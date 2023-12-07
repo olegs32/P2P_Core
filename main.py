@@ -79,8 +79,8 @@ async def ping(id: int, ts: int):
 
 
 @app.get('/ajax', status_code=200)
-async def ajax():
-    return 'In development'
+async def ajax(path):
+    return JSONResponse({"deploy_agents": time.time(),})
 
 
 @app.get('/', status_code=200)
