@@ -80,6 +80,10 @@ async def ping(id: int, ts: int):
 
 @app.get('/ajax', status_code=200)
 async def ajax(path):
+    resp = {}
+    if path =='/':
+        resp['uptime'] = utils.get_uptime()
+        return JSONResponse(resp)
     return JSONResponse({"deploy_agents": time.time(),})
 
 
