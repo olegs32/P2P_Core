@@ -1,5 +1,6 @@
-from threading import Thread
 import time
+
+import src.utils as utils
 
 
 class Client:
@@ -10,10 +11,14 @@ class Client:
         self.ts = ts
         self.services = {}
         self.hostname = hostname
-        self.control = {'upgrade': [], 'downgrade': [], 'deploy': [], 'remove': [], 'start': [], 'stop': [], 'restart': []}
+        self.control = {'upgrade': [], 'downgrade': [], 'deploy': [], 'remove': [], 'start': [], 'stop': [],
+                        'restart': []}
         self.status = 'Registered'
         self.ping_timeout = ping_timeout
-        self.queued = {'upgrade': [], 'downgrade': [], 'deploy': [], 'remove': [], 'start': [], 'stop': [], 'restart': []}
+        self.queued = {'upgrade': [], 'downgrade': [], 'deploy': [], 'remove': [], 'start': [], 'stop': [],
+                       'restart': []}
+        self.ping_resp = {'status': 200, 'upgrade': [], 'downgrade': [], 'deploy': [], 'remove': [], 'start': [], 'stop': [],
+                          'restart': []}
         self.last_update_ts = int
         self.report = {}
 
@@ -23,24 +28,19 @@ class Client:
             # self.online = 'Online' if time.time() - self.ts < self.ping_timeout else False
 
     def invoke(self):
-        status = Thread(target=self._status, daemon=True)
-        status.start()
+        utils.threader([{'target': self._status}])
 
     def update_ts(self, ts):
         self.ts = ts
         self.last_update_ts = time.time()
 
-class Observer:
-    def __init__(self, clients):
-        self.clients = clients
 
-    def observe(self):
-        while True:
-            for c in self.clients:
-                c.renew_status()
-            time.sleep(1)
-
-
-
-
-
+# class Observer:
+#     def __init__(self, clients):
+#         self.clients = clients
+#
+#     def observe(self):
+#         while True:
+#             for c in self.clients:
+#                 c.renew_status()
+#             time.sleep(1)
