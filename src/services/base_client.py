@@ -20,11 +20,14 @@ class Client:
         self.ping_resp = {'status': 200, 'upgrade': [], 'downgrade': [], 'deploy': [], 'remove': [], 'start': [], 'stop': [],
                           'restart': []}
         self.last_update_ts = int
+        self.last_connect = -1
         self.report = {}
 
     def _status(self):
         while True:
             self.status = 'Online' if time.time() - self.ts < self.ping_timeout else 'Offline'
+            self.last_connect = int(time.time() - self.ts)
+            time.sleep(1)
             # self.online = 'Online' if time.time() - self.ts < self.ping_timeout else False
 
     def invoke(self):

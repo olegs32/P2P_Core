@@ -3,6 +3,8 @@ from threading import Thread
 
 import sqlalchemy as db
 from sqlalchemy.inspection import inspect
+
+import src.utils
 from src.services.base_client import *
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
@@ -69,10 +71,11 @@ async def register(ts, hostname):
 
 
 @app.get('/ping', status_code=200)
-async def ping(id: int, ts: int):
-    # print(clients.keys())
+async def ping(id: int, ts: int, services: str):
     if id in clients.keys():
         clients[id].update_ts(ts)
+        clients[id].services = json.loads(services)
+
         return clients[id].ping_resp
     else:
         return {'status': 409, 'description': 'Client not registered'}
@@ -81,10 +84,13 @@ async def ping(id: int, ts: int):
 @app.get('/ajax', status_code=200)
 async def ajax(path):
     resp = {}
-    if path =='/':
+    if path == '/':
         resp['uptime'] = utils.get_uptime()
         return JSONResponse(resp)
-    return JSONResponse({"deploy_agents": time.time(),})
+    elif path == '/tables.html':
+        resp['table_workers'] = src.utils.gen_block_clients(clients)
+        return JSONResponse(resp)
+    return JSONResponse({"deploy_agents": time.time(), })
 
 
 @app.get('/', status_code=200)
@@ -96,6 +102,32 @@ async def root(request: Request):
                                                                   'uptime': uptime,
                                                                   'deploy_agents': agents,
                                                                   'projects_count': projects_count})
+
+
+@app.get('/tables.html', status_code=200)  # todo not ready request
+async def root(request: Request):
+    workers = src.utils.gen_block_clients(clients)
+    projects = 'projects'
+    ajax_workers = 'ajax_workers'
+    ajax_projects = 'ajax_projects'
+    return templates.TemplateResponse('home/tables.html', context={'request': request,
+                                                                   'workers': workers, 'projects': projects,
+                                                                   'ajax_workers': ajax_workers,
+                                                                   'ajax_projects': ajax_projects,
+                                                                   })
+
+@app.get('/deployment.html', status_code=200)
+async def root_tables(request: Request):
+    workers = 'workers'
+
+    projects = 'projects'
+    ajax_workers = 'ajax_workers'
+    ajax_projects = 'generators.gen_ajax_js(, timer=10)'
+    return templates.TemplateResponse('home/deployment.html', context={'request': request,
+                                                                       'workers': workers, 'projects': projects,
+                                                                       'ajax_workers': ajax_workers,
+                                                                       'ajax_projects': ajax_projects,
+                                                                       })
 
 
 if __name__ == "__main__":
