@@ -66,21 +66,22 @@ utils.threader([{'target': client_observer.run}])
 
 
 @app.get('/register', status_code=200)
-async def register(ts, hostname):
+async def register(ts: float, hostname):
     id = len(clients) + 1
     print(f'register {id} client: {hostname}')
     clients[id] = Client(id, int(ts), hostname, REPOS)
     clients[id].invoke()
     print(clients)
 
-    return id
+    return JSONResponse({'id': id})
 
 
-@app.get('/ping', status_code=200)
-async def ping(id: int, ts: int, services: str):
+@app.post('/ping', status_code=200)
+async def ping(id: int, ts: float, services: Request):
+    srvcs = await services.json()
     if id in clients.keys():
         clients[id].update_ts(ts)
-        clients[id].services = json.loads(services)
+        clients[id].services = srvcs
         print(clients[id].services)
 
         return clients[id].ping_resp

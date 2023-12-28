@@ -144,10 +144,10 @@ def gen_client_control(clients, projects, id):
         print(client)
         for ser in client.services:
             service = client.services[ser]
-            print(service)
-            if service != "hosted_projects":
+            if ser != "hosted_projects":
                 button = ''
                 status = service['status']
+
                 if 'stop' in status:
                     button += f"""<a href="/cicd/{id}/{service}?action=start">
                                    <button class="btn btn-link text-dark text-sm mb-0 px-0 ms-4">
