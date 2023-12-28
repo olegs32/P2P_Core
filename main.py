@@ -5,6 +5,7 @@ import sqlalchemy as db
 from sqlalchemy.inspection import inspect
 
 import src.utils
+from src.calls import generators
 from src.services.base_client import *
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
@@ -26,7 +27,7 @@ import time
 import uvicorn  # pip install uvicorn fastapi python-multipart yattag pyinstaller
 import json
 
-from src.services.observer import ClientObserver
+from src.services.observer import ClientObserver, ProjectsObserver
 
 # import src.sqlite_db_wrapper as sqlite_db_wrapper
 
@@ -34,8 +35,9 @@ from src.services.observer import ClientObserver
 BIND_WEB = '127.0.0.1'
 PORT_WEB = 8081
 TEMPLATE_ENGINES = 'repo_templates'
-REPOS = 'repo'
+REPOS = ['repo', ]
 clients = {}
+projects = {}
 app = FastAPI()
 app.mount("/static", StaticFiles(directory="apps/static"), name="static")
 engine = db.create_engine("sqlite:///src/db/main.db")
@@ -54,9 +56,13 @@ templates = Jinja2Templates(directory="apps/templates/")
 Put projects into personal folder for each project in projects library
 """
 
-observer = ClientObserver(clients)
-observer_th = Thread(target=observer.run, args=())
-observer_th.start()
+client_observer = ClientObserver(clients)
+project_observer = ProjectsObserver(projects, REPOS)
+utils.threader([{'target': client_observer.run}])
+
+
+# observer_th = Thread(target=client_observer.run, args=())
+# observer_th.start()
 
 
 @app.get('/register', status_code=200)
@@ -85,19 +91,43 @@ async def ping(id: int, ts: int, services: str):
 async def ajax(path):
     resp = {}
     if path == '/':
+        resp['summary_agents'] = len(clients)
+        resp['deploy_projects'] = len(projects)
+        resp['summary_agents'] = len(clients)
         resp['uptime'] = utils.get_uptime()
-        return JSONResponse(resp)
+        # return JSONResponse(resp)
+
     elif path == '/tables.html':
-        resp['table_workers'] = src.utils.gen_block_clients(clients)
-        return JSONResponse(resp)
-    return JSONResponse({"deploy_agents": time.time(), })
+        resp['table_workers'] = generators.gen_block_clients(clients)
+        resp['projects'] = generators.gen_block_projects(projects)
+        # return JSONResponse(resp)
+
+    elif path == '/deployment.html':
+        resp['workers'] = generators.gen_adv_cli_acts(clients)
+        # return JSONResponse(resp)
+
+    return JSONResponse(resp)
+
+
+@app.get('/project/{id}/{action}', status_code=200)
+async def cli_acts(request: Request, id: int, action: str):
+    html = ''
+    if action == 'deploy':
+        print(action)
+        html = generators.gen_client_project(clients[id], projects, 'deploy')
+    elif action == 'control':
+        html = generators.gen_proj_control(clients[id], id)
+    # elif action == 'remove':
+    #     html = generators.gen_proj_remove(clients[id])
+    # print('custom ajax works')
+    return HTMLResponse(html)
 
 
 @app.get('/', status_code=200)
 async def root(request: Request):
     uptime = utils.get_uptime()
     agents = str(len(clients))
-    projects_count = len('lib.get_projects()')
+    projects_count = len(projects)
     return templates.TemplateResponse('home/index.html', context={'request': request,
                                                                   'uptime': uptime,
                                                                   'deploy_agents': agents,
@@ -106,28 +136,19 @@ async def root(request: Request):
 
 @app.get('/tables.html', status_code=200)  # todo not ready request
 async def root(request: Request):
-    workers = src.utils.gen_block_clients(clients)
-    projects = 'projects'
-    ajax_workers = 'ajax_workers'
-    ajax_projects = 'ajax_projects'
-    return templates.TemplateResponse('home/tables.html', context={'request': request,
-                                                                   'workers': workers, 'projects': projects,
-                                                                   'ajax_workers': ajax_workers,
-                                                                   'ajax_projects': ajax_projects,
-                                                                   })
+    return templates.TemplateResponse('home/tables.html',
+                                      context={'request': request,
+                                               'workers': generators.gen_block_clients(clients),
+                                               'projects': generators.gen_block_projects(projects), })
+
 
 @app.get('/deployment.html', status_code=200)
 async def root_tables(request: Request):
-    workers = 'workers'
-
-    projects = 'projects'
-    ajax_workers = 'ajax_workers'
-    ajax_projects = 'generators.gen_ajax_js(, timer=10)'
-    return templates.TemplateResponse('home/deployment.html', context={'request': request,
-                                                                       'workers': workers, 'projects': projects,
-                                                                       'ajax_workers': ajax_workers,
-                                                                       'ajax_projects': ajax_projects,
-                                                                       })
+    return templates.TemplateResponse('home/deployment.html',
+                                      context={'request': request,
+                                               'workers': generators.gen_adv_cli_acts(clients),
+                                               'projects': generators.gen_block_projects(projects),
+                                               })
 
 
 if __name__ == "__main__":
