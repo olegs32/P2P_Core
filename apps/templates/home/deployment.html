@@ -15,7 +15,7 @@
         }
 
         function Go(href, agent) {
-            document.getElementById('project_title').innerHTML = " of " + agent
+            document.getElementById('project_title').innerHTML = " " + agent
             document.getElementById('hosted_projects').innerHTML = httpGet(href)
         }
     </script>
@@ -59,7 +59,7 @@
                     {#          <div class="col-xl-6">#}
                     {#            <div class="row">#}
                     {#              <div class="col-md-6 col-6">#}
-                    {{ workers | safe }}
+                    {{ projects | safe }}
                     {#                <div class="card">#}
                     {#                  <div class="card-header mx-4 p-3 text-center">#}
                     {#                    <div class="icon icon-shape icon-lg bg-gradient-primary shadow text-center border-radius-lg">#}
@@ -132,7 +132,7 @@
                         <div class="card-header pb-0 p-3">
                             <div class="row">
                                 <div class="col-6 d-flex align-items-center">
-                                    <h6 class="mb-0">Projects </h6>
+                                    <h6 class="mb-0">Workers </h6>
                                     <div class="mb-0" id="project_title"></div>
                                 </div>
                                 <div class="col-6 text-end">

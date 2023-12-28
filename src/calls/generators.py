@@ -73,90 +73,94 @@ def gen_block_clients(clients):
     return html
 
 
-def gen_adv_cli_acts(clients):
+# def gen_adv_cli_acts(clients):
+#     html = ''
+#     for cli in clients:
+#         client = clients[cli]
+#
+#         html += f"""
+#                 <div class="col-md-4 col-4" style="padding-bottom: 2%;
+#         ">
+#                         <div class="card">
+#                           <div class="card-header mx-4 p-3 text-center">
+#
+#                           </div>
+#
+#                             <h6 class="text-center mb-0">{client.hostname}</h6>
+#                             <br>
+#                             <div style="align-self: center;
+#                                         padding-bottom: 5%;">
+#                             <div class="icon icon-shape icon-lg bg-gradient-success shadow text-center border-radius-lg">
+#                               <a href="#" onClick="Go('/project/{client.id}/summary', '{client.hostname}')">
+#                               <i class="material-icons opacity-10">summarize</i></a>
+#
+#                             </div>
+#                             <div class="icon icon-shape icon-lg bg-gradient-info shadow text-center border-radius-lg">
+#                              <a href="#" onClick="Go('/project/{client.id}/control', '{client.hostname}')"><i class="material-icons opacity-10">apps</i></a>
+#                             </div>
+#
+#
+#                 </div>
+#                         </div>
+#                 """
+#
+#     return html
+
+
+def gen_client_project(clients, project):
+    action = ''
     html = ''
     for cli in clients:
         client = clients[cli]
+        if client.hostname in project.hosted:
+            action = 'delete'
+        else:
+            action = 'deploy'
 
         html += f"""
-                <div class="col-md-4 col-4" style="padding-bottom: 2%;
-        ">
-                        <div class="card">
-                          <div class="card-header mx-4 p-3 text-center">
-
-                          </div>
-
-                            <h6 class="text-center mb-0">{client.hostname}</h6>
-                            <br>
-                            <div style="align-self: center;
-                                        padding-bottom: 5%;">
-                            <div class="icon icon-shape icon-lg bg-gradient-success shadow text-center border-radius-lg">
-                              <a href="#" onClick="Go('/project/{client.id}/deploy', '{client.hostname}')"><i class="material-icons opacity-10">add_circle</i></a>
-
-                            </div>
-                            <div class="icon icon-shape icon-lg bg-gradient-info shadow text-center border-radius-lg">
-                             <a href="#" onClick="Go('/project/{client.id}/control', '{client.hostname}')"><i class="material-icons opacity-10">apps</i></a>
-                            </div>
-                            <div class="icon icon-shape icon-lg bg-gradient-primary shadow text-center border-radius-lg">
-                               <a href="#" onClick="Go('/project/{client.id}/remove', '{client.hostname}')"><i class="material-icons opacity-10">remove</i></a>
-                            </div>
-                                </div>
-
-                </div>
-                        </div>
-                """
-
-    return html
-
-
-def gen_client_project(client, projects, action):
-    for proj in projects:
-        project = projects[proj]
-        if client.hostname in project.hosted:
-
-    html = f"""
         <ul class="list-group">
               <li class="list-group-item border-0 d-flex justify-content-between ps-0 mb-2 border-radius-lg">
                 <div class="d-flex flex-column">
-                  <h6 class="mb-1 text-dark font-weight-bold text-sm">{client.hostname}</h6>
-                  <span class="text-xs">#MS-415646</span>
+                  <h6 class="mb-1 text-dark font-weight-bold text-sm">{project.name}</h6>
+                  <span class="text-xs">{project.id}</span>
                 </div>
                 <div class="d-flex align-items-center text-sm">
-                  $180
+                  {project.codename}
                   <button class="btn btn-link text-dark text-sm mb-0 px-0 ms-4">
-                  <i class="material-icons text-lg position-relative me-1">picture_as_pdf</i>Deploy</button>
+                  <i class="material-icons text-lg position-relative me-1">picture_as_pdf</i>{action.capitalize()}</button>
                 </div>
               </li>
-            </ul>
-
-        """
+            </ul>"""
 
     return html
 
 
-def gen_proj_control(client, id):
+def gen_client_control(clients, projects, id):
     html = ''
     # todo Add a href to action button, material_image to icon
     # todo add overlay to display 'parameters': 'kmv.pfx kmv.cer', 'name': 'KMV cert', 'service': 'False', 'status': 'stopped'
-    print(client)
-    for service in client.services:
-        print(service)
-        if service != "hosted_projects":
-            button = ''
-            status = client.service['status']
-            if 'stop' in status:
-                button += f"""<a href="/cicd/{id}/{service}?action=start">
-                               <button class="btn btn-link text-dark text-sm mb-0 px-0 ms-4">
-                               <i class="material-icons text-lg position-relative me-1">play_arrow</i>Start</button></a>"""
-            if 'start' in status:
-                button += f"""<a href="/cicd/{id}/{service}?action=stop">
-                               <button class="btn btn-link text-dark text-sm mb-0 px-0 ms-4">
-                               <i class="material-icons text-lg position-relative me-1">stop</i>Stop</button></a>"""
-                button += f"""<a href="/cicd/{id}/{service}?action=restart">
-                               <button class="btn btn-link text-dark text-sm mb-0 px-0 ms-4">
-                               <i class="material-icons text-lg position-relative me-1">sync</i>Restart</button></a>"""
+    for cli in clients:
+        client = clients[cli]
+        print(client)
+        for ser in client.services:
+            service = client.services[ser]
+            print(service)
+            if service != "hosted_projects":
+                button = ''
+                status = service['status']
+                if 'stop' in status:
+                    button += f"""<a href="/cicd/{id}/{service}?action=start">
+                                   <button class="btn btn-link text-dark text-sm mb-0 px-0 ms-4">
+                                   <i class="material-icons text-lg position-relative me-1">play_arrow</i>Start</button></a>"""
+                if 'start' in status:
+                    button += f"""<a href="/cicd/{id}/{service}?action=stop">
+                                   <button class="btn btn-link text-dark text-sm mb-0 px-0 ms-4">
+                                   <i class="material-icons text-lg position-relative me-1">stop</i>Stop</button></a>"""
+                    button += f"""<a href="/cicd/{id}/{service}?action=restart">
+                                   <button class="btn btn-link text-dark text-sm mb-0 px-0 ms-4">
+                                   <i class="material-icons text-lg position-relative me-1">sync</i>Restart</button></a>"""
 
-            html += f"""
+                html += f"""
                <ul class="list-group">
                      <li class="list-group-item border-0 d-flex justify-content-between ps-0 mb-2 border-radius-lg">
                        <div class="d-flex flex-column">
@@ -180,21 +184,36 @@ def gen_proj_control(client, id):
     return html
 
 
-def gen_proj_remove(client):
-    html = f"""
-        <ul class="list-group">
-              <li class="list-group-item border-0 d-flex justify-content-between ps-0 mb-2 border-radius-lg">
-                <div class="d-flex flex-column">
-                  <h6 class="mb-1 text-dark font-weight-bold text-sm">{client.hostname}</h6>
-                  <span class="text-xs">#MS-415646</span>
-                </div>
-                <div class="d-flex align-items-center text-sm">
-                  $180
-                  <button class="btn btn-link text-dark text-sm mb-0 px-0 ms-4"><i class="material-icons text-lg position-relative me-1">picture_as_pdf</i>Remove</button>
-                </div>
-              </li>
-            </ul>
+def gen_adv_projects_acts(projects):
+    html = ''
+    for proj in projects:
+        project = projects[proj]
 
-        """
+        html += f"""
+                    <div class="col-md-4 col-4" style="padding-bottom: 2%;">
+                            <div class="card">
+                              <div class="card-header mx-4 p-3 text-center">
+
+                              </div>
+
+                                <h6 class="text-center mb-0">{project.name}</h6>
+                                <br>
+                                <div style="align-self: center;
+                                            padding-bottom: 5%;">
+                                <div class="icon icon-shape icon-lg bg-gradient-success shadow text-center border-radius-lg">
+                                  <a href="#" onClick="Go('/project/{project.codename}/summary', '{project.name}')">
+                                  <i class="material-icons opacity-10">summarize</i></a>
+
+                                </div>
+                                <div class="icon icon-shape icon-lg bg-gradient-info shadow text-center border-radius-lg">
+                                 <a href="#" onClick="Go('/project/{project.codename}/control', '{project.name}')">
+                                 <i class="material-icons opacity-10">apps</i></a>
+                                </div>
+
+                                    </div>
+
+                    </div>
+                            </div>
+                    """
 
     return html

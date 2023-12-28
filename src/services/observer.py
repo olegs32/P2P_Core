@@ -41,15 +41,16 @@ class ProjectsObserver:
         for spec in result:
             # requirements = ['name', 'codename', 'version', 'path', 'loader', 'files', 'parameters',
             #                 'service']
-            print(result)
-            print(files[2])
-            self.projects[project] = Project(len(project) + 1,
+            # print(result)
+            # print(files)
+            print('projects', self.projects)
+            self.projects[project] = Project(len(self.projects) + 1,
                                              result[spec]['name'],
-                                             spec,
+                                             project,
                                              result[spec]['version'],
                                              path,
                                              result[spec]['loader'],
-                                             files[2],
+                                             files,
                                              result[spec]['parameters'],
                                              result[spec]['service'],
 
@@ -58,14 +59,18 @@ class ProjectsObserver:
     def parse_projects(self):
         for path in self.repos:
             structure = list(os.walk(path))
-            # print(structure)
+            print(structure)
             if len(structure) > 1:
                 for project in structure[0][1]:
+                    print(project)
                     for files in structure:
+                        print(files)
                         if project in files[0]:
-                            self.projects[project] = {'files': files[2]}
+                            # self.projects[project] = {'files': files[2]}
                             if 'project.ini' in files[2]:
-                                self.parse_specification(project, path, files)
+                                self.parse_specification(project, path, files[2])
+                                print('projects', self.projects)
+
 
     def rescan_projects(self):
         pass

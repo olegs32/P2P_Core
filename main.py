@@ -81,6 +81,7 @@ async def ping(id: int, ts: int, services: str):
     if id in clients.keys():
         clients[id].update_ts(ts)
         clients[id].services = json.loads(services)
+        print(clients[id].services)
 
         return clients[id].ping_resp
     else:
@@ -103,22 +104,21 @@ async def ajax(path):
         # return JSONResponse(resp)
 
     elif path == '/deployment.html':
-        resp['workers'] = generators.gen_adv_cli_acts(clients)
+        resp['projects'] = generators.gen_adv_projects_acts(projects)
         # return JSONResponse(resp)
 
     return JSONResponse(resp)
 
 
 @app.get('/project/{id}/{action}', status_code=200)
-async def cli_acts(request: Request, id: int, action: str):
+async def cli_acts(request: Request, id: str, action: str):
     html = ''
-    if action == 'deploy':
+    if action == 'summary':
         print(action)
-        html = generators.gen_client_project(clients[id], projects, 'deploy')
+        html = generators.gen_client_project(clients, projects[id])
     elif action == 'control':
-        html = generators.gen_proj_control(clients[id], id)
-    # elif action == 'remove':
-    #     html = generators.gen_proj_remove(clients[id])
+        html = generators.gen_client_control(clients, projects, id)
+
     # print('custom ajax works')
     return HTMLResponse(html)
 
@@ -146,8 +146,7 @@ async def root(request: Request):
 async def root_tables(request: Request):
     return templates.TemplateResponse('home/deployment.html',
                                       context={'request': request,
-                                               'workers': generators.gen_adv_cli_acts(clients),
-                                               'projects': generators.gen_block_projects(projects),
+                                               'projects': generators.gen_adv_projects_acts(projects),
                                                })
 
 
