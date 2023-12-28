@@ -84,7 +84,7 @@ async def ping(id: int, ts: float, services: Request):
         clients[id].services = srvcs
         print(clients[id].services)
 
-        return clients[id].ping_resp
+        return JSONResponse({'actions': clients[id].ping_resp})
     else:
         return {'status': 409, 'description': 'Client not registered'}
 
@@ -109,6 +109,13 @@ async def ajax(path):
         # return JSONResponse(resp)
 
     return JSONResponse(resp)
+
+
+@app.get('/lib/{project}/deploy.tar', status_code=200)
+async def lib_proj_download(codename):
+    print(codename)
+    locate = projects[codename].path
+    return FileResponse(rf"{locate}\{codename}_deploy.tar")
 
 
 @app.get('/project/{id}/{action}', status_code=200)

@@ -104,16 +104,27 @@ class client:
         print(self.services)
         # return services
 
+    def ping(self):
+        resp = requests.post(f'http://{self.SERVER}/ping?id={self.id}&ts={time.time()}',
+                             json=self.services).json()
+        # print(r)
+        # print(r.content)
+        print(self.services)
+        if resp['status'] == 409:
+            print(self.register())
+        print(resp)
+        for act in resp['actions']:
+            if len(resp['act']) > 0:
+                print(act)
+                for i in resp['actions'][act]:
+                    act(resp['actions'][act])
+                    requests.get(f"http://{self.SERVER}/cicd/{self.id}/{i}?action=confirm_{resp['task'][i]}")
+
     def dpinger(self, config, ):
         while True:
-            resp = requests.post(f'http://{self.SERVER}/ping?id={self.id}&ts={time.time()}',
-                                 json=self.services).json()
-            # print(r)
-            # print(r.content)
-            print(self.services)
-            if resp['status'] == 409:
-                print(self.register())
-            print(resp)
+            self.ping()
+            time.sleep(self.ping_timeout)
+
             # if resp['change'] is True:
             #     for i in resp['task']:
             #         if resp['task'][i] == 'start':
@@ -141,37 +152,63 @@ class client:
             #     self.deployer(resp['task'], resp['codename'], 'downgrade', )
             #
             # time.sleep(config['ping'])
-            time.sleep(self.ping_timeout)
+
+    def upgrade(self, name):
+        self.deployer(resp['task'], resp['codename'], 'upgrade', )
+
+    def downgrade(self, name):
+        self.deployer(resp['task'], resp['codename'], 'downgrade', )
+
+    def deploy(self, name):
+        self.deployer(resp['task'], resp['codename'], 'deploy', )
+
+    def remove(self, name):
+        self.deployer(resp['task'], resp['codename'], 'remove', )
+
+    def start(self, data):
+        self.start_service(data)
+        self.services[data]['status'] = 'running'
+
+    def stop(self, data):
+        self.stop_service(data)
+        self.services[data]['status'] = 'stopped'
+
+    def restart(self, data):
+        self.restart_service(data)
+        self.services[data]['status'] = 'running'
+
+    def deployer(self, url, codename, action, silent=False):
+        if url == '':
+            url = f'/lib/{codename}/deploy.tar'
+
+        if action == 'deploy':
+            if not os.path.exists(rf'projects\{codename}'):
+                os.mkdir(rf'projects\{codename}')
+            with open(rf'projects\{codename}_deploy.tar', 'wb') as tar:
+                data = requests.get(f'http://{self.SERVER}{url}').content
+                tar.write(data)
+            shutil.unpack_archive(rf'projects\{codename}_deploy.tar', rf'projects')
+
+        elif action == 'remove':
+            shutil.rmtree(rf'projects\{codename}')
+            os.remove(rf'projects\{codename}_deploy.tar')
+            self.services.pop(codename)
+
+        elif 'grade' in action:
+            url_proj_tar = f'/lib/{codename}/deploy.tar'
+
+            if 'pid' in self.services[codename]:
+                self.stop_service(codename)
+            self.deployer(url_proj_tar, codename, 'remove', True)
+            self.deployer(url_proj_tar, codename, 'deploy', True)
+            # self.start_service(codename)
+        #     ToDo fix start_service, create loader module
+
+        self.scan_services()
+        if silent is False:
+            requests.get(f"http://{self.SERVER}/cicd/{self.id}/{'deploy'}?action=confirm_{action}_{codename}")
 
 
-#
-# def deployer(self, url, codename, action, silent=False):
-#     if not os.path.exists(rf'projects\{codename}'):
-#         os.mkdir(rf'projects\{codename}')
-#     if action == 'deploy':
-#         with open(rf'projects\{codename}_deploy.tar', 'wb') as tar:
-#             data = requests.get(f'http://{self.SERVER}{url}').content
-#             tar.write(data)
-#         shutil.unpack_archive(rf'projects\{codename}_deploy.tar', rf'projects')
-#     elif action == 'remove':
-#
-#         shutil.rmtree(rf'projects\{codename}')
-#         os.remove(rf'projects\{codename}_deploy.tar')
-#         self.services.pop(codename)
-#
-#     elif 'grade' in action:
-#         url_proj_tar = f'/lib/{codename}/deploy.tar'
-#
-#         if 'pid' in self.services[codename]:
-#             self.stop_service(codename)
-#         self.deployer(url_proj_tar, codename, 'remove', True)
-#         self.deployer(url_proj_tar, codename, 'deploy', True)
-#         # self.start_service(codename)
-#     #     ToDo fix start_service, create loader module
-#
-#     self.scan_services()
-#     if silent is False:
-#         requests.get(f"http://{self.SERVER}/cicd/{self.id}/{'deploy'}?action=confirm_{action}_{codename}")
 #
 # # def upgrade_service(self, service, up_down_grade):
 # #
