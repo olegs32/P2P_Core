@@ -135,7 +135,7 @@ def gen_client_project(clients, project):
     return html
 
 
-def gen_client_control(clients, projects, id):
+def gen_client_control(clients, projects, proj):
     html = ''
     # todo Add a href to action button, material_image to icon
     # todo add overlay to display 'parameters': 'kmv.pfx kmv.cer', 'name': 'KMV cert', 'service': 'False', 'status': 'stopped'
@@ -149,14 +149,14 @@ def gen_client_control(clients, projects, id):
                 status = service['status']
 
                 if 'stop' in status:
-                    button += f"""<a href="/cicd/{id}/{service}?action=start">
+                    button += f"""<a href="#" onClick=httpGet("/client/{cli}/{proj}/start")>
                                    <button class="btn btn-link text-dark text-sm mb-0 px-0 ms-4">
                                    <i class="material-icons text-lg position-relative me-1">play_arrow</i>Start</button></a>"""
-                if 'start' in status:
-                    button += f"""<a href="/cicd/{id}/{service}?action=stop">
+                if 'run' in status:
+                    button += f"""<a href="#" onClick=httpGet("/client/{cli}/{proj}/stop")>
                                    <button class="btn btn-link text-dark text-sm mb-0 px-0 ms-4">
                                    <i class="material-icons text-lg position-relative me-1">stop</i>Stop</button></a>"""
-                    button += f"""<a href="/cicd/{id}/{service}?action=restart">
+                    button += f"""<a href="#" onClick=httpGet("/client/{cli}/{proj}/restart")>
                                    <button class="btn btn-link text-dark text-sm mb-0 px-0 ms-4">
                                    <i class="material-icons text-lg position-relative me-1">sync</i>Restart</button></a>"""
 
@@ -165,7 +165,7 @@ def gen_client_control(clients, projects, id):
                      <li class="list-group-item border-0 d-flex justify-content-between ps-0 mb-2 border-radius-lg">
                        <div class="d-flex flex-column">
                          <h6 class="mb-1 text-dark font-weight-bold text-sm">{service['name']}</h6>
-                         <span class="text-xs">{service['version']}</span>
+                         <span class="text-xs">{cli}: {client.hostname}</span>
                        </div>
                        <div class="d-flex align-items-center text-sm">
                            <div class="d-flex flex-column">

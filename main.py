@@ -65,6 +65,16 @@ utils.threader([{'target': client_observer.run}])
 # observer_th.start()
 
 
+@app.get('/confirm/{id}/{action}/{payload}', status_code=200)
+async def confirm(id: int, action: str, payload: str):
+    cli = clients[id].ping_resp[action]
+    cli.pop(cli.index(payload))
+    # clients[id].progress[] #todo make progress
+
+
+    return 'ok'
+
+
 @app.get('/register', status_code=200)
 async def register(ts: float, hostname):
     id = len(clients) + 1
@@ -118,17 +128,25 @@ async def lib_proj_download(codename):
     return FileResponse(rf"{locate}\{codename}_deploy.tar")
 
 
-@app.get('/project/{id}/{action}', status_code=200)
-async def cli_acts(request: Request, id: str, action: str):
+@app.get('/project/{proj}/{action}', status_code=200)
+async def cli_acts(request: Request, proj: str, action: str):
     html = ''
     if action == 'summary':
         print(action)
-        html = generators.gen_client_project(clients, projects[id])
+        html = generators.gen_client_project(clients, projects[proj])
     elif action == 'control':
-        html = generators.gen_client_control(clients, projects, id)
+        html = generators.gen_client_control(clients, projects, proj)
 
-    # print('custom ajax works')
     return HTMLResponse(html)
+
+
+@app.get('/client/{id}/{proj}/{action}', status_code=200)
+async def cli_control(request: Request, id: int, proj: str, action: str):
+    print(clients)
+    print(clients[id].queued[action])
+    clients[id].queued[action].append(proj)
+    print(clients[id].queued[action])
+    return 'ok'
 
 
 @app.get('/', status_code=200)
@@ -160,3 +178,4 @@ async def root_tables(request: Request):
 
 if __name__ == "__main__":
     uvicorn.run("main:app", host=BIND_WEB, port=PORT_WEB)
+    # uvicorn.run("main:app", host=BIND_WEB, port=PORT_WEB, reload=True)

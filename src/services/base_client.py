@@ -9,7 +9,7 @@ class Client:
         self.repo = repo
         self.ttl = 60
         self.ts = ts
-        self.services = {}
+        self.services = {}  # update from client
         self.hostname = hostname
         self.control = {'upgrade': [], 'downgrade': [], 'deploy': [], 'remove': [], 'start': [], 'stop': [],
                         'restart': []}
@@ -17,11 +17,13 @@ class Client:
         self.ping_timeout = ping_timeout
         self.queued = {'upgrade': [], 'downgrade': [], 'deploy': [], 'remove': [], 'start': [], 'stop': [],
                        'restart': []}
-        self.ping_resp = {'status': 200, 'upgrade': [], 'downgrade': [], 'deploy': [], 'remove': [], 'start': [], 'stop': [],
+        self.ping_resp = {'status': 200, 'upgrade': [], 'downgrade': [], 'deploy': [], 'remove': [], 'start': [],
+                          'stop': [],
                           'restart': []}
         self.last_update_ts = int
         self.last_connect = -1
         self.report = {}
+        self.progress = {}
 
     def _status(self):
         while True:
@@ -36,7 +38,6 @@ class Client:
     def update_ts(self, ts):
         self.ts = ts
         self.last_update_ts = time.time()
-
 
 # class Observer:
 #     def __init__(self, clients):

@@ -16,8 +16,9 @@ class ClientObserver:
                     # print(self.clients[client])
                     for action in self.clients[client].queued:
                         if len(self.clients[client].queued[action]) != 0:
-                            for e in self.clients[client].queued[action]:
-                                self.clients[client].queued[action].pop(e)  # todo fix error
+                            for index, e in enumerate(self.clients[client].queued[action]):
+                                print(index, e)
+                                self.clients[client].queued[action].pop(index)  # todo fix error
                                 self.clients[client].ping_resp[action].append(e)
             time.sleep(1)
 

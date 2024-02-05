@@ -107,7 +107,7 @@ class client:
     def ping(self):
         resp = requests.post(f'http://{self.SERVER}/ping?id={self.id}&ts={time.time()}',
                              json=self.services).json()
-        print(resp)
+        # print(resp)
         if resp['status'] == 409:
             print(self.register())
         else:
@@ -116,8 +116,22 @@ class client:
                 if type(resp['actions'][act]) is list and len(resp['actions'][act]) > 0:
                     print(act)
                     for i in resp['actions'][act]:
-                        act(resp['actions'][act])
-                        requests.get(f"http://{self.SERVER}/cicd/{self.id}/{i}?action=confirm_{resp['task'][i]}")
+                        for element in resp['actions'][act]:
+                            if act == 'upgrade':
+                                self.upgrade(element)
+                            elif act == 'downgrade':
+                                self.downgrade(element)
+                            elif act == 'deploy':
+                                self.deploy(element)
+                            elif act == 'remove':
+                                self.remove(element)
+                            elif act == 'start':
+                                self.start(element)
+                            elif act == 'stop':
+                                self.stop(element)
+                            elif act == 'restart':
+                                self.restart(element)
+                            requests.get(f"http://{self.SERVER}/confirm/{self.id}/{act}/{element}")
 
     def dpinger(self, config, ):
         while True:
@@ -164,17 +178,32 @@ class client:
     def remove(self, resp):
         self.deployer(resp['task'], resp['codename'], 'remove', )
 
-    def start(self, data):
-        self.start_service(data)
-        self.services[data]['status'] = 'running'
+    def start(self, srv):
+        print(srv)
+        if self.services[srv]['parameters'] != '':
+            proc = Popen(
+                rf"projects\{srv}\{self.services[srv]['loader']} {self.services[srv]['parameters']}",
+                creationflags=CREATE_NEW_CONSOLE)
+        else:
+            proc = Popen(rf"projects\{srv}\{self.services[srv]['loader']}",
+                         creationflags=CREATE_NEW_CONSOLE)
 
-    def stop(self, data):
-        self.stop_service(data)
-        self.services[data]['status'] = 'stopped'
+        self.services[srv]['pid'] = proc.pid
+        self.services[srv]['status'] = 'running'
 
-    def restart(self, data):
-        self.restart_service(data)
-        self.services[data]['status'] = 'running'
+    def stop(self, srv):
+        #     # os.kill(services[service]['pid'], -9)
+        call(['taskkill', '/F', '/T', '/PID', str(self.services[srv]['pid'])], stdout=PIPE)
+        self.services[srv]['killed'] = True
+        self.services[srv]['status'] = 'stopped'
+        self.services[srv].pop('pid')
+
+    def restart(self, srv):
+        if 'pid' in self.services[srv]:
+            self.stop(srv)
+        self.start(srv)
+        self.services[srv]['killed'] = False
+        self.services[srv]['status'] = 'running'
 
     def deployer(self, url, codename, action, silent=False):
         if url == '':
@@ -207,26 +236,14 @@ class client:
         if silent is False:
             requests.get(f"http://{self.SERVER}/cicd/{self.id}/{'deploy'}?action=confirm_{action}_{codename}")
 
+    #
+    # # def upgrade_service(self, service, up_down_grade):
+    # #
+    # #     requests.get(f"http://{self.SERVER}/cicd/{self.id}/{'deploy'}?action=confirm_{up_down_grade}_{service}")
+    #
+    # def start_service(self, service):
 
-#
-# # def upgrade_service(self, service, up_down_grade):
-# #
-# #     requests.get(f"http://{self.SERVER}/cicd/{self.id}/{'deploy'}?action=confirm_{up_down_grade}_{service}")
-#
-# def start_service(self, service):
-#     if self.services[service]['parameters'] != '':
-#         proc = Popen(
-#             rf"projects\{service}\{self.services[service]['loader']} {self.services[service]['parameters']}",
-#             creationflags=CREATE_NEW_CONSOLE)
-#     else:
-#         proc = Popen(rf"projects\{service}\{self.services[service]['loader']}", creationflags=CREATE_NEW_CONSOLE)
-#
-#     self.services[service]['pid'] = proc.pid
-#
-# def stop_service(self, service):
-#     # os.kill(services[service]['pid'], -9)
-#     call(['taskkill', '/F', '/T', '/PID', str(self.services[service]['pid'])], stdout=PIPE)
-#     self.services[service]['killed'] = True
+
 #
 # def restart_service(self, service):
 #     if 'pid' in self.services[service]:
