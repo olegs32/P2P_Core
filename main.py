@@ -84,7 +84,7 @@ async def ping(id: int, ts: float, services: Request):
         clients[id].services = srvcs
         print(clients[id].services)
 
-        return JSONResponse({'actions': clients[id].ping_resp})
+        return JSONResponse({'status': 200, 'actions': clients[id].ping_resp})
     else:
         return {'status': 409, 'description': 'Client not registered'}
 

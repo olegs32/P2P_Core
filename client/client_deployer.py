@@ -107,18 +107,17 @@ class client:
     def ping(self):
         resp = requests.post(f'http://{self.SERVER}/ping?id={self.id}&ts={time.time()}',
                              json=self.services).json()
-        # print(r)
-        # print(r.content)
-        print(self.services)
+        print(resp)
         if resp['status'] == 409:
             print(self.register())
-        print(resp)
-        for act in resp['actions']:
-            if len(resp['act']) > 0:
-                print(act)
-                for i in resp['actions'][act]:
-                    act(resp['actions'][act])
-                    requests.get(f"http://{self.SERVER}/cicd/{self.id}/{i}?action=confirm_{resp['task'][i]}")
+        else:
+            # print(resp)
+            for act in resp['actions']:
+                if type(resp['actions'][act]) is list and len(resp['actions'][act]) > 0:
+                    print(act)
+                    for i in resp['actions'][act]:
+                        act(resp['actions'][act])
+                        requests.get(f"http://{self.SERVER}/cicd/{self.id}/{i}?action=confirm_{resp['task'][i]}")
 
     def dpinger(self, config, ):
         while True:
@@ -153,16 +152,16 @@ class client:
             #
             # time.sleep(config['ping'])
 
-    def upgrade(self, name):
+    def upgrade(self, resp):
         self.deployer(resp['task'], resp['codename'], 'upgrade', )
 
-    def downgrade(self, name):
+    def downgrade(self, resp):
         self.deployer(resp['task'], resp['codename'], 'downgrade', )
 
-    def deploy(self, name):
+    def deploy(self, resp):
         self.deployer(resp['task'], resp['codename'], 'deploy', )
 
-    def remove(self, name):
+    def remove(self, resp):
         self.deployer(resp['task'], resp['codename'], 'remove', )
 
     def start(self, data):
