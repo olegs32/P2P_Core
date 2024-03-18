@@ -107,7 +107,8 @@ def gen_block_clients(clients):
 #     return html
 
 
-def gen_client_project(clients, project):
+def gen_client_project(clients, projects, proj):
+    project = projects[proj]
     action = ''
     html = ''
     for cli in clients:

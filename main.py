@@ -16,6 +16,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.encoders import jsonable_encoder
 from fastapi.templating import Jinja2Templates
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse, FileResponse
+from fastapi.openapi.docs import get_redoc_html, get_swagger_ui_html
 # import jinja2
 import asyncio
 import os
@@ -61,16 +62,11 @@ project_observer = ProjectsObserver(projects, REPOS)
 utils.threader([{'target': client_observer.run}])
 
 
-# observer_th = Thread(target=client_observer.run, args=())
-# observer_th.start()
-
-
 @app.get('/confirm/{id}/{action}/{payload}', status_code=200)
 async def confirm(id: int, action: str, payload: str):
     cli = clients[id].ping_resp[action]
     cli.pop(cli.index(payload))
     # clients[id].progress[] #todo make progress
-
 
     return 'ok'
 
@@ -81,7 +77,7 @@ async def register(ts: float, hostname):
     print(f'register {id} client: {hostname}')
     clients[id] = Client(id, int(ts), hostname, REPOS)
     clients[id].invoke()
-    print(clients)
+    # print(clients)
 
     return JSONResponse({'id': id})
 
@@ -92,7 +88,7 @@ async def ping(id: int, ts: float, services: Request):
     if id in clients.keys():
         clients[id].update_ts(ts)
         clients[id].services = srvcs
-        print(clients[id].services)
+        # print(clients[id].services)
 
         return JSONResponse({'status': 200, 'actions': clients[id].ping_resp})
     else:
@@ -107,17 +103,13 @@ async def ajax(path):
         resp['deploy_projects'] = len(projects)
         resp['summary_agents'] = len(clients)
         resp['uptime'] = utils.get_uptime()
-        # return JSONResponse(resp)
 
     elif path == '/tables.html':
         resp['table_workers'] = generators.gen_block_clients(clients)
         resp['projects'] = generators.gen_block_projects(projects)
-        # return JSONResponse(resp)
 
     elif path == '/deployment.html':
         resp['projects'] = generators.gen_adv_projects_acts(projects)
-        # return JSONResponse(resp)
-
     return JSONResponse(resp)
 
 
@@ -131,21 +123,23 @@ async def lib_proj_download(codename):
 @app.get('/project/{proj}/{action}', status_code=200)
 async def cli_acts(request: Request, proj: str, action: str):
     html = ''
+    # global hosted_projects # todo just do it!
     if action == 'summary':
-        print(action)
-        html = generators.gen_client_project(clients, projects[proj])
+        # print(action)
+        html = generators.gen_client_project(clients, projects, proj)
+        # hosted_projects = [generators.gen_client_project, (clients, projects, proj)]
     elif action == 'control':
         html = generators.gen_client_control(clients, projects, proj)
-
+        # hosted_projects = [generators.gen_client_control, (clients, projects, proj)]
     return HTMLResponse(html)
 
 
 @app.get('/client/{id}/{proj}/{action}', status_code=200)
 async def cli_control(request: Request, id: int, proj: str, action: str):
-    print(clients)
-    print(clients[id].queued[action])
+    # print(clients)
+    # print(clients[id].queued[action])
     clients[id].queued[action].append(proj)
-    print(clients[id].queued[action])
+    # print(clients[id].queued[action])
     return 'ok'
 
 
@@ -154,10 +148,11 @@ async def root(request: Request):
     uptime = utils.get_uptime()
     agents = str(len(clients))
     projects_count = len(projects)
-    return templates.TemplateResponse('home/index.html', context={'request': request,
-                                                                  'uptime': uptime,
-                                                                  'deploy_agents': agents,
-                                                                  'projects_count': projects_count})
+    return templates.TemplateResponse('home/index.html',
+                                      context={'request': request,
+                                               'uptime': uptime,
+                                               'deploy_agents': agents,
+                                               'projects_count': projects_count})
 
 
 @app.get('/tables.html', status_code=200)  # todo not ready request
@@ -174,6 +169,13 @@ async def root_tables(request: Request):
                                       context={'request': request,
                                                'projects': generators.gen_adv_projects_acts(projects),
                                                })
+
+@app.get("/docs", include_in_schema=False)
+async def custom_swagger_ui_html():
+    return get_swagger_ui_html(
+        openapi_url=app.openapi_url,
+        title="Custom Swagger UI"
+    )
 
 
 if __name__ == "__main__":
