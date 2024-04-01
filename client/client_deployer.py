@@ -173,10 +173,11 @@ class client:
         self.deployer(resp['task'], resp['codename'], 'downgrade', )
 
     def deploy(self, resp):
-        self.deployer(resp['task'], resp['codename'], 'deploy', )
+        print(resp)
+        self.deployer(resp, 'deploy', )
 
     def remove(self, resp):
-        self.deployer(resp['task'], resp['codename'], 'remove', )
+        self.deployer(resp, 'remove', )
 
     def start(self, srv):
         print(srv)
@@ -205,17 +206,23 @@ class client:
         self.services[srv]['killed'] = False
         self.services[srv]['status'] = 'running'
 
-    def deployer(self, url, codename, action, silent=False):
+    def deployer(self, codename, action, url='', silent=False):
+        result = 'success'
         if url == '':
             url = f'/lib/{codename}/deploy.tar'
 
         if action == 'deploy':
             if not os.path.exists(rf'projects\{codename}'):
                 os.mkdir(rf'projects\{codename}')
-            with open(rf'projects\{codename}_deploy.tar', 'wb') as tar:
-                data = requests.get(f'http://{self.SERVER}{url}').content
-                tar.write(data)
-            shutil.unpack_archive(rf'projects\{codename}_deploy.tar', rf'projects')
+            resp = requests.get(f'http://{self.SERVER}{url}')
+            if resp.status_code == 200:
+                data = resp.content
+                with open(rf'projects\{codename}_deploy.tar', 'wb') as tar:
+                    tar.write(data)
+
+                shutil.unpack_archive(rf'projects\{codename}_deploy.tar', rf'projects')
+            else:
+                result = resp.status_code
 
         elif action == 'remove':
             shutil.rmtree(rf'projects\{codename}')
@@ -234,7 +241,7 @@ class client:
 
         self.scan_services()
         if silent is False:
-            requests.get(f"http://{self.SERVER}/cicd/{self.id}/{'deploy'}?action=confirm_{action}_{codename}")
+            requests.get(f"http://{self.SERVER}/cicd/{self.id}/{'deploy'}?action=confirm_{action}_{codename}&result={result}")
 
     #
     # # def upgrade_service(self, service, up_down_grade):

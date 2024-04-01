@@ -6,19 +6,30 @@ from src.services.base_project import Project
 
 
 class ClientObserver:
-    def __init__(self, clients):
+    def __init__(self, clients, projects):
         self.clients = clients
+        self.projects = projects
 
     def queue2cli(self):
         while True:
             if len(self.clients) > 0:
                 for client in self.clients:
+                    hostname = self.clients[client].hostname
                     # print(self.clients[client])
                     for action in self.clients[client].queued:
-                        if len(self.clients[client].queued[action]) != 0:
-                            for index, e in enumerate(self.clients[client].queued[action]):
+                        action_proj = self.clients[client].queued[action]
+                        if len(action_proj) != 0:
+                            for index, e in enumerate(action_proj):
                                 print(index, e)
-                                self.clients[client].queued[action].pop(index)  # todo fix error
+                                if action == 'deploy':
+                                    self.projects[e].tar()
+                                    self.projects[e].hosted.append(hostname)
+                                    # print(self.projects[e].hosted)
+                                elif action == 'remove':
+                                    if hostname in self.projects[e].hosted:
+                                     self.projects[e].hosted.pop(self.projects[e].hosted.index(hostname))
+                                    # print(self.projects[e].hosted)
+                                action_proj.pop(index)  # todo fix error
                                 self.clients[client].ping_resp[action].append(e)
             time.sleep(1)
 
@@ -71,7 +82,6 @@ class ProjectsObserver:
                             if 'project.ini' in files[2]:
                                 self.parse_specification(project, path, files[2])
                                 print('projects', self.projects)
-
 
     def rescan_projects(self):
         pass

@@ -57,7 +57,7 @@ templates = Jinja2Templates(directory="apps/templates/")
 Put projects into personal folder for each project in projects library
 """
 
-client_observer = ClientObserver(clients)
+client_observer = ClientObserver(clients, projects)
 project_observer = ProjectsObserver(projects, REPOS)
 utils.threader([{'target': client_observer.run}])
 
@@ -86,9 +86,15 @@ async def register(ts: float, hostname):
 async def ping(id: int, ts: float, services: Request):
     srvcs = await services.json()
     if id in clients.keys():
+        hostname = clients[id].hostname
         clients[id].update_ts(ts)
         clients[id].services = srvcs
-        # print(clients[id].services)
+        for s in srvcs:
+            if s != 'hosted_projects':
+                if s in projects:
+                    # print(projects[s].hosted)
+                    if hostname not in projects[s].hosted:
+                        projects[s].hosted.append(hostname)
 
         return JSONResponse({'status': 200, 'actions': clients[id].ping_resp})
     else:
@@ -114,10 +120,10 @@ async def ajax(path):
 
 
 @app.get('/lib/{project}/deploy.tar', status_code=200)
-async def lib_proj_download(codename):
-    print(codename)
-    locate = projects[codename].path
-    return FileResponse(rf"{locate}\{codename}_deploy.tar")
+async def lib_proj_download(project):
+    print(project)
+    locate = projects[project].path
+    return FileResponse(rf"{locate}\{project}_deploy.tar")
 
 
 @app.get('/project/{proj}/{action}', status_code=200)
@@ -169,6 +175,7 @@ async def root_tables(request: Request):
                                       context={'request': request,
                                                'projects': generators.gen_adv_projects_acts(projects),
                                                })
+
 
 @app.get("/docs", include_in_schema=False)
 async def custom_swagger_ui_html():

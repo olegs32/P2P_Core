@@ -113,8 +113,9 @@ def gen_client_project(clients, projects, proj):
     html = ''
     for cli in clients:
         client = clients[cli]
+        print(project.hosted)
         if client.hostname in project.hosted:
-            action = 'delete'
+            action = 'remove'
         else:
             action = 'deploy'
 
@@ -127,8 +128,11 @@ def gen_client_project(clients, projects, proj):
                 </div>
                 <div class="d-flex align-items-center text-sm">
                   {project.codename}
-                  <button class="btn btn-link text-dark text-sm mb-0 px-0 ms-4">
-                  <i class="material-icons text-lg position-relative me-1">picture_as_pdf</i>{action.capitalize()}</button>
+                  <a href="#" onClick=httpGet("/client/{cli}/{proj}/{action}")>
+                  <button class="btn btn-link text-dark text-sm mb-0 px-0 ms-4" >
+                  <i class="material-icons text-lg position-relative me-1">picture_as_pdf</i>{action.capitalize()}
+                  </button>
+                  </a>
                 </div>
               </li>
             </ul>"""
@@ -218,3 +222,27 @@ def gen_adv_projects_acts(projects):
                     """
 
     return html
+
+
+def gen_prog_bar(value):
+    html = ''
+    bar = f"""
+    <div class="card-body p-3 pb-0" id="progress_">
+    <ul class="list-group">
+    <li class="list-group-item border-0  justify-content-between ps-0 mb-2 border-radius-lg">
+    <div class="d-flex flex-column">
+    <h6 class="mb-1 text-dark font-weight-bold text-sm">Stable</h6>
+    <div class="progress">
+    <div class="progress-bar bg-gradient-success" role="progressbar"
+    aria-valuenow="{value}" aria-valuemin="0" aria-valuemax="100"
+    style="width: 60%;"></div>
+    </div>
+    </div>
+    <div class="align-items-center justify-content-center"><span
+    class="me-2 text-xs font-weight-bold">{value}0%</span>
+    </div>
+    </li>
+    </ul>
+    </div>
+    
+    """
