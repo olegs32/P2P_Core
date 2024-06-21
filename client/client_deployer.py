@@ -23,7 +23,7 @@ HP_PORT = 3280
 
 class client:
     def __init__(self):
-        self.ping_timeout = 3
+        self.ping_timeout = 10
         self.VERSION = 1.0
         self.PROJECT_DIR = 'projects'
         # self.SERVER = '192.168.32.44:8080'

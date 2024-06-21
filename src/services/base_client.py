@@ -39,7 +39,18 @@ class Client:
         self.ts = ts
         self.last_update_ts = time.time()
 
-# class Observer:
+    def describe(self):
+        result = {"id": self.id,
+                  "ttl": self.ttl,
+                  "last_connect": self.last_connect,
+                  "services": self.services,
+                  'hostname': self.hostname,
+                  'status': self.status,
+
+                  }
+        return result
+
+    # class Observer:
 #     def __init__(self, clients):
 #         self.clients = clients
 #

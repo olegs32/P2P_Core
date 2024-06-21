@@ -149,6 +149,29 @@ async def cli_control(request: Request, id: int, proj: str, action: str):
     return 'ok'
 
 
+@app.get('/get/dashboard', status_code=200)
+async def dashboard(request: Request):
+    uptime = utils.get_uptime()
+    online_clients = clients
+    agents = str(len(clients))
+    repos_projects = projects
+    resp = {'uptime': uptime,
+            'agents': agents,
+            'repos_projects': list(projects)
+            }
+    return JSONResponse(resp)
+
+
+@app.get('/get/workers', status_code=200)
+async def dashboard_workers(request: Request):
+    workers = {}
+    for i in clients:
+        print(clients[i])
+        print(type(clients[i].describe()))
+        workers[i] = clients[i].describe()
+    return JSONResponse({'workers': workers})
+
+
 @app.get('/', status_code=200)
 async def root(request: Request):
     uptime = utils.get_uptime()
@@ -186,5 +209,5 @@ async def custom_swagger_ui_html():
 
 
 if __name__ == "__main__":
-    uvicorn.run("main:app", host=BIND_WEB, port=PORT_WEB)
-    # uvicorn.run("main:app", host=BIND_WEB, port=PORT_WEB, reload=True)
+    # uvicorn.run("main:app", host=BIND_WEB, port=PORT_WEB)
+    uvicorn.run("main:app", host=BIND_WEB, port=PORT_WEB, reload=True)
