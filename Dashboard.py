@@ -1,3 +1,4 @@
+import configparser
 from datetime import datetime
 import os
 import json
@@ -196,6 +197,17 @@ def show_card(title, content):
         unsafe_allow_html=True)
 
 
+def pub_project(executor, addition_files):
+    if executor is not None:
+        with open(f"{REPOS[0]}\\{codename}\\{executor.name}", 'wb') as f:
+            f.write(executor.getvalue())
+    if addition_files is not None:
+        for file in addition_files:
+            with open(f"{REPOS[0]}\\{codename}\\{file.name}", 'wb') as f:
+                f.write(file.getvalue())
+    st.write('Successfully published!')
+
+
 if selected == "Dashboard":
     req = requests.get('http://127.0.0.1:8081/get/dashboard').json()
     first, second, third, etc = st.columns([1, 1, 1, 1])
@@ -260,6 +272,10 @@ elif selected == "Workers":
 elif selected == "Projects":
     req = requests.get('http://127.0.0.1:8081/get/projects').json()
     data = {}
+    REPOS = req['REPOS']
+    project = {}
+    conf = configparser.ConfigParser()
+
     # new_proj_persist = False
 
     new_proj = st.checkbox('Create new project')
@@ -276,16 +292,38 @@ elif selected == "Projects":
                     if name:
                         cn = name.replace(' ', '_')
                         codename = st.text_input('Code_Name', value=cn)
-                    executor = st.file_uploader('Execution file', accept_multiple_files=False, type='exe')
-                    #     st.form_submit_button('Register new project')
-                    addition_files = st.file_uploader('Addition files', accept_multiple_files=True, )
+                        executor = st.file_uploader('Execution file', accept_multiple_files=False, type='exe')
+                        #     st.form_submit_button('Register new project')
+                        addition_files = st.file_uploader('Addition files', accept_multiple_files=True, )
+                    service = st.checkbox('Service (enable watchdog)')
                     version = st.number_input('Version', step=0.1, )
+                    args = st.text_input('Run arguments')
+                    publish = st.button('Publicate!')
+                    if publish:
+                        try:
+                            os.mkdir(f"{REPOS[0]}\\{codename}")
+                            pub_project(executor, addition_files)
+                        except FileExistsError:
+                            st.write("Warning! Project with same name already existing! Continue?")
+                            pub_pr = st.checkbox('Continue')
+                            if pub_pr:
+                                pub_project(executor, addition_files)
+                        project[codename] = {}
+                        project[codename]['loader'] = executor.name
+                        project[codename]['version'] = version
+                        project[codename]['parameters'] = args
+                        project[codename]['name'] = name
+                        project[codename]['service'] = service
+                        conf.read_dict(project)
+                        with open(f"{REPOS[0]}\\{codename}\\project.ini", 'w') as f:
+                            conf.write(f)
+                        requests.get('http://127.0.0.1:8081/get/projects?rescan=True')
+
 
         # with right_column:
 
         with st.container(border=True):
             st.markdown('<div class="button-container">', unsafe_allow_html=True)
-
             for i in req['projects']:
                 btype = 'primary'
                 # if req['workers'][i]['status'] == 'Online':

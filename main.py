@@ -61,6 +61,14 @@ client_observer = ClientObserver(clients, projects)
 project_observer = ProjectsObserver(projects, REPOS)
 utils.threader([{'target': client_observer.run}])
 
+for r in REPOS:
+    if not os.path.exists(f"{r}\\temp_dir"):
+        os.mkdir(f"{r}\\temp_dir")
+
+
+class Project(BaseModel):
+    rescan: bool = False
+
 
 @app.get('/confirm/{id}/{action}/{payload}', status_code=200)
 async def confirm(id: int, action: str, payload: str):
@@ -173,7 +181,9 @@ async def dashboard_workers(request: Request):
 
 
 @app.get('/get/projects', status_code=200)
-async def dashboard_workers(request: Request):
+async def dashboard_workers(request: Request, rescan: Project = Depends(Project),):
+    if rescan:
+        project_observer.rescan_projects()
     projs = {}
     for i in projects:
         print(projects[i])
@@ -181,7 +191,7 @@ async def dashboard_workers(request: Request):
         print(projects[i].describe())
         projs[i] = projects[i].describe()
 
-    return JSONResponse({'projects': projs})
+    return JSONResponse({'projects': projs, 'REPOS': REPOS})
 
 
 @app.get('/', status_code=200)

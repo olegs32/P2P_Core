@@ -84,4 +84,4 @@ class ProjectsObserver:
                                 print('projects', self.projects)
 
     def rescan_projects(self):
-        pass
+        self.parse_projects()
