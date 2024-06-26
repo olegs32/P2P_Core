@@ -11,7 +11,7 @@ from streamlit_option_menu import option_menu
 
 start_time = time.time()
 
-headings = ["Dashboard", "Workers", "Deployment"]
+headings = ["Dashboard", "Workers", "Projects", "Deployment"]
 st.set_page_config(page_title="CentralDeploymentCore", layout="wide", menu_items={})
 
 # def generate_cards(data):
@@ -159,15 +159,33 @@ with st.sidebar:
     )
 # show_sidebar = st.sidebar.checkbox("Показать форму добавления контента", False)
 
-css_style = """
-    .custom-container {
-        background-color: #87CEEB; /* Синеватый фон */
-        padding: 20px;
-        border-radius: 15px; /* Скругленные углы */
-        box-shadow: 0px 4px 8px rgba(0, 0, 0, 0.1); /* Тень */
-        margin: 20px;
+# css_style = """
+#     .custom-container {
+#         background-color: #87CEEB; /* Синеватый фон */
+#         padding: 20px;
+#         border-radius: 15px; /* Скругленные углы */
+#         box-shadow: 0px 4px 8px rgba(0, 0, 0, 0.1); /* Тень */
+#         margin: 20px;
+#     }
+# """
+button_container_style = """
+<style>
+    .button-container {
+        display: flex;
+        justify-content: space-between;
+        flex-wrap: wrap;
+        gap: 10px; /* Расстояние между кнопками */
+        background-color: #87CEEB;
+        
+        
     }
+    .button-container .stButton button {
+        flex: 1;
+        margin: 0; /* Убираем отступы */
+    }
+</style>
 """
+st.markdown(button_container_style, unsafe_allow_html=True)
 
 
 # st.markdown(css_style, unsafe_allow_html=True)
@@ -177,70 +195,6 @@ def show_card(title, content):
         f'<div class="card"><div class="card-title">{title}</div><div class="card-content">{content}</div></div>',
         unsafe_allow_html=True)
 
-
-# def show_card(title, content, img=None, attachments=None):
-#     # with stylable_container(key=title, css_styles=css_style):
-#     #     st.header("Стилизованный контейнер")
-#     #     st.write("Этот контейнер имеет синеватый задний фон, скругленные углы и тень.")
-#     #     st.write("Добавьте сюда любую информацию, которую хотите отобразить в стилизованном контейнере.")
-#     with st.container(border=True):
-#         if img:
-#             st.markdown(
-#                 f'<div class="card"><div class="card-title">{title}</div><div class="card-content">{content}<br><img src="{img}"alt="0" style="max-width: 100%;"></div></div>',
-#                 unsafe_allow_html=True)
-#         else:
-#             st.markdown(
-#                 f'<div class="card"><div class="card-title">{title}</div><div class="card-content">{content}</div></div>',
-#                 unsafe_allow_html=True)
-#         if attachments:
-#             for file in attachments:
-#                 print(file)
-#                 if 'data.txt' not in file:
-#                     with open(file, "rb") as f:
-#                         if file.endswith('.jpg'):
-#                             st.image(file)
-#                         name = str(file).split('\\')[-1]
-#                         btn = st.download_button(
-#                             label=f"Скачать {name}",
-#                             data=file,
-#                             file_name=file,
-#                             mime="application/octet-stream"
-#                         )
-#                         print(file)
-
-
-# Отображаем выбранную вкладку
-# st.write(f"Вы выбрали: {selected}")
-
-
-#
-# def dialog_close_button_clicked():
-#     st.write("###  Dialog close callback results:")
-#     st.write("#### No preferences saved!")
-#     dialog.close()
-#
-#
-# dialog = st.dialog(
-#     "first_dialog_with_help", title="Introduce yourself",
-#     on_close_button_clicked=dialog_close_button_clicked, can_be_closed=True)
-#
-#
-# def dialog_form_submit_button_clicked():
-#     st.write("### Dialog form submit button clicked results:")
-#     st.write(f"#### Hey {st.session_state.first_name} {st.session_state.last_name}!")
-#     st.write(f"#### Your preferences are saved")
-#     dialog.close()
-#
-#
-# with dialog:
-#     st.text_input("First name", key="first_name")
-#     st.text_input("Last name", key="last_name")
-#     st.checkbox("I accept cookies", key="cookies")
-#     st.form_submit_button("OK", on_click=dialog_form_submit_button_clicked)
-#
-# if st.button("Open dialog", key="first_dialog_button"):
-#     dialog.open()
-# st.markdown('<br>', unsafe_allow_html=True)
 
 if selected == "Dashboard":
     req = requests.get('http://127.0.0.1:8081/get/dashboard').json()
@@ -273,30 +227,83 @@ if selected == "Dashboard":
 
 elif selected == "Workers":
     req = requests.get('http://127.0.0.1:8081/get/workers').json()
-
+    data = {}
     left_column, right_column = st.columns([2, 2])
     with left_column:
         worker = {}
-        for i in req['workers']:
-            worker[f"{i}_{req['workers'][i]['hostname']}"] = i
-        worker = st.selectbox('select workers', options=worker)
+        # for i in req['workers']:
+        #     worker[f"{i}_{req['workers'][i]['hostname']}"] = i
+        # worker = st.selectbox('select workers', options=worker)
+        with st.container(border=True):
+            st.markdown('<div class="button-container">', unsafe_allow_html=True)
+
+            for i in req['workers']:
+                btype = 'primary'
+                if req['workers'][i]['status'] == 'Online':
+                    btype = 'secondary'
+                btn = st.button(f"{i}_{req['workers'][i]['hostname']}", type=btype)
+                if btn:
+                    data = req['workers'][i]
+            st.markdown('</div>', unsafe_allow_html=True)
+
+        # bworkers
 
     with right_column:
-        if worker:
+        if data:
             with st.container(border=True):
-                data = req['workers'][str(worker).split('_')[0]]
-                st.write('ID', data['id'])
-                st.write('Last connect', data['last_connect'], 'seconds')
-                st.write('hostname', data['hostname'])
-                st.write('status', data['status'])
-                for proj in data['services']:
-
-                    st.write(proj, data['services'][proj])
-                # st.write('workers', data)
-            # st.write(req)
+                for key in data:
+                    st.write(f"{key}:", data[key])
 
     st.write(f'Summary processing time: {round(time.time() - start_time, 5)} secs')
 
+
+elif selected == "Projects":
+    req = requests.get('http://127.0.0.1:8081/get/projects').json()
+    data = {}
+    # new_proj_persist = False
+
+    new_proj = st.checkbox('Create new project')
+    left_column, right_column = st.columns([2, 2])
+
+    with left_column:
+
+        with right_column:
+            with st.container(border=True):
+
+                if new_proj:
+                    name = st.text_input('Name')
+
+                    if name:
+                        cn = name.replace(' ', '_')
+                        codename = st.text_input('Code_Name', value=cn)
+                    executor = st.file_uploader('Execution file', accept_multiple_files=False, type='exe')
+                    #     st.form_submit_button('Register new project')
+                    addition_files = st.file_uploader('Addition files', accept_multiple_files=True, )
+                    version = st.number_input('Version', step=0.1, )
+
+        # with right_column:
+
+        with st.container(border=True):
+            st.markdown('<div class="button-container">', unsafe_allow_html=True)
+
+            for i in req['projects']:
+                btype = 'primary'
+                # if req['workers'][i]['status'] == 'Online':
+                #     btype = 'secondary'
+                btn = st.button(i, )
+                if btn:
+                    data = req['projects'][i]
+            st.markdown('</div>', unsafe_allow_html=True)
+
+        # bworkers
+        with right_column:
+
+            if data:
+                with st.container(border=True):
+                    for key in data:
+                        st.write(f"{key}:", data[key])
+
+    st.write(f'Summary processing time: {round(time.time() - start_time, 5)} secs')
 
 
 elif selected == "Deployment":

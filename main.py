@@ -172,6 +172,18 @@ async def dashboard_workers(request: Request):
     return JSONResponse({'workers': workers})
 
 
+@app.get('/get/projects', status_code=200)
+async def dashboard_workers(request: Request):
+    projs = {}
+    for i in projects:
+        print(projects[i])
+        print(type(projects[i].describe()))
+        print(projects[i].describe())
+        projs[i] = projects[i].describe()
+
+    return JSONResponse({'projects': projs})
+
+
 @app.get('/', status_code=200)
 async def root(request: Request):
     uptime = utils.get_uptime()

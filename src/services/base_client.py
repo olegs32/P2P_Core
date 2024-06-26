@@ -41,11 +41,12 @@ class Client:
 
     def describe(self):
         result = {"id": self.id,
+                  'status': self.status,
                   "ttl": self.ttl,
+                  'hostname': self.hostname,
                   "last_connect": self.last_connect,
                   "services": self.services,
-                  'hostname': self.hostname,
-                  'status': self.status,
+
 
                   }
         return result

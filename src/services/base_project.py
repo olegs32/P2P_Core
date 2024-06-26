@@ -8,22 +8,23 @@ import src.utils as utils
 
 class Project:
     def __init__(self, id, name, codename, version, path, loader, files, parameters, service,):
+        self.id = id
+        self.codename = codename
+        self.name = name
         self.service = service
         self.parameters = parameters
-        self.id = id
         self.version = version
         self.loader = loader
-        self.name = name
-        self.codename = codename
+        self.path = path
         self.files = files
         self.hosted = []
-        self.path = path
 
     def tar(self):
         shutil.make_archive(rf'{self.path}\{self.codename}_deploy', 'tar', root_dir=self.path,
                             base_dir=self.codename)
 
-
+    def describe(self):
+        return self.__dict__
 
 
 
