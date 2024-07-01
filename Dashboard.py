@@ -15,69 +15,6 @@ start_time = time.time()
 headings = ["Dashboard", "Workers", "Projects", "Deployment"]
 st.set_page_config(page_title="CentralDeploymentCore", layout="wide", menu_items={})
 
-# def generate_cards(data):
-#     for card in data:
-#         show_card(card['caption'], card['text'], attachments=card['attachments'])
-
-
-# def parse_practics(folder):
-#     path = os.getcwd() + f'\\data\\{folder}\\'
-#     pract = []
-#     # result = {'attachments': []}
-#     dirs = list(os.walk(path))[0][1]
-#     print(dirs)
-#     if len(dirs) > 0:
-#         for f in dirs:
-#             print(f)
-#             result = {'attachments': []}
-#
-#             with open(f'{path}{f}\\data.txt') as fi:
-#                 file = fi.read()
-#                 print(file)
-#                 data = json.loads(file)
-#                 result['caption'] = data['caption']
-#                 result['text'] = data['text']
-#             for attachment in list(os.walk(f'{path}{f}'))[0][2]:
-#                 print('attachment', attachment)
-#                 if attachment != 'data.txt':
-#                     result['attachments'].append(f'{path}{f}\\{attachment}')
-#             pract.append(result)
-#     return pract
-#
-#
-# def receive_new_post(caption, text, heading, attachments=None):
-#     path = os.getcwd() + f'\\data\\uploaded\\{heading}\\'
-#     os.makedirs(path, exist_ok=True)
-#     count = len(list(os.walk(path)))
-#     os.mkdir(path + f'{count + 1}')
-#     with open(path + f'{count + 1}\\data.txt', 'w') as f:
-#         f.write(json.dumps({"caption": caption, "text": text}))
-#     if attachments:
-#         for file in attachments:
-#             with open(path + f'{count + 1}\\' + file.name, 'wb') as f:
-#                 f.write(file.getvalue())
-#         # file.save(path + f'{count + 1}')
-#
-#
-# def public_post(path):
-#     to = path.replace('uploaded\\', '') + str(time.time())
-#     shutil.move(path, to)
-#     pass
-#
-#
-# def moder_projects_name():
-#     result = []
-#     path = os.getcwd() + f'\\data\\uploaded\\'
-#     print(list(os.walk(path)))
-#     for i in list(os.walk(path)):
-#         if 'data.txt' in str(i):
-#             result.append(list(i))
-#     if result == {}:
-#         return None
-#     else:
-#         return result
-
-
 # Устанавливаем стиль страницы
 page_style = """
 <style>
@@ -160,15 +97,42 @@ with st.sidebar:
     )
 # show_sidebar = st.sidebar.checkbox("Показать форму добавления контента", False)
 
-# css_style = """
-#     .custom-container {
-#         background-color: #87CEEB; /* Синеватый фон */
-#         padding: 20px;
-#         border-radius: 15px; /* Скругленные углы */
-#         box-shadow: 0px 4px 8px rgba(0, 0, 0, 0.1); /* Тень */
-#         margin: 20px;
-#     }
-# """
+card_style = """
+<style>
+    .card {
+        background-color: #FFFFFF;
+        border-radius: 10px;
+        padding: 20px;
+        box-shadow: 0px 4px 8px rgba(0, 0, 0, 0.1);
+        margin-bottom: 20px;
+    }
+    .card-warn {
+        background-color: #CC5500;
+        border-radius: 10px;
+        padding: 20px;
+        box-shadow: 0px 4px 8px rgba(0, 0, 0, 0.1);
+        margin-bottom: 20px;
+    }
+    .card-title {
+        color: #0000FF;
+        font-weight: bold;
+        font-size: 18px;
+        margin-bottom: 10px;
+    }
+    .card-content {
+        color: #000000;
+    }
+    .card-content-warn {
+        color: #000000;
+        background-color: #CC5500;
+        
+    }
+</style>
+"""
+
+# Вставляем CSS стили
+st.markdown(card_style, unsafe_allow_html=True)
+
 button_container_style = """
 <style>
     .button-container {
@@ -193,7 +157,15 @@ st.markdown(button_container_style, unsafe_allow_html=True)
 
 def show_card(title, content):
     st.markdown(
-        f'<div class="card"><div class="card-title">{title}</div><div class="card-content">{content}</div></div>',
+        f'<div class="card"><div class="card-title">{title}</div>'
+        f'<div class="card-content">{content}</div></div>',
+        unsafe_allow_html=True)
+
+
+def show_card_warn(title, content):
+    st.markdown(
+        f'<div class="card-warn"><div class="card-title">{title}</div>'
+        f'<div class="card-content-warn">{content}</div></div>',
         unsafe_allow_html=True)
 
 
@@ -206,6 +178,30 @@ def pub_project(executor, addition_files):
             with open(f"{REPOS[0]}\\{codename}\\{file.name}", 'wb') as f:
                 f.write(file.getvalue())
     st.write('Successfully published!')
+
+
+def remove_project(path):
+    st.write("Project removed")
+    shutil.rmtree(path)
+    requests.get('http://127.0.0.1:8081/get/projects?rescan=True')
+
+
+def deploy_actions(clients, projects, action):
+    bars = []
+    log = []
+    tasks = (len(clients) * len(projects))
+    step = 1 / tasks
+    cur_progress = 0
+    for client in clients:
+        for project in projects:
+            result = (requests.get(f"http://127.0.0.1:8081/client/{client}/{project}/{action}"))
+            st.write(result.text)
+            cur_progress += step
+            if cur_progress != tasks:
+                st.progress(cur_progress, text='Submitting')
+    # time.sleep(1)
+
+    return log
 
 
 if selected == "Dashboard":
@@ -234,7 +230,6 @@ if selected == "Dashboard":
             show_card(f'Repository projects: {len(req["repos_projects"])}', req["repos_projects"])
 
             # Отображение uptime
-    st.write(f'Summary processing time: {round(time.time() - start_time, 5)} secs')
 
 
 elif selected == "Workers":
@@ -266,11 +261,11 @@ elif selected == "Workers":
                 for key in data:
                     st.write(f"{key}:", data[key])
 
-    st.write(f'Summary processing time: {round(time.time() - start_time, 5)} secs')
+    # st.write(f'Summary processing time: {round(time.time() - start_time, 5)} secs')
 
 
 elif selected == "Projects":
-    req = requests.get('http://127.0.0.1:8081/get/projects').json()
+    req = requests.get('http://127.0.0.1:8081/get/projects?rescan=False').json()
     data = {}
     REPOS = req['REPOS']
     project = {}
@@ -279,6 +274,9 @@ elif selected == "Projects":
     # new_proj_persist = False
 
     new_proj = st.checkbox('Create new project')
+    rescan = st.button('Rescan_projects')
+    if rescan:
+        req = requests.get('http://127.0.0.1:8081/get/projects?rescan=True').json()
     left_column, right_column = st.columns([2, 2])
 
     with left_column:
@@ -292,61 +290,109 @@ elif selected == "Projects":
                     if name:
                         cn = name.replace(' ', '_')
                         codename = st.text_input('Code_Name', value=cn)
+                        if os.path.exists(f"{REPOS[0]}\\{codename}"):
+                            show_card_warn("Warning!", "Project with same name already existing!")
+
                         executor = st.file_uploader('Execution file', accept_multiple_files=False, type='exe')
                         #     st.form_submit_button('Register new project')
                         addition_files = st.file_uploader('Addition files', accept_multiple_files=True, )
-                    service = st.checkbox('Service (enable watchdog)')
-                    version = st.number_input('Version', step=0.1, )
-                    args = st.text_input('Run arguments')
-                    publish = st.button('Publicate!')
-                    if publish:
-                        try:
-                            os.mkdir(f"{REPOS[0]}\\{codename}")
-                            pub_project(executor, addition_files)
-                        except FileExistsError:
-                            st.write("Warning! Project with same name already existing! Continue?")
-                            pub_pr = st.checkbox('Continue')
-                            if pub_pr:
-                                pub_project(executor, addition_files)
-                        project[codename] = {}
-                        project[codename]['loader'] = executor.name
-                        project[codename]['version'] = version
-                        project[codename]['parameters'] = args
-                        project[codename]['name'] = name
-                        project[codename]['service'] = service
-                        conf.read_dict(project)
-                        with open(f"{REPOS[0]}\\{codename}\\project.ini", 'w') as f:
-                            conf.write(f)
-                        requests.get('http://127.0.0.1:8081/get/projects?rescan=True')
+                        service = st.checkbox('Service (enable watchdog)')
+                        version = st.number_input('Version', step=1, )
+                        args = st.text_input('Run arguments')
+                        publish = st.button('Publicate!')
 
+                        if publish:
+                            if executor is not None:
+                                try:
+                                    os.mkdir(f"{REPOS[0]}\\{codename}")
+                                    pub_project(executor, addition_files)
+                                except FileExistsError:
+
+                                    # pub_pr = st.checkbox('Continue')
+                                    # if pub_pr:
+                                    pub_project(executor, addition_files)
+                                project[codename] = {}
+                                project[codename]['loader'] = executor.name
+                                project[codename]['version'] = version
+                                project[codename]['parameters'] = args
+                                project[codename]['name'] = name
+                                project[codename]['service'] = service
+                                conf.read_dict(project)
+                                with open(f"{REPOS[0]}\\{codename}\\project.ini", 'w') as f:
+                                    conf.write(f)
+                                st.write(executor, publish)
+                                req = requests.get('http://127.0.0.1:8081/get/projects?rescan=True').json()
 
         # with right_column:
 
         with st.container(border=True):
-            st.markdown('<div class="button-container">', unsafe_allow_html=True)
+            # st.markdown('<div class="button-container">', unsafe_allow_html=True)
             for i in req['projects']:
-                btype = 'primary'
-                # if req['workers'][i]['status'] == 'Online':
-                #     btype = 'secondary'
-                btn = st.button(i, )
+                btn = st.button(i)
                 if btn:
                     data = req['projects'][i]
-            st.markdown('</div>', unsafe_allow_html=True)
+            # st.markdown('</div>', unsafe_allow_html=True)
 
         # bworkers
         with right_column:
-
+            # st.write(data)
             if data:
-                with st.container(border=True):
-                    for key in data:
-                        st.write(f"{key}:", data[key])
+                # with st.container(border=True):
+                # st.markdown(f'<div class="card">', unsafe_allow_html=True,)
+                st.button('Remove project', on_click=remove_project, args=(f"{REPOS[0]}\\{data['codename']}",))
 
-    st.write(f'Summary processing time: {round(time.time() - start_time, 5)} secs')
+                for key in data:
+                    st.write(f"{key}:", data[key])
+
+                # st.markdown('</div>', unsafe_allow_html=True)
+
+    # st.write(f'Summary processing time: {round(time.time() - start_time, 5)} secs')
 
 
 elif selected == "Deployment":
-    pass
-    st.write(f'Summary processing time: {round(time.time() - start_time, 5)} secs')
+    projects = requests.get('http://127.0.0.1:8081/get/projects?rescan=False').json()
+    clients = requests.get('http://127.0.0.1:8081/get/workers').json()
+    data = {}
+    REPOS = projects['REPOS']
+    project = {}
+
+    left_column, middle, right_column = st.columns([1, 1, 1])
+
+    with left_column:
+        with st.container(border=True):
+            selected_projects = st.multiselect('Projects', projects['projects'])
+            # for i in projects['projects']:
+            #     btn = st.checkbox(i)
+            #     if btn:
+            #         data = projects['projects'][i]
+    with middle:
+        with st.container(border=True):
+            selected_clients = st.multiselect('Clients', clients['workers'])
+
+            for i in clients['workers']:
+                btn = st.checkbox(i)
+                if btn:
+                    data = projects['projects'][i]
+
+    with right_column:
+        with st.container(border=True):
+            if selected_clients and selected_projects:
+
+                # st.write(data)
+                #     if data:
+                # with st.container(border=True):
+                # st.markdown(f'<div class="card">', unsafe_allow_html=True,)
+                st.title('Actions:')
+                actions = ['deploy', 'remove', 'start', 'stop', 'restart']
+                for i in actions:
+                    st.button(i.capitalize(), on_click=deploy_actions, args=(selected_clients, selected_projects, i))
+                # st.button('Remove', on_click=deploy_actions, args=(selected_clients, selected_projects, 'remove'))
+                # st.button('Start', on_click=deploy_actions, args=(selected_clients, selected_projects, 'start'))
+                # st.button('Stop', on_click=deploy_actions, args=(selected_clients, selected_projects, 'stop'))
+                # st.button('Restart', on_click=deploy_actions, args=(selected_clients, selected_projects, 'restart'))
+                st.write()
+
+    # st.write(f'Summary processing time: {round(time.time() - start_time, 5)} secs')
 
 page_style = """
 <style>
@@ -376,6 +422,7 @@ page_style = """
 """
 
 st.markdown(page_style, unsafe_allow_html=True)
+st.write(f'Request serviced in {round(time.time() - start_time, 5)} secs')
 
 # # Отображаем значок карандаша
 # # show_sidebar = st.sidebar.checkbox("Показать форму добавления контента", False)

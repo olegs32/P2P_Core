@@ -84,4 +84,9 @@ class ProjectsObserver:
                                 print('projects', self.projects)
 
     def rescan_projects(self):
+        old = self.projects.copy()
+        for i in old:
+            self.projects.pop(i)
+
+        print("!!!RESCANNING!!!")
         self.parse_projects()

@@ -61,9 +61,9 @@ client_observer = ClientObserver(clients, projects)
 project_observer = ProjectsObserver(projects, REPOS)
 utils.threader([{'target': client_observer.run}])
 
-for r in REPOS:
-    if not os.path.exists(f"{r}\\temp_dir"):
-        os.mkdir(f"{r}\\temp_dir")
+# for r in REPOS:
+#     if not os.path.exists(f"{r}\\temp_dir"):
+#         os.mkdir(f"{r}\\temp_dir")
 
 
 class Project(BaseModel):
@@ -181,9 +181,11 @@ async def dashboard_workers(request: Request):
 
 
 @app.get('/get/projects', status_code=200)
-async def dashboard_workers(request: Request, rescan: Project = Depends(Project),):
-    if rescan:
+async def dashboard_workers(request: Request, rescan: bool = False,):
+    if rescan is True:
+        print(rescan)
         project_observer.rescan_projects()
+        # exit(32123)
     projs = {}
     for i in projects:
         print(projects[i])
@@ -231,5 +233,5 @@ async def custom_swagger_ui_html():
 
 
 if __name__ == "__main__":
-    # uvicorn.run("main:app", host=BIND_WEB, port=PORT_WEB)
-    uvicorn.run("main:app", host=BIND_WEB, port=PORT_WEB, reload=True)
+    uvicorn.run("main:app", host=BIND_WEB, port=PORT_WEB)
+    # uvicorn.run("main:app", host=BIND_WEB, port=PORT_WEB, reload=True)
