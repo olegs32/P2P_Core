@@ -44,6 +44,7 @@ app.mount("/static", StaticFiles(directory="apps/static"), name="static")
 engine = db.create_engine("sqlite:///src/db/main.db")
 conn = engine.connect()
 metadata = db.MetaData()
+event_store = []
 
 clients_db = db.Table('clients', metadata,
                       db.Column('client_id', db.Integer, primary_key=True),
@@ -61,6 +62,7 @@ client_observer = ClientObserver(clients, projects)
 project_observer = ProjectsObserver(projects, REPOS)
 utils.threader([{'target': client_observer.run}])
 
+
 # for r in REPOS:
 #     if not os.path.exists(f"{r}\\temp_dir"):
 #         os.mkdir(f"{r}\\temp_dir")
@@ -68,6 +70,30 @@ utils.threader([{'target': client_observer.run}])
 
 class Project(BaseModel):
     rescan: bool = False
+
+
+@app.get("/events")
+async def get_events(last_event_id: int = 0):
+    try:
+        while True:
+            if len(event_store) and event_store[-1]['id'] > last_event_id:
+                # new_events = [event for event in event_store if event['id'] > last_event_id]
+                new_events = []
+                for event in event_store:
+                    if event['id'] > last_event_id:
+                        new_events.append(event)
+                        print(event)
+                return JSONResponse(content={"events": new_events})
+            await asyncio.sleep(1)
+    except asyncio.CancelledError:
+        raise HTTPException(status_code=408, detail="Request timeout")
+
+
+@app.post("/events")
+async def post_event(event: dict):
+    event['id'] = event_store[-1]['id'] + 1 if event_store else 1
+    event_store.append(event)
+    return JSONResponse(content={"status": "success"})
 
 
 @app.get('/confirm/{id}/{action}/{payload}', status_code=200)
@@ -181,7 +207,7 @@ async def dashboard_workers(request: Request):
 
 
 @app.get('/get/projects', status_code=200)
-async def dashboard_workers(request: Request, rescan: bool = False,):
+async def dashboard_workers(request: Request, rescan: bool = False, ):
     if rescan is True:
         print(rescan)
         project_observer.rescan_projects()

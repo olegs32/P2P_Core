@@ -1,4 +1,6 @@
+import asyncio
 import configparser
+import threading
 from datetime import datetime
 import os
 import json
@@ -9,11 +11,24 @@ import requests
 import uptime
 import streamlit as st
 from streamlit_option_menu import option_menu
+from streamlit.runtime.scriptrunner import add_script_run_ctx
+from streamlit.runtime.scriptrunner.script_run_context import get_script_run_ctx
 
-start_time = time.time()
+START_TIME = time.time()
+API_URL = "http://127.0.0.1:8081/events"
 
 headings = ["Dashboard", "Workers", "Projects", "Deployment"]
 st.set_page_config(page_title="CentralDeploymentCore", layout="wide", menu_items={})
+if 'LAST_EVENT_ID' not in st.session_state:
+    st.session_state.LAST_EVENT_ID = 0
+if 'messages' not in st.session_state:
+    st.session_state.messages = []
+if 'fetch_thread' not in st.session_state:
+    st.session_state.fetch_thread = None
+if 'stop_thread' not in st.session_state:
+    st.session_state.stop_thread = False
+if 'started_thread' not in st.session_state:
+    st.session_state.started_thread = False
 
 # Устанавливаем стиль страницы
 page_style = """
@@ -56,45 +71,6 @@ card_style = """
 # with menu:
 st.markdown(card_style, unsafe_allow_html=True)
 
-with st.sidebar:
-    # Создаем горизонтальное меню
-    selected = option_menu(
-        menu_title='Central Deployment Node',  # Заголовок меню
-        options=headings,  # Варианты меню
-        icons=["house", "gear", "tools"],  # Иконки для меню
-        menu_icon="server",  # Иконка для меню
-        default_index=0,  # Индекс по умолчанию
-        orientation="vertical",  # Горизонтальное расположение
-        styles={
-            "nav-link": {"font-size": "20px", "text-align": "center", "margin": "0px"},
-            "nav-link-selected": {"background-color": "green"},
-            "menu_container_style": {
-                "display": "flex",
-                "justify-content": "center",
-                "margin-top": "20px",
-                "background-color": "transparent",
-            },
-            "menu_item_style": {
-                "padding": "10px 20px",
-                "margin": "0px 10px",
-                "cursor": "pointer",
-                "color": "black",
-                "background-color": "transparent",
-                "border-radius": "20px",
-            },
-            "menu_item_hover_style": {
-                "background-color": "#87CEEB",  # Голубой при наведении
-            },
-            "menu_item_selected_style": {
-                "background-color": "#FFFFFF",  # Белый при выборе
-            },
-            "menu_icon_style": {
-                "color": "black",
-                "font-size": "20px",
-                "margin-right": "10px",
-            },
-        }
-    )
 # show_sidebar = st.sidebar.checkbox("Показать форму добавления контента", False)
 
 card_style = """
@@ -155,6 +131,58 @@ st.markdown(button_container_style, unsafe_allow_html=True)
 
 # st.markdown(css_style, unsafe_allow_html=True)
 
+def post_event(event):
+    response = requests.post(API_URL, json={"data": event})
+    if response.status_code == 200:
+        st.success("Event posted successfully")
+    else:
+        st.error("Failed to post event")
+
+
+def fetch_events():
+    with st.sidebar:
+
+        # st.session_state.messages_container.chat_message("assistant").write('b4stop')
+
+        while True:
+            response = requests.get(API_URL, params={"last_event_id": st.session_state.LAST_EVENT_ID})
+            # st.session_state.messages_container.chat_message('ai').write(response.json())
+            # st.write(response.text)
+
+            if response.status_code == 200:
+                events = response.json().get("events", [])
+                if events:
+                    if events[-1]['id'] > st.session_state.LAST_EVENT_ID:
+                        for event in events:
+                            st.write(event, st.session_state.LAST_EVENT_ID, events[-1]['id'])
+                            if event['id'] > st.session_state.LAST_EVENT_ID:
+                                # st.session_state.messages_container.chat_message("assistant").write(event)
+                                st.session_state.messages.append(event["data"])
+                                messages_container.chat_message("assistant").write(event["data"])
+
+                        st.session_state.LAST_EVENT_ID = events[-1]['id']
+            # st.session_state.messages_container.chat_message("assistant").write('looped')
+
+            time.sleep(3)
+            # st.session_state.messages_container.chat_message("assistant").write('looped2')
+
+
+def start_fetch_thread():
+    st.session_state.fetch_thread = threading.Thread(target=fetch_events)
+    add_script_run_ctx(st.session_state.fetch_thread)
+    st.session_state.fetch_thread.start()
+    st.write('LongPolling...', time.time())
+    st.session_state.started_thread = True
+
+
+def stop_fetch_thread():
+    st.session_state.stop_thread = True
+    if st.session_state.fetch_thread is not None:
+        st.session_state.fetch_thread.join()
+
+
+# st.on_session_end(stop_fetch_thread)
+
 def show_card(title, content):
     st.markdown(
         f'<div class="card"><div class="card-title">{title}</div>'
@@ -204,13 +232,90 @@ def deploy_actions(clients, projects, action):
     return log
 
 
+with st.sidebar:
+    # Создаем горизонтальное меню
+    selected = option_menu(
+        menu_title='Central Deployment Node',  # Заголовок меню
+        options=headings,  # Варианты меню
+        icons=["house", "gear", "tools"],  # Иконки для меню
+        menu_icon="server",  # Иконка для меню
+        default_index=0,  # Индекс по умолчанию
+        orientation="vertical",  # Горизонтальное расположение
+        styles={
+            "nav-link": {"font-size": "20px", "text-align": "center", "margin": "0px"},
+            "nav-link-selected": {"background-color": "green"},
+            "menu_container_style": {
+                "display": "flex",
+                "justify-content": "center",
+                "margin-top": "20px",
+                "background-color": "transparent",
+            },
+            "menu_item_style": {
+                "padding": "10px 20px",
+                "margin": "0px 10px",
+                "cursor": "pointer",
+                "color": "black",
+                "background-color": "transparent",
+                "border-radius": "20px",
+            },
+            "menu_item_hover_style": {
+                "background-color": "#87CEEB",  # Голубой при наведении
+            },
+            "menu_item_selected_style": {
+                "background-color": "#FFFFFF",  # Белый при выборе
+            },
+            "menu_icon_style": {
+                "color": "black",
+                "font-size": "20px",
+                "margin-right": "10px",
+            },
+        }
+    )
+    # if st.button("Fetch Events"):
+    #     fetch_events()
+    # time.sleep(1)
+    # st.rerun()
+    # messages = st.container(height=300)
+    # if prompt := st.chat_input("Say something"):
+    #     messages.chat_message("user").write(prompt)
+    #     messages.chat_message("assistant").write(f"Echo: {prompt}")
+    # new_message = st.chat_input("New Message")
+    # if st.button("Send"):
+    #     if new_message:
+    #         post_event(new_message)
+    #         new_message = ""
+    # messages = st.container(height=300)
+    if st.session_state.started_thread is False:
+        start_fetch_thread()
+        # st.write('th started')
+    # st.write(st.session_state.messages)
+    messages_container = st.sidebar.container(height=300)
+    if len(st.session_state.messages) == 0:
+        time.sleep(0.1)
+    for message in st.session_state.messages:
+        messages_container.chat_message("assistant").write(message)
+    if prompt := st.chat_input("Enter command", ):
+        post_event(prompt)
+        time.sleep(0.5)
+        # messages_container.chat_message("assistant").write(st.session_state.messages[1])
+        # st.write(st.session_state.messages)
+        messages_container.chat_message("user").write(prompt)
+
+    # if st.session_state.fetch_thread is None:
+
+    # Отображение чата
+    # for message in st.session_state.messages:
+    #     with st.chat_message("user"):
+    #         st.write(message)
+
+
 if selected == "Dashboard":
     req = requests.get('http://127.0.0.1:8081/get/dashboard').json()
     first, second, third, etc = st.columns([1, 1, 1, 1])
     with first:
         with st.container(border=True):
             show_card('System', f"""
-                        Response time: {round(time.time() - start_time, 5)}
+                        Response time: {round(time.time() - START_TIME, 5)}
                         """, )
 
     with second:
@@ -422,7 +527,7 @@ page_style = """
 """
 
 st.markdown(page_style, unsafe_allow_html=True)
-st.write(f'Request serviced in {round(time.time() - start_time, 5)} secs')
+st.write(f'Request serviced in {round(time.time() - START_TIME, 5)} secs')
 
 # # Отображаем значок карандаша
 # # show_sidebar = st.sidebar.checkbox("Показать форму добавления контента", False)
