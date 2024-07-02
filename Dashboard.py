@@ -29,6 +29,7 @@ if 'stop_thread' not in st.session_state:
     st.session_state.stop_thread = False
 if 'started_thread' not in st.session_state:
     st.session_state.started_thread = False
+# st.session_state.last_update = int(time.time())
 
 # Устанавливаем стиль страницы
 page_style = """
@@ -132,7 +133,7 @@ st.markdown(button_container_style, unsafe_allow_html=True)
 # st.markdown(css_style, unsafe_allow_html=True)
 
 def post_event(event):
-    response = requests.post(API_URL, json={"data": event})
+    response = requests.post(API_URL, json={"data": event, "role": "user"})
     if response.status_code == 200:
         st.success("Event posted successfully")
     else:
@@ -144,6 +145,9 @@ def fetch_events():
 
         # st.session_state.messages_container.chat_message("assistant").write('b4stop')
 
+        # st.success(int(time.time()) - st.session_state.last_update)
+        # st.success(int(time.time()) - START_TIME)
+        # while (int(time.time()) - START_TIME) < 30:
         while True:
             response = requests.get(API_URL, params={"last_event_id": st.session_state.LAST_EVENT_ID})
             # st.session_state.messages_container.chat_message('ai').write(response.json())
@@ -157,14 +161,17 @@ def fetch_events():
                             st.write(event, st.session_state.LAST_EVENT_ID, events[-1]['id'])
                             if event['id'] > st.session_state.LAST_EVENT_ID:
                                 # st.session_state.messages_container.chat_message("assistant").write(event)
-                                st.session_state.messages.append(event["data"])
-                                messages_container.chat_message("assistant").write(event["data"])
+                                st.session_state.messages.append(event)
+                                messages_container.success('Polled!')
+                                messages_container.chat_message(event["role"]).write(event["data"])
 
                         st.session_state.LAST_EVENT_ID = events[-1]['id']
             # st.session_state.messages_container.chat_message("assistant").write('looped')
 
-            time.sleep(3)
-            # st.session_state.messages_container.chat_message("assistant").write('looped2')
+            time.sleep(2)
+        st.session_state.started_thread = False
+        st.warning("Longpoll finished")
+        # st.session_state.messages_container.chat_message("assistant").write('looped2')
 
 
 def start_fetch_thread():
@@ -292,8 +299,8 @@ with st.sidebar:
     messages_container = st.sidebar.container(height=300)
     if len(st.session_state.messages) == 0:
         time.sleep(0.1)
-    for message in st.session_state.messages:
-        messages_container.chat_message("assistant").write(message)
+    # for message in st.session_state.messages:
+    #     messages_container.chat_message("assistant").write(message)
     if prompt := st.chat_input("Enter command", ):
         post_event(prompt)
         time.sleep(0.5)
@@ -304,9 +311,9 @@ with st.sidebar:
     # if st.session_state.fetch_thread is None:
 
     # Отображение чата
-    # for message in st.session_state.messages:
-    #     with st.chat_message("user"):
-    #         st.write(message)
+    for message in st.session_state.messages:
+        with messages_container.chat_message(message["role"]):
+            st.write(message["data"])
 
 
 if selected == "Dashboard":

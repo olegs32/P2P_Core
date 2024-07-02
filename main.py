@@ -129,7 +129,7 @@ async def ping(id: int, ts: float, services: Request):
                     # print(projects[s].hosted)
                     if hostname not in projects[s].hosted:
                         projects[s].hosted.append(hostname)
-
+        await post_event({"data": f'Client {id} still alive at {int(ts)}', "role": "assistant"})
         return JSONResponse({'status': 200, 'actions': clients[id].ping_resp})
     else:
         return {'status': 409, 'description': 'Client not registered'}
