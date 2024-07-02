@@ -18,7 +18,7 @@ START_TIME = time.time()
 API_URL = "http://127.0.0.1:8081/events"
 INTERACTIVE_TRESHOLD = 120
 
-headings = ["Dashboard", "Workers", "Projects", "Deployment"]
+headings = ["Dashboard", "Workers", "Projects", "Deployment", "Console"]
 st.set_page_config(page_title="CentralDeploymentCore", layout="wide", menu_items={})
 if 'LAST_EVENT_ID' not in st.session_state:
     st.session_state.LAST_EVENT_ID = 0
@@ -259,7 +259,7 @@ with st.sidebar:
     selected = option_menu(
         menu_title='Central Deployment Node',  # Заголовок меню
         options=headings,  # Варианты меню
-        icons=["house", "gear", "tools"],  # Иконки для меню
+        icons=["house", "gear", "tools", "pc", "terminal-plus"],  # Иконки для меню
         menu_icon="server",  # Иконка для меню
         default_index=0,  # Индекс по умолчанию
         orientation="vertical",  # Горизонтальное расположение
@@ -293,35 +293,21 @@ with st.sidebar:
             },
         }
     )
-    # if st.button("Fetch Events"):
-    #     fetch_events()
-    # time.sleep(1)
-    # st.rerun()
-    # messages = st.container(height=300)
-    # if prompt := st.chat_input("Say something"):
-    #     messages.chat_message("user").write(prompt)
-    #     messages.chat_message("assistant").write(f"Echo: {prompt}")
-    # new_message = st.chat_input("New Message")
-    # if st.button("Send"):
-    #     if new_message:
-    #         post_event(new_message)
-    #         new_message = ""
-    # messages = st.container(height=300)
-    if st.session_state.started_thread is False:
-        start_fetch_thread()
-        # st.write('th started')
-    # st.write(st.session_state.messages)
-    messages_container = st.sidebar.container(height=300)
-    if len(st.session_state.messages) == 0:
-        time.sleep(0.1)
+
+    # if st.session_state.started_thread is False:
+    #     start_fetch_thread()
+    #     # st.write('th started')
+    # # st.write(st.session_state.messages)
+    # if len(st.session_state.messages) == 0:
+    #     time.sleep(0.1)
     # for message in st.session_state.messages:
     #     messages_container.chat_message("assistant").write(message)
-    if prompt := st.chat_input("Enter command", ):
-        post_event(prompt)
-        time.sleep(0.5)
-        # messages_container.chat_message("assistant").write(st.session_state.messages[1])
-        # st.write(st.session_state.messages)
-        messages_container.chat_message("user").write(prompt)
+    # if prompt := st.chat_input("Enter command", ):
+    #     post_event(prompt)
+    #     time.sleep(0.5)
+    #     messages_container.chat_message("assistant").write(st.session_state.messages[1])
+    #     st.write(st.session_state.messages)
+    #     messages_container.chat_message("user").write(prompt)
 
     # if st.session_state.fetch_thread is None:
 
@@ -473,6 +459,7 @@ elif selected == "Projects":
     # st.write(f'Summary processing time: {round(time.time() - start_time, 5)} secs')
 
 
+
 elif selected == "Deployment":
     projects = requests.get('http://127.0.0.1:8081/get/projects?rescan=False').json()
     clients = requests.get('http://127.0.0.1:8081/get/workers').json()
@@ -517,6 +504,24 @@ elif selected == "Deployment":
                 st.write()
 
     # st.write(f'Summary processing time: {round(time.time() - start_time, 5)} secs')
+elif selected == "Console":
+    if st.session_state.started_thread is False:
+        start_fetch_thread()
+        # st.write('th started')
+    old_len = 0
+    messages_container = st.container(height=600)
+    if prompt := st.chat_input("Enter command", ):
+        post_event(prompt)
+    while int(int(time.time()) - START_TIME) < INTERACTIVE_TRESHOLD:
+        if len(st.session_state.messages) != old_len:
+            diff = (len(st.session_state.messages) - old_len) * -1
+            if diff < 0:
+                for i in range(-1, diff):
+                    message = st.session_state.messages[i]
+                    messages_container.chat_message(message["role"]).st.write(message["data"])
+            old_len = len(st.session_state.messages)
+        #     display_messages()
+        time.sleep(1)
 
 page_style = """
 <style>
@@ -548,15 +553,5 @@ page_style = """
 st.markdown(page_style, unsafe_allow_html=True)
 st.write(f'Request serviced in {round(time.time() - START_TIME, 5)} secs')
 
-old_len = 0
-while int(int(time.time()) - START_TIME) < INTERACTIVE_TRESHOLD:
-    if len(st.session_state.messages) != old_len:
-        diff = (len(st.session_state.messages) - old_len) * -1
-        if diff < 0:
-            for i in range(-1, diff):
-                message = st.session_state.messages[i]
-                messages_container.chat_message(message["role"]).st.write(message["data"])
-        old_len = len(st.session_state.messages)
-#     display_messages()
-    time.sleep(1)
+
 
