@@ -16,6 +16,7 @@ from streamlit.runtime.scriptrunner.script_run_context import get_script_run_ctx
 
 START_TIME = time.time()
 API_URL = "http://127.0.0.1:8081/events"
+INTERACTIVE_TRESHOLD = 120
 
 headings = ["Dashboard", "Workers", "Projects", "Deployment"]
 st.set_page_config(page_title="CentralDeploymentCore", layout="wide", menu_items={})
@@ -29,6 +30,8 @@ if 'stop_thread' not in st.session_state:
     st.session_state.stop_thread = False
 if 'started_thread' not in st.session_state:
     st.session_state.started_thread = False
+global messages_container
+
 # st.session_state.last_update = int(time.time())
 
 # Устанавливаем стиль страницы
@@ -130,6 +133,12 @@ button_container_style = """
 st.markdown(button_container_style, unsafe_allow_html=True)
 
 
+def display_messages():
+    global messages_container
+    for message in st.session_state.messages:
+        messages_container.chat_message(message["role"]).st.write(message["data"])
+
+
 # st.markdown(css_style, unsafe_allow_html=True)
 
 def post_event(event):
@@ -141,14 +150,16 @@ def post_event(event):
 
 
 def fetch_events():
+    global messages_container
     with st.sidebar:
 
         # st.session_state.messages_container.chat_message("assistant").write('b4stop')
 
         # st.success(int(time.time()) - st.session_state.last_update)
         # st.success(int(time.time()) - START_TIME)
-        # while (int(time.time()) - START_TIME) < 30:
-        while True:
+        while int(int(time.time()) - START_TIME) < INTERACTIVE_TRESHOLD:
+            print(int(time.time()) - START_TIME)
+            # while True:
             response = requests.get(API_URL, params={"last_event_id": st.session_state.LAST_EVENT_ID})
             # st.session_state.messages_container.chat_message('ai').write(response.json())
             # st.write(response.text)
@@ -158,12 +169,14 @@ def fetch_events():
                 if events:
                     if events[-1]['id'] > st.session_state.LAST_EVENT_ID:
                         for event in events:
-                            st.write(event, st.session_state.LAST_EVENT_ID, events[-1]['id'])
+                            # st.write(event, st.session_state.LAST_EVENT_ID, events[-1]['id'])
                             if event['id'] > st.session_state.LAST_EVENT_ID:
                                 # st.session_state.messages_container.chat_message("assistant").write(event)
                                 st.session_state.messages.append(event)
-                                messages_container.success('Polled!')
+                                # messages_container.success('Polled!')
                                 messages_container.chat_message(event["role"]).write(event["data"])
+                                # time.sleep(0.3)
+                                # st.rerun()
 
                         st.session_state.LAST_EVENT_ID = events[-1]['id']
             # st.session_state.messages_container.chat_message("assistant").write('looped')
@@ -171,6 +184,8 @@ def fetch_events():
             time.sleep(2)
         st.session_state.started_thread = False
         st.warning("Longpoll finished")
+        print("Longpoll finished:", int(time.time()) - START_TIME)
+
         # st.session_state.messages_container.chat_message("assistant").write('looped2')
 
 
@@ -310,34 +325,31 @@ with st.sidebar:
 
     # if st.session_state.fetch_thread is None:
 
-    # Отображение чата
-    for message in st.session_state.messages:
-        with messages_container.chat_message(message["role"]):
-            st.write(message["data"])
 
+    # Отображение чата
 
 if selected == "Dashboard":
     req = requests.get('http://127.0.0.1:8081/get/dashboard').json()
-    first, second, third, etc = st.columns([1, 1, 1, 1])
-    with first:
+    ffirst, fsecond, fthird, fetc = st.columns([1, 1, 1, 1])
+    with ffirst:
         with st.container(border=True):
             show_card('System', f"""
                         Response time: {round(time.time() - START_TIME, 5)}
                         """, )
 
-    with second:
+    with fsecond:
         with st.container(border=True):
             show_card('Uptime:', f'{req["uptime"]}')
 
             # Отображение uptime
             # st.write(f'Response time: {round(time.time() - start_time, 5)}')
-    with third:
+    with fthird:
         with st.container(border=True):
             show_card(f'Summary Agents: {req["agents"]}', 'online: {online}')
 
             # Отображение uptime
             # st.write(f'Response time: {round(time.time() - start_time, 5)}')
-    with etc:
+    with fetc:
         with st.container(border=True):
             show_card(f'Repository projects: {len(req["repos_projects"])}', req["repos_projects"])
 
@@ -536,96 +548,15 @@ page_style = """
 st.markdown(page_style, unsafe_allow_html=True)
 st.write(f'Request serviced in {round(time.time() - START_TIME, 5)} secs')
 
-# # Отображаем значок карандаша
-# # show_sidebar = st.sidebar.checkbox("Показать форму добавления контента", False)
-# # show_moderate = st.sidebar.button("Показать форму модерации контента", False)
-# # if show_sidebar:
-# #     st.sidebar.header("Форма добавления контента")
-# #
-# #     # Поля для ввода заголовка и текста
-# #     title = st.sidebar.text_input("Заголовок", key="title")
-# #     content = st.sidebar.text_area("Текст", key="content")
-# #
-# #     # Выпадающий список для выбора раздела
-# #     section = st.sidebar.selectbox("Выберите раздел", headings, key="section")
-# #
-# #     # Кнопка для прикрепления файлов
-# #     uploaded_files = st.sidebar.file_uploader("Прикрепить файлы", accept_multiple_files=True, key="files")
-# #
-# #     # Кнопка для отправки формы
-# #     if st.sidebar.button("Отправить"):
-# #         # Отображаем введенные данные
-# #         st.sidebar.write(f"**Успешно отправлено!** ")
-# #         # st.sidebar.write(f"**Текст:** {content}")
-# #         # st.sidebar.write(f"**Раздел:** {section}")
-# #
-# #         # Отображаем прикрепленные файлы
-# #         if uploaded_files:
-# #             st.sidebar.write("**Прикрепленные файлы:**")
-# #             for file in uploaded_files:
-# #                 st.sidebar.write(file.name)
-# #             receive_new_post(title, content, section, uploaded_files)
-# #         else:
-# #             receive_new_post(title, content, section)
-# #
-# #
-# #
-# # if show_moderate:
-# #     st.sidebar.header("Форма постмодернизма контента :)")
-# #     projects = moder_projects_name()
-# #     print(projects)
-# #     if projects:
-# #         # for project in projects:
-# #         project = projects.pop(0)
-# #         print('project', project)
-# #         heading = str(project[0]).split('\\')[-2]
-# #         # title = ''
-# #         # text = ''
-# #         with open(f'{project[0]}\\data.txt') as f:
-# #             file = f.read()
-# #             print(file)
-# #             data = json.loads(file)
-# #
-# #         # Поля для ввода заголовка и текста
-# #         title_text = st.sidebar.text_input("Заголовок", key="loaded_title", value=data['caption'])
-# #         content_text = st.sidebar.text_area("Текст", key="loaded_content", value=data['text'])
-# #
-# #         # Выпадающий список для выбора раздела
-# #         section = st.sidebar.selectbox("Выберите раздел", headings, key="loaded_section",)
-# #
-# #         st.sidebar.header("Доступные файлы для скачивания")
-# #         # Отображаем ссылки для скачивания файлов
-# #         for filename in project[2]:
-# #             if filename != 'data.txt':
-# #
-# #                 filepath = os.path.join(project[0], filename)
-# #                 with open(filepath, "rb") as file:
-# #                     if filename.endswith('.jpg'):
-# #                         st.sidebar.image(filepath)
-# #                     btn = st.sidebar.download_button(
-# #                         label=f"Скачать {filename}",
-# #                         data=file,
-# #                         file_name=filename,
-# #                         mime="application/octet-stream"
-# #                     )
-# #                     print(filename)
-# #
-# #         # Кнопка для прикрепления файлов
-# #         uploaded_files = st.sidebar.file_uploader("Перезаписать исправленные файлы", accept_multiple_files=True,
-# #                                                   key="loaded_files")
-# #
-# #         # Кнопка для отправки формы
-# #         if st.sidebar.button("Разгласить"):
-# #             # Отображаем введенные данные
-# #             st.sidebar.write(f"**Успешно опубликовано:** ")
-# #             # st.sidebar.write(f"**Текст:** {content}")
-# #             # st.sidebar.write(f"**Раздел:** {section}")
-# #             #
-# #             # Отображаем прикрепленные файлы
-# #             # if uploaded_files:
-# #             #     st.sidebar.write("**Прикрепленные файлы:**")
-# #             #     for file in uploaded_files:
-# #             #         st.sidebar.write(file.name)
-# #             #     receive_new_post(title, content, section, uploaded_files)
-# #             # # receive_new_post(title, content, section)
-#             public_post(project[0])
+old_len = 0
+while int(int(time.time()) - START_TIME) < INTERACTIVE_TRESHOLD:
+    if len(st.session_state.messages) != old_len:
+        diff = (len(st.session_state.messages) - old_len) * -1
+        if diff < 0:
+            for i in range(-1, diff):
+                message = st.session_state.messages[i]
+                messages_container.chat_message(message["role"]).st.write(message["data"])
+        old_len = len(st.session_state.messages)
+#     display_messages()
+    time.sleep(1)
+
