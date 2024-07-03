@@ -112,6 +112,7 @@ async def register(ts: float, hostname):
     clients[id] = Client(id, int(ts), hostname, REPOS)
     clients[id].invoke()
     # print(clients)
+    await post_event({"data": f'Client {id} registered', "role": "assistant"})
 
     return JSONResponse({'id': id})
 
