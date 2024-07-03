@@ -12,7 +12,6 @@ import uptime
 import streamlit as st
 from streamlit_option_menu import option_menu
 from streamlit.runtime.scriptrunner import add_script_run_ctx
-from streamlit_modal import Modal
 from streamlit.runtime.scriptrunner.script_run_context import get_script_run_ctx
 
 START_TIME = time.time()
@@ -32,15 +31,6 @@ if 'stop_thread' not in st.session_state:
 if 'started_thread' not in st.session_state:
     st.session_state.started_thread = False
 global messages_container
-
-modal_chat = Modal(
-    "Interactive console",
-    key="console-modal",
-
-    # Optional
-    padding=20,  # default value
-    max_width=744  # default value
-)
 
 # st.session_state.last_update = int(time.time())
 
@@ -143,12 +133,6 @@ button_container_style = """
 st.markdown(button_container_style, unsafe_allow_html=True)
 
 
-# @st.dialog("Interactive console")
-def console():
-    global messages_container
-
-
-#
 def display_messages():
     global messages_container
     for message in st.session_state.messages:
@@ -204,7 +188,7 @@ def fetch_events():
     st.warning("Longpoll finished")
     print("Longpoll finished:", int(time.time()) - START_TIME)
 
-    # st.session_state.messages_container.chat_message("assistant").write('looped2')
+        # st.session_state.messages_container.chat_message("assistant").write('looped2')
 
 
 def start_fetch_thread():
@@ -328,6 +312,7 @@ with st.sidebar:
     #     messages_container.chat_message("user").write(prompt)
 
     # if st.session_state.fetch_thread is None:
+
 
     # Отображение чата
 
@@ -521,31 +506,32 @@ elif selected == "Deployment":
                 st.write()
 
     # st.write(f'Summary processing time: {round(time.time() - start_time, 5)} secs')
-# elif selected == "Console":
-# if st.session_state.started_thread is False:
-#     start_fetch_thread()
-#     # st.write('th started')
-# old_len = 0
-# messages_container = st.container(height=600)
-# if prompt := st.chat_input("Enter command", ):
-#     post_event(prompt)
-#     # time.sleep(0.2)
-#     # messages_container.chat_message("user").write(prompt)
-#
-# while int(int(time.time()) - START_TIME) < INTERACTIVE_TRESHOLD:
-#     if len(st.session_state.messages) != old_len:
-#         diff = (len(st.session_state.messages) - old_len)
-#         if diff > 0:
-#             data = list(range(1, diff + 1))
-#             data.reverse()
-#             for i in data:
-#                 # Debug
-#                 # messages_container.chat_message("ai").write(f'{diff}, {i}, {data}')
-#
-#                 message = st.session_state.messages[i * -1]
-#                 messages_container.chat_message(message["role"]).write(message["data"])
-#         old_len = len(st.session_state.messages)
-#     time.sleep(1)
+elif selected == "Console":
+    if st.session_state.started_thread is False:
+        start_fetch_thread()
+        # st.write('th started')
+    old_len = 0
+    messages_container = st.container(height=600)
+    if prompt := st.chat_input("Enter command", ):
+        post_event(prompt)
+        # time.sleep(0.2)
+        # messages_container.chat_message("user").write(prompt)
+
+    while int(int(time.time()) - START_TIME) < INTERACTIVE_TRESHOLD:
+        if len(st.session_state.messages) != old_len:
+            diff = (len(st.session_state.messages) - old_len)
+            if diff > 0:
+                data = list(range(1, diff + 1))
+                data.reverse()
+                for i in data:
+                    # Debug
+                    # messages_container.chat_message("ai").write(f'{diff}, {i}, {data}')
+
+                    message = st.session_state.messages[i * -1]
+                    messages_container.chat_message(message["role"]).write(message["data"])
+            old_len = len(st.session_state.messages)
+
+        time.sleep(1)
 
 page_style = """
 <style>
@@ -576,32 +562,6 @@ page_style = """
 
 st.markdown(page_style, unsafe_allow_html=True)
 st.write(f'Request serviced in {round(time.time() - START_TIME, 5)} secs')
-if st.button('Console'):
-    modal_chat.open()
-if modal_chat.is_open():
-    with modal_chat.container:
-        if st.session_state.started_thread is False:
-            start_fetch_thread()
-            # st.write('th started')
-        old_len = 0
-        messages_container = st.container(height=600)
-        if prompt := st.chat_input("Enter command", ):
-            post_event(prompt)
-            # time.sleep(0.2)
-            # messages_container.chat_message("user").write(prompt)
 
-        while int(int(time.time()) - START_TIME) < INTERACTIVE_TRESHOLD:
-            if len(st.session_state.messages) != old_len:
-                diff = (len(st.session_state.messages) - old_len)
-                if diff > 0:
-                    data = list(range(1, diff + 1))
-                    data.reverse()
-                    for i in data:
-                        # Debug
-                        # messages_container.chat_message("ai").write(f'{diff}, {i}, {data}')
 
-                        message = st.session_state.messages[i * -1]
-                        messages_container.chat_message(message["role"]).write(message["data"])
-                old_len = len(st.session_state.messages)
-            # time.sleep(1)
 
