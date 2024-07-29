@@ -26,8 +26,8 @@ class ClientObserver:
                                     self.projects[e].hosted.append(hostname)
                                     # print(self.projects[e].hosted)
                                 elif action == 'remove':
-                                    if hostname in self.projects[e].hosted:
-                                     self.projects[e].hosted.pop(self.projects[e].hosted.index(hostname))
+                                    if hostname in str(self.projects[e].hosted):
+                                        self.projects[e].pop(self.projects[e].index(hostname))
                                     # print(self.projects[e].hosted)
                                 action_proj.pop(index)  # todo fix error
                                 self.clients[client].ping_resp[action].append(e)

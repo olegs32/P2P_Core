@@ -20,6 +20,7 @@ INTERACTIVE_TRESHOLD = 120
 
 headings = ["Dashboard", "Workers", "Projects", "Deployment", "Console"]
 st.set_page_config(page_title="CentralDeploymentCore", layout="wide", menu_items={})
+
 if 'LAST_EVENT_ID' not in st.session_state:
     st.session_state.LAST_EVENT_ID = 0
 if 'messages' not in st.session_state:
@@ -188,7 +189,7 @@ def fetch_events():
     st.warning("Longpoll finished")
     print("Longpoll finished:", int(time.time()) - START_TIME)
 
-        # st.session_state.messages_container.chat_message("assistant").write('looped2')
+    # st.session_state.messages_container.chat_message("assistant").write('looped2')
 
 
 def start_fetch_thread():
@@ -257,44 +258,8 @@ def deploy_actions(clients, projects, action):
 
 
 with st.sidebar:
+    pass
     # Создаем горизонтальное меню
-    selected = option_menu(
-        menu_title='Central Deployment Node',  # Заголовок меню
-        options=headings,  # Варианты меню
-        icons=["house", "gear", "tools", "pc", "terminal-plus"],  # Иконки для меню
-        menu_icon="server",  # Иконка для меню
-        default_index=0,  # Индекс по умолчанию
-        orientation="vertical",  # Горизонтальное расположение
-        styles={
-            "nav-link": {"font-size": "20px", "text-align": "center", "margin": "0px"},
-            "nav-link-selected": {"background-color": "green"},
-            "menu_container_style": {
-                "display": "flex",
-                "justify-content": "center",
-                "margin-top": "20px",
-                "background-color": "transparent",
-            },
-            "menu_item_style": {
-                "padding": "10px 20px",
-                "margin": "0px 10px",
-                "cursor": "pointer",
-                "color": "black",
-                "background-color": "transparent",
-                "border-radius": "20px",
-            },
-            "menu_item_hover_style": {
-                "background-color": "#87CEEB",  # Голубой при наведении
-            },
-            "menu_item_selected_style": {
-                "background-color": "#FFFFFF",  # Белый при выборе
-            },
-            "menu_icon_style": {
-                "color": "black",
-                "font-size": "20px",
-                "margin-right": "10px",
-            },
-        }
-    )
 
     # if st.session_state.started_thread is False:
     #     start_fetch_thread()
@@ -313,8 +278,59 @@ with st.sidebar:
 
     # if st.session_state.fetch_thread is None:
 
-
     # Отображение чата
+selected = option_menu(
+    menu_title='Central Deployment Node',  # Заголовок меню
+    options=headings,  # Варианты меню
+    icons=["house", "gear", "tools", "pc", "terminal-plus"],  # Иконки для меню
+    menu_icon="server",  # Иконка для меню
+    default_index=0,  # Индекс по умолчанию
+    orientation="horizontal",  # Горизонтальное расположение
+    styles={
+        "nav-link": {"font-size": "20px", "text-align": "center", "margin": "0px"},
+        "nav-link-selected": {"background-color": "green"},
+        "menu_container_style": {
+            "display": "flex",
+            "justify-content": "center",
+            "margin-top": "20px",
+            "background-color": "transparent",
+        },
+        "menu_item_style": {
+            "padding": "10px 20px",
+            "margin": "0px 10px",
+            "cursor": "pointer",
+            "color": "black",
+            "background-color": "transparent",
+            "border-radius": "20px",
+        },
+        "menu_item_hover_style": {
+            "background-color": "#87CEEB",  # Голубой при наведении
+        },
+        "menu_item_selected_style": {
+            "background-color": "#FFFFFF",  # Белый при выборе
+        },
+        "menu_icon_style": {
+            "color": "black",
+            "font-size": "20px",
+            "margin-right": "10px",
+        },
+    }
+)
+
+locale = {'id': 'ID',
+          'codename': 'Coding project name',
+          'name': 'Name',
+          'service': 'Service',
+          'parameters': 'Parameters to run',
+          'version': 'Version',
+          'loader': 'Loader',
+          'path': 'Repository',
+          'status': 'Status',
+          'files': 'Files',
+          'last_connect': 'Last ping',
+          'hostname': 'Hostname',
+          'ttl': 'TTL',
+          }
 
 if selected == "Dashboard":
     req = requests.get('http://127.0.0.1:8081/get/dashboard').json()
@@ -353,7 +369,7 @@ elif selected == "Workers":
         # for i in req['workers']:
         #     worker[f"{i}_{req['workers'][i]['hostname']}"] = i
         # worker = st.selectbox('select workers', options=worker)
-        with st.container(border=True):
+        with st.container(border=True, height=400):
             st.markdown('<div class="button-container">', unsafe_allow_html=True)
 
             for i in req['workers']:
@@ -369,9 +385,42 @@ elif selected == "Workers":
 
     with right_column:
         if data:
-            with st.container(border=True):
-                for key in data:
-                    st.write(f"{key}:", data[key])
+            with st.container(border=True, height=400):
+                for topic in data:
+                    if topic != 'services':
+                        try:
+                            st.markdown(f":blue[{str(locale[topic])}]: {data[topic]}")
+                        except KeyError:
+                            st.markdown(f":orange[{str(topic)}]: {data[topic]}")
+                    if topic == 'services':
+                        for key in data[topic]:
+                            if key == 'hosted_projects':
+                                try:
+                                    # st.markdown(f":blue[{str(locale[key])}]: {data[topic][key]}")
+                                    st.markdown(f":blue[{str(locale[key])}]: {data[topic][key]}")
+                                except KeyError:
+                                    st.markdown(f":blue[{str(key)}]: {data[topic][key]}")
+                                st.divider()
+                            else:
+                                # st.write(data)
+                                # st.write(topic)
+                                st.subheader(data[topic][key]['name'])
+                                # try:
+                                #     st.markdown(f":blue[{str(locale[key])}]: {data[topic][key]}")
+                                # except KeyError:
+                                #     st.markdown(f":orange[{str(key)}]: {data[topic][key]}")
+                                for param in data[topic][key]:
+                                    try:
+                                        st.markdown(f":blue[{str(locale[param])}]: {data[topic][key][param]}")
+                                    except KeyError:
+                                        st.markdown(f":orange[{str(param)}]: {data[topic][key][param]}")
+                                actions = ['deploy', 'remove', 'start', 'stop', 'restart']
+                                with st.popover('Control'):
+                                    for i in actions:
+                                        st.button(i.capitalize(), key=i.capitalize() + key,
+                                                  on_click=deploy_actions, args=([data['id']], [key], i))
+
+                                st.divider()
 
     # st.write(f'Summary processing time: {round(time.time() - start_time, 5)} secs')
 
@@ -394,9 +443,8 @@ elif selected == "Projects":
     with left_column:
 
         with right_column:
-            with st.container(border=True):
-
-                if new_proj:
+            if new_proj:
+                with st.container(border=True, height=400) as c:
                     name = st.text_input('Name')
 
                     if name:
@@ -437,7 +485,7 @@ elif selected == "Projects":
 
         # with right_column:
 
-        with st.container(border=True):
+        with st.container(border=True, height=400):
             # st.markdown('<div class="button-container">', unsafe_allow_html=True)
             for i in req['projects']:
                 btn = st.button(i)
@@ -445,16 +493,21 @@ elif selected == "Projects":
                     data = req['projects'][i]
             # st.markdown('</div>', unsafe_allow_html=True)
 
-        # bworkers
-        with right_column:
-            # st.write(data)
-            if data:
-                # with st.container(border=True):
-                # st.markdown(f'<div class="card">', unsafe_allow_html=True,)
-                st.button('Remove project', on_click=remove_project, args=(f"{REPOS[0]}\\{data['codename']}",))
+            # bworkers
 
-                for key in data:
-                    st.write(f"{key}:", data[key])
+            with right_column:
+                # st.write(data)
+                if data:
+                    with st.container(border=True, height=400):
+                        # with st.container(border=True):
+                        # st.markdown(f'<div class="card">', unsafe_allow_html=True,)
+                        st.button('Remove project', on_click=remove_project, args=(f"{REPOS[0]}\\{data['codename']}",))
+
+                        for key in data:
+                            try:
+                                st.markdown(f":blue[{str(locale[key])}]: {data[key]}")
+                            except KeyError:
+                                st.markdown(f":orange[{str(key)}]: {data[key]}")
 
                 # st.markdown('</div>', unsafe_allow_html=True)
 
@@ -511,6 +564,7 @@ elif selected == "Console":
         start_fetch_thread()
         # st.write('th started')
     old_len = 0
+    st.subheader('Console')
     messages_container = st.container(height=600)
     if prompt := st.chat_input("Enter command", ):
         post_event(prompt)
@@ -562,6 +616,3 @@ page_style = """
 
 st.markdown(page_style, unsafe_allow_html=True)
 st.write(f'Request serviced in {round(time.time() - START_TIME, 5)} secs')
-
-
-
