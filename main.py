@@ -184,6 +184,11 @@ async def cli_control(request: Request, id: int, proj: str, action: str):
     return 'ok'
 
 
+@app.get('/poll', status_code=200)
+async def poll(request: Request, id: int, last_event: int):
+    return 'ok'
+
+
 @app.get('/get/dashboard', status_code=200)
 async def dashboard(request: Request):
     uptime = utils.get_uptime()

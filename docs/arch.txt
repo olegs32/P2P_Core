@@ -27,4 +27,56 @@ main
 |
 |
 |
-|
+
+
+long poll client technology
+
+Server:
+    ClientClass:
+        id
+        poll_timeout
+        last_polled
+    Poller:
+        # serve clients from client_dictionary
+        on_poll_request:
+            ID
+            last event
+            # push newly queued data to client
+            send:
+                {msg_ID: data}
+
+
+Client:
+    ID
+    DPinger:
+        ping every {ping_timeout} secs:
+            ID
+            services
+            status: [free, busy]
+    Poller:
+        last_event
+        on_event:
+            receive:
+                {msg_ID: data, msg_ID: data}: # iterable
+                    # list commands to do, not transmitted empty commands
+                    {'upgrade': [], 'downgrade': [], 'deploy': [], 'remove': [], 'start': [], 'stop': [], 'restart': []}:
+                        response:
+                            successful: bool
+                            chat: str
+                    {'engine': { 'core': base64, 'payload': base64}}:
+                        response:
+                            successful: bool
+                            chat: str
+                            result: base64
+
+
+
+
+
+
+
+
+
+
+
+

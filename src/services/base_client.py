@@ -25,6 +25,9 @@ class Client:
         self.report = {}
         self.progress = {}
 
+        self.poll_timeout = 60
+        self.last_polled = 0
+
     def _status(self):
         while True:
             self.status = 'Online' if time.time() - self.ts < self.ping_timeout else 'Offline'
@@ -47,11 +50,12 @@ class Client:
                   "last_connect": self.last_connect,
                   "services": self.services,
 
-
                   }
         return result
 
     # class Observer:
+
+
 #     def __init__(self, clients):
 #         self.clients = clients
 #
@@ -60,3 +64,7 @@ class Client:
 #             for c in self.clients:
 #                 c.renew_status()
 #             time.sleep(1)
+
+# class Poller():
+#     def
+

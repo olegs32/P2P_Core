@@ -90,3 +90,7 @@ class ProjectsObserver:
 
         print("!!!RESCANNING!!!")
         self.parse_projects()
+
+
+
+
