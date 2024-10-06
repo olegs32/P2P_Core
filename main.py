@@ -1,6 +1,12 @@
 # from apps.home import generators
 from threading import Thread
 
+import asyncio
+import uvicorn
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from collections import defaultdict
+from typing import Dict, List
+
 import sqlalchemy as db
 from sqlalchemy.inspection import inspect
 
@@ -22,7 +28,7 @@ import asyncio
 import os
 from pydantic import BaseModel
 import pathlib
-import queue
+# import queue
 
 import time
 import uvicorn  # pip install uvicorn fastapi python-multipart yattag pyinstaller
@@ -40,12 +46,14 @@ REPOS = ['repo', ]
 clients = {}
 projects = {}
 app = FastAPI()
+
+# Deprecated configs
+
 app.mount("/static", StaticFiles(directory="apps/static"), name="static")
 engine = db.create_engine("sqlite:///src/db/main.db")
 conn = engine.connect()
 metadata = db.MetaData()
 event_store = []
-
 clients_db = db.Table('clients', metadata,
                       db.Column('client_id', db.Integer, primary_key=True),
                       db.Column('hostname', db.Text)
@@ -63,15 +71,103 @@ project_observer = ProjectsObserver(projects, REPOS)
 utils.threader([{'target': client_observer.run}])
 
 
+class Project(BaseModel):
+    rescan: bool = False
+
+
 # for r in REPOS:
 #     if not os.path.exists(f"{r}\\temp_dir"):
 #         os.mkdir(f"{r}\\temp_dir")
 
 
-class Project(BaseModel):
-    rescan: bool = False
+# === CCC protocol ===
 
 
+# Хранилище состояний клиентов
+class ClientStateManager:
+    def __init__(self, queue: asyncio.Queue):
+        # Храним состояние клиентов в виде словаря
+        self.client_states: Dict[str, Dict[str, str]] = defaultdict(dict)
+        self.queue = queue
+
+    async def update_operation(self, client_id: str, operation_id: str, state: str):
+        """Обновляем состояние операции клиента"""
+        self.client_states[client_id][operation_id] = state
+        print(f"Обновлено состояние операции: {operation_id} для клиента: {client_id} -> {state}")
+        await self.queue.put((client_id, operation_id, state))
+
+    def get_operations(self, client_id: str) -> Dict[str, str]:
+        """Возвращаем состояния всех операций клиента"""
+        return self.client_states.get(client_id, {})
+
+
+# Управление WebSocket-соединениями
+class ConnectionManager:
+    def __init__(self):
+        self.active_connections: List[WebSocket] = []
+
+    async def connect(self, websocket: WebSocket):
+        await websocket.accept()
+        self.active_connections.append(websocket)
+
+    def disconnect(self, websocket: WebSocket):
+        self.active_connections.remove(websocket)
+
+    async def send_message(self, message: str):
+        """Отправка сообщения всем подключенным клиентам"""
+        for connection in self.active_connections:
+            await connection.send_text(message)
+
+
+# Инициализация FastAPI приложения и объектов
+app = FastAPI()
+queue = asyncio.Queue()
+client_manager = ClientStateManager(queue)
+connection_manager = ConnectionManager()
+
+
+# Фоновая задача для обработки изменений состояний
+async def watch_state_changes(queue: asyncio.Queue):
+    """Слушаем изменения состояний и отправляем обновления через WebSocket"""
+    while True:
+        client_id, operation_id, state = await queue.get()
+        message = f"Client {client_id}: Operation {operation_id} changed to {state}"
+        print(message)
+        await connection_manager.send_message(message)
+        queue.task_done()
+
+
+@app.post("/update")
+async def update_operation(client_id: str, operation_id: str, state: str):
+    """Обновление состояния операции клиента"""
+    await client_manager.update_operation(client_id, operation_id, state)
+    return {"status": "updated"}
+
+
+# WebSocket роут для взаимодействия с клиентом
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    """Управление подключением WebSocket клиента"""
+    await connection_manager.connect(websocket)
+    try:
+        while True:
+            # Ожидание сообщений от клиента (например, для теста)
+            data = await websocket.receive_text()
+            print(f"Received from WebSocket: {data}")
+            await websocket.send_text(f"Message from server: {data}")
+    except WebSocketDisconnect:
+        connection_manager.disconnect(websocket)
+        print("WebSocket disconnected")
+
+
+# Запуск watchdog при старте приложения
+@app.on_event("startup")
+async def startup_event():
+    print("Запуск фоновой задачи для отслеживания изменений состояний")
+    asyncio.create_task(watch_state_changes(queue))
+
+
+# old communications DEPRECATED
 @app.get("/events")
 async def get_events(last_event_id: int = 0):
     try:
@@ -223,6 +319,7 @@ async def dashboard_workers(request: Request, rescan: bool = False, ):
     return JSONResponse({'projects': projs, 'REPOS': REPOS})
 
 
+# Frontend - deprecated
 @app.get('/', status_code=200)
 async def root(request: Request):
     uptime = utils.get_uptime()
