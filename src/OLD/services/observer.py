@@ -36,6 +36,9 @@ class ClientObserver:
     def run(self):
         utils.threader([{'target': self.queue2cli}])
 
+class Poller:
+    def __init__(self, client):
+        self.client = client
 
 class ProjectsObserver:
     def __init__(self, projects: dict, repos: list):

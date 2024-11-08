@@ -1,0 +1,47 @@
+server - serves http requests by fastapi. Long polling clients
+    POST {payload} URL /agent/{agent_id}?to={dest}&code={code}
+        # Long Poll from agent
+
+traffic router - get queries from client by LP and forward to request node, or to itself by ID Node
+    Basic Core Proto
+    {'from': id_client, 'to': id_dest, 'code':XX, 'payload': payload}
+    Codes:
+    # First number fork from http codes
+    0 - Request
+    2 - Successful
+    3 - Redirect
+    4 - Client error
+    5 - Server error
+    
+    # Second
+    0 - LongPoll
+    1 - Job
+    2 - Payload
+    3 -
+
+    # Third
+    0 - empty
+    1 - Done with output content
+
+
+Node interface - provide client control methods from node
+    client.job(ID_client, command, payload-optional)
+    client.control(ID_client, ID_hosted_project, command)
+    commands:
+        start
+        stop
+        enable
+        disable
+        deploy
+        remove
+    interactive send new tasks to streamlit via websocket
+
+
+
+
+
+
+
+
+
+
