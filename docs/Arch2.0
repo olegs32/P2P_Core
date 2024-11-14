@@ -12,7 +12,7 @@ traffic router - get queries from client by LP and forward to request node, or t
     3 - Redirect
     4 - Client error
     5 - Server error
-    
+
     # Second
     0 - LongPoll
     1 - Job
@@ -35,6 +35,14 @@ Node interface - provide client control methods from node
         deploy
         remove
     interactive send new tasks to streamlit via websocket
+
+
+
+
+
+
+
+
 
 
 

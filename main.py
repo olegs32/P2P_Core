@@ -35,7 +35,8 @@ import json
 BIND_WEB = '127.0.0.1'
 PORT_WEB = 8081
 
-lp = LongPoll()
+
+# lp = LongPoll()
 
 
 # app.mount("/static", StaticFiles(directory="apps/static"), name="static")
@@ -94,14 +95,95 @@ async def watch_state_changes(queue: asyncio.Queue):
         queue.task_done()
 
 
+class ClientData(BaseModel):
+    data: str
+
+
+class LongPollServer:
+    def __init__(self):
+        self.clients: Dict[str, Dict[str, int | asyncio.Queue | List[Dict[str, int | str]]]] = {}
+
+    async def add_client(self, client_id: str) -> asyncio.Queue:
+        """Инициализирует очередь для нового клиента и список сообщений."""
+        queue = asyncio.Queue()
+        self.clients[client_id] = {
+            "queue": queue,
+            "messages": [],
+            "last_id": 0  # идентификатор последнего отправленного сообщения
+        }
+        return queue
+
+    def push(self, to: str, msg: str):
+        """Отправляет сообщение с уникальным идентификатором для конкретного клиента."""
+        if to in self.clients:
+            message_id = self.clients[to]["last_id"] + 1
+            self.clients[to]["messages"].append({"id": message_id, "msg": msg})
+            self.clients[to]["last_id"] = message_id
+            # Отправляем сообщение в очередь, чтобы оно стало доступным для клиента
+            self.clients[to]["queue"].put_nowait(msg)
+            print(f"Message '{msg}' sent to client {to} with id {message_id}")
+            return {'success': True}
+        else:
+            print(f"Client {to} not found")
+            return {'success': False, 'error': f"Client {to} not found"}
+
+    async def get_message(self, client_id: str, last_id: int):
+        """Возвращает следующее новое сообщение для клиента, основываясь на его последнем полученном идентификаторе."""
+        if client_id not in self.clients:
+            await self.add_client(client_id)
+
+        queue = self.clients[client_id]["queue"]
+        messages = [m for m in self.clients[client_id]["messages"] if m["id"] > last_id]
+        # print(messages)
+
+        if messages:
+            print('return', messages)
+            return messages  # Если есть сообщения, возвращаем их сразу
+        try:
+            # Иначе ждем новых сообщений в очереди
+            await asyncio.wait_for(queue.get(), timeout=60)
+            messages = [m for m in self.clients[client_id]["messages"] if m["id"] > last_id]
+            print('alredy awaited and sending', messages)
+            return messages
+        except asyncio.TimeoutError:
+            return []  # Таймаут — возвращаем пустой список
+
+
+long_poll_server = LongPollServer()
+
+
+@app.get("/agent/lp")
+async def get_long_poll(client_id: str, last_id: int = 0):
+    """Получает все новые сообщения для клиента, начиная с идентификатора last_id."""
+    messages = await long_poll_server.get_message(client_id, last_id)
+    print('processed LP')
+    return {"client_id": client_id, "messages": messages}
+
+
+@app.get("/agent/push")
+async def push_long_poll(agent_id: str, msg: str):
+    """Получает все новые сообщения для клиента, начиная с идентификатора last_id."""
+    return long_poll_server.push(to=agent_id, msg=msg)
+    # return {"client_id": agent_id, "messages": msg}
+
+
+# Agent updates operations
 @app.get("/agent/update")
-async def update_operation(client_id: str, operation_id: str, state: str):
-    """Обновление состояния операции клиента"""
-    await client_manager.update_operation(client_id, operation_id, state)
-    return {"status": "updated"}
+async def update_operation(agent_id: str, operation_id: str, state: str):
+    """Update client operation state"""
+    await client_manager.update_operation(agent_id, operation_id, state)
+    return {"status": 2}
 
 
-# WebSocket роут для взаимодействия с клиентом
+@app.post("/agent/update")
+async def update_operation(agent_id: str, data: Request):
+    """Mass updates client states"""
+    for state in data:
+        await client_manager.update_operation(agent_id, data[state]['operation_id'], data[state]['state'])
+    return {"status": 2}
+
+
+# WebSocket роут для взаимодействия с клиентом (frontend streamlit?)
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     """Управление подключением WebSocket клиента"""
@@ -123,11 +205,6 @@ async def startup_event():
     print("Запуск фоновой задачи для отслеживания изменений состояний")
     asyncio.create_task(watch_state_changes(queue))
 
-
-@app.post("/agent/{agent}")
-async def agent(agent: int, dest: int, code: int):
-    lp.poll()
-    return JSONResponse(content={"status": "success"})
 
 
 if __name__ == "__main__":
