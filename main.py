@@ -34,6 +34,7 @@ import json
 # BIND_WEB = '0.0.0.0'
 BIND_WEB = '127.0.0.1'
 PORT_WEB = 8081
+DOMAIN = 'direct'
 
 
 # lp = LongPoll()
@@ -129,9 +130,12 @@ class LongPollServer:
 
     async def get_message(self, client_id: str, last_id: int):
         """Возвращает следующее новое сообщение для клиента, основываясь на его последнем полученном идентификаторе."""
-        if client_id not in self.clients:
-            await self.add_client(client_id)
-
+        # if client_id not in self.clients:
+        #     await self.add_client(client_id)
+        try:
+            self.clients[client_id]
+        except KeyError:
+            return []
         queue = self.clients[client_id]["queue"]
         messages = [m for m in self.clients[client_id]["messages"] if m["id"] > last_id]
         # print(messages)
@@ -149,13 +153,29 @@ class LongPollServer:
             return []  # Таймаут — возвращаем пустой список
 
 
-long_poll_server = LongPollServer()
+lp = LongPollServer()
 
+
+@app.get("/agent/auth")
+async def agent_auth(hostname: str, passphrase: str):
+    client_id = f"{DOMAIN}_{hostname}"
+    if client_id not in lp.clients:
+        secret = hostname + hostname
+        if passphrase == secret:
+
+            if client_id not in lp.clients:
+                await lp.add_client(client_id)
+                return {"client_id": client_id, 'success': True}
+            else:
+                return {"client_id": 'DUPLICATE', 'success': True}
+
+    else:
+        return {"client_id": None, 'success': False}
 
 @app.get("/agent/lp")
 async def get_long_poll(client_id: str, last_id: int = 0):
     """Получает все новые сообщения для клиента, начиная с идентификатора last_id."""
-    messages = await long_poll_server.get_message(client_id, last_id)
+    messages = await lp.get_message(client_id, last_id)
     print('processed LP')
     return {"client_id": client_id, "messages": messages}
 
@@ -163,7 +183,7 @@ async def get_long_poll(client_id: str, last_id: int = 0):
 @app.get("/agent/push")
 async def push_long_poll(agent_id: str, msg: str):
     """Получает все новые сообщения для клиента, начиная с идентификатора last_id."""
-    return long_poll_server.push(to=agent_id, msg=msg)
+    return lp.push(to=agent_id, msg=msg)
     # return {"client_id": agent_id, "messages": msg}
 
 
