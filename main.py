@@ -114,7 +114,7 @@ class LongPollServer:
         }
         return queue
 
-    def push(self, to: str, msg: str):
+    def push(self, to: str, msg: dict):
         """Отправляет сообщение с уникальным идентификатором для конкретного клиента."""
         if to in self.clients:
             message_id = self.clients[to]["last_id"] + 1
@@ -138,6 +138,7 @@ class LongPollServer:
             return []
         queue = self.clients[client_id]["queue"]
         messages = [m for m in self.clients[client_id]["messages"] if m["id"] > last_id]
+        # TODO clear delivered messages
         # print(messages)
 
         if messages:
@@ -147,7 +148,7 @@ class LongPollServer:
             # Иначе ждем новых сообщений в очереди
             await asyncio.wait_for(queue.get(), timeout=60)
             messages = [m for m in self.clients[client_id]["messages"] if m["id"] > last_id]
-            print('alredy awaited and sending', messages)
+            print('already awaited and sending', messages)
             return messages
         except asyncio.TimeoutError:
             return []  # Таймаут — возвращаем пустой список
@@ -165,25 +166,29 @@ async def agent_auth(hostname: str, passphrase: str):
 
             if client_id not in lp.clients:
                 await lp.add_client(client_id)
-                return {"client_id": client_id, 'success': True}
-            else:
-                return {"client_id": 'DUPLICATE', 'success': True}
+            return {"client_id": client_id, 'success': True}
+            # else:
+            #     return {"client_id": client_id, 'success': True}
+            #     return {"client_id": 'DUPLICATE', 'success': True}
 
     else:
-        return {"client_id": None, 'success': False}
+        return {"client_id": client_id, 'success': True}  # Debug
+        # return {"client_id": None, 'success': False}
+
 
 @app.get("/agent/lp")
 async def get_long_poll(client_id: str, last_id: int = 0):
     """Получает все новые сообщения для клиента, начиная с идентификатора last_id."""
     messages = await lp.get_message(client_id, last_id)
-    print('processed LP')
+    # print('processed LP')
     return {"client_id": client_id, "messages": messages}
 
 
+# only for http debug
 @app.get("/agent/push")
-async def push_long_poll(agent_id: str, msg: str):
+async def push_long_poll(agent_id: str, action: str, service: str):
     """Получает все новые сообщения для клиента, начиная с идентификатора last_id."""
-    return lp.push(to=agent_id, msg=msg)
+    return lp.push(to=agent_id, msg={'action': action, 'service': service})
     # return {"client_id": agent_id, "messages": msg}
 
 
@@ -224,7 +229,6 @@ async def websocket_endpoint(websocket: WebSocket):
 async def startup_event():
     print("Запуск фоновой задачи для отслеживания изменений состояний")
     asyncio.create_task(watch_state_changes(queue))
-
 
 
 if __name__ == "__main__":

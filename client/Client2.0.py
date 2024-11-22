@@ -1,161 +1,148 @@
+import logging
+import socket
+
 import httpx
 import asyncio
-import base64
-import configparser
-import glob
-import json
 import os
-from random import randint
-import socket
-import http.server
-import socketserver
 import shutil
-import time
-import zipfile
-from subprocess import call, Popen, PIPE, CREATE_NEW_CONSOLE
-from threading import Thread
-import requests  # pip install requests
+import configparser
+from subprocess import Popen, call, PIPE
+from pathlib import Path
 
-HP_BIND = "0.0.0.0"
-HP_PORT = 3280
+logging.basicConfig(level=logging.INFO)
 
 
 class CoreClient:
-    def __init__(self):
-        self.VERSION = 1.0
-        self.PROJECT_DIR = 'projects'
-        self.SERVER = 'http://127.0.0.1:8081'
-        self.db_file = 'client_config.ini'
-        self.id = -1
+    def __init__(self, server='http://127.0.0.1:8081', project_dir='projects'):
+        self.server = server
+        self.project_dir = Path(project_dir)
+        self.id = 'guest'
+        # self.hostname = os.getenv("HOSTNAME", "DefaultHost")
         self.hostname = socket.gethostname()
-        self.passphrase = self.hostname + self.hostname
         self.services = {'hosted_projects': {}}
-        # self.config = self.get_config()
-        # self.auth()
-
-        # self.scan_services()
-
-        os.makedirs(self.PROJECT_DIR, exist_ok=True)
+        self.project_dir.mkdir(exist_ok=True)  # Убедимся, что каталог существует
 
     async def auth(self):
-        async with httpx.AsyncClient() as client:
-            resp = await client.get(f'{self.SERVER}/agent/auth', params={
-                'hostname': self.hostname,
-                'passphrase': self.passphrase})
-            resp = resp.json()
-            if resp['success']:
-                if resp['client_id'] != 'DUPLICATE':
-                    self.id = resp['client_id']
-            else:
-                print('FATAL ERROR: DUPLICATE MACHINE WITH SAME NAME DETECTED!')
-                print('TERMINATING IN 20 SECONDS')
-                print('BYE!')
-                await asyncio.sleep(20)
-                exit(403)
+        """Метод для авторизации клиента на сервере."""
+        async with httpx.AsyncClient() as cli:
+            try:
+                response = await cli.get(f'{self.server}/agent/auth', params={
+                    'hostname': self.hostname,
+                    'passphrase': self.hostname * 2
+                })
+                data = response.json()
+                if data.get('success'):
+                    self.id = data['client_id']
+                    logging.info(f"Authorized with ID: {self.id}")
+                else:
+                    logging.error("Duplicate machine name detected. Exiting...")
+                    await asyncio.sleep(20)
+                    exit(403)
+            except httpx.HTTPStatusError as e:
+                logging.error(f"Authorization failed: {e}")
 
     def scan_services(self):
-        structure = list(os.walk(self.PROJECT_DIR))
-        if len(structure) > 1:
-            for project in structure[0][1]:
-                project_path = os.path.join(self.PROJECT_DIR, project)
-                self.services[project] = {'files': os.listdir(project_path)}
+        """Сканирует проекты в каталоге и загружает их конфигурацию."""
+        for project_path in self.project_dir.glob("*"):
+            if project_path.is_dir():
+                service_info = {'files': list(project_path.iterdir())}
+                ini_file = project_path / 'project.ini'
+                if ini_file.exists():
+                    config = configparser.ConfigParser()
+                    config.read(ini_file)
+                    service_info.update({
+                        key: value for section in config.sections() for key, value in config.items(section)
+                    })
+                    service_info.setdefault('status', 'stopped')
+                self.services['hosted_projects'][project_path.name] = service_info
+        logging.info(f"Scanned services: {self.services['hosted_projects']}")
 
-                if 'project.ini' in self.services[project]['files']:
-                    conf = configparser.ConfigParser()
-                    conf.read(os.path.join(project_path, 'project.ini'))
-                    for spec in conf.sections():
-                        self.services[project].update(conf.items(spec))
-                    self.services[project].setdefault('status', 'stopped')
+    ''' Control services '''
 
-        print(self.services)
+    def start_service(self, service_name):
+        """Запускает сервис с заданным именем."""
+        service = self.services['hosted_projects'].get(service_name)
+        if service is None:
+            logging.warning(f"Service {service_name} not found")
+            return
+        command = f"projects/{service_name}/{service['loader']}"
+        parameters = service.get('parameters', '')
+        full_command = f"{command} {parameters}"
+        proc = Popen(full_command, shell=True)
+        service['pid'] = proc.pid
+        service['status'] = 'running'
+        logging.info(f"Started {service_name} with PID {proc.pid}")
 
-    def handle_actions(self, actions):
-        for act, elements in actions.items():
-            if isinstance(elements, list) and elements:
-                print(act)
-                for element in elements:
-                    action_method = getattr(self, act, None)
-                    if action_method:
-                        action_method(element)
-                        requests.get(f"http://{self.SERVER}/confirm/{self.id}/{act}/{element}")
+    def stop_service(self, service_name):
+        """Останавливает сервис с заданным именем."""
+        service = self.services['hosted_projects'].get(service_name)
+        if service and 'pid' in service:
+            call(['taskkill', '/F', '/T', '/PID', str(service['pid'])], stdout=PIPE)
+            service['status'] = 'stopped'
+            service.pop('pid', None)
+            logging.info(f"Stopped {service_name}")
+        else:
+            logging.warning(f"Service {service_name} not running or not found")
 
-    def upgrade(self, resp):
-        self.deployer(resp['task'], resp['codename'], 'upgrade')
+    def restart_service(self, service_name):
+        """Перезапускает сервис с заданным именем."""
+        self.stop_service(service_name)
+        self.start_service(service_name)
 
-    def downgrade(self, resp):
-        self.deployer(resp['task'], resp['codename'], 'downgrade')
-
-    def deploy(self, resp):
-        print(resp)
-        self.deployer(resp, 'deploy')
-
-    def remove(self, resp):
-        self.deployer(resp, 'remove')
-
-    def start(self, srv):
-        print(srv)
-        command = rf"projects\{srv}\{self.services[srv]['loader']}"
-        parameters = self.services[srv]['parameters']
-        if parameters:
-            command += f" {parameters}"
-
-        proc = Popen(command, creationflags=CREATE_NEW_CONSOLE)
-        self.services[srv]['pid'] = proc.pid
-        self.services[srv]['status'] = 'running'
-
-    def stop(self, srv):
-        call(['taskkill', '/F', '/T', '/PID', str(self.services[srv]['pid'])], stdout=PIPE)
-        self.services[srv].update({'killed': True, 'status': 'stopped'})
-        self.services[srv].pop('pid', None)
-
-    def restart(self, srv):
-        if 'pid' in self.services[srv]:
-            self.stop(srv)
-        self.start(srv)
-        self.services[srv].update({'killed': False, 'status': 'running'})
-
-    def deployer(self, codename, action, url='', silent=False):
-        result = 'success'
-        url = url or f'/lib/{codename}/deploy.tar'
+    async def deploy_service(self, codename, action):
+        """Асинхронный метод для развертывания, обновления и удаления сервиса."""
+        url = f'/lib/{codename}/deploy.tar'
+        project_path = self.project_dir / codename
 
         if action == 'deploy':
-            os.makedirs(rf'projects\{codename}', exist_ok=True)
-            resp = requests.get(f'http://{self.SERVER}{url}')
-            if resp.status_code == 200:
-                with open(rf'projects\{codename}_deploy.tar', 'wb') as tar:
-                    tar.write(resp.content)
-                shutil.unpack_archive(rf'projects\{codename}_deploy.tar', rf'projects')
-            else:
-                result = resp.status_code
+            project_path.mkdir(exist_ok=True)
+            async with httpx.AsyncClient() as cli:
+                response = await cli.get(url)
+                with open(project_path / 'deploy.tar', 'wb') as file:
+                    file.write(response.content)
+            shutil.unpack_archive(str(project_path / 'deploy.tar'), str(self.project_dir))
+            logging.info(f"{codename} deployed successfully.")
 
         elif action == 'remove':
-            shutil.rmtree(rf'projects\{codename}')
-            os.remove(rf'projects\{codename}_deploy.tar')
-            self.services.pop(codename, None)
-
-        elif 'grade' in action:
-            self.stop(codename) if 'pid' in self.services[codename] else None
-            self.deployer(codename, 'remove', silent=True)
-            self.deployer(codename, 'deploy', silent=True)
+            shutil.rmtree(project_path)
+            logging.info(f"{codename} removed successfully.")
 
         self.scan_services()
-        if not silent:
-            requests.get(
-                f"http://{self.SERVER}/cicd/{self.id}/deploy?action=confirm_{action}_{codename}&result={result}")
+
+    def post_state(self, operation, state):
+        # not ready
+        if operation == 'all':
+            async with httpx.AsyncClient() as cli:
+                resp = cli.get(f'{self.server}/agent/update', params={
+                    'agent_id': self.id,
+                    'operation_id': operation,
+                    'state': state
+                })
+        else:
+            async with httpx.AsyncClient() as cli:
+                resp = cli.get(f'{self.server}/agent/update', params={
+                    'agent_id': self.id,
+                    'operation_id': operation,
+                    'state': state
+                })
+
+
+
+client = CoreClient()
 
 
 class LongPollClient:
     def __init__(self, client_id: str, server_url: str):
         self.client_id = client_id
         self.server_url = server_url
-        self.last_id = 0  # идентификатор последнего полученного сообщения
+        self.last_id = 0  # Идентификатор последнего полученного сообщения
 
     async def get_updates(self):
         """Получает обновления от сервера через Long Polling."""
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient() as cli:
             while True:
                 try:
-                    response = await client.get(
+                    response = await cli.get(
                         f"{self.server_url}/agent/lp",
                         params={"client_id": self.client_id, "last_id": self.last_id},
                         timeout=None
@@ -163,44 +150,55 @@ class LongPollClient:
                     if response.status_code == 200:
                         data = response.json()
                         messages = data.get("messages", [])
-                        if messages:
-                            for message in messages:
-                                # Processing messages
-                                print(f"Received message: {message['msg']} with id: {message['id']}")
-                                self.last_id = message['id']  # обновляем last_id
-                        else:
-                            print("No new messages")
-                    await asyncio.sleep(5)  # Ждем перед повторным запросом
-                except Exception as e:
-                    print(f"Error in get_updates: {e}")
-                    await asyncio.sleep(5)  # Ждем перед повторным подключением в случае ошибки
+                        for message in messages:
+                            # Processing commands
+                            logging.info(f"Received message: {message['msg']}")
+                            self.last_id = message['id']
+                            # Получаем команду (например, "start", "stop", "deploy")
+
+                            action = message.get("msg").get('action')
+                            print(action)
+                            # params = message.get("msg").get("params", {})
+
+                            # Проверяем, существует ли метод в CoreClient с таким именем
+                            action_method = getattr(client, action, None)
+
+                            if action_method is not None:  # Если метод найден
+                                service = message.get("msg").get("service", '')
+
+                                if service:
+                                    # Вызов метода с параметром
+                                    logging.info(f"Executing {action} for service {service}")
+                                    action_method(service)
+                            else:
+                                logging.warning(f"Unknown action: {action}")
+
+                    await asyncio.sleep(5)
+                except httpx.RequestError as e:
+                    logging.error(f"Connection error: {e}")
+                    await asyncio.sleep(5)  # Пауза перед повторным запросом
 
 
-async def another_task():
-    # Пример другой фоновой задачи
-
-
-
-    while True:
-        print("Running another task...")
-        print(client.id)
-        await asyncio.sleep(10)
-
-
-client = CoreClient()
-
-
-# Пример использования клиента
+# Пример использования CoreClient с LongPollClient для получения обновлений и задач от сервера
 async def main():
     await client.auth()
-    await asyncio.sleep(5)
-    lp_client = LongPollClient(client_id=client.id, server_url=client.SERVER)
+    client.scan_services()
+
+    # Пример клиента для получения сообщений от сервера через Long Polling
+    lp_client = LongPollClient(client_id=client.id, server_url=client.server)
     await asyncio.gather(
         lp_client.get_updates(),
-        another_task(),
+        another_task(),  # Пример фоновой задачи
     )
 
 
+async def another_task():
+    """Пример фоновой задачи, выполняющейся параллельно."""
+    while True:
+        # logging.info("Running another task...")
+        await asyncio.sleep(10)
+
+
 # Запуск клиента
-# asyncio.create_task(main())
-asyncio.run(main())
+if __name__ == '__main__':
+    asyncio.run(main())
