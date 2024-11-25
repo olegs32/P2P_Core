@@ -1,4 +1,6 @@
+import json
 import logging
+import pathlib
 import socket
 
 import httpx
@@ -45,7 +47,7 @@ class CoreClient:
         """Сканирует проекты в каталоге и загружает их конфигурацию."""
         for project_path in self.project_dir.glob("*"):
             if project_path.is_dir():
-                service_info = {'files': list(project_path.iterdir())}
+                service_info = {'files': list(str(item.joinpath('')) for item in project_path.iterdir())}
                 ini_file = project_path / 'project.ini'
                 if ini_file.exists():
                     config = configparser.ConfigParser()
@@ -55,6 +57,7 @@ class CoreClient:
                     })
                     service_info.setdefault('status', 'stopped')
                 self.services['hosted_projects'][project_path.name] = service_info
+                print(service_info)
         logging.info(f"Scanned services: {self.services['hosted_projects']}")
 
     ''' Control services '''
@@ -109,23 +112,21 @@ class CoreClient:
 
         self.scan_services()
 
-    def post_state(self, operation, state):
-        # not ready
+    async def post_state(self, operation, state=None):
         if operation == 'all':
+            logging.info('Init to post all states')
+
             async with httpx.AsyncClient() as cli:
-                resp = cli.get(f'{self.server}/agent/update', params={
-                    'agent_id': self.id,
-                    'operation_id': operation,
-                    'state': state
-                })
+                # data = json.loads(self.services.get('hosted_projects', {}))
+                resp = await cli.post(f'{self.server}/agent/projects/{self.id}', json=self.services)
+                print(resp)
         else:
             async with httpx.AsyncClient() as cli:
-                resp = cli.get(f'{self.server}/agent/update', params={
+                await cli.get(f'{self.server}/agent/update', params={
                     'agent_id': self.id,
                     'operation_id': operation,
                     'state': state
                 })
-
 
 
 client = CoreClient()
@@ -139,6 +140,7 @@ class LongPollClient:
 
     async def get_updates(self):
         """Получает обновления от сервера через Long Polling."""
+        logging.info('LP Running!')
         async with httpx.AsyncClient() as cli:
             while True:
                 try:
@@ -155,8 +157,9 @@ class LongPollClient:
                             logging.info(f"Received message: {message['msg']}")
                             self.last_id = message['id']
                             # Получаем команду (например, "start", "stop", "deploy")
+                            print(message)
 
-                            action = message.get("msg").get('action')
+                            action = message.get("msg", {}).get('action', None)
                             print(action)
                             # params = message.get("msg").get("params", {})
 
@@ -169,7 +172,7 @@ class LongPollClient:
                                 if service:
                                     # Вызов метода с параметром
                                     logging.info(f"Executing {action} for service {service}")
-                                    action_method(service)
+                                    await action_method(service)
                             else:
                                 logging.warning(f"Unknown action: {action}")
 

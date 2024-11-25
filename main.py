@@ -43,7 +43,7 @@ DOMAIN = 'direct'
 # app.mount("/static", StaticFiles(directory="apps/static"), name="static")
 
 # Хранилище состояний клиентов
-class ClientStateManager:
+class AgentStateManager:
     def __init__(self, queue: asyncio.Queue):
         # Храним состояние клиентов в виде словаря
         self.client_states: Dict[str, Dict[str, str]] = defaultdict(dict)
@@ -58,6 +58,27 @@ class ClientStateManager:
     def get_operations(self, client_id: str) -> Dict[str, str]:
         """Возвращаем состояния всех операций клиента"""
         return self.client_states.get(client_id, {})
+
+
+class AgentProjectManager:
+    def __init__(self):
+        self.agent_states: Dict[str, Dict[str, Dict[str, str]]] = defaultdict(dict)
+
+    def force_update(self, client_id: str, project_id: str, project: dict):
+        """Обновляем состояние проекта клиента"""
+        self.agent_states[client_id][project_id] = project
+        print(f"Обновлен проект: {project_id} с агента: {client_id}")
+
+    def update(self, client_id: str, project_id: str, param: str, state: str):
+        """Обновляем состояние проекта клиента"""
+        self.agent_states[client_id][project_id][param] = state
+        print(f"Обновлен параметр {param} проекта: {project_id} на агенте: {client_id} -> {state}")
+
+    def get(self, client_id: str, project_id: str = None) -> dict[str, str] | dict[str, dict[str, str]]:
+        if project_id is not None:
+            return self.agent_states.get(client_id, {}).get(project_id, {})
+        else:
+            return self.agent_states.get(client_id, {})
 
 
 # Управление WebSocket-соединениями
@@ -81,8 +102,9 @@ class ConnectionManager:
 # Инициализация FastAPI приложения и объектов
 app = FastAPI()
 queue = asyncio.Queue()
-client_manager = ClientStateManager(queue)
+state_manager = AgentStateManager(queue)
 connection_manager = ConnectionManager()
+project_manager = AgentProjectManager()
 
 
 # Фоновая задача для обработки изменений состояний
@@ -117,7 +139,7 @@ class LongPollServer:
         }
         return queue
 
-    def push(self, to: str, msg: str):
+    def push(self, to: str, msg: dict):
         """Отправляет сообщение клиенту с уникальным идентификатором."""
         if to in self.clients:
             client_data = self.clients[to]
@@ -205,7 +227,7 @@ async def get_long_poll(client_id: str, last_id: int = 0):
 @app.get("/agent/push")
 async def push_long_poll(agent_id: str, action: str, service: str):
     """Получает все новые сообщения для клиента, начиная с идентификатора last_id."""
-    return lp.push(to=agent_id, msg=str({'action': action, 'service': service}))
+    return lp.push(to=agent_id, msg={'action': action, 'service': service})
     # return {"client_id": agent_id, "messages": msg}
 
 
@@ -213,15 +235,23 @@ async def push_long_poll(agent_id: str, action: str, service: str):
 @app.get("/agent/update")
 async def update_operation(agent_id: str, operation_id: str, state: str):
     """Update client operation state"""
-    await client_manager.update_operation(agent_id, operation_id, state)
+    await state_manager.update_operation(agent_id, operation_id, state)
     return {"status": 2}
 
 
-@app.post("/agent/update")
+@app.post("/agent/projects/{agent_id}")
 async def update_operation(agent_id: str, data: Request):
     """Mass updates client states"""
-    for state in data:
-        await client_manager.update_operation(agent_id, data[state]['operation_id'], data[state]['state'])
+    print(await data.json())
+    services = await data.json()
+    print(services)
+
+    for project_name in services.get('hosted_projects', {}):
+        project = services.get('hosted_projects', {}).get(project_name, {})
+        project_manager.force_update(agent_id, project_name, project)
+
+    # print(project_name, )
+
     return {"status": 2}
 
 
