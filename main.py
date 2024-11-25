@@ -102,54 +102,71 @@ class ClientData(BaseModel):
 
 class LongPollServer:
     def __init__(self):
+        self.history_limit = 100
+        self.timeout = 60
         self.clients: Dict[str, Dict[str, int | asyncio.Queue | List[Dict[str, int | str]]]] = {}
 
     async def add_client(self, client_id: str) -> asyncio.Queue:
-        """Инициализирует очередь для нового клиента и список сообщений."""
+        """Инициализирует очередь для нового клиента."""
         queue = asyncio.Queue()
         self.clients[client_id] = {
             "queue": queue,
-            "messages": [],
-            "last_id": 0  # идентификатор последнего отправленного сообщения
+            "delivered_messages": [],  # последние 15 доставленных сообщений
+            "undelivered_messages": [],  # все недоставленные сообщения
+            "last_id": 0,  # идентификатор последнего доставленного сообщения
         }
         return queue
 
-    def push(self, to: str, msg: dict):
-        """Отправляет сообщение с уникальным идентификатором для конкретного клиента."""
+    def push(self, to: str, msg: str):
+        """Отправляет сообщение клиенту с уникальным идентификатором."""
         if to in self.clients:
-            message_id = self.clients[to]["last_id"] + 1
-            self.clients[to]["messages"].append({"id": message_id, "msg": msg})
-            self.clients[to]["last_id"] = message_id
-            # Отправляем сообщение в очередь, чтобы оно стало доступным для клиента
-            self.clients[to]["queue"].put_nowait(msg)
+            client_data = self.clients[to]
+            message_id = client_data["last_id"] + 1
+
+            # Добавляем новое сообщение в список недоставленных
+            client_data["undelivered_messages"].append({"id": message_id, "msg": msg})
+            client_data["last_id"] = message_id
+
+            # Уведомляем клиента о новом сообщении через очередь
+            client_data["queue"].put_nowait(msg)
             print(f"Message '{msg}' sent to client {to} with id {message_id}")
-            return {'success': True}
         else:
             print(f"Client {to} not found")
-            return {'success': False, 'error': f"Client {to} not found"}
 
     async def get_message(self, client_id: str, last_id: int):
-        """Возвращает следующее новое сообщение для клиента, основываясь на его последнем полученном идентификаторе."""
-        # if client_id not in self.clients:
-        #     await self.add_client(client_id)
-        try:
-            self.clients[client_id]
-        except KeyError:
-            return []
-        queue = self.clients[client_id]["queue"]
-        messages = [m for m in self.clients[client_id]["messages"] if m["id"] > last_id]
-        # TODO clear delivered messages
-        # print(messages)
+        """Возвращает новые сообщения для клиента и обновляет список доставленных."""
+        if client_id not in self.clients:
+            await self.add_client(client_id)
 
-        if messages:
-            print('return', messages)
-            return messages  # Если есть сообщения, возвращаем их сразу
+        client_data = self.clients[client_id]
+        queue = client_data["queue"]
+
+        # Извлекаем недоставленные сообщения
+        new_messages = [
+            m for m in client_data["undelivered_messages"] if m["id"] > last_id
+        ]
+
+        # Если есть новые сообщения, перемещаем их в список доставленных
+        if new_messages:
+            client_data["delivered_messages"].extend(new_messages)
+            client_data["undelivered_messages"] = [
+                m for m in client_data["undelivered_messages"] if m["id"] <= last_id
+            ]
+
+            # Оставляем только последние 15 доставленных сообщений
+            if len(client_data["delivered_messages"]) > self.history_limit:
+                client_data["delivered_messages"] = client_data["delivered_messages"][-self.history_limit:]
+
+            return new_messages
+
         try:
-            # Иначе ждем новых сообщений в очереди
-            await asyncio.wait_for(queue.get(), timeout=60)
-            messages = [m for m in self.clients[client_id]["messages"] if m["id"] > last_id]
-            print('already awaited and sending', messages)
-            return messages
+            # Ждем новых сообщений, если их пока нет
+            await asyncio.wait_for(queue.get(), timeout=self.timeout)
+            # Повторяем проверку на новые сообщения
+            new_messages = [
+                m for m in client_data["undelivered_messages"] if m["id"] > last_id
+            ]
+            return new_messages
         except asyncio.TimeoutError:
             return []  # Таймаут — возвращаем пустой список
 
@@ -188,7 +205,7 @@ async def get_long_poll(client_id: str, last_id: int = 0):
 @app.get("/agent/push")
 async def push_long_poll(agent_id: str, action: str, service: str):
     """Получает все новые сообщения для клиента, начиная с идентификатора last_id."""
-    return lp.push(to=agent_id, msg={'action': action, 'service': service})
+    return lp.push(to=agent_id, msg=str({'action': action, 'service': service}))
     # return {"client_id": agent_id, "messages": msg}
 
 
