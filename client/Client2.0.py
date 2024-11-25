@@ -2,6 +2,7 @@ import json
 import logging
 import pathlib
 import socket
+import tarfile
 
 import httpx
 import asyncio
@@ -44,39 +45,60 @@ class CoreClient:
                 logging.error(f"Authorization failed: {e}")
 
     def scan_services(self):
-        """Сканирует проекты в каталоге и загружает их конфигурацию."""
+        """Scans projects in the directory and loads their configurations."""
         for project_path in self.project_dir.glob("*"):
             if project_path.is_dir():
-                service_info = {'files': list(str(item.joinpath('')) for item in project_path.iterdir())}
-                ini_file = project_path / 'project.ini'
-                if ini_file.exists():
-                    config = configparser.ConfigParser()
-                    config.read(ini_file)
-                    service_info.update({
-                        key: value for section in config.sections() for key, value in config.items(section)
-                    })
-                    service_info.setdefault('status', 'stopped')
+                service_info = {
+                    'files': [str(item) for item in project_path.iterdir()]  # List all files in the project directory
+                }
+                json_file = project_path / 'config.json'
+                if json_file.exists():
+                    try:
+                        # Load configuration from config.json
+                        with open(json_file, 'r') as f:
+                            config = json.load(f)
+                        service_info.update(config)
+                        service_info.setdefault('status', 'stopped')  # Default status
+                    except json.JSONDecodeError as e:
+                        logging.error(f"Error decoding JSON in {json_file}: {e}")
+                        continue
+                else:
+                    logging.warning(f"No config.json found in {project_path}")
+
                 self.services['hosted_projects'][project_path.name] = service_info
                 print(service_info)
         logging.info(f"Scanned services: {self.services['hosted_projects']}")
 
     ''' Control services '''
 
-    def start_service(self, service_name):
-        """Запускает сервис с заданным именем."""
+    async def start_service(self, service_name):
+        """Starts a service with the given name."""
         service = self.services['hosted_projects'].get(service_name)
         if service is None:
             logging.warning(f"Service {service_name} not found")
             return
-        command = f"projects/{service_name}/{service['loader']}"
-        parameters = service.get('parameters', '')
-        full_command = f"{command} {parameters}"
-        proc = Popen(full_command, shell=True)
-        service['pid'] = proc.pid
-        service['status'] = 'running'
-        logging.info(f"Started {service_name} with PID {proc.pid}")
 
-    def stop_service(self, service_name):
+        # Build the absolute path to the loader script
+        loader_path = self.project_dir / service_name / service['loader']
+        if not loader_path.exists():
+            logging.error(f"Loader script not found: {loader_path}")
+            return
+
+        # Ensure the path is absolute and prepare the command
+        absolute_loader_path = str(loader_path.resolve())
+        parameters = service.get('parameters', '')
+        full_command = f"{absolute_loader_path} {parameters}"
+
+        # Start the service
+        try:
+            proc = Popen(full_command, shell=True)
+            service['pid'] = proc.pid
+            service['status'] = 'running'
+            logging.info(f"Started {service_name} with PID {proc.pid}")
+        except Exception as e:
+            logging.error(f"Failed to start service {service_name}: {e}")
+
+    async def stop_service(self, service_name):
         """Останавливает сервис с заданным именем."""
         service = self.services['hosted_projects'].get(service_name)
         if service and 'pid' in service:
@@ -87,28 +109,32 @@ class CoreClient:
         else:
             logging.warning(f"Service {service_name} not running or not found")
 
-    def restart_service(self, service_name):
+    async def restart_service(self, service_name):
         """Перезапускает сервис с заданным именем."""
-        self.stop_service(service_name)
-        self.start_service(service_name)
+        await self.stop_service(service_name)
+        await self.start_service(service_name)
 
-    async def deploy_service(self, codename, action):
+    async def deploy_service(self, codename):
         """Асинхронный метод для развертывания, обновления и удаления сервиса."""
-        url = f'/lib/{codename}/deploy.tar'
+        url = f'{self.server}/store/deploy?project={codename}'
         project_path = self.project_dir / codename
 
-        if action == 'deploy':
-            project_path.mkdir(exist_ok=True)
-            async with httpx.AsyncClient() as cli:
-                response = await cli.get(url)
-                with open(project_path / 'deploy.tar', 'wb') as file:
-                    file.write(response.content)
-            shutil.unpack_archive(str(project_path / 'deploy.tar'), str(self.project_dir))
-            logging.info(f"{codename} deployed successfully.")
+        project_path.mkdir(exist_ok=True)
+        async with httpx.AsyncClient() as cli:
+            response = await cli.get(url)
+            with open(project_path / 'deploy.tar.gz', 'wb') as file:
+                file.write(response.content)
+            with tarfile.open(project_path / 'deploy.tar.gz', "r:gz") as tar:
+                tar.extractall(project_path)
+        # shutil.unpack_archive(str(project_path / 'deploy.tar'), str(self.project_dir))
+        logging.info(f"{codename} deployed successfully.")
 
-        elif action == 'remove':
-            shutil.rmtree(project_path)
-            logging.info(f"{codename} removed successfully.")
+        self.scan_services()
+
+    async def remove_service(self, codename):
+        project_path = self.project_dir / codename
+        shutil.rmtree(project_path)
+        logging.info(f"{codename} removed successfully.")
 
         self.scan_services()
 
@@ -127,9 +153,6 @@ class CoreClient:
                     'operation_id': operation,
                     'state': state
                 })
-
-
-client = CoreClient()
 
 
 class LongPollClient:
@@ -182,7 +205,9 @@ class LongPollClient:
                     await asyncio.sleep(5)  # Пауза перед повторным запросом
 
 
-# Пример использования CoreClient с LongPollClient для получения обновлений и задач от сервера
+client = CoreClient()
+
+
 async def main():
     await client.auth()
     client.scan_services()
@@ -199,7 +224,7 @@ async def another_task():
     """Пример фоновой задачи, выполняющейся параллельно."""
     while True:
         # logging.info("Running another task...")
-        await asyncio.sleep(10)
+        await asyncio.sleep(100)
 
 
 # Запуск клиента

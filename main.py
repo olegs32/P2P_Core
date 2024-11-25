@@ -31,10 +31,13 @@ import time
 import uvicorn  # pip install uvicorn fastapi python-multipart yattag pyinstaller
 import json
 
+from src.projects import ProjectManager
+
 # BIND_WEB = '0.0.0.0'
 BIND_WEB = '127.0.0.1'
 PORT_WEB = 8081
 DOMAIN = 'direct'
+REPO = 'repo'
 
 
 # lp = LongPoll()
@@ -105,6 +108,7 @@ queue = asyncio.Queue()
 state_manager = AgentStateManager(queue)
 connection_manager = ConnectionManager()
 project_manager = AgentProjectManager()
+project_store = ProjectManager(REPO)
 
 
 # Фоновая задача для обработки изменений состояний
@@ -233,14 +237,14 @@ async def push_long_poll(agent_id: str, action: str, service: str):
 
 # Agent updates operations
 @app.get("/agent/update")
-async def update_operation(agent_id: str, operation_id: str, state: str):
+async def get_update_operation(agent_id: str, operation_id: str, state: str):
     """Update client operation state"""
     await state_manager.update_operation(agent_id, operation_id, state)
     return {"status": 2}
 
 
 @app.post("/agent/projects/{agent_id}")
-async def update_operation(agent_id: str, data: Request):
+async def post_update_operation(agent_id: str, data: Request):
     """Mass updates client states"""
     print(await data.json())
     services = await data.json()
@@ -253,6 +257,15 @@ async def update_operation(agent_id: str, data: Request):
     # print(project_name, )
 
     return {"status": 2}
+
+
+@app.get('/store/deploy', status_code=200)
+async def lib_project_deploy(project):
+    print(project)
+    project_store.tar_project(project)
+    tarball = project_store.get_tar_location(project)
+    print(tarball)
+    return FileResponse(tarball)
 
 
 # WebSocket роут для взаимодействия с клиентом (frontend streamlit?)
@@ -406,11 +419,7 @@ if __name__ == "__main__":
 #     return JSONResponse(resp)
 #
 #
-# @app.get('/lib/{project}/deploy.tar', status_code=200)
-# async def lib_proj_download(project):
-#     print(project)
-#     locate = projects[project].path
-#     return FileResponse(rf"{locate}\{project}_deploy.tar")
+
 #
 #
 # @app.get('/project/{proj}/{action}', status_code=200)
