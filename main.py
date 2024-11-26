@@ -33,9 +33,9 @@ import json
 
 from src.projects import ProjectManager
 
-# BIND_WEB = '0.0.0.0'
-BIND_WEB = '127.0.0.1'
-PORT_WEB = 8081
+BIND_WEB = '0.0.0.0'
+# BIND_WEB = '127.0.0.1'
+PORT_WEB = 8080
 DOMAIN = 'direct'
 REPO = 'repo'
 
@@ -96,10 +96,10 @@ class ConnectionManager:
     def disconnect(self, websocket: WebSocket):
         self.active_connections.remove(websocket)
 
-    async def send_message(self, message: str):
+    async def send_message(self, message: dict):
         """Отправка сообщения всем подключенным клиентам"""
         for connection in self.active_connections:
-            await connection.send_text(message)
+            await connection.send_text(json.dumps(message))
 
 
 # Инициализация FastAPI приложения и объектов
@@ -116,7 +116,7 @@ async def watch_state_changes(queue: asyncio.Queue):
     """Слушаем изменения состояний и отправляем обновления через WebSocket"""
     while True:
         client_id, operation_id, state = await queue.get()
-        message = f"Client {client_id}: Operation {operation_id} changed to {state}"
+        message = {'Client': client_id, 'Operation': operation_id, 'state': state}
         print(message)
         await connection_manager.send_message(message)
         queue.task_done()

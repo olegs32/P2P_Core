@@ -1,3 +1,4 @@
+import datetime
 import json
 import logging
 import pathlib
@@ -16,7 +17,7 @@ logging.basicConfig(level=logging.INFO)
 
 
 class CoreClient:
-    def __init__(self, server='http://127.0.0.1:8081', project_dir='projects'):
+    def __init__(self, server='http://127.0.0.1:8080', project_dir='projects'):
         self.server = server
         self.project_dir = Path(project_dir)
         self.id = 'guest'
@@ -67,7 +68,10 @@ class CoreClient:
 
                 self.services['hosted_projects'][project_path.name] = service_info
                 print(service_info)
+
         logging.info(f"Scanned services: {self.services['hosted_projects']}")
+
+        return f'Scan services successfully finished on {self.id}'
 
     ''' Control services '''
 
@@ -76,13 +80,13 @@ class CoreClient:
         service = self.services['hosted_projects'].get(service_name)
         if service is None:
             logging.warning(f"Service {service_name} not found")
-            return
+            return f'Start {service_name} failed with error on {self.id}: Service not found'
 
         # Build the absolute path to the loader script
         loader_path = self.project_dir / service_name / service['loader']
         if not loader_path.exists():
             logging.error(f"Loader script not found: {loader_path}")
-            return
+            return f'Start {service_name} failed with error on {self.id}: No loader defined in config'
 
         # Ensure the path is absolute and prepare the command
         absolute_loader_path = str(loader_path.resolve())
@@ -95,19 +99,25 @@ class CoreClient:
             service['pid'] = proc.pid
             service['status'] = 'running'
             logging.info(f"Started {service_name} with PID {proc.pid}")
-        except Exception as e:
-            logging.error(f"Failed to start service {service_name}: {e}")
+            return f'Start {service_name} successfully on {self.id} with PID {proc.pid}'
+        except Exception as ex:
+            logging.error(f"Failed to start service {service_name}: {ex}")
+            return f'Start {service_name} failed with error on {self.id}: {ex}'
 
     async def stop_service(self, service_name):
         """Останавливает сервис с заданным именем."""
-        service = self.services['hosted_projects'].get(service_name)
-        if service and 'pid' in service:
-            call(['taskkill', '/F', '/T', '/PID', str(service['pid'])], stdout=PIPE)
-            service['status'] = 'stopped'
-            service.pop('pid', None)
-            logging.info(f"Stopped {service_name}")
-        else:
-            logging.warning(f"Service {service_name} not running or not found")
+        try:
+            service = self.services['hosted_projects'].get(service_name)
+            if service and 'pid' in service:
+                call(['taskkill', '/F', '/T', '/PID', str(service['pid'])], stdout=PIPE)
+                service['status'] = 'stopped'
+                service.pop('pid', None)
+                logging.info(f"Stopped {service_name}")
+            else:
+                logging.warning(f"Service {service_name} not running or not found")
+            return f'Stop {service_name} successfully on {self.id}'
+        except Exception as ex:
+            return f'Stop {service_name} failed with error on {self.id}: {ex}'
 
     async def restart_service(self, service_name):
         """Перезапускает сервис с заданным именем."""
@@ -116,27 +126,35 @@ class CoreClient:
 
     async def deploy_service(self, codename):
         """Асинхронный метод для развертывания, обновления и удаления сервиса."""
-        url = f'{self.server}/store/deploy?project={codename}'
-        project_path = self.project_dir / codename
+        try:
+            url = f'{self.server}/store/deploy?project={codename}'
+            project_path = self.project_dir / codename
 
-        project_path.mkdir(exist_ok=True)
-        async with httpx.AsyncClient() as cli:
-            response = await cli.get(url)
-            with open(project_path / 'deploy.tar.gz', 'wb') as file:
-                file.write(response.content)
-            with tarfile.open(project_path / 'deploy.tar.gz', "r:gz") as tar:
-                tar.extractall(project_path)
-        # shutil.unpack_archive(str(project_path / 'deploy.tar'), str(self.project_dir))
-        logging.info(f"{codename} deployed successfully.")
+            project_path.mkdir(exist_ok=True)
+            async with httpx.AsyncClient() as cli:
+                response = await cli.get(url)
+                with open(project_path / 'deploy.tar.gz', 'wb') as file:
+                    file.write(response.content)
+                with tarfile.open(project_path / 'deploy.tar.gz', "r:gz") as tar:
+                    tar.extractall(project_path)
+            # shutil.unpack_archive(str(project_path / 'deploy.tar'), str(self.project_dir))
+            logging.info(f"{codename} deployed successfully.")
 
-        self.scan_services()
+            self.scan_services()
+            return f'Deploy {codename} successfully on {self.id}'
+        except Exception as ex:
+            return f'Deploy {codename} failed with error on {self.id}: {ex}'
 
     async def remove_service(self, codename):
-        project_path = self.project_dir / codename
-        shutil.rmtree(project_path)
-        logging.info(f"{codename} removed successfully.")
+        try:
+            project_path = self.project_dir / codename
+            shutil.rmtree(project_path)
+            logging.info(f"{codename} removed successfully.")
 
-        self.scan_services()
+            self.scan_services()
+            return f'Remove {codename} successfully on {self.id}'
+        except Exception as ex:
+            return f'Remove {codename} failed with error on {self.id}: {ex}'
 
     async def post_state(self, operation, state=None):
         if operation == 'all':
@@ -148,6 +166,7 @@ class CoreClient:
                 print(resp)
         else:
             async with httpx.AsyncClient() as cli:
+
                 await cli.get(f'{self.server}/agent/update', params={
                     'agent_id': self.id,
                     'operation_id': operation,
@@ -195,9 +214,13 @@ class LongPollClient:
                                 if service:
                                     # Вызов метода с параметром
                                     logging.info(f"Executing {action} for service {service}")
-                                    await action_method(service)
+                                    result = await action_method(service)
+                                    now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                                    await client.post_state(action, f'{now} {result}')
                             else:
                                 logging.warning(f"Unknown action: {action}")
+                                now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                                await client.post_state(action, f'{now} - Unknown action: {action}')
 
                     await asyncio.sleep(5)
                 except httpx.RequestError as e:

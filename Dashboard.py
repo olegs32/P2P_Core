@@ -1,3 +1,5 @@
+import json
+
 import streamlit as st
 import asyncio
 import websockets
@@ -6,12 +8,13 @@ st.write('begin')
 
 
 async def listen_to_server():
-    uri = "ws://localhost:8000/ws"  # WebSocket-сервер
+    uri = "ws://127.0.0.1:8080/ws"  # WebSocket-сервер
     async with websockets.connect(uri) as websocket:
         while True:
-            message = await websocket.recv()
-            st.button(message)
-            st.rerun()
+            message = json.loads(await websocket.recv())
+
+            st.write(message)
+            # st.rerun()
 
 # Запуск корутины с WebSocket в Streamlit
 asyncio.run(listen_to_server())
