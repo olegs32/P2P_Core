@@ -1,117 +1,24 @@
-# from apps.home import generators
-from threading import Thread
-
-import sqlalchemy as db
-from sqlalchemy.inspection import inspect
-
-import asyncio
-import uvicorn
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from collections import defaultdict
-from typing import Dict, List
-from src.net import *
-from fastapi import FastAPI
-from fastapi.staticfiles import StaticFiles
-from fastapi.templating import Jinja2Templates
-from fastapi.responses import HTMLResponse
-from fastapi import Body, FastAPI, Form, HTTPException, Request, File, UploadFile, Depends
-from fastapi.staticfiles import StaticFiles
-from fastapi.encoders import jsonable_encoder
-from fastapi.templating import Jinja2Templates
-from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse, FileResponse
-from fastapi.openapi.docs import get_redoc_html, get_swagger_ui_html
-# import jinja2
-import asyncio
-import os
-from pydantic import BaseModel
-import pathlib
 import queue
 
-import time
 import uvicorn  # pip install uvicorn fastapi python-multipart yattag pyinstaller
-import json
+from fastapi import FastAPI, Request
+from fastapi import WebSocketDisconnect
+from fastapi.responses import FileResponse
+from pydantic import BaseModel
 
+from src.managers import *
 from src.projects import ProjectManager
+from src.servers import *
+from src.web import Web
 
 BIND_WEB = '0.0.0.0'
 # BIND_WEB = '127.0.0.1'
 PORT_WEB = 8080
 DOMAIN = 'direct'
 REPO = 'repo'
+NODE = f'NODE_{DOMAIN}'
 
 
-# lp = LongPoll()
-
-
-# app.mount("/static", StaticFiles(directory="apps/static"), name="static")
-
-# Хранилище состояний клиентов
-class AgentStateManager:
-    def __init__(self, queue: asyncio.Queue):
-        # Храним состояние клиентов в виде словаря
-        self.client_states: Dict[str, Dict[str, str]] = defaultdict(dict)
-        self.queue = queue
-
-    async def update_operation(self, client_id: str, operation_id: str, state: str):
-        """Обновляем состояние операции клиента"""
-        self.client_states[client_id][operation_id] = state
-        print(f"Обновлено состояние операции: {operation_id} для клиента: {client_id} -> {state}")
-        await self.queue.put((client_id, operation_id, state))
-
-    def get_operations(self, client_id: str) -> Dict[str, str]:
-        """Возвращаем состояния всех операций клиента"""
-        return self.client_states.get(client_id, {})
-
-
-class AgentProjectManager:
-    def __init__(self):
-        self.agent_states: Dict[str, Dict[str, Dict[str, str]]] = defaultdict(dict)
-
-    def force_update(self, client_id: str, project_id: str, project: dict):
-        """Обновляем состояние проекта клиента"""
-        self.agent_states[client_id][project_id] = project
-        print(f"Обновлен проект: {project_id} с агента: {client_id}")
-
-    def update(self, client_id: str, project_id: str, param: str, state: str):
-        """Обновляем состояние проекта клиента"""
-        self.agent_states[client_id][project_id][param] = state
-        print(f"Обновлен параметр {param} проекта: {project_id} на агенте: {client_id} -> {state}")
-
-    def get(self, client_id: str, project_id: str = None) -> dict[str, str] | dict[str, dict[str, str]]:
-        if project_id is not None:
-            return self.agent_states.get(client_id, {}).get(project_id, {})
-        else:
-            return self.agent_states.get(client_id, {})
-
-
-# Управление WebSocket-соединениями
-class ConnectionManager:
-    def __init__(self):
-        self.active_connections: List[WebSocket] = []
-
-    async def connect(self, websocket: WebSocket):
-        await websocket.accept()
-        self.active_connections.append(websocket)
-
-    def disconnect(self, websocket: WebSocket):
-        self.active_connections.remove(websocket)
-
-    async def send_message(self, message: dict):
-        """Отправка сообщения всем подключенным клиентам"""
-        for connection in self.active_connections:
-            await connection.send_text(json.dumps(message))
-
-
-# Инициализация FastAPI приложения и объектов
-app = FastAPI()
-queue = asyncio.Queue()
-state_manager = AgentStateManager(queue)
-connection_manager = ConnectionManager()
-project_manager = AgentProjectManager()
-project_store = ProjectManager(REPO)
-
-
-# Фоновая задача для обработки изменений состояний
 async def watch_state_changes(queue: asyncio.Queue):
     """Слушаем изменения состояний и отправляем обновления через WebSocket"""
     while True:
@@ -126,78 +33,18 @@ class ClientData(BaseModel):
     data: str
 
 
-class LongPollServer:
-    def __init__(self):
-        self.history_limit = 100
-        self.timeout = 60
-        self.clients: Dict[str, Dict[str, int | asyncio.Queue | List[Dict[str, int | str]]]] = {}
-
-    async def add_client(self, client_id: str) -> asyncio.Queue:
-        """Инициализирует очередь для нового клиента."""
-        queue = asyncio.Queue()
-        self.clients[client_id] = {
-            "queue": queue,
-            "delivered_messages": [],  # последние 15 доставленных сообщений
-            "undelivered_messages": [],  # все недоставленные сообщения
-            "last_id": 0,  # идентификатор последнего доставленного сообщения
-        }
-        return queue
-
-    def push(self, to: str, msg: dict):
-        """Отправляет сообщение клиенту с уникальным идентификатором."""
-        if to in self.clients:
-            client_data = self.clients[to]
-            message_id = client_data["last_id"] + 1
-
-            # Добавляем новое сообщение в список недоставленных
-            client_data["undelivered_messages"].append({"id": message_id, "msg": msg})
-            client_data["last_id"] = message_id
-
-            # Уведомляем клиента о новом сообщении через очередь
-            client_data["queue"].put_nowait(msg)
-            print(f"Message '{msg}' sent to client {to} with id {message_id}")
-        else:
-            print(f"Client {to} not found")
-
-    async def get_message(self, client_id: str, last_id: int):
-        """Возвращает новые сообщения для клиента и обновляет список доставленных."""
-        if client_id not in self.clients:
-            await self.add_client(client_id)
-
-        client_data = self.clients[client_id]
-        queue = client_data["queue"]
-
-        # Извлекаем недоставленные сообщения
-        new_messages = [
-            m for m in client_data["undelivered_messages"] if m["id"] > last_id
-        ]
-
-        # Если есть новые сообщения, перемещаем их в список доставленных
-        if new_messages:
-            client_data["delivered_messages"].extend(new_messages)
-            client_data["undelivered_messages"] = [
-                m for m in client_data["undelivered_messages"] if m["id"] <= last_id
-            ]
-
-            # Оставляем только последние 15 доставленных сообщений
-            if len(client_data["delivered_messages"]) > self.history_limit:
-                client_data["delivered_messages"] = client_data["delivered_messages"][-self.history_limit:]
-
-            return new_messages
-
-        try:
-            # Ждем новых сообщений, если их пока нет
-            await asyncio.wait_for(queue.get(), timeout=self.timeout)
-            # Повторяем проверку на новые сообщения
-            new_messages = [
-                m for m in client_data["undelivered_messages"] if m["id"] > last_id
-            ]
-            return new_messages
-        except asyncio.TimeoutError:
-            return []  # Таймаут — возвращаем пустой список
-
-
+# Инициализация FastAPI приложения и объектов
+app = FastAPI()
+queue = asyncio.Queue()
+state_manager = AgentStateManager(queue)
+connection_manager = ConnectionManager()
+project_manager = AgentProjectManager()
+project_store = ProjectManager(REPO)
 lp = LongPollServer()
+web = Web()
+# Указание сервисов, доступных извне по протоколу BCP
+services = {'lp': lp, 'web': web}
+router = Router(DOMAIN, NODE, services)
 
 
 @app.get("/agent/auth")
@@ -230,8 +77,8 @@ async def get_long_poll(client_id: str, last_id: int = 0):
 # only for http debug
 @app.get("/agent/push")
 async def push_long_poll(agent_id: str, action: str, service: str):
-    """Получает все новые сообщения для клиента, начиная с идентификатора last_id."""
-    return lp.push(to=agent_id, msg={'action': action, 'service': service})
+    """Координирует запрос к адресу назначения."""
+    return lp.push(src='debug', dst=agent_id, msg={'action': action, 'service': service})
     # return {"client_id": agent_id, "messages": msg}
 
 
@@ -259,6 +106,14 @@ async def post_update_operation(agent_id: str, data: Request):
     return {"status": 2}
 
 
+@app.post("/route")
+async def route(src: str, dst: str, service: str, data: Request):
+    """Координирует запрос к адресу назначения."""
+    data = await data.json()
+    return router.route(src, dst, service, data)
+    # return {"client_id": agent_id, "messages": msg}
+
+
 @app.get('/store/deploy', status_code=200)
 async def lib_project_deploy(project):
     print(project)
@@ -276,8 +131,13 @@ async def websocket_endpoint(websocket: WebSocket):
     try:
         while True:
             # Ожидание сообщений от клиента (например, для теста)
-            data = await websocket.receive_text()
+            data = json.loads(await websocket.receive_text())
+            if data.get('cmd', None) == 'get':
+                if data.get('param', None) == 'agents':
+                    print('send agents data', lp.get_clients())
+                    await websocket.send_json(lp.get_clients())
             print(f"Received from WebSocket: {data}")
+
             await websocket.send_text(f"Message from server: {data}")
     except WebSocketDisconnect:
         connection_manager.disconnect(websocket)
