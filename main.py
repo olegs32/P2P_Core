@@ -1,4 +1,5 @@
 import queue
+import time
 
 import uvicorn  # pip install uvicorn fastapi python-multipart yattag pyinstaller
 from fastapi import FastAPI, Request
@@ -17,6 +18,7 @@ PORT_WEB = 8080
 DOMAIN = 'direct'
 REPO = 'repo'
 NODE = f'NODE_{DOMAIN}'
+START_TIME = time.time()
 
 
 async def watch_state_changes(queue: asyncio.Queue):
@@ -41,9 +43,13 @@ connection_manager = ConnectionManager()
 project_manager = AgentProjectManager()
 project_store = ProjectManager(REPO)
 lp = LongPollServer()
-web = Web()
+web_data = {'start_time': START_TIME}
+services = {'lp': lp, 'connection_manager': connection_manager,
+            'state_manager': state_manager, 'project_manager': project_manager,
+            'project_store': project_store}
+web = Web(DOMAIN, NODE, web_data, services)
+services['web'] = web
 # Указание сервисов, доступных извне по протоколу BCP
-services = {'lp': lp, 'web': web}
 router = Router(DOMAIN, NODE, services)
 
 

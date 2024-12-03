@@ -81,7 +81,7 @@ class Client:
             self.handle_actions(resp['actions'])
 
     def handle_actions(self, actions):
-        for act, elements in actions.items():
+        for act, elements in actions.item():
             if isinstance(elements, list) and elements:
                 print(act)
                 for element in elements:

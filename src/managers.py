@@ -22,6 +22,9 @@ class AgentStateManager:
         """Возвращаем состояния всех операций клиента"""
         return self.client_states.get(client_id, {})
 
+    def state(self):
+        return self.client_states
+
 
 class AgentProjectManager:
     def __init__(self):
@@ -43,6 +46,9 @@ class AgentProjectManager:
         else:
             return self.agent_states.get(client_id, {})
 
+    def state(self):
+        return self.agent_states
+
 
 # Управление WebSocket-соединениями
 class ConnectionManager:
@@ -61,3 +67,6 @@ class ConnectionManager:
         """Отправка сообщения всем подключенным клиентам"""
         for connection in self.active_connections:
             await connection.send_text(json.dumps(message))
+
+    def state(self):
+        return {index: value for index, value in enumerate(self.active_connections)}

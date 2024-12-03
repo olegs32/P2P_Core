@@ -86,3 +86,6 @@ class ProjectManager:
             raise FileNotFoundError(f"Tar file for project '{project_name}' does not exist.")
 
         return tar_path
+
+    def state(self):
+        return self.projects

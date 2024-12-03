@@ -75,12 +75,13 @@ class LongPollServer:
             return []  # Таймаут — возвращаем пустой список
 
     def get_clients(self):
-        clients = {}
-        for client in self.clients:
-            clients[client] = self.clients.get(client).get('last_id')
-        # print(serialize_json(clients))
+        print({client: self.clients.get(client).get('last_id') for client in self.clients})
+        return {client: self.clients.get(client).get('last_id') for client in self.clients}
 
-        return clients
+    def state(self):
+        return {'state': 'Running',
+                'clients': self.get_clients()
+                }
 
 
 class Router:
