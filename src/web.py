@@ -2,6 +2,8 @@ import time
 from collections import defaultdict
 from typing import Dict
 
+from src.tools import uptime
+
 
 class Web:
     def __init__(self, domain: str, node: str, data: dict, services):
@@ -15,17 +17,20 @@ class Web:
 
     def gen_page(self):
         print('gen page')
-        uptime = time.time() - self.data.get('start_time')
+
         services = self.gen_services_menu()
+        up = uptime(self.data.get('start_time', 0))
         example_page = {
             'menu_title': self.node,
             'menu': {
                 'Dashboard': {'icon': 'house', 'content': [
-                    {'type': 'success', 'label': 'Uptime', 'value': 'XX:XX:XX'},
-                    {'type': 'button', 'label': 'Press me!', 'action': 'write', 'cmd': 'constructor work'}
+                    {'type': 'success', 'label': f'Uptime: {up}', 'value': ''},
+                    self.control_panel()
                 ]
                               },
-                'logs': {'icon': 'log', 'content': services
+                'States': {'icon': 'log', 'content': services
+                           },
+                'Logs': {'icon': 'log', 'content': services
                          }
             }
         }
@@ -38,9 +43,9 @@ class Web:
         print(services)
         result = []
         for service in services:
-            if len(services[service]) > 0:
+            if len(services[service]) > -1:
                 result.append({'type': 'subheader', 'label': service, 'value': ''}),
-                result.append({'type': 'table', 'label': services[service], 'value': ''}),
+                result.append({'type': 'dataframe', 'label': services[service], 'value': ''}),
             # elif isinstance(services[service], list):
             #     tmp_dict = {'type': 'table', 'value': ''}
             #     if len(services[service]) > 0:
@@ -62,6 +67,25 @@ class Web:
 
     def do_action(self):
         pass
+
+    def control_panel(self):
+        # for project in self.services.get('project_store'):
+        #     pass
+        data = [{'name': 'anydesk',
+                 'status': 'some status',
+                 'start': 'start_service',
+                 'restart': 'start_service',
+                 'stop': 'start_service',
+                 'remove': 'start_service',
+                 'update': 'start_service',
+                 'deploy': 'start_service',
+                 }]
+        return {'type': 'custom_table', 'cols': len(data), 'rows': data}
+
+    def logs(self):
+        logs = []
+        logs.append({'type': 'write', 'label': 'logs station', 'value': ''})
+        return logs
 
     def serve(self):
         return self.gen_page()

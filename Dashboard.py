@@ -21,15 +21,25 @@ from src.st_styles import *
 from src.st_tabs import *
 
 START_TIME = time.time()
-API_URL = f'http://127.0.0.1:8080'
+API_SERVER = f'http://127.0.0.1:8080'
 # INTERACTIVE_TRESHOLD = 120
 post_data = {'action': 'serve'}
 
 if 'resp' not in st.session_state:
-    st.session_state.resp = requests.post(url=f'{API_URL}/route?src=debug&dst=NODE_direct&service=web',
+    st.session_state.resp = requests.post(url=f'{API_SERVER}/route?src=debug&dst=NODE_direct&service=web',
                                           json=post_data).json()
 resp = st.session_state.resp
 st.set_page_config(page_title=resp.get('data').get('menu_title'), layout="wide", menu_items={})
+
+
+async def listen_to_server():
+    uri = f"ws://{API_SERVER}/ws"  # WebSocket-сервер
+    async with websockets.connect(uri) as websocket:
+        while True:
+            message = json.loads(await websocket.recv())
+
+            st.write(message)
+            # st.rerun()
 
 
 class Action:
@@ -41,6 +51,9 @@ class Action:
 
     def empty(self, arg):
         st.warning(f'No Action defined to {arg}')
+
+    def send_action(self, msg):
+        print(msg)
 
 
 actions = Action()
@@ -62,17 +75,26 @@ if resp.get('successfully') is True:
     )
     content = data.get('menu').get(selected).get('content')
     for item in content:
-        obj = getattr(st, item.get('type'))
-        element = obj(item.get('label'))
-        if 'action' in item:
-            action = item.get('action')
-            if element:
-                act = getattr(actions, action, None)
-                if act:
-                    act(item.get('cmd'))
-                else:
-                    actions.empty(action)
-                st.write('acted')
+        if item.get('type') == 'custom_table':
+            rows = item.get('rows')
+            columns = list(st.columns(item.get('cols')))
+            for index, row in enumerate(rows):
+                for cell in row:
+                    with columns[index]:
+                        st.button(cell, on_click=actions.send_action(row[cell]))
+
+        else:
+            obj = getattr(st, item.get('type'))
+            element = obj(item.get('label'))
+            if 'action' in item:
+                action = item.get('action')
+                if element:
+                    act = getattr(actions, action, None)
+                    if act:
+                        act(item.get('cmd'))
+                    else:
+                        actions.empty(action)
+                    st.write('acted')
                 # st.write(element)
             # st.write()
 

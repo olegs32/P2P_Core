@@ -7,6 +7,10 @@ from fastapi import WebSocket
 
 
 class AgentStateManager:
+    """
+    Store actual states on agent
+
+    """
     def __init__(self, queue: asyncio.Queue):
         # Храним состояние клиентов в виде словаря
         self.client_states: Dict[str, Dict[str, str]] = defaultdict(dict)
@@ -52,6 +56,10 @@ class AgentProjectManager:
 
 # Управление WebSocket-соединениями
 class ConnectionManager:
+    """
+    WS connection
+
+    """
     def __init__(self):
         self.active_connections: List[WebSocket] = []
 

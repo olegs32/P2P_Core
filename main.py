@@ -44,8 +44,9 @@ project_manager = AgentProjectManager()
 project_store = ProjectManager(REPO)
 lp = LongPollServer()
 web_data = {'start_time': START_TIME}
-services = {'lp': lp, 'connection_manager': connection_manager,
-            'state_manager': state_manager, 'project_manager': project_manager,
+services = {'lp': lp,
+            'state_manager': state_manager,
+            'project_manager': project_manager,
             'project_store': project_store}
 web = Web(DOMAIN, NODE, web_data, services)
 services['web'] = web

@@ -45,7 +45,7 @@ class CoreClient:
             except httpx.HTTPStatusError as e:
                 logging.error(f"Authorization failed: {e}")
 
-    def scan_services(self):
+    async def scan_services(self):
         """Scans projects in the directory and loads their configurations."""
         for project_path in self.project_dir.glob("*"):
             if project_path.is_dir():
@@ -70,7 +70,9 @@ class CoreClient:
                 print(service_info)
 
         logging.info(f"Scanned services: {self.services['hosted_projects']}")
-
+        async with httpx.AsyncClient() as cli:
+            response = await cli.post(f'{self.server}/agent/projects/{self.id}', json=self.services)
+            print(response)
         return f'Scan services successfully finished on {self.id}'
 
     ''' Control services '''
@@ -140,7 +142,7 @@ class CoreClient:
             # shutil.unpack_archive(str(project_path / 'deploy.tar'), str(self.project_dir))
             logging.info(f"{codename} deployed successfully.")
 
-            self.scan_services()
+            await self.scan_services()
             return f'Deploy {codename} successfully on {self.id}'
         except Exception as ex:
             return f'Deploy {codename} failed with error on {self.id}: {ex}'
@@ -151,7 +153,7 @@ class CoreClient:
             shutil.rmtree(project_path)
             logging.info(f"{codename} removed successfully.")
 
-            self.scan_services()
+            await self.scan_services()
             return f'Remove {codename} successfully on {self.id}'
         except Exception as ex:
             return f'Remove {codename} failed with error on {self.id}: {ex}'
@@ -233,7 +235,7 @@ client = CoreClient()
 
 async def main():
     await client.auth()
-    client.scan_services()
+    await client.scan_services()
 
     # Пример клиента для получения сообщений от сервера через Long Polling
     lp_client = LongPollClient(client_id=client.id, server_url=client.server)

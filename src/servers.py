@@ -80,7 +80,7 @@ class LongPollServer:
 
     def state(self):
         return {'state': 'Running',
-                'clients': self.get_clients()
+                'last_id_msg': self.get_clients()
                 }
 
 
