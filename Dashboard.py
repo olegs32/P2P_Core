@@ -57,6 +57,7 @@ class Action:
 
 
 actions = Action()
+# st.write(st.columns)
 
 # st.write(resp.get('data'))
 if resp.get('successfully') is True:
@@ -77,12 +78,17 @@ if resp.get('successfully') is True:
     for item in content:
         if item.get('type') == 'custom_table':
             rows = item.get('rows')
-            columns = list(st.columns(item.get('cols')))
-            for index, row in enumerate(rows):
-                for cell in row:
+            container = st.container(border=True)
+            columns = container.columns(item.get('cols'))
+            print(int(item.get('cols')))
+            for row in rows:
+                for index, cell in enumerate(row):
+                    # st.write(index)
+                    # st.write(cell)
+                    # st.write(row)
+                    # st.write(columns)
                     with columns[index]:
-                        st.button(cell, on_click=actions.send_action(row[cell]))
-
+                        container.button(cell, on_click=actions.send_action(row[cell]))
         else:
             obj = getattr(st, item.get('type'))
             element = obj(item.get('label'))
@@ -95,8 +101,8 @@ if resp.get('successfully') is True:
                     else:
                         actions.empty(action)
                     st.write('acted')
-                # st.write(element)
-            # st.write()
+            # st.write(element)
+        # st.write()
 
 #
 #

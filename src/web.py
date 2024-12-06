@@ -80,7 +80,7 @@ class Web:
                  'update': 'start_service',
                  'deploy': 'start_service',
                  }]
-        return {'type': 'custom_table', 'cols': len(data), 'rows': data}
+        return {'type': 'custom_table', 'cols': len(data[0]), 'rows': data}
 
     def logs(self):
         logs = []
