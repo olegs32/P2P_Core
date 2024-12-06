@@ -94,21 +94,28 @@ class Router:
     def to_self_node(self, src, service, data):
         if service in self.services:
             method = self.services[service]
-            action = data.get('action')
+            action = data.get('action', None)
             act = getattr(method, action, None)
             if act:
                 try:
+                    # print(act)
                     result = {'successfully': True, 'data': act()}
+                    print('trying')
+
                 except Exception as ex:
                     print(ex)
                     result = {'successfully': False, 'data': ex}
                     return result
                 self.route(self.node, src, service, result)
                 return result
+            else:
+                return {'successfully': False, 'data': f'No action :{method} {data.get('action')}'}
+
         else:
             return {'successfully': False, 'data': f'No service found: {service}'}
 
     def route(self, src, dst, service, data):
+        # print('Routing', src, dst, service, data)
         if dst == self.node:
             return self.to_self_node(src, service, data)
 

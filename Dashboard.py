@@ -1,4 +1,5 @@
 import json
+import random
 
 import streamlit as st
 import asyncio
@@ -13,7 +14,7 @@ import shutil
 import time
 
 import requests
-import uptime
+# import uptime
 import streamlit as st
 from streamlit_option_menu import option_menu
 from streamlit.runtime.scriptrunner import add_script_run_ctx
@@ -29,6 +30,8 @@ if 'resp' not in st.session_state:
     st.session_state.resp = requests.post(url=f'{API_SERVER}/route?src=debug&dst=NODE_direct&service=web',
                                           json=post_data).json()
 resp = st.session_state.resp
+# st.write(resp)
+
 st.set_page_config(page_title=resp.get('data').get('menu_title'), layout="wide", menu_items={})
 
 
@@ -55,11 +58,23 @@ class Action:
     def send_action(self, msg):
         print(msg)
 
+    def gen_action(self, item):
+        obj = getattr(st, item.get('type'))
+        element = obj(item.get('label'))
+        if 'action' in item:
+            action = item.get('action')
+            if element:
+                act = getattr(actions, action, None)
+                if act:
+                    act(item.get('cmd'))
+                else:
+                    actions.empty(action)
+                st.write('acted')
+
 
 actions = Action()
 # st.write(st.columns)
 
-# st.write(resp.get('data'))
 if resp.get('successfully') is True:
     data = resp.get('data')
     options = list(data.get('menu').keys())
@@ -76,33 +91,51 @@ if resp.get('successfully') is True:
     )
     content = data.get('menu').get(selected).get('content')
     for item in content:
+        # st.write(item)
         if item.get('type') == 'custom_table':
-            rows = item.get('rows')
-            container = st.container(border=True)
-            columns = container.columns(item.get('cols'))
-            print(int(item.get('cols')))
-            for row in rows:
-                for index, cell in enumerate(row):
-                    # st.write(index)
-                    # st.write(cell)
-                    # st.write(row)
-                    # st.write(columns)
-                    with columns[index]:
-                        container.button(cell, on_click=actions.send_action(row[cell]))
+            rows = item.get('agents')
+            # st.write(rows)
+            for agent in rows:
+                st.header(agent)
+
+                with st.container(border=True):
+                    columns = st.columns(item.get('cols'))
+                    # st.write(rows[agent])
+                    for index, row in enumerate(rows[agent]):
+                        # st.write(index)
+                        with columns[index]:
+                        # st.write(row)
+
+                            actions.gen_action(row)
+                st.divider()
+                # obj = getattr(st, row.get('type'))
+                # element = obj(row.get('label'), key=random.random())
+                # if 'action' in row:
+                #     action = row.get('action')
+                #     if element:
+                #         act = getattr(actions, action, None)
+                #         if act:
+                #             act(row.get('cmd'))
+                #         else:
+                #             actions.empty(action)
+                #         st.write('acted')
         else:
-            obj = getattr(st, item.get('type'))
-            element = obj(item.get('label'))
-            if 'action' in item:
-                action = item.get('action')
-                if element:
-                    act = getattr(actions, action, None)
-                    if act:
-                        act(item.get('cmd'))
-                    else:
-                        actions.empty(action)
-                    st.write('acted')
-            # st.write(element)
-        # st.write()
+            actions.gen_action(item)
+        # obj = getattr(st, item.get('type'))
+        # element = obj(item.get('label'))
+        # if 'action' in item:
+        #     action = item.get('action')
+        #     if element:
+        #         act = getattr(actions, action, None)
+        #         if act:
+        #             act(item.get('cmd'))
+        #         else:
+        #             actions.empty(action)
+        #         st.write('acted')
+else:
+    st.write(resp)
+# st.write(element)
+# st.write()
 
 #
 #

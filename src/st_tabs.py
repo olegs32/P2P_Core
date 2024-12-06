@@ -13,7 +13,7 @@ import shutil
 import time
 
 import requests
-import uptime
+# import uptime
 import streamlit as st
 from streamlit_option_menu import option_menu
 from streamlit.runtime.scriptrunner import add_script_run_ctx

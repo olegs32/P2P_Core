@@ -11,6 +11,7 @@ class AgentStateManager:
     Store actual states on agent
 
     """
+
     def __init__(self, queue: asyncio.Queue):
         # Храним состояние клиентов в виде словаря
         self.client_states: Dict[str, Dict[str, str]] = defaultdict(dict)
@@ -31,6 +32,10 @@ class AgentStateManager:
 
 
 class AgentProjectManager:
+    """
+    agent_states[client_id][project_id][param] = state
+    """
+
     def __init__(self):
         self.agent_states: Dict[str, Dict[str, Dict[str, str]]] = defaultdict(dict)
 
@@ -53,6 +58,10 @@ class AgentProjectManager:
     def state(self):
         return self.agent_states
 
+    def status(self, agent, project):
+        print('agent states', )
+        return self.agent_states.get(agent, {}).get(project, 'NOT FOUND')
+
 
 # Управление WebSocket-соединениями
 class ConnectionManager:
@@ -60,6 +69,7 @@ class ConnectionManager:
     WS connection
 
     """
+
     def __init__(self):
         self.active_connections: List[WebSocket] = []
 

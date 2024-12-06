@@ -1,6 +1,6 @@
 import time
 from collections import defaultdict
-from typing import Dict
+from typing import Dict, List
 
 from src.tools import uptime
 
@@ -16,7 +16,7 @@ class Web:
         pass
 
     def gen_page(self):
-        print('gen page')
+        print('Generating web page')
 
         services = self.gen_services_menu()
         up = uptime(self.data.get('start_time', 0))
@@ -69,18 +69,22 @@ class Web:
         pass
 
     def control_panel(self):
-        # for project in self.services.get('project_store'):
-        #     pass
-        data = [{'name': 'anydesk',
-                 'status': 'some status',
-                 'start': 'start_service',
-                 'restart': 'start_service',
-                 'stop': 'start_service',
-                 'remove': 'start_service',
-                 'update': 'start_service',
-                 'deploy': 'start_service',
-                 }]
-        return {'type': 'custom_table', 'cols': len(data[0]), 'rows': data}
+
+        agents = self.services.get('lp').get_clients()
+        acts = ['deploy', 'update', 'start', 'stop', 'restart', 'remove']
+        data = {}
+        # data: Dict[str, List[Dict[str: str, str: str, str: str]]]
+        for agent in agents:
+            data[agent] = []
+            for project in self.services.get('project_store').state():
+
+                status = self.services.get('project_manager').status(agent, project)
+                data[agent].append({'type': 'write', 'label': project, 'value': ''})
+                data[agent].append({'type': 'write', 'label': status, 'value': ''})
+                for act in acts:
+                    data[agent].append({'type': 'button', 'label': f'{act}_service', 'value': ''})
+        print('Panel generated')
+        return {'type': 'custom_table', 'cols': 8, 'agents': data}
 
     def logs(self):
         logs = []

@@ -13,7 +13,8 @@ class ProjectManager:
         """
         self.repo_path = os.path.abspath(repo_path)
         if not os.path.exists(self.repo_path):
-            raise FileNotFoundError(f"Repository path '{self.repo_path}' does not exist.")
+            os.makedirs(self.repo_path, exist_ok=True)
+            # raise FileNotFoundError(f"Repository path '{self.repo_path}' does not exist.")
         self.projects = {}
         self._parse_projects()
         print(self.projects)
