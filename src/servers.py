@@ -33,10 +33,9 @@ class LongPollServer:
 
             # Уведомляем клиента о новом сообщении через очередь
             client_data["queue"].put_nowait(msg)
-            return {'success': True, msg: f"Message '{msg}' sent to client {dst} with id {message_id}",
-                    'id': message_id}
+            print(f"Message '{msg}' sent to client {dst} with id {message_id}")
         else:
-            return {'success': False, msg: f"Client {dst} not found"}
+            print(f"Client {dst} not found")
 
     async def get_message(self, client_id: str, last_id: int):
         """Возвращает новые сообщения для клиента и обновляет список доставленных."""
@@ -79,9 +78,6 @@ class LongPollServer:
         print({client: self.clients.get(client).get('last_id') for client in self.clients})
         return {client: self.clients.get(client).get('last_id') for client in self.clients}
 
-    def client_id(self, client):
-        return self.clients.get(client).get('last_id')
-
     def state(self):
         return {'state': 'Running',
                 'last_id_msg': self.get_clients()
@@ -94,7 +90,6 @@ class Router:
         self.services = services
         self.domain = domain
         self.node = node
-        self.neighbors: Dict[str, str] = defaultdict(str)
 
     def to_self_node(self, src, service, data):
         if service in self.services:
@@ -105,7 +100,7 @@ class Router:
                 try:
                     # print(act)
                     result = {'successfully': True, 'data': act()}
-
+                    print('trying')
                 except Exception as ex:
                     print(ex)
                     result = {'successfully': False, 'data': ex}
@@ -117,28 +112,18 @@ class Router:
         else:
             return {'successfully': False, 'data': f'No service found: {service}'}
 
-    def route(self, src: str, dst: str, data):
-        """Routes messages between nodes and services"""
-        service = src.split('_')[0] if '_' in src else 'agent'
-
+    def route(self, src, dst, service, data):
+        # print('Routing', src, dst, service, data)
         if dst == self.node:
             return self.to_self_node(src, service, data)
 
-        if not self.domain in dst:
+        elif self.domain in dst:
+            msg = {'action': data.get('action'), 'service': service}
+            self.push(src, dst, msg)
+            return {'successfully': True}
+
+        else:
             logging.warning(f'No clients with this ID: {dst}')
-            return {'success': False, 'data': f'No clients with this ID: {dst}'}
 
-        msg = {
-            'action': data.get('action'),
-            'service': service,
-            'payload': data.get('payload', {})
-        }
-        result = self.push(src, dst, msg)
-        return {'success': True, 'data': result}
-
-    def push(self, sender: str, to: str, data: dict) -> dict:
-        """Pushes message to long polling service"""
-        lp_service = self.services.get('lp')
-        if not lp_service:
-            return {'success': False, 'data': 'Long polling service not available'}
-        return lp_service.push(src=sender, dst=to, msg=data)
+    def push(self, sender, to, data):
+        self.services.get('lp').push(src=sender, dst=to, msg=data)
