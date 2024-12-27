@@ -40,7 +40,6 @@ async def listen_to_server():
     async with websockets.connect(uri) as websocket:
         while True:
             message = json.loads(await websocket.recv())
-
             st.write(message)
             # st.rerun()
 

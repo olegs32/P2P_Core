@@ -33,9 +33,10 @@ class LongPollServer:
 
             # Уведомляем клиента о новом сообщении через очередь
             client_data["queue"].put_nowait(msg)
-            print(f"Message '{msg}' sent to client {dst} with id {message_id}")
+            return {'success': True, msg: f"Message '{msg}' sent to client {dst} with id {message_id}",
+                    'id': message_id}
         else:
-            print(f"Client {dst} not found")
+            return {'success': False, msg: f"Client {dst} not found"}
 
     async def get_message(self, client_id: str, last_id: int):
         """Возвращает новые сообщения для клиента и обновляет список доставленных."""
@@ -78,6 +79,9 @@ class LongPollServer:
         print({client: self.clients.get(client).get('last_id') for client in self.clients})
         return {client: self.clients.get(client).get('last_id') for client in self.clients}
 
+    def client_id(self, client):
+        return self.clients.get(client).get('last_id')
+
     def state(self):
         return {'state': 'Running',
                 'last_id_msg': self.get_clients()
@@ -90,6 +94,7 @@ class Router:
         self.services = services
         self.domain = domain
         self.node = node
+        self.neighbors: Dict[str, str] = defaultdict(str)
 
     def to_self_node(self, src, service, data):
         if service in self.services:
@@ -100,7 +105,6 @@ class Router:
                 try:
                     # print(act)
                     result = {'successfully': True, 'data': act()}
-                    print('trying')
 
                 except Exception as ex:
                     print(ex)
@@ -110,7 +114,6 @@ class Router:
                 return result
             else:
                 return {'successfully': False, 'data': f'No action :{method} {data.get('action')}'}
-
         else:
             return {'successfully': False, 'data': f'No service found: {service}'}
 
@@ -121,11 +124,12 @@ class Router:
 
         elif self.domain in dst:
             msg = {'action': data.get('action'), 'service': service}
-            self.push(src, dst, msg)
-            return {'successfully': True}
+            result = self.push(src, dst, msg)
+            return {'success': True, 'data': result}
 
         else:
             logging.warning(f'No clients with this ID: {dst}')
+            return {'success': False, 'data': f'No clients with this ID: {dst}'}
 
     def push(self, sender, to, data):
-        self.services.get('lp').push(src=sender, dst=to, msg=data)
+        return self.services.get('lp').push(src=sender, dst=to, msg=data)

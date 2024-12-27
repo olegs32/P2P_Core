@@ -4,6 +4,8 @@ import logging
 import pathlib
 import socket
 import tarfile
+from collections import defaultdict
+from typing import Dict
 
 import httpx
 import asyncio
@@ -13,14 +15,37 @@ import configparser
 from subprocess import Popen, call, PIPE
 from pathlib import Path
 
+import requests
+import uvicorn  # pip install uvicorn fastapi python-multipart yattag pyinstaller
+from fastapi import FastAPI, Request
+from fastapi import WebSocketDisconnect
+from fastapi.responses import FileResponse
+from pydantic import BaseModel
+
 logging.basicConfig(level=logging.INFO)
+
+BIND_WEB = '0.0.0.0'
+PORT_WEB = 8088
+
+NODE_SERVER = 'http://127.0.0.1:8080'
+
+
+def check_for_updates(current_version):
+    url = f"{NODE_SERVER}/api/check_version"
+    response = requests.get(url)
+    if response.status_code == 200:
+        data = response.json()
+        if data['version'] > current_version:
+            return data['download_url']
+    return None
 
 
 class CoreClient:
-    def __init__(self, server='http://127.0.0.1:8080', project_dir='projects'):
+    def __init__(self, server, project_dir='projects'):
         self.server = server
         self.project_dir = Path(project_dir)
         self.id = 'guest'
+        self.REQUEST_TRACKER: Dict[str, Dict[str, str]] = defaultdict(dict)
         # self.hostname = os.getenv("HOSTNAME", "DefaultHost")
         self.hostname = socket.gethostname()
         self.services = {'hosted_projects': {}}
@@ -175,6 +200,20 @@ class CoreClient:
                     'state': state
                 })
 
+    # async def ack(self, action):
+    #     if len(self.REQUEST_TRACKER.get(self.id)) > 0:
+    #         waiting: dict = self.REQUEST_TRACKER.get(self.id)
+    #         for ack in waiting:
+    #             if last_id >= waiting[ack].get('id'):
+    #                 lp.push(client_id,
+    #                         waiting[ack],
+    #                         {'service': 'ack', 'action': ack
+    #                          })
+    #                 REQUEST_TRACKER[client_id].pop(ack)
+    #                 logging.info(f'Confirm delivery {ack} ')
+    #
+    # pass
+
 
 class LongPollClient:
     def __init__(self, client_id: str, server_url: str):
@@ -230,28 +269,49 @@ class LongPollClient:
                     await asyncio.sleep(5)  # Пауза перед повторным запросом
 
 
-client = CoreClient()
+client = CoreClient(NODE_SERVER)
+app = FastAPI()
+lp_client = LongPollClient(client_id=client.id, server_url=client.server)
 
 
-async def main():
+@app.post("/route")
+async def route(src: str, dst: str, service: str, data: Request):
+    """Координирует запрос к адресу назначения."""
+    # data = data
+    if dst == client.id:
+        resp = 'Routed to Node'
+    else:
+        async with httpx.AsyncClient() as cli:
+            resp = await cli.post(f'{client.server}/route?src={src}&dst={dst}&service={service}', data=data)
+    return resp
+    # return {"client_id": agent_id, "messages": msg}
+
+
+@app.on_event("startup")
+async def startup_event():
+    print("Запуск LongPolling!")
+    asyncio.create_task(lp_client.get_updates())
+    asyncio.create_task(prepare())
+
+
+async def prepare():
     await client.auth()
     await client.scan_services()
 
-    # Пример клиента для получения сообщений от сервера через Long Polling
-    lp_client = LongPollClient(client_id=client.id, server_url=client.server)
-    await asyncio.gather(
-        lp_client.get_updates(),
-        another_task(),  # Пример фоновой задачи
-    )
 
-
-async def another_task():
-    """Пример фоновой задачи, выполняющейся параллельно."""
-    while True:
-        # logging.info("Running another task...")
-        await asyncio.sleep(100)
-
+# async def main():
+#
+#
+#     # Пример клиента для получения сообщений от сервера через Long Polling
+#     await asyncio.gather(
+#         lp_client.get_updates(),
+#         another_task(),  # Пример фоновой задачи
+#     )
+#
+#
+# async def another_task():
+#
 
 # Запуск клиента
 if __name__ == '__main__':
-    asyncio.run(main())
+    uvicorn.run("Client2:app", host=BIND_WEB, port=PORT_WEB)

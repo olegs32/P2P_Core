@@ -8,3 +8,4 @@ uvicorn~=0.31.0
 pydantic~=2.10.3
 streamlit_option_menu
 httpx~=0.28.1
+pyinstaller

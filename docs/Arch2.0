@@ -38,6 +38,15 @@ Node interface - provide client control methods from node
 
 
 
+LP structure
+
+{'src': src_id,
+'dst': dst_id,
+{'service': str,
+  'action': any
+  }
+}
+
 
 
 

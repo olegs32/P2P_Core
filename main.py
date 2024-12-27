@@ -1,8 +1,13 @@
+import logging
 import queue
+import threading
 import time
+import hmac
+import hashlib
 
+import requests
 import uvicorn  # pip install uvicorn fastapi python-multipart yattag pyinstaller
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Header, HTTPException
 from fastapi import WebSocketDisconnect
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
@@ -12,6 +17,7 @@ from src.projects import ProjectManager
 from src.servers import *
 from src.web import Web
 
+CURRENT_VERSION = "1.2.0"
 BIND_WEB = '0.0.0.0'
 # BIND_WEB = '127.0.0.1'
 PORT_WEB = 8080
@@ -19,21 +25,9 @@ DOMAIN = 'direct'
 REPO = 'repo'
 NODE = f'NODE_{DOMAIN}'
 START_TIME = time.time()
-
-
-async def watch_state_changes(queue: asyncio.Queue):
-    """Слушаем изменения состояний и отправляем обновления через WebSocket"""
-    while True:
-        client_id, operation_id, state = await queue.get()
-        message = {'Client': client_id, 'Operation': operation_id, 'state': state}
-        print(message)
-        await connection_manager.send_message(message)
-        queue.task_done()
-
-
-class ClientData(BaseModel):
-    data: str
-
+REQUEST_TRACKER: Dict[str, Dict[str, str]] = defaultdict(dict)
+MAX_REQUEST_ID = 3000
+LOCK = threading.Lock()
 
 # Инициализация FastAPI приложения и объектов
 app = FastAPI()
@@ -52,6 +46,52 @@ web = Web(DOMAIN, NODE, web_data, services)
 services['web'] = web
 # Указание сервисов, доступных извне по протоколу BCP
 router = Router(DOMAIN, NODE, services)
+
+SECRET_KEY = "your-secret-key"
+AUTHORIZED_TOKENS = {"client-token-1", "client-token-2"}
+DOWNLOAD_URL = f"http://127.0.0.1:{PORT_WEB}/downloads/client.exe"
+
+
+def generate_request_id():
+    with LOCK:
+        for i in range(MAX_REQUEST_ID):
+            if i not in REQUEST_TRACKER:
+                return i
+        raise Exception("Превышен лимит запросов")
+
+
+async def watch_state_changes(queue: asyncio.Queue):
+    """Слушаем изменения состояний и отправляем обновления через WebSocket"""
+    while True:
+        client_id, operation_id, state = await queue.get()
+        message = {'Client': client_id, 'Operation': operation_id, 'state': state}
+        print(message)
+        await connection_manager.send_message(message)
+        queue.task_done()
+
+
+class ClientData(BaseModel):
+    data: str
+
+
+@app.get("/api/check_version")
+def check_version(x_client_token: str = Header(...)):
+    if x_client_token not in AUTHORIZED_TOKENS:
+        raise HTTPException(status_code=403, detail="Invalid client token")
+    return {"version": CURRENT_VERSION, "download_url": DOWNLOAD_URL, "release_notes": "Исправлены ошибки."}
+
+
+@app.post("/api/validate_client")
+async def validate_client(file_hash: str):
+    valid_hashes = {"valid-hash-1", "valid-hash-2"}
+    if file_hash not in valid_hashes:
+        raise HTTPException(status_code=403, detail="Invalid client binary")
+    return {"status": "verified"}
+
+
+@app.get("/downloads/client.exe")
+async def download_client():
+    return FileResponse("dist/client2.exe")
 
 
 @app.get("/agent/auth")
@@ -76,6 +116,18 @@ async def agent_auth(hostname: str, passphrase: str):
 @app.get("/agent/lp")
 async def get_long_poll(client_id: str, last_id: int = 0):
     """Получает все новые сообщения для клиента, начиная с идентификатора last_id."""
+    if client_id in REQUEST_TRACKER:
+        if len(REQUEST_TRACKER.get(client_id)) > 0:
+            waiting: dict = REQUEST_TRACKER.get(client_id)
+            for ack in waiting:
+                if last_id >= waiting[ack].get('id'):
+                    lp.push(client_id,
+                            waiting[ack],
+                            {'service': 'ack', 'action': ack
+                             })
+                    REQUEST_TRACKER[client_id].pop(ack)
+                    logging.info(f'Confirm delivery {ack} ')
+
     messages = await lp.get_message(client_id, last_id)
     # print('processed LP')
     return {"client_id": client_id, "messages": messages}
@@ -117,8 +169,35 @@ async def post_update_operation(agent_id: str, data: Request):
 async def route(src: str, dst: str, service: str, data: Request):
     """Координирует запрос к адресу назначения."""
     data = await data.json()
-    return router.route(src, dst, service, data)
+    # request_id = generate_request_id()
+    response = router.route(src, dst, service, data)
+    if response.get('success'):
+        REQUEST_TRACKER[src][response['id']] = dst
+        return {'success': True, "status": "Message delivered"}
+    else:
+        return {'success': False, "status": "Failed to deliver", "error": response.get("msg")}
+
+    #
+    # if response.get("success"):
+    #     # Ждём подтверждения
+    #     REQUEST_TRACKER[request_id]["status"] = "delivered"
+    #     return {"status": "Message delivered"}
+    # else:
+    #     REQUEST_TRACKER[request_id]["status"] = "failed"
+    #     return {"status": "Failed to deliver", "error": response.get("msg")}
     # return {"client_id": agent_id, "messages": msg}
+
+
+# @app.post("/route/ack")
+# def acknowledge(request_id: int):
+#     """
+#     Подтверждение доставки от целевого клиента.
+#     """
+#     if request_id in REQUEST_TRACKER:
+#         lp.push(src=sender, dst=to, msg=data)
+#         REQUEST_TRACKER.pop(request_id, None)
+#         return {"status": "Acknowledged"}
+#     raise HTTPException(status_code=404, detail="Request ID not found")
 
 
 @app.get('/store/deploy', status_code=200)
@@ -172,4 +251,3 @@ async def startup_event():
 if __name__ == "__main__":
     uvicorn.run("main:app", host=BIND_WEB, port=PORT_WEB)
     # uvicorn.run("main:app", host=BIND_WEB, port=PORT_WEB, reload=True)
-
