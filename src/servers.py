@@ -117,19 +117,28 @@ class Router:
         else:
             return {'successfully': False, 'data': f'No service found: {service}'}
 
-    def route(self, src, dst, service, data):
-        # print('Routing', src, dst, service, data)
+    def route(self, src: str, dst: str, data):
+        """Routes messages between nodes and services"""
+        service = src.split('_')[0] if '_' in src else 'agent'
+
         if dst == self.node:
             return self.to_self_node(src, service, data)
 
-        elif self.domain in dst:
-            msg = {'action': data.get('action'), 'service': service}
-            result = self.push(src, dst, msg)
-            return {'success': True, 'data': result}
-
-        else:
+        if not self.domain in dst:
             logging.warning(f'No clients with this ID: {dst}')
             return {'success': False, 'data': f'No clients with this ID: {dst}'}
 
-    def push(self, sender, to, data):
-        return self.services.get('lp').push(src=sender, dst=to, msg=data)
+        msg = {
+            'action': data.get('action'),
+            'service': service,
+            'payload': data.get('payload', {})
+        }
+        result = self.push(src, dst, msg)
+        return {'success': True, 'data': result}
+
+    def push(self, sender: str, to: str, data: dict) -> dict:
+        """Pushes message to long polling service"""
+        lp_service = self.services.get('lp')
+        if not lp_service:
+            return {'success': False, 'data': 'Long polling service not available'}
+        return lp_service.push(src=sender, dst=to, msg=data)
