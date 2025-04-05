@@ -3,6 +3,8 @@ import logging
 from collections import defaultdict
 from typing import Dict, List
 
+import httpx
+
 
 class LongPollServer:
     def __init__(self):
@@ -95,6 +97,10 @@ class Router:
         self.domain = domain
         self.node = node
         self.neighbors: Dict[str, str] = defaultdict(str)
+        self.host_map = {
+            "db01.main_domain": "127.0.0.1:8001",
+            "logger.node1": "127.0.0.1:8002",
+        }
 
     def to_self_node(self, src, service, data):
         if service in self.services:
@@ -104,32 +110,70 @@ class Router:
             if act:
                 try:
                     # print(act)
-                    result = {'successfully': True, 'data': act()}
+                    return {'stat': {'host': True,
+                                     'service': True},
+                            'data': act()}
 
                 except Exception as ex:
                     print(ex)
-                    result = {'successfully': False, 'data': ex}
-                    return result
-                self.route(self.node, src, service, result)
-                return result
-            else:
-                return {'successfully': False, 'data': f'No action :{method} {data.get('action')}'}
-        else:
-            return {'successfully': False, 'data': f'No service found: {service}'}
+                    return {'stat': {'host': True,
+                                     'service': False},
+                            'data': ex}
 
-    def route(self, src, dst, service, data):
-        # print('Routing', src, dst, service, data)
-        if dst == self.node:
+                # self.route(self.node, src, result)
+                # return result
+            else:
+                return {'stat': {'host': True,
+                                 'service': False},
+                        'data': f'No action :{method} {data.get('action')}'}
+        else:
+            return {'stat': {'host': True,
+                             'service': False},
+                    'data': f'No service found: {service}'}
+
+    async def route(self, src: str, dst: str, data):
+        """
+        dst: service.node.domain
+        """
+        service = None
+        parts = dst.split('.')
+        print(parts, dst, self.node)
+
+        if len(parts) == 2:
+            # broadservice template
+            pass
+        else:
+            service = parts[0]
+
+        if self.node in dst:
+            print('to self node')
             return self.to_self_node(src, service, data)
 
         elif self.domain in dst:
-            msg = {'action': data.get('action'), 'service': service}
-            result = self.push(src, dst, msg)
-            return {'success': True, 'data': result}
+            print('sending')
+            # msg = {'action': data.get('action'), 'service': service}
+            result = await self.push(src, dst, data)
+            print(result)
+            return result
 
         else:
             logging.warning(f'No clients with this ID: {dst}')
             return {'success': False, 'data': f'No clients with this ID: {dst}'}
 
-    def push(self, sender, to, data):
-        return self.services.get('lp').push(src=sender, dst=to, msg=data)
+    async def push(self, src, dst, data):
+        host = await self.resolve_host(dst)
+        async with httpx.AsyncClient() as client:
+            try:
+                response = await client.post(f"http://{host}/route?src={src}&dst={dst}", data=data)
+                response.raise_for_status()
+                return response.json()
+            except Exception as ex:
+                return {'stat': {'host': False,
+                                 'service': False},
+                        'data': ex}
+        # return self.services.get('lp').push(src=sender, dst=to, msg=data)
+
+    # Простейший резолвер: в реальной системе будет искать через DHT или таблицу узлов
+    async def resolve_host(self, to_node: str) -> str:
+
+        return self.host_map.get(to_node, "127.0.0.1:8080")
