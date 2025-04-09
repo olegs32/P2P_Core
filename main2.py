@@ -23,7 +23,7 @@ CURRENT_VERSION = "1.2.0"
 # BIND_WEB = '127.0.0.1'
 # hostname = 'node1'
 BIND_WEB = '127.0.0.2'
-hostname = 'node1'
+hostname = 'node2'
 PORT_WEB = 8080
 DOMAIN = 'direct'
 REPO = 'repo'
@@ -52,8 +52,8 @@ class Test:
         data = {'0': 100, '1': 101, '2': 102}
         return data[arg]
 
-    def run(self, *args, **kwargs):
-        return f'running, {args}, {kwargs}'
+    def run(self):
+        return 'running'
 
 
 services = {'test': Test(), }
@@ -283,7 +283,6 @@ async def startup_event():
 
 
 if __name__ == "__main__":
-    # uvicorn.run("main:app", host=BIND_WEB, port=PORT_WEB)
-    uvicorn.run("main:app", host='127.0.0.1', port=PORT_WEB)
-
+    uvicorn.run("main2:app", host=BIND_WEB, port=PORT_WEB)
+    # uvicorn.run("main:app", host='127.0.0.2', port=PORT_WEB)
     # uvicorn.run("main:app", host=BIND_WEB, port=PORT_WEB, reload=True)

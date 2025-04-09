@@ -96,58 +96,76 @@ class Router:
         self.services = services
         self.domain = domain
         self.node = node
+
         self.neighbors: Dict[str, str] = defaultdict(str)
         self.host_map = {
-            "db01.main_domain": "127.0.0.1:8001",
-            "logger.node1": "127.0.0.1:8002",
+            "node1.direct": "127.0.0.1:8001",
+            "node2.direct": "127.0.0.1:8002",
         }
 
-    def to_self_node(self, src, service, data):
+    def to_self_node(self, src, dst, data):
+        service = dst.split('.')[2]
+        key = data['service']
+        print('service', service)
+        result = None
         if service in self.services:
             method = self.services[service]
             action = data.get('action', None)
-            act = getattr(method, action, None)
-            if act:
-                try:
-                    # print(act)
-                    return {'stat': {'host': True,
-                                     'service': True},
-                            'data': act()}
+            print(method, action, service)
 
-                except Exception as ex:
-                    print(ex)
-                    return {'stat': {'host': True,
-                                     'service': False},
-                            'data': ex}
+            # try:
+            if action == 'getattr':
+                act = getattr(method, key, None)
+                result = act()
+            elif action == 'getitem':
+                act = getattr(method, key, None)
+                result = act(data['data'])
+            elif action == 'call':
+                act = getattr(method, key, None)
+                result = act(*data['data']['args'], **data['data']['kwargs'])
 
-                # self.route(self.node, src, result)
-                # return result
-            else:
-                return {'stat': {'host': True,
-                                 'service': False},
-                        'data': f'No action :{method} {data.get('action')}'}
+            # if result:
+
+            # print(act)
+            return {'stat': {'host': True,
+                             'service': True},
+                    'data': result}
+
+            # except Exception as ex:
+            #     print(ex)
+            #     return {'stat': {'host': True,
+            #                      'service': False},
+            #             'data': ex}
+
+            # self.route(self.node, src, result)
+            # return result
         else:
             return {'stat': {'host': True,
                              'service': False},
-                    'data': f'No service found: {service}'}
+                    'data': f'No action: {service} {data.get('action')}'}
+
+        # else:
+        #     return {'stat': {'host': True,
+        #                  'service': False},
+        #         'data': f'No service found: {service}'}
 
     async def route(self, src: str, dst: str, data):
         """
         dst: service.node.domain
         """
-        service = None
-        parts = dst.split('.')
-        print(parts, dst, self.node)
-
-        if len(parts) == 2:
-            # broadservice template
-            pass
-        else:
-            service = parts[0]
+        # service = None
+        # parts = dst.split('.')
+        # print(parts, dst, self.node)
+        #
+        # if len(parts) == 2:
+        #     broadservice template
+        # pass
+        # else:
+        #     service = parts[0]
 
         if self.node in dst:
             print('to self node')
-            return self.to_self_node(src, service, data)
+            return self.to_self_node(src, dst, data)
 
         elif self.domain in dst:
             print('sending')
@@ -164,16 +182,14 @@ class Router:
         host = await self.resolve_host(dst)
         async with httpx.AsyncClient() as client:
             try:
-                response = await client.post(f"http://{host}/route?src={src}&dst={dst}", data=data)
+                response = await client.post(f"http://{host}/route?src={src}&dst={dst}", json=data)
                 response.raise_for_status()
                 return response.json()
-            except Exception as ex:
+            except Exception as ex:  # Connection refused
                 return {'stat': {'host': False,
                                  'service': False},
                         'data': ex}
-        # return self.services.get('lp').push(src=sender, dst=to, msg=data)
 
     # Простейший резолвер: в реальной системе будет искать через DHT или таблицу узлов
     async def resolve_host(self, to_node: str) -> str:
-
         return self.host_map.get(to_node, "127.0.0.1:8080")
