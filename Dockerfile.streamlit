@@ -1,0 +1,55 @@
+# Dockerfile for Streamlit Admin Interface
+
+FROM python:3.11-slim
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create non-root user
+RUN useradd -m -u 1000 -s /bin/bash streamlituser
+
+# Set working directory
+WORKDIR /app
+
+# Copy requirements
+COPY requirements.txt .
+
+# Install Python dependencies
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Create necessary directories
+RUN mkdir -p /app/admin /app/config /app/.streamlit && \
+    chown -R streamlituser:streamlituser /app
+
+# Copy Streamlit config
+COPY --chown=streamlituser:streamlituser .streamlit/config.toml /app/.streamlit/
+
+# Copy application code
+COPY --chown=streamlituser:streamlituser admin/ /app/admin/
+COPY --chown=streamlituser:streamlituser config/ /app/config/
+COPY --chown=streamlituser:streamlituser core/ /app/core/
+COPY --chown=streamlituser:streamlituser api/ /app/api/
+COPY --chown=streamlituser:streamlituser services/ /app/services/
+
+# Switch to non-root user
+USER streamlituser
+
+# Environment variables
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONPATH=/app
+ENV STREAMLIT_SERVER_PORT=8501
+ENV STREAMLIT_SERVER_ADDRESS=0.0.0.0
+ENV STREAMLIT_SERVER_HEADLESS=true
+ENV STREAMLIT_BROWSER_GATHER_USAGE_STATS=false
+
+# Expose Streamlit port
+EXPOSE 8501
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
+    CMD curl -f http://localhost:8501/_stcore/health || exit 1
+
+# Default command
+CMD ["streamlit", "run", "admin/app.py", "--server.port=8501", "--server.address=0.0.0.0"]
