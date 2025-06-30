@@ -55,8 +55,13 @@ class AsyncDHT:
     async def store(self, key: str, value: dict) -> bool:
         """Сохранение данных в DHT"""
         try:
+            # print("\n" * 10)
+            # print(self.server.storage.data)
             serialized_value = json.dumps(value)
             await self.server.set(key, serialized_value)
+            print(self.server.storage.data)
+            # print("\n")
+            # print('=============get', await self.server.get(key))
             self.local_data[key] = value
             logger.debug(f"Stored {key} in DHT")
             return True
@@ -67,6 +72,7 @@ class AsyncDHT:
     async def retrieve(self, key: str) -> Optional[dict]:
         """Получение данных из DHT"""
         try:
+            print(self.server.storage.data)
             value = await self.server.get(key)
             if value:
                 return json.loads(value)
@@ -77,14 +83,15 @@ class AsyncDHT:
 
     async def register_service(self, service_name: str, service_info: dict):
         """Регистрация сервиса в DHT"""
-        key = f"service:{service_name}:{self.node_id}"
-        service_data = {
-            "node_id": self.node_id,
+        key = f"{service_name}"
+        service_data = {self.node_id: {
             "host": self.host,
             "port": self.port,
             "timestamp": time.time(),
             **service_info
         }
+        }
+        print(f"Registering {key}")
         await self.store(key, service_data)
 
     async def discover_services(self, service_name: str) -> List[dict]:
@@ -92,8 +99,10 @@ class AsyncDHT:
         services = []
         # В реальной реализации нужен префиксный поиск
         # Пока используем простой подход
-        for i in range(10):  # Поиск в нескольких узлах
-            key = f"service:{service_name}:{i}"
+        for i in range(1):  # Поиск в нескольких узлах
+            # key = f"service:{service_name}:{i}"
+            key = f"{service_name}"
+            # key = f"{service_name}"
             service = await self.retrieve(key)
             if service:
                 services.append(service)

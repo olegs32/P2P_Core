@@ -15,7 +15,7 @@ class Settings(BaseSettings):
     # Node settings
     node_host: str = Field(default="127.0.0.1", env="NODE_HOST")
     node_port: int = Field(default=8000, env="NODE_PORT")
-    dht_port: int = Field(default=5678, env="DHT_PORT")
+    dht_port: int = Field(default=10000, env="DHT_PORT")
     node_name: Optional[str] = Field(default=None, env="NODE_NAME")
 
     # Bootstrap nodes
@@ -86,6 +86,8 @@ class Settings(BaseSettings):
     debug: bool = Field(default=False, env="DEBUG")
     profile_enabled: bool = Field(default=False, env="PROFILE_ENABLED")
 
+
+
     @validator("bootstrap_nodes", pre=True)
     def parse_bootstrap_nodes(cls, v):
         """Парсинг bootstrap узлов из строки"""
@@ -111,6 +113,7 @@ class Settings(BaseSettings):
         env_file = ".env"
         env_file_encoding = "utf-8"
         case_sensitive = False
+        extra = "allow"
 
 
 class AdminSettings(BaseSettings):
@@ -216,3 +219,5 @@ def get_service_settings() -> ServiceSettings:
 settings = get_settings()
 admin_settings = get_admin_settings()
 service_settings = get_service_settings()
+
+print(settings)

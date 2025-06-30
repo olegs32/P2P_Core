@@ -2,7 +2,7 @@ import asyncio
 import json
 import time
 from typing import Dict, List, Set, Optional, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, asdict
 import httpx
 from fastapi import FastAPI, WebSocket
 import logging
@@ -29,7 +29,7 @@ class P2PNode:
     def __init__(self, host: str = "127.0.0.1", port: int = 8000):
         self.host = host
         self.port = port
-        self.dht = AsyncDHT(host, port + 1000)  # DHT на другом порту
+        self.dht = AsyncDHT(host, port + 2000)  # DHT на другом порту
         self.auth = P2PAuth()
         self.peers: Dict[str, PeerInfo] = {}
         self.services: Dict[str, dict] = {}
@@ -69,6 +69,7 @@ class P2PNode:
             "status": "active"
         }
         await self.dht.register_service("p2p_node", node_info)
+        print(f"Node registered: {node_info}")
 
     async def _unregister_node(self):
         """Отмена регистрации узла"""
@@ -81,15 +82,20 @@ class P2PNode:
     async def _peer_discovery_loop(self):
         """Цикл обнаружения пиров"""
         while True:
-            try:
-                services = await self.dht.discover_services("p2p_node")
-                for service in services:
-                    if service["node_id"] != self.dht.node_id:
-                        await self._add_peer(service)
-                await asyncio.sleep(30)  # Поиск каждые 30 сек
-            except Exception as e:
-                logger.error(f"Peer discovery error: {e}")
-                await asyncio.sleep(60)
+            # try:
+            services = await self.dht.discover_services("p2p_node")
+            print('services', services)
+            for service in services:
+                for node in service:
+                    print('node', node, 'service', service)
+                    print(node, dict(service)[node], service, )
+                    if node != self.dht.node_id:
+                        await self._add_peer(node, service[node])
+                        logger.info(f'Peer detected: {node}')
+            await asyncio.sleep(30)  # Поиск каждые 30 сек
+            # except Exception as e:
+            #     logger.error(f"Peer discovery error: {e}")
+            #     await asyncio.sleep(60)
 
     async def _health_check_loop(self):
         """Цикл проверки здоровья пиров"""
@@ -122,9 +128,9 @@ class P2PNode:
                 logger.error(f"Task processor error: {e}")
                 await asyncio.sleep(5)
 
-    async def _add_peer(self, service_info: dict):
+    async def _add_peer(self, peer_id, service_info: dict):
         """Добавление пира"""
-        peer_id = service_info["node_id"]
+        # peer_id = service_info["node_id"]
         if peer_id not in self.peers:
             peer = PeerInfo(
                 node_id=peer_id,
