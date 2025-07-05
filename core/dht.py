@@ -24,7 +24,10 @@ class DHTNode:
 
 
 class AsyncDHT:
-    """Асинхронная DHT на основе Kademlia"""
+    """Асинхронная DHT на основе Kademlia с поддержкой префиксного поиска"""
+
+    IDX_NAMES = "index:service_names"
+    IDX_KEYS_TPL = "index:service:{service}:keys"
 
     def __init__(self, host: str = "127.0.0.1", port: int = 5678):
         self.host = host
@@ -35,11 +38,9 @@ class AsyncDHT:
         self.local_data = {}
 
     def _generate_node_id(self) -> str:
-        """Генерация уникального ID узла"""
         return hashlib.sha256(f"{self.host}:{self.port}:{time.time()}".encode()).hexdigest()
 
     async def start(self, bootstrap_nodes: List[Tuple[str, int]] = None):
-        """Запуск DHT узла"""
         await self.server.listen(self.port)
         logger.info(f"DHT node started on {self.host}:{self.port}")
 
@@ -49,70 +50,89 @@ class AsyncDHT:
             logger.info(f"Bootstrapped with {len(bootstrap_nodes)} nodes")
 
     async def stop(self):
-        """Остановка DHT узла"""
         self.server.stop()
 
-    async def store(self, key: str, value: dict) -> bool:
-        """Сохранение данных в DHT"""
+    async def store(self, key: str, value) -> bool:
         try:
-            # print("\n" * 10)
-            # print(self.server.storage.data)
-            serialized_value = json.dumps(value)
-            await self.server.set(key, serialized_value)
-            print(self.server.storage.data)
-            # print("\n")
-            # print('=============get', await self.server.get(key))
+            serial = json.dumps(value)
+            await self.server.set(key, serial)
             self.local_data[key] = value
-            logger.debug(f"Stored {key} in DHT")
+            logger.debug(f"Stored {key}")
             return True
         except Exception as e:
             logger.error(f"Failed to store {key}: {e}")
             return False
 
-    async def retrieve(self, key: str) -> Optional[dict]:
-        """Получение данных из DHT"""
+    async def retrieve(self, key: str):
         try:
-            print(self.server.storage.data)
-            value = await self.server.get(key)
-            if value:
-                return json.loads(value)
-            return None
+            val = await self.server.get(key)
+            return json.loads(val) if val else None
         except Exception as e:
             logger.error(f"Failed to retrieve {key}: {e}")
             return None
 
+    async def _update_index(self, idx_key: str, element) -> None:
+        """Подтягиваем список из DHT, добавляем элемент и заново сохраняем."""
+        lst = await self.retrieve(idx_key) or []
+        if element not in lst:
+            lst.append(element)
+            await self.store(idx_key, lst)
+
     async def register_service(self, service_name: str, service_info: dict):
-        """Регистрация сервиса в DHT"""
-        key = f"{service_name}"
-        service_data = {self.node_id: {
+        """Регистрируем сервис и обновляем оба индекса."""
+        key = f"service:{service_name}:{self.node_id}"
+        data = {
+            "node_id": self.node_id,
             "host": self.host,
             "port": self.port,
             "timestamp": time.time(),
             **service_info
         }
-        }
-        print(f"Registering {key}")
-        await self.store(key, service_data)
+        # 1) Сохраняем сам сервис
+        await self.store(key, data)
+
+        # 2) Обновляем список ключей для этого сервиса
+        idx_keys = self.IDX_KEYS_TPL.format(service=service_name)
+        await self._update_index(idx_keys, key)
+
+        # 3) Обновляем список всех имён сервисов
+        await self._update_index(self.IDX_NAMES, service_name)
 
     async def discover_services(self, service_name: str) -> List[dict]:
-        """Поиск сервисов в DHT"""
-        services = []
-        # В реальной реализации нужен префиксный поиск
-        # Пока используем простой подход
-        for i in range(1):  # Поиск в нескольких узлах
-            # key = f"service:{service_name}:{i}"
-            key = f"{service_name}"
-            # key = f"{service_name}"
-            service = await self.retrieve(key)
-            if service:
-                services.append(service)
-        return services
+        """Поиск всех инстансов сервисов по точному имени."""
+        result = []
+        idx_keys = self.IDX_KEYS_TPL.format(service=service_name)
+        keys = await self.retrieve(idx_keys) or []
+        for k in keys:
+            svc = await self.retrieve(k)
+            if svc:
+                result.append(svc)
+        return result
 
-    def get_node_info(self) -> DHTNode:
-        """Получение информации о текущем узле"""
-        return DHTNode(
-            node_id=self.node_id,
-            host=self.host,
-            port=self.port,
-            last_seen=time.time()
-        )
+    async def discover_services_mask(self, mask: str) -> List[dict]:
+        """Префиксный поиск по именам сервисов."""
+        found = []
+        # 1) Скачиваем все зарегистрированные имена
+        all_names = await self.retrieve(self.IDX_NAMES) or []
+
+        # 2) Фильтруем по префиксу
+        matched = [name for name in all_names if name.startswith(mask)]
+
+        # 3) Для каждого подходящего имени — достаём все его ключи и данные
+        for name in matched:
+            idx_keys = self.IDX_KEYS_TPL.format(service=name)
+            keys = await self.retrieve(idx_keys) or []
+            for k in keys:
+                svc = await self.retrieve(k)
+                if svc:
+                    found.append(svc)
+        return found
+
+
+def get_node_info(self) -> DHTNode:
+    return DHTNode(
+        node_id=self.node_id,
+        host=self.host,
+        port=self.port,
+        last_seen=time.time()
+    )
