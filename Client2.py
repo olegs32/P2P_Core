@@ -247,7 +247,7 @@ class LongPollClient:
                             # params = message.get("msg").get("params", {})
 
                             # Проверяем, существует ли метод в CoreClient с таким именем
-                            action_method = getattr(client, action, None)
+                            action_method = getattr(agent, action, None)
 
                             if action_method is not None:  # Если метод найден
                                 service = message.get("msg").get("service", '')
@@ -257,11 +257,11 @@ class LongPollClient:
                                     logging.info(f"Executing {action} for service {service}")
                                     result = await action_method(service)
                                     now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                                    await client.post_state(action, f'{now} {result}')
+                                    await agent.post_state(action, f'{now} {result}')
                             else:
                                 logging.warning(f"Unknown action: {action}")
                                 now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                                await client.post_state(action, f'{now} - Unknown action: {action}')
+                                await agent.post_state(action, f'{now} - Unknown action: {action}')
 
                     await asyncio.sleep(5)
                 except httpx.RequestError as e:
@@ -269,20 +269,20 @@ class LongPollClient:
                     await asyncio.sleep(5)  # Пауза перед повторным запросом
 
 
-client = CoreClient(NODE_SERVER)
+agent = CoreClient(NODE_SERVER)
 app = FastAPI()
-lp_client = LongPollClient(client_id=client.id, server_url=client.server)
+lp_client = LongPollClient(client_id=agent.id, server_url=agent.server)
 
 
 @app.post("/route")
 async def route(src: str, dst: str, service: str, data: Request):
     """Координирует запрос к адресу назначения."""
     # data = data
-    if dst == client.id:
+    if dst == agent.id:
         resp = 'Routed to Node'
     else:
         async with httpx.AsyncClient() as cli:
-            resp = await cli.post(f'{client.server}/route?src={src}&dst={dst}&service={service}', data=data)
+            resp = await cli.post(f'{agent.server}/route?src={src}&dst={dst}&service={service}', data=data)
     return resp
     # return {"client_id": agent_id, "messages": msg}
 
@@ -295,8 +295,8 @@ async def startup_event():
 
 
 async def prepare():
-    await client.auth()
-    await client.scan_services()
+    await agent.auth()
+    await agent.scan_services()
 
 
 # async def main():
