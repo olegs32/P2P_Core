@@ -1,0 +1,102 @@
+# Streamlit configuration file
+
+[theme]
+# Primary color
+primaryColor = "#1f77b4"
+
+# Background color for the main content area
+backgroundColor = "#0e1117"
+
+# Background color for sidebar and most interactive widgets
+secondaryBackgroundColor = "#262730"
+
+# Color used for almost all text
+textColor = "#fafafa"
+
+# Font family for all text in the app
+font = "sans serif"
+
+[server]
+# Port to use for the server
+port = 8501
+
+# Address to use for the server
+address = "0.0.0.0"
+
+# If false, will attempt to open a browser window on start
+headless = true
+
+# Automatically rerun script when the file is modified
+runOnSave = true
+
+# Max size, in megabytes, for files uploaded with the file_uploader
+maxUploadSize = 200
+
+# Max size, in megabytes, of messages that can be sent via the WebSocket connection
+maxMessageSize = 200
+
+# Enables support for Cross-Origin Request Sharing (CORS) protection
+enableCORS = true
+
+# Enables support for websocket compression
+enableWebsocketCompression = true
+
+[browser]
+# Internet address where users should point their browsers to connect to the app
+serverAddress = "localhost"
+
+# Port where users should point their browsers to connect to the app
+serverPort = 8501
+
+# Whether to send usage statistics to Streamlit
+gatherUsageStats = false
+
+[ui]
+# Whether to hide the Streamlit header and footer
+hideTopBar = false
+
+# Whether to hide the sidebar navigation
+hideSidebarNav = false
+
+[runner]
+# Allows you to type a variable or string by itself in a single line of Python code to write it to the app
+magicEnabled = true
+
+# Install a Python tracer to allow you to stop or pause your script at any point
+installTracer = false
+
+# Sets the MPLBACKEND environment variable to Agg inside Streamlit to prevent Python crashing
+fixMatplotlib = true
+
+# Run the Python Garbage Collector after each script execution
+postScriptGC = true
+
+# Handle script reruns for custom components
+fastReruns = true
+
+[logger]
+# Level of logging
+level = "INFO"
+
+# String format for logging messages
+messageFormat = "%(asctime)s %(message)s"
+
+[client]
+# Whether to enable st.cache
+caching = true
+
+# If false, makes your Streamlit script not draw to a Streamlit app
+displayEnabled = true
+
+# Controls whether uncaught app exceptions are displayed in the browser
+showErrorDetails = true
+
+# Change the visibility of items in the toolbar
+toolbarMode = "auto"
+
+[deprecation]
+# Set to false to disable the deprecation warning for the file uploader encoding
+showfileUploaderEncoding = false
+
+# Set to false to disable the deprecation warning for using the global pyplot instance
+showPyplotGlobalUse = false
