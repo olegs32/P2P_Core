@@ -278,17 +278,16 @@ class P2PAdminSystem:
 
 # Специальный клиент без HTTP сервера
 class P2PClient:
-    """Облегченный P2P клиент без HTTP сервера"""
+    """Облегченный P2P клиент с ИСПРАВЛЕННЫМ таргетингом узлов"""
 
     def __init__(self, client_id: str = "p2p-client"):
-        self.node_index = 0
         self.client_id = client_id
         self.logger = logging.getLogger(f"P2PClient.{client_id}")
 
         # Создаем только транспортный уровень
         transport_config = TransportConfig()
         transport_config.connect_timeout = 15.0
-        transport_config.read_timeout = 90.0  # Увеличиваем до 90 секунд
+        transport_config.read_timeout = 90.0
         self.transport = P2PTransportLayer(transport_config)
 
         self.connected_nodes = []
@@ -300,7 +299,6 @@ class P2PClient:
 
         for coord_addr in coordinator_addresses:
             try:
-                # Проверяем доступность координатора
                 coord_host, coord_port = coord_addr.split(':')
                 health_url = f"http://{coord_host}:{coord_port}/health"
 
@@ -338,95 +336,152 @@ class P2PClient:
             self.token = data["access_token"]
             self.logger.info("✅ Токен аутентификации получен")
 
-    async def rpc_call(self, method_path: str, params: dict = None, target_role: str = None, timeout: int = 90) -> dict:
-        """Выполнение RPC вызова с детальной отладкой"""
-        if not self.token:
-            raise RuntimeError("Не аутентифицирован")
-
-        if params is None:
-            params = {}
-
-        self.logger.debug(f"Начинаем RPC вызов: {method_path} с параметрами: {params}")
-
-        # Получаем список доступных узлов
+    async def _get_available_nodes(self) -> List[Dict[str, Any]]:
+        """Получение списка доступных узлов"""
         coord_addr = self.connected_nodes[0]
         coord_host, coord_port = coord_addr.split(':')
         nodes_url = f"http://{coord_host}:{coord_port}/cluster/nodes"
 
         headers = {"Authorization": f"Bearer {self.token}"}
 
-        try:
-            async with httpx.AsyncClient(timeout=httpx.Timeout(timeout)) as client:
-                # Получаем список узлов
-                self.logger.debug(f"Получение списка узлов от {nodes_url}")
-                nodes_response = await client.get(nodes_url, headers=headers)
-                if nodes_response.status_code != 200:
-                    raise RuntimeError(
-                        f"Не удалось получить список узлов: {nodes_response.status_code} - {nodes_response.text}")
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            nodes_response = await client.get(nodes_url, headers=headers)
+            if nodes_response.status_code != 200:
+                raise RuntimeError(f"Не удалось получить список узлов: {nodes_response.status_code}")
 
-                nodes_data = nodes_response.json()
-                self.logger.debug(f"Получено узлов: {len(nodes_data.get('nodes', []))}")
+            nodes_data = nodes_response.json()
+            return [
+                node for node in nodes_data["nodes"]
+                if node["status"] == "alive" and node["port"] > 0
+            ]
 
-                available_nodes = [
-                    node for node in nodes_data["nodes"]
-                    if node["status"] == "alive" and
-                       (not target_role or node["role"] == target_role) and
-                       node["port"] > 0  # Исключаем клиентов
+    async def _select_target_node(self, target_node_name: str = None, target_role: str = None) -> Dict[str, Any]:
+        """ИСПРАВЛЕННЫЙ выбор целевого узла"""
+        available_nodes = await self._get_available_nodes()
+
+        print(f"🎯 Node selection:")
+        print(f"   Available nodes: {[n['node_id'] for n in available_nodes]}")
+        print(f"   Target node name: {target_node_name}")
+        print(f"   Target role: {target_role}")
+
+        # Если указано конкретное имя узла
+        if target_node_name:
+            # Ищем точное совпадение
+            exact_match = [node for node in available_nodes if node["node_id"] == target_node_name]
+            if exact_match:
+                print(f"   → Found exact match: {exact_match[0]['node_id']}")
+                return exact_match[0]
+
+            # Ищем частичное совпадение (например "coordinator" найдет "coordinator-12345")
+            partial_matches = [
+                node for node in available_nodes
+                if target_node_name.lower() in node["node_id"].lower()
+            ]
+            if partial_matches:
+                print(f"   → Found partial match: {partial_matches[0]['node_id']}")
+                return partial_matches[0]
+
+            # Ищем по роли, если имя похоже на роль
+            if target_node_name.lower() in ['coordinator', 'worker']:
+                role_matches = [
+                    node for node in available_nodes
+                    if node["role"] == target_node_name.lower()
                 ]
+                if role_matches:
+                    print(f"   → Found by role: {role_matches[0]['node_id']}")
+                    return role_matches[0]
 
-                self.logger.debug(f"Доступных узлов для RPC: {len(available_nodes)}")
+            raise RuntimeError(f"Node '{target_node_name}' not found")
 
-                if not available_nodes:
-                    raise RuntimeError(f"Нет доступных узлов для RPC вызова (роль: {target_role})")
+        # Если указана роль
+        if target_role:
+            role_nodes = [node for node in available_nodes if node["role"] == target_role]
+            if role_nodes:
+                print(f"   → Selected by role: {role_nodes[0]['node_id']}")
+                return role_nodes[0]
 
-                # Выбираем первый доступный узел
-                target_node = random.choice(available_nodes)
-                # target_node = available_nodes[self.node_index % len(available_nodes)]
-                # self.node_index += 1
-                rpc_url = f"http://{target_node['address']}:{target_node['port']}/rpc/{method_path}"
+        # По умолчанию - первый доступный
+        if available_nodes:
+            print(f"   → Default selection: {available_nodes[0]['node_id']}")
+            return available_nodes[0]
 
-                # Выполняем RPC вызов
-                rpc_payload = {
-                    "method": method_path.split('/')[-1],
-                    "params": params,
-                    "id": f"client_req_{datetime.now().timestamp()}"
-                }
+        raise RuntimeError("No available nodes found")
 
-                self.logger.debug(f"RPC вызов к {target_node['node_id']} ({rpc_url})")
-                self.logger.debug(f"Payload: {rpc_payload}")
+    async def rpc_call(self, method_path: str, params: dict = None, target_role: str = None, timeout: int = 90) -> dict:
+        """RPC вызов с отладкой"""
 
-                # Увеличиваем таймаут для RPC вызова
-                rpc_response = await client.post(
-                    rpc_url,
-                    json=rpc_payload,
-                    headers=headers,
-                    timeout=httpx.Timeout(timeout)
-                )
+        print(f"🔍 DEBUG RPC_CALL START:")
+        print(f"   method_path: {method_path}")
+        print(f"   params: {params}")
+        print(f"   target_role: {target_role}")
 
-                self.logger.debug(f"RPC ответ: статус {rpc_response.status_code}")
+        # Извлекаем target_node из параметров
+        target_node_name = params.pop('_target_node', None) if params else None
+        print(f"   extracted target_node_name: {target_node_name}")
+
+        # ВОТ ЗДЕСЬ ДОБАВЬТЕ ПРОВЕРКУ:
+        if target_node_name:
+            print(f"🎯 ATTEMPTING TO SELECT SPECIFIC NODE: {target_node_name}")
+        if not self.token:
+            raise RuntimeError("Не аутентифицирован")
+
+        if params is None:
+            params = {}
+
+        # Извлекаем target_node из параметров
+        target_node_name = params.pop('_target_node', None)
+        target_domain = params.pop('_target_domain', None)  # Пока не используем, но извлекаем
+
+        self.logger.debug(f"RPC Call: {method_path}")
+        self.logger.debug(f"Target node: {target_node_name}")
+        self.logger.debug(f"Target role: {target_role}")
+        self.logger.debug(f"Params: {params}")
+
+        try:
+            # Выбираем целевой узел
+            target_node = await self._select_target_node(target_node_name, target_role)
+
+            # Формируем ПРАВИЛЬНЫЙ URL
+            rpc_url = f"http://{target_node['address']}:{target_node['port']}/rpc/{method_path}"
+
+            print(f"📍 FINAL TARGET NODE: {target_node.get('node_id', 'UNKNOWN')}")
+            print(f"🌐 FORMING URL: http://{target_node['address']}:{target_node['port']}/rpc/{method_path}")
+
+            # Подготавливаем RPC payload
+            rpc_payload = {
+                "method": method_path.split('/')[-1],  # Только имя метода!
+                "params": params,
+                "id": f"client_req_{datetime.now().timestamp()}"
+            }
+
+            headers = {"Authorization": f"Bearer {self.token}"}
+
+            print(f"🚀 RPC Call Details:")
+            print(f"   Target: {target_node['node_id']} ({target_node['role']})")
+            print(f"   URL: {rpc_url}")
+            print(f"   Method: {rpc_payload['method']}")
+
+            async with httpx.AsyncClient(timeout=httpx.Timeout(timeout)) as client:
+                rpc_response = await client.post(rpc_url, json=rpc_payload, headers=headers)
 
                 if rpc_response.status_code != 200:
                     error_text = rpc_response.text
-                    self.logger.error(f"RPC вызов неудачен: {rpc_response.status_code} - {error_text}")
-                    raise RuntimeError(f"RPC вызов неудачен: {rpc_response.status_code} - {error_text}")
+                    self.logger.error(f"RPC failed: {rpc_response.status_code} - {error_text}")
+                    raise RuntimeError(f"RPC failed: {rpc_response.status_code} - {error_text}")
 
                 result = rpc_response.json()
-                self.logger.debug(f"RPC результат: {result}")
 
                 if result.get("error"):
-                    raise RuntimeError(f"RPC ошибка: {result['error']}")
+                    raise RuntimeError(f"RPC error: {result['error']}")
 
                 return result.get("result")
 
-        except httpx.TimeoutException as e:
-            self.logger.error(f"Таймаут RPC вызова после {timeout}с: {e}")
-            raise RuntimeError(f"Таймаут RPC вызова после {timeout}с")
         except Exception as e:
-            self.logger.error(f"Ошибка RPC вызова: {e}")
-            raise RuntimeError(f"Ошибка RPC вызова: {e}")
+            self.logger.error(f"RPC call failed: {e}")
+            raise RuntimeError(f"RPC call failed: {e}")
 
     async def broadcast_call(self, method_path: str, params: dict = None, target_role: str = None) -> List[dict]:
-        """Широковещательный RPC вызов"""
+        """Широковещательный RPC вызов БЕЗ ИЗМЕНЕНИЙ"""
         if not self.token:
             raise RuntimeError("Не аутентифицирован")
 
