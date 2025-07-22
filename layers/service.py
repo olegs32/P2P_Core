@@ -286,12 +286,19 @@ class P2PServiceLayer:
             with open('docs/p2p_admin_dashboard.html', 'r', encoding='utf-8') as f:
                 return HTMLResponse(content=f.read())
 
+        # ЗАМЕНИТЕ существующий @self.app.post("/admin/broadcast") на:
+
         @self.app.post("/admin/broadcast")
         async def admin_broadcast(
                 broadcast_request: Dict[str, Any],
                 node_id: str = Depends(self.security)
         ):
-            """Административный широковещательный запрос"""
+            """УЛУЧШЕННЫЙ Административный широковещательный запрос с поддержкой доменов"""
+
+            # Debug информация
+            print("🚀 BROADCAST DEBUG: New broadcast endpoint called!")
+            print(f"   Request: {broadcast_request}")
+
             method_path = broadcast_request.get('method')
             params = broadcast_request.get('params', {})
             target_role = broadcast_request.get('target_role')
@@ -299,14 +306,32 @@ class P2PServiceLayer:
             if not method_path:
                 raise HTTPException(status_code=400, detail="method is required")
 
-            # Создание RPC запроса
+            # НОВАЯ ЛОГИКА: Извлекаем домен из параметров
+            target_domain = params.get('_target_domain')
+
+            if target_domain:
+                print(f"🌐 Domain filter detected: {target_domain}")
+
+            # Убираем служебные параметры перед отправкой методу
+            clean_params = {k: v for k, v in params.items() if not k.startswith('_target_')}
+
+            print(f"🧹 Original params: {params}")
+            print(f"🧹 Cleaned params: {clean_params}")
+
+            # Создание RPC запроса с ЧИСТЫМИ параметрами
             rpc_request = RPCRequest(
                 method=method_path.split('/')[-1],
-                params=params,
+                params=clean_params,  # ← Используем очищенные параметры!
                 id=f"broadcast_{uuid.uuid4()}"
             )
 
             headers = {"Authorization": f"Bearer {self._generate_internal_token(node_id)}"}
+
+            # TODO: Здесь можно добавить фильтрацию по домену
+            # Пока отправляем ко всем узлам с target_role
+            print(f"📡 Broadcasting method '{method_path}' to role '{target_role}'")
+            if target_domain:
+                print(f"   Note: Domain filtering '{target_domain}' not yet implemented in network layer")
 
             results = await self.network.broadcast_request(
                 endpoint=f"/rpc/{method_path}",
@@ -315,11 +340,16 @@ class P2PServiceLayer:
                 target_role=target_role
             )
 
+            print(f"📊 Broadcast results: {len(results)} responses")
+            success_count = len([r for r in results if r.get('success')])
+            print(f"   Successful: {success_count}/{len(results)}")
+
             return {
                 "broadcast_id": rpc_request.id,
                 "results": results,
-                "success_count": len([r for r in results if r.get('success')]),
-                "total_count": len(results)
+                "success_count": success_count,
+                "total_count": len(results),
+                "target_domain": target_domain  # Добавляем в ответ для debug
             }
 
         @self.app.get("/debug/registry")

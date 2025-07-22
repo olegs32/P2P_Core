@@ -103,32 +103,42 @@ class SimpleMethodProxy:
         if args:
             params['args'] = list(args)
 
-        # Добавляем таргетинг
+        # Извлекаем служебные параметры для роутинга (НЕ передаем в метод!)
+        routing_params = {}
         if self.node_name:
-            params['_target_node'] = self.node_name
+            routing_params['_target_node'] = self.node_name
         if self.domain_name:
-            params['_target_domain'] = self.domain_name
+            routing_params['_target_domain'] = self.domain_name
 
         # Формируем правильный путь метода
         method_path = f"{self.service_name}/{self.method_name}"
 
         print(f"   Method path: {method_path}")
-        print(f"   Params: {params}")
+        print(f"   User params: {params}")
+        print(f"   Routing params: {routing_params}")
 
         # Выбираем тип вызова
         if self.node_name:
             print(f"   → Using RPC call to specific node")
+            # Для RPC добавляем routing параметры к user параметрам
+            all_params = {**params, **routing_params}
             result = await self.client.rpc_call(
                 method_path=method_path,
-                params=params,
+                params=all_params,
                 target_role=None  # Не ограничиваем по роли, ищем по имени
             )
             return result
         else:
             print(f"   → Using broadcast call")
+            # Для broadcast добавляем домен в params для координатора
+            broadcast_params = dict(params)
+            if self.domain_name:
+                broadcast_params['_target_domain'] = self.domain_name
+                print(f"   → Adding domain filter: {self.domain_name}")
+
             results = await self.client.broadcast_call(
                 method_path=method_path,
-                params=params,
+                params=broadcast_params,  # Включаем домен для координатора
                 target_role="worker"
             )
             return results
@@ -205,5 +215,59 @@ async def simple_logic():
         await client.close()
 
 
+async def domain_calls():
+    """Тест доменных вызовов"""
+
+    try:
+        from p2p_admin import P2PClient
+    except ImportError:
+        from main import P2PClient
+
+    client = P2PClient("domain-test")
+
+    try:
+        await client.connect(["127.0.0.1:8001"])
+        await client.authenticate()
+
+        simple = create_simple_universal_client(client)
+
+        print("🌐 Domain Calls Test")
+        print("=" * 50)
+
+        print("\n🔍 Testing: simple.system.local_domain.get_system_metrics()")
+
+        print("Step 1: simple.system")
+        system = simple.system
+
+        print("Step 2: simple.system.local_domain")
+        domain = system.local_domain
+
+        print("Step 3: simple.system.local_domain.get_system_metrics")
+        method = domain.get_system_metrics
+
+        print("Step 4: Execute...")
+        result = await method()
+        print(result)
+
+        print(await simple.system.coordinator.get_system_info())
+
+        print(f"✅ Domain result: {len(result)} responses")
+        for r in result:
+            if r.get('success'):
+                node_id = r.get('node_id', 'unknown')
+                print(f"   📍 {node_id}: OK")
+            else:
+                print(f"   ❌ {r.get('node_id', 'unknown')}: {r.get('error', 'Unknown error')}")
+
+    except Exception as e:
+        print(f"❌ Domain test failed: {e}")
+        import traceback
+        traceback.print_exc()
+    finally:
+        await client.close()
+
+
 if __name__ == "__main__":
-    asyncio.run(simple_logic())
+    import asyncio
+
+    asyncio.run(domain_calls())
