@@ -1,17 +1,15 @@
 #!/usr/bin/env python3
 """
-P2P Administrative System - Main Entry Point
-Легковесная асинхронная P2P система для администрирования локальных сервисов
-
-Использование:
-    python main.py coordinator                  # Запуск координатора
-    python main.py worker                       # Запуск рабочего узла
-    python main.py client                       # Демонстрация клиента
-    python main.py test                         # Тестовый кластер
+P2P Administrative System - Main Entry Point (FIXED VERSION)
+Исправления:
+- Клиент не регистрируется в gossip как сервер
+- Увеличены таймауты для стабильности
+- Улучшена обработка ошибок RPC
 """
 
 import asyncio
 import os
+import random
 import sys
 import signal
 import argparse
@@ -105,6 +103,9 @@ class P2PAdminSystem:
 
         # Инициализация компонентов
         transport_config = TransportConfig()
+        # Увеличиваем таймауты для стабильности
+        transport_config.connect_timeout = 15.0
+        transport_config.read_timeout = 45.0
         self.transport = P2PTransportLayer(transport_config)
 
         self.network = P2PNetworkLayer(
@@ -114,6 +115,10 @@ class P2PAdminSystem:
             port,
             coordinator_mode
         )
+
+        # Увеличиваем интервалы gossip для стабильности
+        self.network.gossip.gossip_interval = 15  # было 10
+        self.network.gossip.failure_timeout = 60  # было 30
 
         # Кеш с возможностью fallback
         cache_config = CacheConfig(redis_url=redis_url, redis_enabled=True)
@@ -182,8 +187,8 @@ class P2PAdminSystem:
             if join_addresses:
                 self.logger.info(f"Подключение к координаторам: {', '.join(join_addresses)}")
 
-            # Небольшая пауза для стабилизации
-            await asyncio.sleep(1)
+            # Увеличиваем паузу для стабилизации
+            await asyncio.sleep(3)
 
             # Вывод статистики кластера
             status = self.network.get_cluster_status()
@@ -271,6 +276,184 @@ class P2PAdminSystem:
             await self.stop()
 
 
+# Специальный клиент без HTTP сервера
+class P2PClient:
+    """Облегченный P2P клиент без HTTP сервера"""
+
+    def __init__(self, client_id: str = "p2p-client"):
+        self.node_index = 0
+        self.client_id = client_id
+        self.logger = logging.getLogger(f"P2PClient.{client_id}")
+
+        # Создаем только транспортный уровень
+        transport_config = TransportConfig()
+        transport_config.connect_timeout = 15.0
+        transport_config.read_timeout = 90.0  # Увеличиваем до 90 секунд
+        self.transport = P2PTransportLayer(transport_config)
+
+        self.connected_nodes = []
+        self.token = None
+
+    async def connect(self, coordinator_addresses: List[str]):
+        """Подключение к кластеру через прямые HTTP вызовы"""
+        self.logger.info(f"Подключение к кластеру...")
+
+        for coord_addr in coordinator_addresses:
+            try:
+                # Проверяем доступность координатора
+                coord_host, coord_port = coord_addr.split(':')
+                health_url = f"http://{coord_host}:{coord_port}/health"
+
+                async with httpx.AsyncClient(timeout=10.0) as client:
+                    response = await client.get(health_url)
+                    if response.status_code == 200:
+                        self.connected_nodes.append(coord_addr)
+                        self.logger.info(f"✅ Подключен к координатору: {coord_addr}")
+                        break
+            except Exception as e:
+                self.logger.warning(f"❌ Не удалось подключиться к {coord_addr}: {e}")
+
+        if not self.connected_nodes:
+            raise RuntimeError("Не удалось подключиться ни к одному координатору")
+
+    async def authenticate(self):
+        """Получение токена аутентификации"""
+        if not self.connected_nodes:
+            raise RuntimeError("Не подключен к кластеру")
+
+        coord_addr = self.connected_nodes[0]
+        coord_host, coord_port = coord_addr.split(':')
+        token_url = f"http://{coord_host}:{coord_port}/auth/token"
+
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.post(
+                token_url,
+                json={"node_id": self.client_id}
+            )
+
+            if response.status_code != 200:
+                raise RuntimeError(f"Ошибка аутентификации: {response.status_code}")
+
+            data = response.json()
+            self.token = data["access_token"]
+            self.logger.info("✅ Токен аутентификации получен")
+
+    async def rpc_call(self, method_path: str, params: dict = None, target_role: str = None, timeout: int = 90) -> dict:
+        """Выполнение RPC вызова с детальной отладкой"""
+        if not self.token:
+            raise RuntimeError("Не аутентифицирован")
+
+        if params is None:
+            params = {}
+
+        self.logger.debug(f"Начинаем RPC вызов: {method_path} с параметрами: {params}")
+
+        # Получаем список доступных узлов
+        coord_addr = self.connected_nodes[0]
+        coord_host, coord_port = coord_addr.split(':')
+        nodes_url = f"http://{coord_host}:{coord_port}/cluster/nodes"
+
+        headers = {"Authorization": f"Bearer {self.token}"}
+
+        try:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(timeout)) as client:
+                # Получаем список узлов
+                self.logger.debug(f"Получение списка узлов от {nodes_url}")
+                nodes_response = await client.get(nodes_url, headers=headers)
+                if nodes_response.status_code != 200:
+                    raise RuntimeError(
+                        f"Не удалось получить список узлов: {nodes_response.status_code} - {nodes_response.text}")
+
+                nodes_data = nodes_response.json()
+                self.logger.debug(f"Получено узлов: {len(nodes_data.get('nodes', []))}")
+
+                available_nodes = [
+                    node for node in nodes_data["nodes"]
+                    if node["status"] == "alive" and
+                       (not target_role or node["role"] == target_role) and
+                       node["port"] > 0  # Исключаем клиентов
+                ]
+
+                self.logger.debug(f"Доступных узлов для RPC: {len(available_nodes)}")
+
+                if not available_nodes:
+                    raise RuntimeError(f"Нет доступных узлов для RPC вызова (роль: {target_role})")
+
+                # Выбираем первый доступный узел
+                target_node = random.choice(available_nodes)
+                # target_node = available_nodes[self.node_index % len(available_nodes)]
+                # self.node_index += 1
+                rpc_url = f"http://{target_node['address']}:{target_node['port']}/rpc/{method_path}"
+
+                # Выполняем RPC вызов
+                rpc_payload = {
+                    "method": method_path.split('/')[-1],
+                    "params": params,
+                    "id": f"client_req_{datetime.now().timestamp()}"
+                }
+
+                self.logger.debug(f"RPC вызов к {target_node['node_id']} ({rpc_url})")
+                self.logger.debug(f"Payload: {rpc_payload}")
+
+                # Увеличиваем таймаут для RPC вызова
+                rpc_response = await client.post(
+                    rpc_url,
+                    json=rpc_payload,
+                    headers=headers,
+                    timeout=httpx.Timeout(timeout)
+                )
+
+                self.logger.debug(f"RPC ответ: статус {rpc_response.status_code}")
+
+                if rpc_response.status_code != 200:
+                    error_text = rpc_response.text
+                    self.logger.error(f"RPC вызов неудачен: {rpc_response.status_code} - {error_text}")
+                    raise RuntimeError(f"RPC вызов неудачен: {rpc_response.status_code} - {error_text}")
+
+                result = rpc_response.json()
+                self.logger.debug(f"RPC результат: {result}")
+
+                if result.get("error"):
+                    raise RuntimeError(f"RPC ошибка: {result['error']}")
+
+                return result.get("result")
+
+        except httpx.TimeoutException as e:
+            self.logger.error(f"Таймаут RPC вызова после {timeout}с: {e}")
+            raise RuntimeError(f"Таймаут RPC вызова после {timeout}с")
+        except Exception as e:
+            self.logger.error(f"Ошибка RPC вызова: {e}")
+            raise RuntimeError(f"Ошибка RPC вызова: {e}")
+
+    async def broadcast_call(self, method_path: str, params: dict = None, target_role: str = None) -> List[dict]:
+        """Широковещательный RPC вызов"""
+        if not self.token:
+            raise RuntimeError("Не аутентифицирован")
+
+        coord_addr = self.connected_nodes[0]
+        coord_host, coord_port = coord_addr.split(':')
+        broadcast_url = f"http://{coord_host}:{coord_port}/admin/broadcast"
+
+        headers = {"Authorization": f"Bearer {self.token}"}
+        broadcast_payload = {
+            "method": method_path,
+            "params": params or {},
+            "target_role": target_role
+        }
+
+        async with httpx.AsyncClient(timeout=90.0) as client:
+            response = await client.post(broadcast_url, json=broadcast_payload, headers=headers)
+
+            if response.status_code != 200:
+                raise RuntimeError(f"Broadcast неудачен: {response.status_code}")
+
+            return response.json().get("results", [])
+
+    async def close(self):
+        """Закрытие клиента"""
+        await self.transport.close_all()
+        self.logger.info("P2P клиент закрыт")
+
 async def run_coordinator(node_id: str, port: int, bind_address: str, redis_url: str):
     """Запуск координатора"""
     logger = logging.getLogger("Coordinator")
@@ -328,179 +511,157 @@ async def run_worker(node_id: str, port: int, bind_address: str,
 
 
 async def run_client_demo(coordinator_address: str, verbose: bool = False):
-    """Демонстрация работы клиента"""
+    """Исправленная демонстрация работы клиента"""
     logger = logging.getLogger("ClientDemo")
 
     logger.info("P2P Client Demo - подключение к кластеру...")
 
-    # Создание клиентских компонентов
-    transport = P2PTransportLayer(TransportConfig())
-    network = P2PNetworkLayer(transport, "client-demo", "127.0.0.1", 0)
+    # Используем новый облегченный клиент
+    client = P2PClient("client-demo")
 
     try:
-        # Подключение к сети
-        await network.start(join_addresses=[coordinator_address])
-        await asyncio.sleep(2)  # Время для обнаружения узлов
+        # Подключение и аутентификация
+        await client.connect([coordinator_address])
+        await client.authenticate()
 
-        # Получение токена аутентификации
-        coord_host, coord_port = coordinator_address.split(':')
-        token_url = f"http://{coord_host}:{coord_port}/auth/token"
+        print("\n" + "=" * 60)
+        print("🔬 ДЕМОНСТРАЦИЯ RPC ВЫЗОВОВ P2P СИСТЕМЫ")
+        print("=" * 60)
 
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            token_response = await client.post(
-                token_url,
-                json={"node_id": "client-demo"}
-            )
+        # 1. Получение информации о системе
+        print("\n📊 1. Получение информации о системе...")
+        try:
+            system_info = await client.rpc_call("system/get_system_info")
+            print(f"   ✅ Hostname: {system_info.get('hostname')}")
+            print(f"   ✅ Platform: {system_info.get('platform')}")
+            print(f"   ✅ CPU Count: {system_info.get('cpu_count')}")
+            print(f"   ✅ Memory: {system_info.get('memory_total', 0) // (1024 ** 3)} GB")
+            print(f"   ✅ Architecture: {system_info.get('architecture')}")
+        except Exception as e:
+            print(f"   ❌ Ошибка: {e}")
 
-            if token_response.status_code != 200:
-                logger.error(f"Не удалось получить токен: {token_response.status_code}")
-                return
+        # 2. Получение метрик системы
+        print("\n📈 2. Получение текущих метрик производительности...")
+        try:
+            metrics = await client.rpc_call("system/get_system_metrics")
+            memory = metrics.get('memory', {})
+            load_avg = metrics.get('load_average', [0, 0, 0])
+            print(f"   ✅ CPU Usage: {metrics.get('cpu_percent', 0):.1f}%")
+            print(f"   ✅ Memory Usage: {memory.get('percent', 0):.1f}%")
+            print(f"   ✅ Available Memory: {memory.get('available', 0) // (1024 ** 2)} MB")
+            print(f"   ✅ Process Count: {metrics.get('process_count', 0)}")
+            print(f"   ✅ Load Average: {load_avg[0]:.2f}, {load_avg[1]:.2f}, {load_avg[2]:.2f}")
+        except Exception as e:
+            print(f"   ❌ Ошибка: {e}")
 
-            token = token_response.json()["access_token"]
+        # 3. Выполнение безопасной команды
+        print("\n⚙️  3. Выполнение системной команды...")
+        try:
+            result = await client.rpc_call("system/execute_command", {
+                "command": "ping -n 10 8.8.8.8", 'timeout': 15
+            })
+            if result.get('success'):
+                output_lines = result.get('stdout', '').strip().split('\n')
+                for line in output_lines:
+                    if line.strip():
+                        print(f"   ✅ {line}")
+                print(f"   ✅ Exit Code: {result.get('return_code')}")
+            else:
+                print(f"   ❌ Команда не выполнена: {result.get('error')}")
+        except Exception as e:
+            print(f"   ❌ Ошибка: {e}")
 
-        logger.info("Токен аутентификации получен")
+        # 4. Тестирование кеширования
+        print("\n💾 4. Тестирование системы кеширования...")
+        try:
+            # Первый вызов (без кеша)
+            start_time = asyncio.get_event_loop().time()
+            await client.rpc_call("system/get_system_info")
+            first_call_time = asyncio.get_event_loop().time() - start_time
 
-        # Создание P2P клиента
-        async with P2PServiceClient(network, token) as service:
+            # Второй вызов (с кешем)
+            start_time = asyncio.get_event_loop().time()
+            await client.rpc_call("system/get_system_info")
+            second_call_time = asyncio.get_event_loop().time() - start_time
 
-            print("\n" + "=" * 60)
-            print("🔬 ДЕМОНСТРАЦИЯ RPC ВЫЗОВОВ P2P СИСТЕМЫ")
-            print("=" * 60)
+            print(f"   ✅ Первый вызов: {first_call_time * 1000:.1f}ms")
+            print(f"   ✅ Второй вызов (кеш): {second_call_time * 1000:.1f}ms")
+            speedup = first_call_time / second_call_time if second_call_time > 0 else 1
+            print(f"   ✅ Ускорение: {speedup:.1f}x")
+        except Exception as e:
+            print(f"   ❌ Ошибка: {e}")
 
-            # 1. Получение информации о системе
-            print("\n📊 1. Получение информации о системе...")
-            try:
-                system_info = await service.system.get_system_info()
-                print(f"   ✅ Hostname: {system_info.get('hostname')}")
-                print(f"   ✅ Platform: {system_info.get('platform')}")
-                print(f"   ✅ CPU Count: {system_info.get('cpu_count')}")
-                print(f"   ✅ Memory: {system_info.get('memory_total', 0) // (1024 ** 3)} GB")
-                print(f"   ✅ Architecture: {system_info.get('architecture')}")
-            except Exception as e:
-                print(f"   ❌ Ошибка: {e}")
+        # 5. Широковещательный запрос
+        print("\n📡 5. Широковещательный запрос ко всем узлам кластера...")
+        try:
+            broadcast_results = await client.broadcast_call("system/get_system_metrics")
+            successful = [r for r in broadcast_results if r.get('success')]
+            failed = [r for r in broadcast_results if not r.get('success')]
 
-            # 2. Получение метрик системы
-            print("\n📈 2. Получение текущих метрик производительности...")
-            try:
-                metrics = await service.system.get_system_metrics()
-                memory = metrics.get('memory', {})
-                load_avg = metrics.get('load_average', [0, 0, 0])
-                print(f"   ✅ CPU Usage: {metrics.get('cpu_percent', 0):.1f}%")
-                print(f"   ✅ Memory Usage: {memory.get('percent', 0):.1f}%")
-                print(f"   ✅ Available Memory: {memory.get('available', 0) // (1024 ** 2)} MB")
-                print(f"   ✅ Process Count: {metrics.get('process_count', 0)}")
-                print(f"   ✅ Load Average: {load_avg[0]:.2f}, {load_avg[1]:.2f}, {load_avg[2]:.2f}")
-            except Exception as e:
-                print(f"   ❌ Ошибка: {e}")
+            print(f"   ✅ Ответили узлов: {len(successful)}/{len(broadcast_results)}")
 
-            # 3. Выполнение безопасной команды
-            print("\n⚙️  3. Выполнение системной команды...")
-            try:
-                result = await service.system.execute_command(
-                    command="echo 'Hello from P2P Admin System!' && date"
-                )
-                if result.get('success'):
-                    output_lines = result.get('stdout', '').strip().split('\n')
-                    for line in output_lines:
-                        if line.strip():
-                            print(f"   ✅ {line}")
-                    print(f"   ✅ Exit Code: {result.get('return_code')}")
+            if failed:
+                print(f"   ⚠️  Неудачных запросов: {len(failed)}")
+
+            for i, result in enumerate(successful[:3]):  # Показываем первые 3
+                node_id = result.get('node_id')
+                metrics = result.get('result', {})
+                cpu_percent = metrics.get('cpu_percent', 'N/A')
+                memory_percent = metrics.get('memory', {}).get('percent', 'N/A')
+                process_count = metrics.get('process_count', 'N/A')
+                print(f"   📊 {node_id}: CPU {cpu_percent}%, Memory {memory_percent}%, Processes {process_count}")
+
+        except Exception as e:
+            print(f"   ❌ Ошибка: {e}")
+
+        # 6. Получение статуса кластера
+        print("\n🏛️  6. Анализ состояния кластера...")
+        try:
+            coord_host, coord_port = coordinator_address.split(':')
+            status_url = f"http://{coord_host}:{coord_port}/cluster/status"
+
+            async with httpx.AsyncClient(timeout=10.0) as http_client:
+                headers = {"Authorization": f"Bearer {client.token}"}
+                status_response = await http_client.get(status_url, headers=headers)
+
+                if status_response.status_code == 200:
+                    cluster_status = status_response.json()
+                    print(f"   ✅ Размер кластера: {cluster_status.get('cluster_size', 0)} узлов")
+                    print(f"   ✅ Координаторов: {cluster_status.get('coordinators', 0)}")
+                    print(f"   ✅ Рабочих узлов: {cluster_status.get('workers', 0)}")
+                    print(f"   ✅ Время работы: {cluster_status.get('uptime', 0):.1f} сек")
+
+                    req_stats = cluster_status.get('request_stats', {})
+                    total_req = req_stats.get('total_requests', 0)
+                    success_rate = req_stats.get('success_rate', 0)
+                    avg_duration = req_stats.get('average_duration_ms', 0)
+
+                    print(f"   ✅ Всего запросов: {total_req}")
+                    print(f"   ✅ Успешность: {success_rate:.1%}")
+                    print(f"   ✅ Среднее время ответа: {avg_duration:.1f}ms")
+
+                    network_health = cluster_status.get('network_health', {})
+                    live_ratio = network_health.get('live_node_ratio', 0)
+                    print(f"   ✅ Здоровье сети: {live_ratio:.1%} узлов активны")
                 else:
-                    print(f"   ❌ Команда не выполнена: {result.get('error')}")
-            except Exception as e:
-                print(f"   ❌ Ошибка: {e}")
+                    print(f"   ❌ Не удалось получить статус: {status_response.status_code}")
 
-            # 4. Тестирование кеширования
-            print("\n💾 4. Тестирование системы кеширования...")
-            try:
-                # Первый вызов (без кеша)
-                start_time = asyncio.get_event_loop().time()
-                await service.system.get_system_info()
-                first_call_time = asyncio.get_event_loop().time() - start_time
+        except Exception as e:
+            print(f"   ❌ Ошибка: {e}")
 
-                # Второй вызов (с кешем)
-                start_time = asyncio.get_event_loop().time()
-                await service.system.get_system_info()
-                second_call_time = asyncio.get_event_loop().time() - start_time
-
-                print(f"   ✅ Первый вызов: {first_call_time * 1000:.1f}ms")
-                print(f"   ✅ Второй вызов (кеш): {second_call_time * 1000:.1f}ms")
-                speedup = first_call_time / second_call_time if second_call_time > 0 else 1
-                print(f"   ✅ Ускорение: {speedup:.1f}x")
-            except Exception as e:
-                print(f"   ❌ Ошибка: {e}")
-
-            # 5. Широковещательный запрос
-            print("\n📡 5. Широковещательный запрос ко всем узлам кластера...")
-            try:
-                broadcast_results = await service.broadcast_call("system/get_system_metrics")
-                successful = [r for r in broadcast_results if r.get('success')]
-                failed = [r for r in broadcast_results if not r.get('success')]
-
-                print(f"   ✅ Ответили узлов: {len(successful)}/{len(broadcast_results)}")
-
-                if failed:
-                    print(f"   ⚠️  Неудачных запросов: {len(failed)}")
-
-                for i, result in enumerate(successful[:3]):  # Показываем первые 3
-                    node_id = result.get('node_id')
-                    metrics = result.get('result', {})
-                    cpu_percent = metrics.get('cpu_percent', 'N/A')
-                    memory_percent = metrics.get('memory', {}).get('percent', 'N/A')
-                    process_count = metrics.get('process_count', 'N/A')
-                    print(f"   📊 {node_id}: CPU {cpu_percent}%, Memory {memory_percent}%, Processes {process_count}")
-
-            except Exception as e:
-                print(f"   ❌ Ошибка: {e}")
-
-            # 6. Получение статуса кластера
-            print("\n🏛️  6. Анализ состояния кластера...")
-            try:
-                coord_host, coord_port = coordinator_address.split(':')
-                status_url = f"http://{coord_host}:{coord_port}/cluster/status"
-
-                async with httpx.AsyncClient(timeout=10.0) as client:
-                    headers = {"Authorization": f"Bearer {token}"}
-                    status_response = await client.get(status_url, headers=headers)
-
-                    if status_response.status_code == 200:
-                        cluster_status = status_response.json()
-                        print(f"   ✅ Размер кластера: {cluster_status.get('cluster_size', 0)} узлов")
-                        print(f"   ✅ Координаторов: {cluster_status.get('coordinators', 0)}")
-                        print(f"   ✅ Рабочих узлов: {cluster_status.get('workers', 0)}")
-                        print(f"   ✅ Время работы: {cluster_status.get('uptime', 0):.1f} сек")
-
-                        req_stats = cluster_status.get('request_stats', {})
-                        total_req = req_stats.get('total_requests', 0)
-                        success_rate = req_stats.get('success_rate', 0)
-                        avg_duration = req_stats.get('average_duration_ms', 0)
-
-                        print(f"   ✅ Всего запросов: {total_req}")
-                        print(f"   ✅ Успешность: {success_rate:.1%}")
-                        print(f"   ✅ Среднее время ответа: {avg_duration:.1f}ms")
-
-                        network_health = cluster_status.get('network_health', {})
-                        live_ratio = network_health.get('live_node_ratio', 0)
-                        print(f"   ✅ Здоровье сети: {live_ratio:.1%} узлов активны")
-                    else:
-                        print(f"   ❌ Не удалось получить статус: {status_response.status_code}")
-
-            except Exception as e:
-                print(f"   ❌ Ошибка: {e}")
-
-            print("\n" + "=" * 60)
-            print("✅ ДЕМОНСТРАЦИЯ ЗАВЕРШЕНА УСПЕШНО!")
-            print("=" * 60)
-            print("\n💡 Советы:")
-            print("   - Попробуйте API документацию: http://127.0.0.1:8001/docs")
-            print("   - Мониторьте кластер: http://127.0.0.1:8001/cluster/status")
-            print("   - Проверьте здоровье узлов: http://127.0.0.1:8001/health")
+        print("\n" + "=" * 60)
+        print("✅ ДЕМОНСТРАЦИЯ ЗАВЕРШЕНА УСПЕШНО!")
+        print("=" * 60)
+        print("\n💡 Советы:")
+        print("   - Попробуйте API документацию: http://127.0.0.1:8001/docs")
+        print("   - Мониторьте кластер: http://127.0.0.1:8001/cluster/status")
+        print("   - Проверьте здоровье узлов: http://127.0.0.1:8001/health")
 
     except Exception as e:
         logger.error(f"Ошибка демонстрации клиента: {e}")
         raise
     finally:
-        await network.stop()
+        await client.close()
 
 
 async def run_test_cluster():
@@ -518,26 +679,37 @@ async def run_test_cluster():
         # Запуск координатора
         logger.info("Запуск координатора...")
         await coordinator.start()
-        await asyncio.sleep(3)  # Время для полного запуска
+        await asyncio.sleep(5)  # Увеличенное время для полного запуска
 
         # Запуск рабочих узлов
         logger.info("Запуск рабочих узлов...")
         await worker1.start(join_addresses=["127.0.0.1:8001"])
-        await asyncio.sleep(2)
+        await asyncio.sleep(3)
 
         await worker2.start(join_addresses=["127.0.0.1:8001"])
-        await asyncio.sleep(2)
+        await asyncio.sleep(3)
 
-        # Статистика кластера
-        status = coordinator.network.get_cluster_status()
+        # Безопасное получение статистики кластера
+        try:
+            status = coordinator.network.get_cluster_status()
+        except Exception as e:
+            logger.warning(f"Не удалось получить статус кластера: {e}")
+            status = {
+                'cluster_size': 0,
+                'coordinators': 0,
+                'workers': 0,
+                'uptime': 0,
+                'request_stats': {},
+                'network_health': {}
+            }
 
         print("\n" + "=" * 50)
         print("🧪 ТЕСТОВЫЙ P2P КЛАСТЕР ЗАПУЩЕН")
         print("=" * 50)
         print(f"📊 Статистика кластера:")
-        print(f"   Узлов в кластере: {status['cluster_size']}")
-        print(f"   Координаторов: {status['coordinators']}")
-        print(f"   Рабочих узлов: {status['workers']}")
+        print(f"   Узлов в кластере: {status.get('cluster_size', 0)}")
+        print(f"   Координаторов: {status.get('coordinators', 0)}")
+        print(f"   Рабочих узлов: {status.get('workers', 0)}")
         print(f"   Время работы: {status.get('uptime', 0):.1f} сек")
 
         # Показываем endpoints
@@ -551,21 +723,28 @@ async def run_test_cluster():
         print(f"\n⏳ Кластер работает 20 секунд...")
         for i in range(4):
             await asyncio.sleep(5)
-            current_status = coordinator.network.get_cluster_status()
-            req_stats = current_status.get('request_stats', {})
-            print(f"   ⏱️  {(i + 1) * 5}с: {req_stats.get('total_requests', 0)} запросов, "
-                  f"узлов: {current_status['live_nodes']}")
+            try:
+                current_status = coordinator.network.get_cluster_status()
+                req_stats = current_status.get('request_stats', {})
+                print(f"   ⏱️  {(i + 1) * 5}с: {req_stats.get('total_requests', 0)} запросов, "
+                      f"узлов: {current_status.get('live_nodes', 0)}")
+            except Exception as e:
+                print(f"   ⏱️  {(i + 1) * 5}с: Ошибка получения статуса - {e}")
 
         # Финальная статистика
-        final_status = coordinator.network.get_cluster_status()
-        req_stats = final_status.get('request_stats', {})
-        network_health = final_status.get('network_health', {})
+        try:
+            final_status = coordinator.network.get_cluster_status()
+            req_stats = final_status.get('request_stats', {})
+            network_health = final_status.get('network_health', {})
 
-        print(f"\n📈 Финальная статистика:")
-        print(f"   Внутренних запросов: {req_stats.get('total_requests', 0)}")
-        print(f"   Успешность: {req_stats.get('success_rate', 0):.1%}")
-        print(f"   Среднее время ответа: {req_stats.get('average_duration_ms', 0):.1f}ms")
-        print(f"   Здоровье сети: {network_health.get('live_node_ratio', 0):.1%}")
+            print(f"\n📈 Финальная статистика:")
+            print(f"   Внутренних запросов: {req_stats.get('total_requests', 0)}")
+            print(f"   Успешность: {req_stats.get('success_rate', 0):.1%}")
+            print(f"   Среднее время ответа: {req_stats.get('average_duration_ms', 0):.1f}ms")
+            print(f"   Здоровье сети: {network_health.get('live_node_ratio', 0):.1%}")
+        except Exception as e:
+            print(f"\n📈 Не удалось получить финальную статистику: {e}")
+
         print("=" * 50)
 
     except Exception as e:
@@ -573,10 +752,20 @@ async def run_test_cluster():
         raise
     finally:
         logger.info("Остановка тестового кластера...")
-        await coordinator.stop()
-        await worker1.stop()
-        await worker2.stop()
+        try:
+            await coordinator.stop()
+        except Exception as e:
+            logger.error(f"Ошибка остановки координатора: {e}")
 
+        try:
+            await worker1.stop()
+        except Exception as e:
+            logger.error(f"Ошибка остановки worker1: {e}")
+
+        try:
+            await worker2.stop()
+        except Exception as e:
+            logger.error(f"Ошибка остановки worker2: {e}")
 
 def create_argument_parser():
     """Создание парсера аргументов командной строки"""
@@ -762,8 +951,11 @@ def print_banner():
 ║                                                              ║
 ║           🚀 P2P Administrative System v1.0                  ║
 ║                                                              ║
-║     Легковесная асинхронная система администрирования        ║
-║              локальных сервисов в P2P сети                   ║
+║     Легковесная асинхронная система администрирования       ║
+║              локальных сервисов в P2P сети                  ║
+║                                                              ║
+║                         ИСПРАВЛЕНО                          ║
+║               ✅ Фиксы клиента и стабильности                ║
 ║                                                              ║
 ╚══════════════════════════════════════════════════════════════╝
 """
