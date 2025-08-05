@@ -1,9 +1,0 @@
-start python run.py --host 127.0.0.1 --port 8002 --dht-port 9002 --bootstrap 127.0.0.1:10000
-start python run.py --host 127.0.0.1 --port 8003 --dht-port 9003 --bootstrap 127.0.0.1:10000
-start python run.py --host 127.0.0.1 --port 8004 --dht-port 9004 --bootstrap 127.0.0.1:10000
-start python run.py --host 127.0.0.1 --port 8005 --dht-port 9005 --bootstrap 127.0.0.1:10000
-start python run.py --host 127.0.0.1 --port 8006 --dht-port 9006 --bootstrap 127.0.0.1:10000
-start python run.py --host 127.0.0.1 --port 8007 --dht-port 9007 --bootstrap 127.0.0.1:10000
-start python run.py --host 127.0.0.1 --port 8008 --dht-port 9008 --bootstrap 127.0.0.1:10000
-start python run.py --host 127.0.0.1 --port 8009 --dht-port 9009 --bootstrap 127.0.0.1:10000
-start python run.py --host 127.0.0.1 --port 8010 --dht-port 9010 --bootstrap 127.0.0.1:10000
