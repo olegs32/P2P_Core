@@ -1,3 +1,10 @@
+import asyncio
+import importlib
+import logging
+import sys
+import time
+from pathlib import Path
+
 from fastapi import FastAPI, HTTPException, Depends, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
@@ -15,6 +22,8 @@ from layers.network import P2PNetworkLayer
 JWT_SECRET_KEY = "your-super-secret-key-change-this-in-production"
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRATION_HOURS = 24
+
+method_registry: Dict[str, Any] = {}
 
 
 class RPCRequest(BaseModel):
@@ -120,6 +129,7 @@ class AsyncRPCProxy:
             )
 
 
+# useless code
 class P2PServiceClient:
     """Клиент P2P сервисов с поддержкой await service.node.domain.method()"""
 
@@ -165,16 +175,119 @@ class P2PServiceClient:
         await self.close()
 
 
+class RPCMethods:
+    def __init__(self, method_registry):
+        self.method_registry = method_registry
+        self.services_path = Path("../services")
+        self.registered_services = set()
+        # Запуск observer в фоновом режиме
+        import asyncio
+        asyncio.create_task(self.observer())
+
+    async def register_rpc_methods(self, path: str, methods_instance):
+        """Регистрация RPC методов для динамической диспетчеризации"""
+        for name, method in inspect.getmembers(methods_instance, predicate=inspect.ismethod):
+            if not name.startswith('_'):
+                method_path = f"{path}/{name}"
+                self.method_registry[method_path] = method
+                logging.info(f"Зарегистрирован RPC метод: {method_path}")
+
+    def load_core_service(self, service_dir: Path):
+        """Загрузка core_service.py из директории сервиса"""
+        try:
+            core_service_path = service_dir / "core_service.py"
+
+            if not core_service_path.exists():
+                return None
+
+            # Создаем уникальное имя модуля
+            module_name = f"core_service_{service_dir.name}"
+
+            # Загружаем модуль
+            spec = importlib.util.spec_from_file_location(module_name, core_service_path)
+            module = importlib.util.module_from_spec(spec)
+
+            # Добавляем в sys.modules чтобы избежать повторных загрузок
+            sys.modules[module_name] = module
+            spec.loader.exec_module(module)
+
+            # Ищем класс CoreMethods
+            if hasattr(module, 'CoreMethods'):
+                return module.CoreMethods
+            else:
+                logging.warning(f"Класс CoreMethods не найден в {core_service_path}")
+                return None
+
+        except Exception as e:
+            logging.error(f"Ошибка загрузки {service_dir}/core_service.py: {e}")
+            return None
+
+    async def scan_services(self):
+        """Сканирование папок сервисов и регистрация новых методов"""
+        try:
+            if not self.services_path.exists():
+                logging.warning(f"Директория сервисов не найдена: {self.services_path}")
+                return
+
+            # Получаем все поддиректории в services
+            for service_dir in self.services_path.iterdir():
+                if not service_dir.is_dir():
+                    continue
+
+                service_name = service_dir.name
+
+                # Проверяем, не зарегистрирован ли уже этот сервис
+                if service_name in self.registered_services:
+                    continue
+
+                # Проверяем наличие core_service.py
+                core_service_path = service_dir / "core_service.py"
+                if not core_service_path.exists():
+                    continue
+
+                # Проверяем, что методы сервиса еще не зарегистрированы
+                service_methods_exist = any(
+                    key.startswith(service_name + "/")
+                    for key in self.method_registry.keys()
+                )
+
+                if service_methods_exist:
+                    self.registered_services.add(service_name)
+                    continue
+
+                # Загружаем класс CoreMethods
+                core_methods_class = self.load_core_service(service_dir)
+                if core_methods_class is None:
+                    continue
+
+                # Создаем экземпляр класса и регистрируем методы
+                try:
+                    methods_instance = core_methods_class()
+                    await self.register_rpc_methods(service_name, methods_instance)
+                    self.registered_services.add(service_name)
+                    logging.info(f"Сервис {service_name} успешно зарегистрирован")
+
+                except Exception as e:
+                    logging.error(f"Ошибка создания экземпляра CoreMethods для {service_name}: {e}")
+
+        except Exception as e:
+            logging.error(f"Ошибка сканирования сервисов: {e}")
+
+    async def observer(self):
+        """Основной цикл наблюдателя"""
+        logging.info("Запуск RPC Methods Observer...")
+
+        while True:
+            try:
+                await self.scan_services()
+                await asyncio.sleep(60)  # Проверка каждую минуту
+
+            except Exception as ex:
+                logging.exception(f"Ошибка в observer: {ex}")
+                await asyncio.sleep(60)  # Продолжаем работу даже при ошибках
+
+
 # Реестр методов для динамической диспетчеризации
-method_registry: Dict[str, Any] = {}
-
-
-def register_rpc_methods(path: str, methods_instance):
-    """Регистрация RPC методов для динамической диспетчеризации"""
-    for name, method in inspect.getmembers(methods_instance, predicate=inspect.ismethod):
-        if not name.startswith('_'):
-            method_path = f"{path}/{name}"
-            method_registry[method_path] = method
 
 
 class P2PServiceLayer:

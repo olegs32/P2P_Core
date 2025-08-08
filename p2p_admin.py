@@ -27,7 +27,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 try:
     from layers.transport import P2PTransportLayer, TransportConfig
     from layers.network import P2PNetworkLayer
-    from layers.service import P2PServiceLayer, P2PServiceClient, register_rpc_methods
+    from layers.service import P2PServiceLayer, P2PServiceClient, RPCMethods, method_registry
     from layers.cache import P2PMultiLevelCache, CacheConfig
     from methods.system import SystemMethods
 except ImportError as e:
@@ -125,12 +125,14 @@ class P2PAdminSystem:
         self.cache = P2PMultiLevelCache(cache_config, node_id)
 
         self.service_layer = P2PServiceLayer(self.network)
+        self.rpc = RPCMethods(method_registry)
 
         # Регистрация административных методов
         self._setup_admin_methods()
 
         # Добавляем систему в глобальный список для graceful shutdown
         active_systems.append(self)
+        # TODO: add register methods
 
     def _setup_admin_methods(self):
         """Настройка административных методов"""
@@ -142,7 +144,7 @@ class P2PAdminSystem:
             self._bind_cache_to_methods(system_methods)
 
             # Регистрация методов для RPC
-            register_rpc_methods("system", system_methods)
+            self.rpc.register_rpc_methods("system", system_methods)
 
             self.logger.info("Зарегистрированы administrative методы: system")
 
