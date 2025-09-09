@@ -28,7 +28,7 @@ class Run(BaseService):
             "last_error": None,
             "uptime_start": None
         }
-        self.initialize()
+        asyncio.create_task(self.initialize())
 
     async def initialize(self):
         """Инициализация сервиса с запуском мониторинга"""

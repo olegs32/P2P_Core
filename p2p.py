@@ -1,35 +1,21 @@
 import asyncio
 import os
 import sys
-import signal
 import argparse
 import logging
 from typing import List
-from datetime import datetime
-import uvicorn
 from pathlib import Path
 
 # Добавляем текущую директорию в путь для импортов
 sys.path.insert(0, str(Path(__file__).parent))
-from layers.local_service_bridge import create_local_service_bridge
+
+# Импортируем новый Application Context
+from layers.application_context import P2PApplicationContext, P2PConfig, P2PComponent
+from layers.transport import P2PTransportLayer, TransportConfig
+from layers.network import P2PNetworkLayer
+from layers.service import P2PServiceLayer
+from layers.cache import P2PMultiLevelCache, CacheConfig
 from layers.service_framework import ServiceManager
-
-try:
-    from layers.transport import P2PTransportLayer, TransportConfig
-    from layers.network import P2PNetworkLayer
-    from layers.service import P2PServiceLayer, RPCMethods, method_registry
-    from layers.cache import P2PMultiLevelCache, CacheConfig
-    from methods.system import SystemMethods
-except ImportError as e:
-    print(f"Ошибка импорта модулей: {e}")
-    print("Убедитесь, что все файлы находятся в правильных директориях:")
-    print("  layers/transport.py, layers/network.py, layers/service.py, layers/cache.py")
-    print("  methods/system.py")
-    sys.exit(1)
-
-# Глобальные переменные для graceful shutdown
-shutdown_event = asyncio.Event()
-active_systems = []
 
 
 def setup_logging(verbose: bool = False):
@@ -61,233 +47,317 @@ def setup_logging(verbose: bool = False):
     logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 
-def setup_signal_handlers():
-    """Настройка обработчиков сигналов для graceful shutdown"""
+# === Компоненты системы как отдельные классы ===
 
-    def signal_handler(signum, frame):
-        signal_name = signal.Signals(signum).name
-        print(f"\nПолучен сигнал {signal_name}, начинаем graceful shutdown...")
-        shutdown_event.set()
+class TransportComponent(P2PComponent):
+    """Компонент транспортного уровня"""
 
-    # Обработка SIGINT (Ctrl+C) и SIGTERM
-    if hasattr(signal, 'SIGINT'):
-        signal.signal(signal.SIGINT, signal_handler)
-    if hasattr(signal, 'SIGTERM'):
-        signal.signal(signal.SIGTERM, signal_handler)
+    def __init__(self, context: P2PApplicationContext):
+        super().__init__("transport", context)
+
+    async def _do_initialize(self):
+        config = TransportConfig()
+        config.connect_timeout = self.context.config.connect_timeout
+        config.read_timeout = self.context.config.read_timeout
+
+        self.transport = P2PTransportLayer(config)
+        self.context.set_shared("transport", self.transport)
+        self.logger.info("Transport layer initialized")
+
+    async def _do_shutdown(self):
+        if hasattr(self, 'transport'):
+            await self.transport.close_all()
+            self.logger.info("Transport layer shutdown")
 
 
-class P2PAdminSystem:
-    """Полная система P2P администрирования"""
+class CacheComponent(P2PComponent):
+    """Компонент системы кеширования"""
 
-    def __init__(self, node_id: str, port: int,
-                 bind_address: str = "127.0.0.1",
-                 coordinator_mode: bool = False,
-                 redis_url: str = "redis://localhost:6379"):
-        self.node_id = node_id
-        self.port = port
-        self.bind_address = bind_address
-        self.coordinator_mode = coordinator_mode
-        self.started = False
+    def __init__(self, context: P2PApplicationContext):
+        super().__init__("cache", context)
 
-        self.logger = logging.getLogger(f"P2PSystem.{node_id}")
-
-        # Инициализация компонентов
-        transport_config = TransportConfig()
-        # Увеличиваем таймауты для стабильности
-        transport_config.connect_timeout = 15.0
-        transport_config.read_timeout = 45.0
-        self.transport = P2PTransportLayer(transport_config)
-
-        self.network = P2PNetworkLayer(
-            self.transport,
-            node_id,
-            bind_address,
-            port,
-            coordinator_mode
+    async def _do_initialize(self):
+        cache_config = CacheConfig(
+            redis_url=self.context.config.redis_url,
+            redis_enabled=self.context.config.redis_enabled
         )
 
-        # Увеличиваем интервалы gossip для стабильности
-        self.network.gossip.gossip_interval = 15  # было 10
-        self.network.gossip.failure_timeout = 60  # было 30
+        self.cache = P2PMultiLevelCache(cache_config, self.context.config.node_id)
+        await self.cache.setup_distributed_cache()
+        await self.cache.setup_invalidation_listener()
 
-        # Кеш с возможностью fallback
-        cache_config = CacheConfig(redis_url=redis_url, redis_enabled=True)
-        self.cache = P2PMultiLevelCache(cache_config, node_id)
+        cache_type = 'Redis + Memory' if self.cache.redis_available else 'Memory Only'
+        self.context.set_shared("cache", self.cache)
+        self.logger.info(f"Cache system initialized: {cache_type}")
 
-        self.service_layer = P2PServiceLayer(self.network)
-        self.rpc = RPCMethods(method_registry)
+    async def _do_shutdown(self):
+        if hasattr(self, 'cache'):
+            await self.cache.close()
+            self.logger.info("Cache system shutdown")
 
-        # Добавляем систему в глобальный список для graceful shutdown
-        active_systems.append(self)
 
-    async def _setup_admin_methods(self):
+class NetworkComponent(P2PComponent):
+    """Компонент сетевого уровня"""
+
+    def __init__(self, context: P2PApplicationContext):
+        super().__init__("network", context)
+        self.add_dependency("transport")  # Зависит от транспорта
+
+    async def _do_initialize(self):
+        transport = self.context.get_shared("transport")
+        if not transport:
+            raise RuntimeError("Transport not available")
+
+        self.network = P2PNetworkLayer(
+            transport,
+            self.context.config.node_id,
+            self.context.config.bind_address,
+            self.context.config.port,
+            self.context.config.coordinator_mode
+        )
+
+        # Настройка gossip из конфигурации
+        self.network.gossip.gossip_interval = self.context.config.gossip_interval
+        self.network.gossip.failure_timeout = self.context.config.failure_timeout
+
+        # Получаем координаторы для подключения из контекста
+        join_addresses = self.context.get_shared("join_addresses", [])
+        await self.network.start(join_addresses)
+
+        if join_addresses:
+            self.logger.info(f"Connected to coordinators: {', '.join(join_addresses)}")
+
+        # Ждем стабилизации
+        await asyncio.sleep(3)
+
+        status = self.network.get_cluster_status()
+        self.logger.info(f"Cluster status - Total: {status['total_nodes']}, "
+                         f"Live: {status['live_nodes']}, "
+                         f"Coordinators: {status['coordinators']}, "
+                         f"Workers: {status['workers']}")
+
+        self.context.set_shared("network", self.network)
+
+    async def _do_shutdown(self):
+        if hasattr(self, 'network'):
+            await self.network.stop()
+            self.logger.info("Network layer shutdown")
+
+
+class ServiceComponent(P2PComponent):
+    """Компонент сервисного уровня"""
+
+    def __init__(self, context: P2PApplicationContext):
+        super().__init__("service", context)
+        self.add_dependency("network")
+        self.add_dependency("cache")
+
+    async def _do_initialize(self):
+        network = self.context.get_shared("network")
+        cache = self.context.get_shared("cache")
+
+        if not network:
+            raise RuntimeError("Network not available")
+        if not cache:
+            raise RuntimeError("Cache not available")
+
+        # Создаем сервисный слой с инжекцией method_registry из контекста
+        self.service_layer = P2PServiceLayer(network)
+
+        # Инициализируем менеджер сервисов
+        from layers.service import RPCMethods
+
+        # Используем method_registry из контекста вместо глобального
+        self.rpc = RPCMethods(self.context.list_methods())
+
+        # Устанавливаем связки
+        self.rpc.method_registry = self.context.list_methods()  # Прямая ссылка
+
+        # Инициализируем административные методы
+        await self._setup_admin_methods(cache)
+
+        # Инициализируем локальные сервисы
+        await self._initialize_local_services()
+
+        self.context.set_shared("service_layer", self.service_layer)
+        self.context.set_shared("rpc", self.rpc)
+
+        self.logger.info("Service layer initialized")
+
+    async def _setup_admin_methods(self, cache):
+        """Настройка административных методов"""
         try:
-            # Создаем экземпляры методов
-            system_methods = SystemMethods(self.cache)
+            from methods.system import SystemMethods
+            system_methods = SystemMethods(cache)
 
             # Привязка кеша к методам с декораторами
-            self._bind_cache_to_methods(system_methods)
+            self._bind_cache_to_methods(system_methods, cache)
 
-            # Регистрация методов для RPC
-            await self.rpc.register_rpc_methods("system", system_methods)
+            # Регистрация методов в контексте вместо глобального registry
+            await self._register_methods_in_context("system", system_methods)
 
-            self.logger.info("Зарегистрированы administrative методы: system")
-
-        except Exception as e:
-            self.logger.error(f"Ошибка при настройке административных методов: {e}")
-            raise
-
-    async def _initialize_local_services(self):
-        """Инициализация локальных сервисов БЕЗ сетевых подключений"""
-        try:
-            self.logger.info("Инициализация системы сервисов...")
-            service_manager = ServiceManager(self.rpc)
-            local_bridge = create_local_service_bridge(
-                self.rpc.method_registry,
-                service_manager
-            )
-            await local_bridge.initialize()
-            service_manager.set_proxy_client(local_bridge.get_proxy())
-            await service_manager.initialize_all_services()
-            self.service_manager = service_manager
-            self.local_bridge = local_bridge
-            self.logger.info("Система сервисов инициализирована")
+            self.logger.info("Administrative methods registered: system")
 
         except Exception as e:
-            self.logger.error(f"Ошибка инициализации сервисов: {e}")
+            self.logger.error(f"Error setting up admin methods: {e}")
             raise
 
-    def _bind_cache_to_methods(self, methods_instance):
+    async def _register_methods_in_context(self, path: str, methods_instance):
+        """Регистрация методов в контексте приложения"""
+        import inspect
+
+        for name, method in inspect.getmembers(methods_instance, predicate=inspect.ismethod):
+            if not name.startswith('_'):
+                method_path = f"{path}/{name}"
+                self.context.register_method(method_path, method)
+                self.logger.debug(f"Registered method: {method_path}")
+
+    def _bind_cache_to_methods(self, methods_instance, cache):
         """Привязка кеша к методам с декораторами"""
         for method_name in dir(methods_instance):
             if not method_name.startswith('_'):
                 method = getattr(methods_instance, method_name)
-                # Проверяем, является ли метод декорированной функцией кеширования
                 if hasattr(method, '__wrapped__') and hasattr(method, '__name__'):
-                    # Привязываем кеш к декорированному методу
-                    method._cache = self.cache
+                    method._cache = cache
 
-    async def start(self, join_addresses: List[str] = None):
-        """Запуск P2P системы"""
-        if self.started:
-            self.logger.warning("Система уже запущена")
-            return
-
+    async def _initialize_local_services(self):
+        """Инициализация системы локальных сервисов"""
         try:
-            await self._setup_admin_methods()
-            self.logger.info(f"Запуск P2P Core")
-            self.logger.info(f"Node ID: {self.node_id}")
-            self.logger.info(f"Address: {self.bind_address}:{self.port}")
-            self.logger.info(f"Mode: {'Coordinator' if self.coordinator_mode else 'Worker'}")
+            from layers.local_service_bridge import create_local_service_bridge
+            from layers.service_framework import ServiceManager
 
-            self.logger.info("Инициализация системы кеширования...")
-            await self.cache.setup_distributed_cache()
-            await self.cache.setup_invalidation_listener()
-            cache_type = 'Redis + Memory' if self.cache.redis_available else 'Memory Only'
-            self.logger.info(f"Cache: {cache_type}")
+            service_manager = ServiceManager(self.rpc)
+            local_bridge = create_local_service_bridge(
+                self.context.list_methods(),
+                service_manager
+            )
 
-            self.logger.info("Запуск сетевого уровня...")
-            await self.network.start(join_addresses)
+            await local_bridge.initialize()
+            service_manager.set_proxy_client(local_bridge.get_proxy())
+            await service_manager.initialize_all_services()
 
-            if join_addresses:
-                self.logger.info(f"Подключение к координаторам: {', '.join(join_addresses)}")
+            self.service_manager = service_manager
+            self.local_bridge = local_bridge
 
-            # Увеличиваем паузу для стабилизации
-            await asyncio.sleep(3)
+            # Устанавливаем локальный мост в сервисном слое
+            self.service_layer.set_local_bridge(local_bridge)
 
-            status = self.network.get_cluster_status()
-            self.logger.info(f"Статус кластера - Всего узлов: {status['total_nodes']}, "
-                             f"Активных: {status['live_nodes']}, "
-                             f"Координаторов: {status['coordinators']}, "
-                             f"Рабочих: {status['workers']}")
-
-            await self._initialize_local_services()
-
-            self.started = True
-            self.logger.info("P2P Core успешно запущен!")
+            self.logger.info("Local services system initialized")
 
         except Exception as e:
-            self.logger.error(f"Ошибка запуска P2P системы: {e}")
+            self.logger.error(f"Error initializing local services: {e}")
             raise
 
-    async def stop(self):
-        """Остановка системы"""
-        if not self.started:
-            return
+    async def _do_shutdown(self):
+        if hasattr(self, 'service_manager'):
+            await self.service_manager.shutdown_all_services()
 
-        self.logger.info("Остановка P2P Core...")
+        self.logger.info("Service layer shutdown")
 
-        try:
-            if hasattr(self, 'service_manager'):
-                self.logger.debug("Остановка системы локальных сервисов...")
-                await self.service_manager.shutdown_all_services()
 
-            self.logger.debug("Остановка сетевого уровня...")
-            await self.network.stop()
+class WebServerComponent(P2PComponent):
+    """Компонент веб-сервера"""
 
-            self.logger.debug("Закрытие системы кеширования...")
-            await self.cache.close()
+    def __init__(self, context: P2PApplicationContext):
+        super().__init__("webserver", context)
+        self.add_dependency("service")
 
-            self.started = False
-            self.logger.info(f"P2P Core остановлен: {self.node_id}")
+    async def _do_initialize(self):
+        service_layer = self.context.get_shared("service_layer")
+        if not service_layer:
+            raise RuntimeError("Service layer not available")
 
-            # Удаляем из глобального списка
-            if self in active_systems:
-                active_systems.remove(self)
+        import uvicorn
 
-        except Exception as e:
-            self.logger.error(f"Ошибка при остановке системы: {e}")
-
-    async def run_server(self):
-        """Запуск FastAPI сервера"""
-        if not self.started:
-            raise RuntimeError("Система не запущена. Вызовите start() сначала.")
-
-        self.logger.info(f"Запуск HTTP сервера на {self.bind_address}:{self.port}")
-
-        config = uvicorn.Config(
-            app=self.service_layer.app,
-            host=self.bind_address,
-            port=self.port,
+        self.config = uvicorn.Config(
+            app=service_layer.app,
+            host=self.context.config.bind_address,
+            port=self.context.config.port,
             log_level="warning",
             access_log=False,
             server_header=False,
             date_header=False
         )
 
-        server = uvicorn.Server(config)
+        self.server = uvicorn.Server(self.config)
 
-        # Запуск сервера с обработкой shutdown
-        server_task = asyncio.create_task(server.serve())
-        shutdown_task = asyncio.create_task(shutdown_event.wait())
+        # Запускаем сервер в фоновой задаче
+        self.server_task = asyncio.create_task(self.server.serve())
 
-        try:
-            # Ждем либо завершения сервера, либо сигнала shutdown
-            done, pending = await asyncio.wait(
-                [server_task, shutdown_task],
-                return_when=asyncio.FIRST_COMPLETED
-            )
+        self.logger.info(f"Web server started on {self.context.config.bind_address}:{self.context.config.port}")
 
-            # Отменяем оставшиеся задачи
-            for task in pending:
-                task.cancel()
-                try:
-                    await task
-                except asyncio.CancelledError as e:
-                    print(f'Error due stop task: {e}')
+        # Ждем немного чтобы сервер успел запуститься
+        await asyncio.sleep(1)
 
-        except Exception as e:
-            self.logger.error(f"Ошибка сервера: {e}")
-        finally:
-            # Graceful shutdown
-            await self.stop()
+    async def _do_shutdown(self):
+        if hasattr(self, 'server_task'):
+            self.server_task.cancel()
+            try:
+                await self.server_task
+            except asyncio.CancelledError:
+                pass
 
+        self.logger.info("Web server shutdown")
+
+
+# === Factory функции для создания приложения ===
+
+async def create_coordinator_application(config: P2PConfig) -> P2PApplicationContext:
+    """Создание координатора"""
+    context = P2PApplicationContext(config)
+
+    # Регистрируем компоненты
+    context.register_component(TransportComponent(context))
+    context.register_component(CacheComponent(context))
+    context.register_component(NetworkComponent(context))
+    context.register_component(ServiceComponent(context))
+    context.register_component(WebServerComponent(context))
+
+    # Устанавливаем порядок запуска
+    context.set_startup_order([
+        "transport",
+        "cache",
+        "network",
+        "service",
+        "webserver"
+    ])
+
+    return context
+
+
+async def create_worker_application(config: P2PConfig, coordinator_addresses: List[str]) -> P2PApplicationContext:
+    """Создание рабочего узла"""
+    context = P2PApplicationContext(config)
+
+    # Сохраняем адреса координаторов в контексте
+    context.set_shared("join_addresses", coordinator_addresses)
+
+    # Регистрируем компоненты (те же что и для координатора)
+    context.register_component(TransportComponent(context))
+    context.register_component(CacheComponent(context))
+    context.register_component(NetworkComponent(context))
+    context.register_component(ServiceComponent(context))
+    context.register_component(WebServerComponent(context))
+
+    # Устанавливаем порядок запуска
+    context.set_startup_order([
+        "transport",
+        "cache",
+        "network",
+        "service",
+        "webserver"
+    ])
+
+    return context
+
+
+# === Основная логика запуска ===
 
 async def run_coordinator(node_id: str, port: int, bind_address: str, redis_url: str):
-    """Запуск координатора"""
+    """Запуск координатора с использованием Application Context"""
     logger = logging.getLogger("Coordinator")
 
-    coordinator = P2PAdminSystem(
+    config = P2PConfig(
         node_id=node_id,
         port=port,
         bind_address=bind_address,
@@ -295,27 +365,41 @@ async def run_coordinator(node_id: str, port: int, bind_address: str, redis_url:
         redis_url=redis_url
     )
 
-    try:
-        await coordinator.start()
+    # Создаем приложение
+    app_context = await create_coordinator_application(config)
 
-        logger.info("Доступные endpoints:")
+    try:
+        # Инициализируем все компоненты
+        await app_context.initialize_all()
+
+        # Проверяем здоровье системы
+        health = app_context.health_check()
+        if not health["healthy"]:
+            raise RuntimeError(f"System is not healthy: {health}")
+
+        logger.info("Coordinator started successfully")
+        logger.info(f"Available endpoints:")
         logger.info(f"  Health: http://{bind_address}:{port}/health")
         logger.info(f"  API Docs: http://{bind_address}:{port}/docs")
         logger.info(f"  Cluster Status: http://{bind_address}:{port}/cluster/status")
 
-        await coordinator.run_server()
+        # Ждем сигнал shutdown
+        await app_context.wait_for_shutdown()
 
     except Exception as e:
-        logger.error(f"Ошибка координатора: {e}")
+        logger.error(f"Coordinator error: {e}")
         raise
+    finally:
+        # Graceful shutdown
+        await app_context.shutdown_all()
 
 
 async def run_worker(node_id: str, port: int, bind_address: str,
                      coordinator_addresses: List[str], redis_url: str):
-    """Запуск рабочего узла"""
+    """Запуск рабочего узла с использованием Application Context"""
     logger = logging.getLogger("Worker")
 
-    worker = P2PAdminSystem(
+    config = P2PConfig(
         node_id=node_id,
         port=port,
         bind_address=bind_address,
@@ -323,18 +407,33 @@ async def run_worker(node_id: str, port: int, bind_address: str,
         redis_url=redis_url
     )
 
-    try:
-        await worker.start(join_addresses=coordinator_addresses)
+    # Создаем приложение
+    app_context = await create_worker_application(config, coordinator_addresses)
 
-        logger.info("Доступные endpoints:")
+    try:
+        # Инициализируем все компоненты
+        await app_context.initialize_all()
+
+        # Проверяем здоровье системы
+        health = app_context.health_check()
+        if not health["healthy"]:
+            raise RuntimeError(f"System is not healthy: {health}")
+
+        logger.info("Worker started successfully")
+        logger.info(f"Available endpoints:")
         logger.info(f"  Health: http://{bind_address}:{port}/health")
         logger.info(f"  API Docs: http://{bind_address}:{port}/docs")
 
-        await worker.run_server()
+        # Ждем сигнал shutdown
+        await app_context.wait_for_shutdown()
 
     except Exception as e:
-        logger.error(f"Ошибка рабочего узла: {e}")
+        logger.error(f"Worker error: {e}")
         raise
+    finally:
+        # Graceful shutdown
+        await app_context.shutdown_all()
+
 
 def create_argument_parser():
     """Создание парсера аргументов командной строки"""
@@ -347,7 +446,6 @@ def create_argument_parser():
   %(prog)s coordinator --port 9001        # Координатор на порту 9001
   %(prog)s worker                          # Рабочий узел на порту 8002
   %(prog)s worker --port 9002 --coord 127.0.0.1:9001
-
 
 Документация API:
   После запуска координатора откройте http://127.0.0.1:8001/docs
@@ -400,20 +498,6 @@ def create_argument_parser():
     return parser
 
 
-async def graceful_shutdown():
-    """Graceful shutdown всех активных систем"""
-    logger = logging.getLogger("Shutdown")
-
-    if active_systems:
-        logger.info(f"Graceful shutdown {len(active_systems)} активных систем...")
-
-        # Останавливаем все системы параллельно
-        shutdown_tasks = [system.stop() for system in active_systems.copy()]
-        await asyncio.gather(*shutdown_tasks, return_exceptions=True)
-
-        logger.info("Все системы остановлены")
-
-
 async def main():
     """Главная функция приложения"""
     parser = create_argument_parser()
@@ -422,15 +506,12 @@ async def main():
     setup_logging(args.verbose)
     logger = logging.getLogger("Main")
 
-    # Настройка обработчиков сигналов
-    setup_signal_handlers()
-
     try:
         if args.mode == 'coordinator':
             node_id = args.node_id or f"coordinator-{os.getpid()}"
             port = args.port or 8001
 
-            logger.info(f"Запуск координатора: {node_id} на {args.address}:{port}")
+            logger.info(f"Starting coordinator: {node_id} on {args.address}:{port}")
             await run_coordinator(
                 node_id=node_id,
                 port=port,
@@ -442,7 +523,7 @@ async def main():
             node_id = args.node_id or f"worker-{os.getpid()}"
             port = args.port or 8002
 
-            logger.info(f"Запуск рабочего узла: {node_id} на {args.address}:{port}")
+            logger.info(f"Starting worker: {node_id} on {args.address}:{port}")
             await run_worker(
                 node_id=node_id,
                 port=port,
@@ -452,16 +533,13 @@ async def main():
             )
 
     except KeyboardInterrupt:
-        logger.info("Программа прервана пользователем")
+        logger.info("Program interrupted by user")
     except Exception as e:
-        logger.error(f"Критическая ошибка: {e}")
+        logger.error(f"Critical error: {e}")
         if args.verbose:
             import traceback
             logger.error(traceback.format_exc())
         return 1
-    finally:
-        # Graceful shutdown
-        await graceful_shutdown()
 
     return 0
 
@@ -500,24 +578,6 @@ def check_dependencies():
     return True
 
 
-def print_banner():
-    """Вывод баннера приложения"""
-    banner = """
-╔══════════════════════════════════════════════════════════════╗
-║                                                              ║
-║              P2P Administrative System v1.0                  ║
-║                                                              ║
-║              Distributed service computing                   ║
-║              Booting...                                      ║
-║                                                              ║
-║                                                              ║
-║                                                              ║
-║                                                              ║
-╚══════════════════════════════════════════════════════════════╝
-"""
-    print(banner)
-
-
 if __name__ == "__main__":
     # Проверки системы
     if not check_python_version():
@@ -525,10 +585,6 @@ if __name__ == "__main__":
 
     if not check_dependencies():
         sys.exit(1)
-
-    # Показать баннер только если не передан аргумент --help
-    if len(sys.argv) == 1 or (len(sys.argv) == 2 and sys.argv[1] not in ['-h', '--help']):
-        print_banner()
 
     # Запуск главной функции
     try:
@@ -538,5 +594,5 @@ if __name__ == "__main__":
         print("\nStopped")
         sys.exit(0)
     except Exception as e:
-        print(f"Фатальная ошибка: {e}")
+        print(f"Fatal error: {e}")
         sys.exit(1)
