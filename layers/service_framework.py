@@ -41,7 +41,6 @@ def service_method(
         cache_ttl: int = 0,
         requires_auth: bool = True
 ):
-    """Декоратор для пометки методов сервиса"""
 
     def decorator(func):
         func._service_method = True
@@ -59,7 +58,7 @@ class BaseService(ABC):
 
     def __init__(self, service_name: str, proxy_client=None):
         self.service_name = service_name
-        self.proxy = proxy_client  # Инжектированный universal proxy
+        self.proxy = proxy_client  # Инжектированный proxy
         self.logger = logging.getLogger(f"Service.{service_name}")
         self.status = ServiceStatus.STOPPED
         self.info = ServiceInfo(name=service_name)
@@ -269,7 +268,7 @@ class ServiceManager:
         self.proxy_client = None
 
     def set_proxy_client(self, proxy_client):
-        """Установка universal proxy для инжекции в сервисы"""
+        """Установка proxy для инъекции в сервисы"""
         self.proxy_client = proxy_client
 
     async def initialize_all_services(self):
@@ -293,31 +292,9 @@ class ServiceManager:
 # Пример использования в существующем коде:
 
 """
-# В p2p_admin.py добавить:
-
-from service_framework import ServiceManager
-
-class P2PAdminSystem:
-    def __init__(self, ...):
-        # ... существующий код ...
-
-        # Добавляем менеджер сервисов
-        self.service_manager = ServiceManager(self.rpc)
-
-    async def start(self, ...):
-        # ... существующий код ...
-
-        # Настраиваем proxy для сервисов  
-        from universal_proxy import create_universal_client
-        proxy_client = create_universal_client(self.transport)
-        self.service_manager.set_proxy_client(proxy_client)
-
-        # Инициализируем все сервисы
-        await self.service_manager.initialize_all_services()
-
 # Пример сервиса (services/example_service/main.py):
 
-from service_framework import BaseService, service_method
+from layers.service_framework import BaseService, service_method
 
 class Run(BaseService):
     SERVICE_NAME = "example_service"

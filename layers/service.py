@@ -187,7 +187,7 @@ class RPCMethods:
         self.local_service_layer = EnhancedLocalServiceLayer(method_registry)
         self.local_bridge = None
 
-        # Определяем путь к сервисам
+
         if os.path.exists("services"):
             self.services_path = Path("services")
         else:
@@ -197,10 +197,10 @@ class RPCMethods:
         import asyncio
         asyncio.create_task(self.observer())
 
-    def set_service_manager(self, service_manager):
-        """Установка менеджера сервисов для локального моста"""
-        self.local_bridge = create_local_service_bridge(self.method_registry, service_manager)
-        self.local_service_layer.set_service_registry(service_manager.registry)
+    # def set_service_manager(self, service_manager):
+    #     """Установка менеджера сервисов для локального моста"""
+    #     self.local_bridge = create_local_service_bridge(self.method_registry, service_manager)
+    #     self.local_service_layer.set_service_registry(service_manager.registry)
 
     async def register_rpc_methods(self, path: str, methods_instance):
         """Регистрация RPC методов с локальным прокси"""
@@ -211,12 +211,12 @@ class RPCMethods:
                 self.method_registry[method_path] = method
                 logging.info(f"Зарегистрирован RPC метод: {method_path}")
 
-        # НОВОЕ: Установка локального прокси вместо P2P клиента
+
         if self.local_bridge and hasattr(methods_instance, 'proxy'):
-            # Создаем локальный прокси без сетевых запросов
+            # Создаем локальный прокси
             local_proxy = self.local_bridge.get_proxy()
             methods_instance.proxy = local_proxy
-            logging.info(f"Установлен локальный прокси для сервиса: {path}")
+            logging.info(f"Установлен прокси для сервиса: {path}")
 
     def load_core_service(self, service_dir: Path):
         """Загрузка core_service.py или main.py из директории сервиса"""
@@ -292,7 +292,7 @@ class RPCMethods:
 
                 # Создаем экземпляр класса и регистрируем методы
                 try:
-                    # НОВОЕ: Создаем локальный прокси для сервиса
+                    # Создаем локальный прокси для сервиса
                     local_proxy = None
                     if self.local_bridge:
                         local_proxy = self.local_bridge.get_proxy()

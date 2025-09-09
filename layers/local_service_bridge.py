@@ -5,7 +5,6 @@ from typing import Dict, Any, Optional
 
 
 class LocalServiceBridge:
-    """Локальный мост сервисов БЕЗ сетевых подключений"""
 
     def __init__(self, method_registry: Dict[str, Any], service_manager):
         self.method_registry = method_registry
@@ -55,7 +54,7 @@ class ServiceMethodProxy:
     def __getattr__(self, attr_name: str):
         """Получить callable для метода или прокси для узла"""
 
-        # Список известных узлов/ролей для таргетинга
+        #todo Список известных узлов/ролей для таргетинга дополнить актуальными
         known_targets = [
             'coordinator', 'worker', 'worker1', 'worker2', 'worker3',
             'node1', 'node2', 'host1', 'host2', 'pc1', 'pc2',

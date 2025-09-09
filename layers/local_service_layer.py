@@ -1,7 +1,10 @@
 # local_service_layer.py - Локальный слой сервисов без P2PClient
 
 import asyncio
+import inspect
 import logging
+import os
+from pathlib import Path
 from typing import Dict, Any, List, Optional, Callable
 from datetime import datetime
 import uuid

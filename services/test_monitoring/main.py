@@ -29,6 +29,7 @@ class Run(BaseService):
             "uptime_start": None
         }
         self.initialize()
+
     async def initialize(self):
         """Инициализация сервиса с запуском мониторинга"""
         self.logger.info("Test monitoring service initializing...")
