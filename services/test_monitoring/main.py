@@ -118,7 +118,7 @@ class Run(BaseService):
                 "timestamp": request_time.isoformat(),
                 "metrics": metrics,
                 "source": "coordinator",
-                "response_time_ms": (datetime.now() - request_time).total_seconds() * 1000
+                "response_time_ms": (datetime.now() - request_time).total_seconds() * 1
             }
 
             # Ограничиваем историю (последние 100 записей)
