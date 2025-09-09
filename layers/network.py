@@ -365,7 +365,7 @@ class SimpleGossipProtocol:
         try:
             await self._process_gossip_response(gossip_data)
 
-            # Возврат собственной информации о узлах
+            # Возврат собственной информации об узлах
             return {
                 'status': 'success',
                 'nodes': [node.to_dict() for node in self.node_registry.values()],
