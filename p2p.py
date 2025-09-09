@@ -1,31 +1,27 @@
 import asyncio
 import os
-import random
-import socket
 import sys
 import signal
 import argparse
 import logging
-from typing import List, Optional, Dict, Any
+from typing import List
 from datetime import datetime
 import uvicorn
-import httpx
 from pathlib import Path
 
 # Добавляем текущую директорию в путь для импортов
 sys.path.insert(0, str(Path(__file__).parent))
-# from layers.local_service_layer import P2PServiceBridge, create_enhanced_universal_client
 from layers.local_service_bridge import create_local_service_bridge
 from layers.service_framework import ServiceManager
 
 try:
     from layers.transport import P2PTransportLayer, TransportConfig
     from layers.network import P2PNetworkLayer
-    from layers.service import P2PServiceLayer, P2PServiceClient, RPCMethods, method_registry
+    from layers.service import P2PServiceLayer, RPCMethods, method_registry
     from layers.cache import P2PMultiLevelCache, CacheConfig
     from methods.system import SystemMethods
 except ImportError as e:
-    print(f"❌ Ошибка импорта модулей: {e}")
+    print(f"Ошибка импорта модулей: {e}")
     print("Убедитесь, что все файлы находятся в правильных директориях:")
     print("  layers/transport.py, layers/network.py, layers/service.py, layers/cache.py")
     print("  methods/system.py")
@@ -70,7 +66,7 @@ def setup_signal_handlers():
 
     def signal_handler(signum, frame):
         signal_name = signal.Signals(signum).name
-        print(f"\n🛑 Получен сигнал {signal_name}, начинаем graceful shutdown...")
+        print(f"\nПолучен сигнал {signal_name}, начинаем graceful shutdown...")
         shutdown_event.set()
 
     # Обработка SIGINT (Ctrl+C) и SIGTERM
@@ -92,7 +88,6 @@ class P2PAdminSystem:
         self.bind_address = bind_address
         self.coordinator_mode = coordinator_mode
         self.started = False
-        self.service_bridge = None
 
         self.logger = logging.getLogger(f"P2PSystem.{node_id}")
 
@@ -122,20 +117,15 @@ class P2PAdminSystem:
         self.service_layer = P2PServiceLayer(self.network)
         self.rpc = RPCMethods(method_registry)
 
-        # Регистрация административных методов
-        # self._setup_admin_methods()
-
         # Добавляем систему в глобальный список для graceful shutdown
         active_systems.append(self)
-        # TODO: add register methods
 
     async def _setup_admin_methods(self):
         try:
             # Создаем экземпляры методов
-            from methods.system import SystemMethods
             system_methods = SystemMethods(self.cache)
 
-            # Привязка кэша к методам с декораторами
+            # Привязка кеша к методам с декораторами
             self._bind_cache_to_methods(system_methods)
 
             # Регистрация методов для RPC
@@ -172,7 +162,7 @@ class P2PAdminSystem:
         for method_name in dir(methods_instance):
             if not method_name.startswith('_'):
                 method = getattr(methods_instance, method_name)
-                # Проверяем, является ли метод декорированным функцией кеширования
+                # Проверяем, является ли метод декорированной функцией кеширования
                 if hasattr(method, '__wrapped__') and hasattr(method, '__name__'):
                     # Привязываем кеш к декорированному методу
                     method._cache = self.cache
@@ -293,239 +283,6 @@ class P2PAdminSystem:
             await self.stop()
 
 
-# Устаревший клиент
-# class P2PClient:
-#     """Облегченный P2P клиент с ИСПРАВЛЕННЫМ таргетингом узлов"""
-#
-#     def __init__(self, client_id: str = "p2p-client"):
-#         self.client_id = client_id
-#         self.logger = logging.getLogger(f"P2PClient.{client_id}")
-#
-#         # Создаем только транспортный уровень
-#         transport_config = TransportConfig()
-#         transport_config.connect_timeout = 15.0
-#         transport_config.read_timeout = 90.0
-#         self.transport = P2PTransportLayer(transport_config)
-#
-#         self.connected_nodes = []
-#         self.token = None
-#
-#     async def connect(self, coordinator_addresses: List[str]):
-#         """Подключение к кластеру через прямые HTTP вызовы"""
-#         self.logger.info(f"Подключение к кластеру...")
-#
-#         for coord_addr in coordinator_addresses:
-#             try:
-#                 coord_host, coord_port = coord_addr.split(':')
-#                 health_url = f"http://{coord_host}:{coord_port}/health"
-#
-#                 async with httpx.AsyncClient(timeout=10.0) as client:
-#                     response = await client.get(health_url)
-#                     if response.status_code == 200:
-#                         self.connected_nodes.append(coord_addr)
-#                         self.logger.info(f"✅ Подключен к координатору: {coord_addr}")
-#                         break
-#             except Exception as e:
-#                 self.logger.warning(f"❌ Не удалось подключиться к {coord_addr}: {e}")
-#
-#         if not self.connected_nodes:
-#             raise RuntimeError("Не удалось подключиться ни к одному координатору")
-#
-#     async def authenticate(self):
-#         """Получение токена аутентификации"""
-#         if not self.connected_nodes:
-#             raise RuntimeError("Не подключен к кластеру")
-#
-#         coord_addr = self.connected_nodes[0]
-#         coord_host, coord_port = coord_addr.split(':')
-#         token_url = f"http://{coord_host}:{coord_port}/auth/token"
-#
-#         async with httpx.AsyncClient(timeout=10.0) as client:
-#             response = await client.post(
-#                 token_url,
-#                 json={"node_id": self.client_id}
-#             )
-#
-#             if response.status_code != 200:
-#                 raise RuntimeError(f"Ошибка аутентификации: {response.status_code}")
-#
-#             data = response.json()
-#             self.token = data["access_token"]
-#             self.logger.info("✅ Токен аутентификации получен")
-#
-#     async def _get_available_nodes(self) -> List[Dict[str, Any]]:
-#         """Получение списка доступных узлов"""
-#         coord_addr = self.connected_nodes[0]
-#         coord_host, coord_port = coord_addr.split(':')
-#         nodes_url = f"http://{coord_host}:{coord_port}/cluster/nodes"
-#
-#         headers = {"Authorization": f"Bearer {self.token}"}
-#
-#         async with httpx.AsyncClient(timeout=30.0) as client:
-#             nodes_response = await client.get(nodes_url, headers=headers)
-#             if nodes_response.status_code != 200:
-#                 raise RuntimeError(f"Не удалось получить список узлов: {nodes_response.status_code}")
-#
-#             nodes_data = nodes_response.json()
-#             return [
-#                 node for node in nodes_data["nodes"]
-#                 if node["status"] == "alive" and node["port"] > 0
-#             ]
-#
-#     async def _select_target_node(self, target_node_name: str = None, target_role: str = None) -> Dict[str, Any]:
-#         """ИСПРАВЛЕННЫЙ выбор целевого узла"""
-#         available_nodes = await self._get_available_nodes()
-#
-#         print(f"🎯 Node selection:")
-#         print(f"   Available nodes: {[n['node_id'] for n in available_nodes]}")
-#         print(f"   Target node name: {target_node_name}")
-#         print(f"   Target role: {target_role}")
-#
-#         # Если указано конкретное имя узла
-#         if target_node_name:
-#             # Ищем точное совпадение
-#             exact_match = [node for node in available_nodes if node["node_id"] == target_node_name]
-#             if exact_match:
-#                 print(f"   → Found exact match: {exact_match[0]['node_id']}")
-#                 return exact_match[0]
-#
-#             # Ищем частичное совпадение (например "coordinator" найдет "coordinator-12345")
-#             partial_matches = [
-#                 node for node in available_nodes
-#                 if target_node_name.lower() in node["node_id"].lower()
-#             ]
-#             if partial_matches:
-#                 print(f"   → Found partial match: {partial_matches[0]['node_id']}")
-#                 return partial_matches[0]
-#
-#             # Ищем по роли, если имя похоже на роль
-#             if target_node_name.lower() in ['coordinator', 'worker']:
-#                 role_matches = [
-#                     node for node in available_nodes
-#                     if node["role"] == target_node_name.lower()
-#                 ]
-#                 if role_matches:
-#                     print(f"   → Found by role: {role_matches[0]['node_id']}")
-#                     return role_matches[0]
-#
-#             raise RuntimeError(f"Node '{target_node_name}' not found")
-#
-#         # Если указана роль
-#         if target_role:
-#             role_nodes = [node for node in available_nodes if node["role"] == target_role]
-#             if role_nodes:
-#                 print(f"   → Selected by role: {role_nodes[0]['node_id']}")
-#                 return role_nodes[0]
-#
-#         # По умолчанию - первый доступный
-#         if available_nodes:
-#             print(f"   → Default selection: {available_nodes[0]['node_id']}")
-#             return available_nodes[0]
-#
-#         raise RuntimeError("No available nodes found")
-#
-#     async def rpc_call(self, method_path: str, params: dict = None, target_role: str = None, timeout: int = 90) -> dict:
-#         """RPC вызов с отладкой"""
-#
-#         print(f"🔍 DEBUG RPC_CALL START:")
-#         print(f"   method_path: {method_path}")
-#         print(f"   params: {params}")
-#         print(f"   target_role: {target_role}")
-#
-#         # Извлекаем target_node из параметров
-#         target_node_name = params.pop('_target_node', None) if params else None
-#         print(f"   extracted target_node_name: {target_node_name}")
-#
-#         # ВОТ ЗДЕСЬ ДОБАВЬТЕ ПРОВЕРКУ:
-#         if target_node_name:
-#             print(f"🎯 ATTEMPTING TO SELECT SPECIFIC NODE: {target_node_name}")
-#         if not self.token:
-#             raise RuntimeError("Не аутентифицирован")
-#
-#         if params is None:
-#             params = {}
-#
-#         # Извлекаем target_node из параметров
-#         target_node_name = params.pop('_target_node', None)
-#         target_domain = params.pop('_target_domain', None)  # Пока не используем, но извлекаем
-#
-#         self.logger.debug(f"RPC Call: {method_path}")
-#         self.logger.debug(f"Target node: {target_node_name}")
-#         self.logger.debug(f"Target role: {target_role}")
-#         self.logger.debug(f"Params: {params}")
-#
-#         try:
-#             # Выбираем целевой узел
-#             target_node = await self._select_target_node(target_node_name, target_role)
-#
-#             # Формируем URL
-#             rpc_url = f"http://{target_node['address']}:{target_node['port']}/rpc/{method_path}"
-#
-#             print(f"📍 FINAL TARGET NODE: {target_node.get('node_id', 'UNKNOWN')}")
-#             print(f"🌐 FORMING URL: http://{target_node['address']}:{target_node['port']}/rpc/{method_path}")
-#
-#             # Подготавливаем RPC payload
-#             rpc_payload = {
-#                 "method": method_path.split('/')[-1],  # Только имя метода!
-#                 "params": params,
-#                 "id": f"client_req_{datetime.now().timestamp()}"
-#             }
-#
-#             headers = {"Authorization": f"Bearer {self.token}"}
-#
-#             print(f"🚀 RPC Call Details:")
-#             print(f"   Target: {target_node['node_id']} ({target_node['role']})")
-#             print(f"   URL: {rpc_url}")
-#             print(f"   Method: {rpc_payload['method']}")
-#
-#             async with httpx.AsyncClient(timeout=httpx.Timeout(timeout)) as client:
-#                 rpc_response = await client.post(rpc_url, json=rpc_payload, headers=headers)
-#
-#                 if rpc_response.status_code != 200:
-#                     error_text = rpc_response.text
-#                     self.logger.error(f"RPC failed: {rpc_response.status_code} - {error_text}")
-#                     raise RuntimeError(f"RPC failed: {rpc_response.status_code} - {error_text}")
-#
-#                 result = rpc_response.json()
-#
-#                 if result.get("error"):
-#                     raise RuntimeError(f"RPC error: {result['error']}")
-#
-#                 return result.get("result")
-#
-#         except Exception as e:
-#             self.logger.error(f"RPC call failed: {e}")
-#             raise RuntimeError(f"RPC call failed: {e}")
-#
-#     async def broadcast_call(self, method_path: str, params: dict = None, target_role: str = None) -> List[dict]:
-#         """Широковещательный RPC вызов"""
-#         if not self.token:
-#             raise RuntimeError("Не аутентифицирован")
-#
-#         coord_addr = self.connected_nodes[0]
-#         coord_host, coord_port = coord_addr.split(':')
-#         broadcast_url = f"http://{coord_host}:{coord_port}/admin/broadcast"
-#
-#         headers = {"Authorization": f"Bearer {self.token}"}
-#         broadcast_payload = {
-#             "method": method_path,
-#             "params": params or {},
-#             "target_role": target_role
-#         }
-#
-#         async with httpx.AsyncClient(timeout=90.0) as client:
-#             response = await client.post(broadcast_url, json=broadcast_payload, headers=headers)
-#
-#             if response.status_code != 200:
-#                 raise RuntimeError(f"Broadcast неудачен: {response.status_code}")
-#
-#             return response.json().get("results", [])
-#
-#     async def close(self):
-#         """Закрытие клиента"""
-#         await self.transport.close_all()
-#         self.logger.info("P2P клиент закрыт")
-
 async def run_coordinator(node_id: str, port: int, bind_address: str, redis_url: str):
     """Запуск координатора"""
     logger = logging.getLogger("Coordinator")
@@ -599,7 +356,7 @@ def create_argument_parser():
 
     parser.add_argument(
         'mode',
-        choices=['coordinator', 'worker', 'client', 'test'],
+        choices=['coordinator', 'worker'],
         help='Режим запуска системы'
     )
 
@@ -682,11 +439,10 @@ async def main():
             )
 
         elif args.mode == 'worker':
-            node_id = args.node_id or f"worker-{socket.gethostname()}"
-            # node_id = args.node_id or f"worker-{os.getpid()}"
+            node_id = args.node_id or f"worker-{os.getpid()}"
             port = args.port or 8002
 
-            logger.info(f"⚙️  Запуск рабочего узла: {node_id} на {args.address}:{port}")
+            logger.info(f"Запуск рабочего узла: {node_id} на {args.address}:{port}")
             await run_worker(
                 node_id=node_id,
                 port=port,
@@ -713,7 +469,7 @@ async def main():
 def check_python_version():
     """Проверка версии Python"""
     if sys.version_info < (3, 7):
-        print("❌ Требуется Python 3.7 или новее")
+        print("Требуется Python 3.7 или новее")
         print(f"   Текущая версия: {sys.version}")
         return False
     return True
@@ -734,7 +490,7 @@ def check_dependencies():
             missing_packages.append(package)
 
     if missing_packages:
-        print("❌ Отсутствуют обязательные зависимости:")
+        print("Отсутствуют обязательные зависимости:")
         for package in missing_packages:
             print(f"   - {package}")
         print("\nУстановите зависимости:")
@@ -782,5 +538,5 @@ if __name__ == "__main__":
         print("\nStopped")
         sys.exit(0)
     except Exception as e:
-        print(f"❌ Фатальная ошибка: {e}")
+        print(f"Фатальная ошибка: {e}")
         sys.exit(1)

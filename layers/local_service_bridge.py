@@ -1,10 +1,11 @@
-# local_service_bridge.py - ИСПРАВЛЕННАЯ версия с поддержкой таргетинга узлов
+# local_service_bridge.py - Локальный мост сервисов с поддержкой таргетинга узлов
 import asyncio
 import logging
 from typing import Dict, Any, Optional
 
 
 class LocalServiceBridge:
+    """Локальный мост для вызова сервисов без сетевых запросов"""
 
     def __init__(self, method_registry: Dict[str, Any], service_manager):
         self.method_registry = method_registry
@@ -54,7 +55,7 @@ class ServiceMethodProxy:
     def __getattr__(self, attr_name: str):
         """Получить callable для метода или прокси для узла"""
 
-        #todo Список известных узлов/ролей для таргетинга дополнить актуальными
+        # Список известных узлов/ролей для таргетинга
         known_targets = [
             'coordinator', 'worker', 'worker1', 'worker2', 'worker3',
             'node1', 'node2', 'host1', 'host2', 'pc1', 'pc2',

@@ -1,4 +1,4 @@
-# Решение проблемы с aioredis в Python 3.12+
+# cache.py - Система кеширования с fallback подходом
 import sys
 from typing import Optional, Any, Dict
 import json
@@ -15,7 +15,6 @@ warnings.filterwarnings("ignore", category=DeprecationWarning)
 # Попытка импорта aioredis с обработкой ошибки
 try:
     import aioredis
-
     REDIS_AVAILABLE = True
 except (ImportError, TypeError) as e:
     print(f"Redis недоступен: {e}")

@@ -5,20 +5,18 @@ import os.path
 import sys
 import time
 from pathlib import Path
+from typing import Any, Dict, Union, List, Optional
 
 from fastapi import FastAPI, HTTPException, Depends, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
-from typing import Any, Dict, Union, List
 import jwt
 import inspect
 from datetime import datetime, timedelta
-import uuid
-
 from starlette.responses import HTMLResponse
 
 from layers.network import P2PNetworkLayer
-from layers.local_service_layer import LocalServiceProxy, EnhancedLocalServiceLayer, create_local_service_bridge
+from layers.local_service_bridge import create_local_service_bridge
 
 # JWT конфигурация
 JWT_SECRET_KEY = "your-super-secret-key-change-this-in-production"
@@ -80,101 +78,47 @@ class P2PAuthBearer(HTTPBearer):
             )
 
 
-class AsyncRPCProxy:
-    """Динамический прокси для асинхронных RPC вызовов"""
+class SimpleLocalServiceLayer:
+    """Простой слой для работы с локальными сервисами"""
 
-    def __init__(self, client, base_url: str = "", path: str = "", auth_token: str = None):
-        self._client = client
-        self._base_url = base_url
-        self._path = path
-        self._auth_token = auth_token
+    def __init__(self, method_registry: Dict[str, Any]):
+        self.method_registry = method_registry
+        self.logger = logging.getLogger("SimpleLocalServiceLayer")
 
-    def __getattr__(self, name: str) -> 'AsyncRPCProxy':
-        """Создание цепочки прокси: service.node.domain -> /service/node/domain"""
-        new_path = f"{self._path}/{name}" if self._path else name
-        return AsyncRPCProxy(
-            client=self._client,
-            base_url=self._base_url,
-            path=new_path,
-            auth_token=self._auth_token
-        )
+    def list_all_services(self) -> Dict[str, Dict[str, Any]]:
+        """Список всех сервисов из method_registry"""
+        services = {}
+        for method_path in self.method_registry.keys():
+            if '/' in method_path:
+                service_name = method_path.split('/')[0]
+                if service_name not in services:
+                    services[service_name] = {
+                        "methods": [],
+                        "status": "running"
+                    }
+                method_name = method_path.split('/', 1)[1]
+                services[service_name]["methods"].append(method_name)
+        return services
 
-    async def __call__(self, *args, **kwargs) -> Any:
-        """Выполнение RPC вызова"""
+    def list_registry_methods(self) -> List[str]:
+        """Список всех методов в реестре"""
+        return list(self.method_registry.keys())
 
-        payload = RPCRequest(
-            method=self._path.split('/')[-1],
-            params=kwargs if kwargs else list(args),
-            id=f"req_{uuid.uuid4()}"
-        )
+    def get_service_info(self, service_name: str) -> Optional[Dict[str, Any]]:
+        """Получить информацию о сервисе"""
+        methods = []
+        for method_path in self.method_registry.keys():
+            if method_path.startswith(f"{service_name}/"):
+                method_name = method_path.split('/', 1)[1]
+                methods.append(method_name)
 
-        headers = {"Content-Type": "application/json"}
-        if self._auth_token:
-            headers["Authorization"] = f"Bearer {self._auth_token}"
-
-        try:
-            result = await self._client.execute_request(
-                endpoint=f"/rpc/{self._path}",
-                data=payload.dict(),
-                headers=headers
-            )
-
-            if result.get("error"):
-                raise HTTPException(status_code=400, detail=result["error"])
-
-            return result.get("result")
-
-        except Exception as e:
-            raise HTTPException(
-                status_code=503,
-                detail=f"RPC call failed: {str(e)}"
-            )
-
-
-# useless code
-class P2PServiceClient:
-    """Клиент P2P сервисов с поддержкой await service.node.domain.method()"""
-
-    def __init__(self, network_layer: P2PNetworkLayer, auth_token: str):
-        self.network = network_layer
-        self.auth_token = auth_token
-
-    def __getattr__(self, name: str) -> AsyncRPCProxy:
-        """Точка входа для цепочки прокси"""
-        return AsyncRPCProxy(
-            client=self.network,
-            base_url="",  # URL определяется динамически
-            path=name,
-            auth_token=self.auth_token
-        )
-
-    async def broadcast_call(self, method_path: str, *args, **kwargs) -> List[Dict[str, Any]]:
-        """Широковещательный RPC вызов ко всем узлам"""
-        payload = RPCRequest(
-            method=method_path.split('/')[-1],
-            params=kwargs if kwargs else list(args),
-            id=f"broadcast_{uuid.uuid4()}"
-        )
-
-        headers = {"Content-Type": "application/json"}
-        if self.auth_token:
-            headers["Authorization"] = f"Bearer {self.auth_token}"
-
-        return await self.network.broadcast_request(
-            endpoint=f"/rpc/{method_path}",
-            data=payload.dict(),
-            headers=headers
-        )
-
-    async def close(self):
-        """Закрытие клиента"""
-        await self.network.stop()
-
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
-        await self.close()
+        if methods:
+            return {
+                "name": service_name,
+                "methods": methods,
+                "status": "running"
+            }
+        return None
 
 
 class RPCMethods:
@@ -183,10 +127,9 @@ class RPCMethods:
         self.services_path = Path("services")
         self.registered_services = set()
 
-        # НОВОЕ: Локальный слой сервисов
-        self.local_service_layer = EnhancedLocalServiceLayer(method_registry)
+        # Локальный слой сервисов
+        self.local_service_layer = SimpleLocalServiceLayer(method_registry)
         self.local_bridge = None
-
 
         if os.path.exists("services"):
             self.services_path = Path("services")
@@ -194,13 +137,7 @@ class RPCMethods:
             self.services_path = Path("../services")
 
         # Запуск observer в фоновом режиме
-        import asyncio
         asyncio.create_task(self.observer())
-
-    # def set_service_manager(self, service_manager):
-    #     """Установка менеджера сервисов для локального моста"""
-    #     self.local_bridge = create_local_service_bridge(self.method_registry, service_manager)
-    #     self.local_service_layer.set_service_registry(service_manager.registry)
 
     async def register_rpc_methods(self, path: str, methods_instance):
         """Регистрация RPC методов с локальным прокси"""
@@ -210,7 +147,6 @@ class RPCMethods:
                 method_path = f"{path}/{name}"
                 self.method_registry[method_path] = method
                 logging.info(f"Зарегистрирован RPC метод: {method_path}")
-
 
         if self.local_bridge and hasattr(methods_instance, 'proxy'):
             # Создаем локальный прокси
@@ -333,19 +269,17 @@ class RPCMethods:
     def set_service_manager(self, service_manager):
         """Установка менеджера сервисов для локального моста"""
         try:
-            from local_service_bridge import create_local_service_bridge
+            from layers.local_service_bridge import create_local_service_bridge
 
             self.local_bridge = create_local_service_bridge(
                 self.method_registry,
                 service_manager
             )
-            self.logger.info("Local service bridge установлен в RPCMethods")
+            logging.info("Local service bridge установлен в RPCMethods")
 
         except ImportError as e:
-            self.logger.warning(f"Не удалось импортировать local_service_bridge: {e}")
+            logging.warning(f"Не удалось импортировать local_service_bridge: {e}")
             self.local_bridge = None
-
-# Реестр методов для динамической диспетчеризации
 
 
 class P2PServiceLayer:
@@ -360,8 +294,8 @@ class P2PServiceLayer:
         )
         self.security = P2PAuthBearer()
 
-        # НОВОЕ: Локальный слой для сервисов
-        self.local_service_layer = EnhancedLocalServiceLayer(method_registry)
+        # Локальный слой для сервисов (инициализируется позже через set_local_bridge)
+        self.local_service_layer = None
         self.local_bridge = None
 
         self.setup_endpoints()
@@ -369,7 +303,8 @@ class P2PServiceLayer:
     def set_local_bridge(self, local_bridge):
         """Установка локального моста сервисов"""
         self.local_bridge = local_bridge
-        self.local_service_layer = local_bridge.local_layer
+        # Создаем простой слой для работы с method_registry
+        self.local_service_layer = SimpleLocalServiceLayer(method_registry)
 
     def setup_endpoints(self):
         """Настройка FastAPI endpoints"""
@@ -389,7 +324,7 @@ class P2PServiceLayer:
                 )
 
             try:
-                # НОВОЕ: Прямой вызов через локальный слой
+                # Прямой вызов через локальный слой
                 if self.local_bridge:
                     if isinstance(rpc_request.params, dict):
                         result = await self.local_bridge.call_method_direct(
@@ -481,7 +416,7 @@ class P2PServiceLayer:
             except FileNotFoundError:
                 return {"message": "P2P Admin System", "status": "running"}
 
-        # НОВОЕ: Локальные административные endpoints
+        # Локальные административные endpoints
 
         @self.app.get("/local/services")
         async def get_local_services(node_id: str = Depends(self.security)):
@@ -519,7 +454,7 @@ class P2PServiceLayer:
             except Exception as e:
                 return {"error": str(e), "success": False}
 
-        # МОДИФИЦИРОВАННЫЙ broadcast endpoint
+        # Модифицированный broadcast endpoint
 
         @self.app.post("/admin/broadcast")
         async def admin_broadcast(
@@ -545,7 +480,7 @@ class P2PServiceLayer:
             rpc_request = RPCRequest(
                 method=method_path.split('/')[-1],
                 params=clean_params,
-                id=f"broadcast_{uuid.uuid4()}"
+                id=f"broadcast_{int(datetime.now().timestamp())}"
             )
 
             headers = {"Authorization": f"Bearer {self._generate_internal_token(node_id)}"}
