@@ -22,7 +22,9 @@ from pathlib import Path
 
 # Добавляем текущую директорию в путь для импортов
 sys.path.insert(0, str(Path(__file__).parent))
-
+# from layers.local_service_layer import P2PServiceBridge, create_enhanced_universal_client
+from layers.local_service_bridge import create_local_service_bridge
+from layers.service_framework import ServiceManager
 # Импорты компонентов системы
 try:
     from layers.transport import P2PTransportLayer, TransportConfig
@@ -98,6 +100,7 @@ class P2PAdminSystem:
         self.bind_address = bind_address
         self.coordinator_mode = coordinator_mode
         self.started = False
+        self.service_bridge = None
 
         self.logger = logging.getLogger(f"P2PSystem.{node_id}")
 
@@ -135,12 +138,13 @@ class P2PAdminSystem:
         # TODO: add register methods
 
     async def _setup_admin_methods(self):
-        """Настройка административных методов"""
+        """Настройка административных методов БЕЗ внешних подключений"""
         try:
-            # Создание экземпляров методов
+            # Создаем экземпляры методов
+            from methods.system import SystemMethods
             system_methods = SystemMethods(self.cache)
 
-            # Привязка кеша к методам с декораторами
+            # Привязка кэша к методам с декораторами
             self._bind_cache_to_methods(system_methods)
 
             # Регистрация методов для RPC
@@ -150,6 +154,39 @@ class P2PAdminSystem:
 
         except Exception as e:
             self.logger.error(f"Ошибка при настройке административных методов: {e}")
+            raise
+
+    async def _initialize_local_services(self):
+        """Инициализация локальных сервисов БЕЗ сетевых подключений"""
+        try:
+            self.logger.info("Инициализация системы сервисов...")
+
+            # Создаем менеджер сервисов
+            service_manager = ServiceManager(self.rpc)
+
+            # Создаем локальный мост БЕЗ P2P клиента
+            local_bridge = create_local_service_bridge(
+                self.rpc.method_registry,
+                service_manager
+            )
+
+            # Инициализируем локальный мост
+            await local_bridge.initialize()
+
+            # Устанавливаем локальный прокси для новых сервисов
+            service_manager.set_proxy_client(local_bridge.get_proxy())
+
+            # Инициализируем все сервисы из директории services/
+            await service_manager.initialize_all_services()
+
+            # Сохраняем ссылки для использования в других частях системы
+            self.service_manager = service_manager
+            self.local_bridge = local_bridge
+
+            self.logger.info("Система сервисов инициализирована (только локальные вызовы)")
+
+        except Exception as e:
+            self.logger.error(f"Ошибка инициализации сервисов: {e}")
             raise
 
     def _bind_cache_to_methods(self, methods_instance):
@@ -200,8 +237,12 @@ class P2PAdminSystem:
                              f"Координаторов: {status['coordinators']}, "
                              f"Рабочих: {status['workers']}")
 
+            # self.started = True
+            # НОВОЕ: Инициализация локальных сервисов БЕЗ сетевых подключений
+            await self._initialize_local_services()
+
             self.started = True
-            self.logger.info("P2P Admin System успешно запущен!")
+            self.logger.info("P2P Admin System с сервисами успешно запущен!")
 
         except Exception as e:
             self.logger.error(f"Ошибка запуска P2P системы: {e}")
@@ -215,6 +256,10 @@ class P2PAdminSystem:
         self.logger.info("Остановка P2P Admin System...")
 
         try:
+            if hasattr(self, 'service_manager'):
+                self.logger.debug("Остановка системы локальных сервисов...")
+                await self.service_manager.shutdown_all_services()
+
             # Остановка сетевого уровня
             self.logger.debug("Остановка сетевого уровня...")
             await self.network.stop()

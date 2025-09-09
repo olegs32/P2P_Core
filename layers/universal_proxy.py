@@ -112,10 +112,11 @@ class SimpleMethodProxy:
 
 
 class SimpleUniversalClient:
-    """Простой универсальный клиент"""
+    """Простой универсальный клиент с поддержкой локальных сервисов"""
 
-    def __init__(self, base_client):
+    def __init__(self, base_client, local_service_registry=None):
         self.base_client = base_client
+        self.local_registry = local_service_registry
 
     def __getattr__(self, name: str):
         """Делегирование к базовому клиенту или создание прокси"""
@@ -125,12 +126,15 @@ class SimpleUniversalClient:
             return getattr(self.base_client, name)
 
         # Создаем прокси сервиса
-        return SimpleServiceProxy(self.base_client, service_name=name)
+        return SimpleServiceProxy(
+            self.base_client,
+            service_name=name,
+            local_registry=self.local_registry
+        )
 
-
-def create_universal_client(base_client):
-    """Создание универсального клиента"""
-    return SimpleUniversalClient(base_client)
+def create_universal_client(base_client, local_registry=None):
+    """Создание универсального клиента с поддержкой локальных сервисов"""
+    return SimpleUniversalClient(base_client, local_registry)
 
 
 # Простой пример использования

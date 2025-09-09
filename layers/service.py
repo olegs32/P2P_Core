@@ -18,6 +18,7 @@ import uuid
 from starlette.responses import HTMLResponse
 
 from layers.network import P2PNetworkLayer
+from layers.local_service_layer import LocalServiceProxy, EnhancedLocalServiceLayer, create_local_service_bridge
 
 # JWT конфигурация
 JWT_SECRET_KEY = "your-super-secret-key-change-this-in-production"
@@ -181,51 +182,79 @@ class RPCMethods:
         self.method_registry = method_registry
         self.services_path = Path("services")
         self.registered_services = set()
-        # Запуск observer в фоновом режиме
+
+        # НОВОЕ: Локальный слой сервисов
+        self.local_service_layer = EnhancedLocalServiceLayer(method_registry)
+        self.local_bridge = None
+
+        # Определяем путь к сервисам
         if os.path.exists("services"):
             self.services_path = Path("services")
         else:
             self.services_path = Path("../services")
 
+        # Запуск observer в фоновом режиме
         import asyncio
         asyncio.create_task(self.observer())
 
+    def set_service_manager(self, service_manager):
+        """Установка менеджера сервисов для локального моста"""
+        self.local_bridge = create_local_service_bridge(self.method_registry, service_manager)
+        self.local_service_layer.set_service_registry(service_manager.registry)
+
     async def register_rpc_methods(self, path: str, methods_instance):
-        """Регистрация RPC методов для динамической диспетчеризации"""
+        """Регистрация RPC методов с локальным прокси"""
+        # Стандартная регистрация
         for name, method in inspect.getmembers(methods_instance, predicate=inspect.ismethod):
             if not name.startswith('_'):
                 method_path = f"{path}/{name}"
                 self.method_registry[method_path] = method
                 logging.info(f"Зарегистрирован RPC метод: {method_path}")
 
+        # НОВОЕ: Установка локального прокси вместо P2P клиента
+        if self.local_bridge and hasattr(methods_instance, 'proxy'):
+            # Создаем локальный прокси без сетевых запросов
+            local_proxy = self.local_bridge.get_proxy()
+            methods_instance.proxy = local_proxy
+            logging.info(f"Установлен локальный прокси для сервиса: {path}")
+
     def load_core_service(self, service_dir: Path):
-        """Загрузка core_service.py из директории сервиса"""
+        """Загрузка core_service.py или main.py из директории сервиса"""
         try:
+            # Проверяем сначала main.py (новый стандарт)
+            main_service_path = service_dir / "main.py"
             core_service_path = service_dir / "core_service.py"
 
-            if not core_service_path.exists():
+            service_path = None
+            if main_service_path.exists():
+                service_path = main_service_path
+                class_name = "Run"  # Для main.py ищем класс Run
+            elif core_service_path.exists():
+                service_path = core_service_path
+                class_name = "CoreMethods"  # Для core_service.py ищем CoreMethods
+            else:
                 return None
 
             # Создаем уникальное имя модуля
-            module_name = f"core_service_{service_dir.name}"
+            module_name = f"service_{service_dir.name}_{int(time.time())}"
 
             # Загружаем модуль
-            spec = importlib.util.spec_from_file_location(module_name, core_service_path)
+            spec = importlib.util.spec_from_file_location(module_name, service_path)
             module = importlib.util.module_from_spec(spec)
 
             # Добавляем в sys.modules чтобы избежать повторных загрузок
             sys.modules[module_name] = module
             spec.loader.exec_module(module)
 
-            # Ищем класс CoreMethods
-            if hasattr(module, 'CoreMethods'):
-                return module.CoreMethods
+            # Ищем нужный класс
+            if hasattr(module, class_name):
+                return getattr(module, class_name)
             else:
-                logging.warning(f"Класс CoreMethods не найден в {core_service_path}")
+                logging.warning(f"Класс {class_name} не найден в {service_path}")
                 return None
 
         except Exception as e:
-            logging.error(f"Ошибка загрузки {service_dir}/core_service.py: {e}")
+            logging.error(f"Ошибка загрузки {service_dir}/main.py или core_service.py: {e}")
             return None
 
     async def scan_services(self):
@@ -246,11 +275,6 @@ class RPCMethods:
                 if service_name in self.registered_services:
                     continue
 
-                # Проверяем наличие core_service.py
-                core_service_path = service_dir / "core_service.py"
-                if not core_service_path.exists():
-                    continue
-
                 # Проверяем, что методы сервиса еще не зарегистрированы
                 service_methods_exist = any(
                     key.startswith(service_name + "/")
@@ -261,20 +285,34 @@ class RPCMethods:
                     self.registered_services.add(service_name)
                     continue
 
-                # Загружаем класс CoreMethods
-                core_methods_class = self.load_core_service(service_dir)
-                if core_methods_class is None:
+                # Загружаем класс сервиса
+                service_class = self.load_core_service(service_dir)
+                if service_class is None:
                     continue
 
                 # Создаем экземпляр класса и регистрируем методы
                 try:
-                    methods_instance = core_methods_class()
+                    # НОВОЕ: Создаем локальный прокси для сервиса
+                    local_proxy = None
+                    if self.local_bridge:
+                        local_proxy = self.local_bridge.get_proxy()
+
+                    # Создаем экземпляр с локальным прокси
+                    if hasattr(service_class, '__init__'):
+                        # Для BaseService
+                        methods_instance = service_class(service_name, local_proxy)
+                    else:
+                        # Для старых CoreMethods
+                        methods_instance = service_class()
+                        if hasattr(methods_instance, 'proxy'):
+                            methods_instance.proxy = local_proxy
+
                     await self.register_rpc_methods(service_name, methods_instance)
                     self.registered_services.add(service_name)
                     logging.info(f"Сервис {service_name} успешно зарегистрирован")
 
                 except Exception as e:
-                    logging.error(f"Ошибка создания экземпляра CoreMethods для {service_name}: {e}")
+                    logging.error(f"Ошибка создания экземпляра сервиса {service_name}: {e}")
 
         except Exception as e:
             logging.error(f"Ошибка сканирования сервисов: {e}")
@@ -292,12 +330,26 @@ class RPCMethods:
                 logging.exception(f"Ошибка в observer: {ex}")
                 await asyncio.sleep(60)  # Продолжаем работу даже при ошибках
 
+    def set_service_manager(self, service_manager):
+        """Установка менеджера сервисов для локального моста"""
+        try:
+            from local_service_bridge import create_local_service_bridge
+
+            self.local_bridge = create_local_service_bridge(
+                self.method_registry,
+                service_manager
+            )
+            self.logger.info("Local service bridge установлен в RPCMethods")
+
+        except ImportError as e:
+            self.logger.warning(f"Не удалось импортировать local_service_bridge: {e}")
+            self.local_bridge = None
 
 # Реестр методов для динамической диспетчеризации
 
 
 class P2PServiceLayer:
-    """Уровень сервисов с FastAPI и RPC диспетчеризацией"""
+    """Уровень сервисов с FastAPI и локальным взаимодействием"""
 
     def __init__(self, network_layer: P2PNetworkLayer):
         self.network = network_layer
@@ -307,7 +359,17 @@ class P2PServiceLayer:
             version="1.0.0"
         )
         self.security = P2PAuthBearer()
+
+        # НОВОЕ: Локальный слой для сервисов
+        self.local_service_layer = EnhancedLocalServiceLayer(method_registry)
+        self.local_bridge = None
+
         self.setup_endpoints()
+
+    def set_local_bridge(self, local_bridge):
+        """Установка локального моста сервисов"""
+        self.local_bridge = local_bridge
+        self.local_service_layer = local_bridge.local_layer
 
     def setup_endpoints(self):
         """Настройка FastAPI endpoints"""
@@ -318,7 +380,7 @@ class P2PServiceLayer:
                 rpc_request: RPCRequest,
                 node_id: str = Depends(self.security)
         ):
-            """Динамический RPC endpoint"""
+            """Динамический RPC endpoint с локальной оптимизацией"""
 
             if path not in method_registry:
                 raise HTTPException(
@@ -327,12 +389,23 @@ class P2PServiceLayer:
                 )
 
             try:
-                method = method_registry[path]
-
-                if isinstance(rpc_request.params, dict):
-                    result = await method(**rpc_request.params)
+                # НОВОЕ: Прямой вызов через локальный слой
+                if self.local_bridge:
+                    if isinstance(rpc_request.params, dict):
+                        result = await self.local_bridge.call_method_direct(
+                            *path.split('/', 1), **rpc_request.params
+                        )
+                    else:
+                        # Для позиционных параметров используем старый способ
+                        method = method_registry[path]
+                        result = await method(*rpc_request.params)
                 else:
-                    result = await method(*rpc_request.params)
+                    # Fallback на старый способ
+                    method = method_registry[path]
+                    if isinstance(rpc_request.params, dict):
+                        result = await method(**rpc_request.params)
+                    else:
+                        result = await method(*rpc_request.params)
 
                 return RPCResponse(result=result, id=rpc_request.id)
 
@@ -402,21 +475,58 @@ class P2PServiceLayer:
         @self.app.get("/")
         async def main_web_page():
             """simple web"""
-            with open('docs/p2p_admin_dashboard.html', 'r', encoding='utf-8') as f:
-                return HTMLResponse(content=f.read())
+            try:
+                with open('docs/p2p_admin_dashboard.html', 'r', encoding='utf-8') as f:
+                    return HTMLResponse(content=f.read())
+            except FileNotFoundError:
+                return {"message": "P2P Admin System", "status": "running"}
 
-        # ЗАМЕНИТЕ существующий @self.app.post("/admin/broadcast") на:
+        # НОВОЕ: Локальные административные endpoints
+
+        @self.app.get("/local/services")
+        async def get_local_services(node_id: str = Depends(self.security)):
+            """Получение списка локальных сервисов"""
+            if self.local_service_layer:
+                return {
+                    "services": self.local_service_layer.list_all_services(),
+                    "registry_methods": self.local_service_layer.list_registry_methods()
+                }
+            return {"services": {}, "registry_methods": []}
+
+        @self.app.get("/local/services/{service_name}")
+        async def get_service_info(service_name: str, node_id: str = Depends(self.security)):
+            """Получение информации о конкретном сервисе"""
+            if self.local_service_layer:
+                info = self.local_service_layer.get_service_info(service_name)
+                if info:
+                    return info
+            raise HTTPException(status_code=404, detail=f"Service {service_name} not found")
+
+        @self.app.post("/local/call/{service_name}/{method_name}")
+        async def call_local_service_method(
+                service_name: str,
+                method_name: str,
+                params: Dict[str, Any] = {},
+                node_id: str = Depends(self.security)
+        ):
+            """Прямой вызов локального метода сервиса"""
+            try:
+                if self.local_bridge:
+                    result = await self.local_bridge.call_method_direct(service_name, method_name, **params)
+                    return {"result": result, "success": True}
+                else:
+                    raise HTTPException(status_code=503, detail="Local bridge not available")
+            except Exception as e:
+                return {"error": str(e), "success": False}
+
+        # МОДИФИЦИРОВАННЫЙ broadcast endpoint
 
         @self.app.post("/admin/broadcast")
         async def admin_broadcast(
                 broadcast_request: Dict[str, Any],
                 node_id: str = Depends(self.security)
         ):
-            """УЛУЧШЕННЫЙ Административный широковещательный запрос с поддержкой доменов"""
-
-            # Debug информация
-            print("🚀 BROADCAST DEBUG: New broadcast endpoint called!")
-            print(f"   Request: {broadcast_request}")
+            """Административный широковещательный запрос с поддержкой доменов"""
 
             method_path = broadcast_request.get('method')
             params = broadcast_request.get('params', {})
@@ -425,33 +535,22 @@ class P2PServiceLayer:
             if not method_path:
                 raise HTTPException(status_code=400, detail="method is required")
 
-            # НОВАЯ ЛОГИКА: Извлекаем домен из параметров
+            # Извлекаем домен из параметров
             target_domain = params.get('_target_domain')
-
-            if target_domain:
-                print(f"🌐 Domain filter detected: {target_domain}")
 
             # Убираем служебные параметры перед отправкой методу
             clean_params = {k: v for k, v in params.items() if not k.startswith('_target_')}
 
-            print(f"🧹 Original params: {params}")
-            print(f"🧹 Cleaned params: {clean_params}")
-
             # Создание RPC запроса с ЧИСТЫМИ параметрами
             rpc_request = RPCRequest(
                 method=method_path.split('/')[-1],
-                params=clean_params,  # ← Используем очищенные параметры!
+                params=clean_params,
                 id=f"broadcast_{uuid.uuid4()}"
             )
 
             headers = {"Authorization": f"Bearer {self._generate_internal_token(node_id)}"}
 
-            # TODO: Здесь можно добавить фильтрацию по домену
-            # Пока отправляем ко всем узлам с target_role
-            print(f"📡 Broadcasting method '{method_path}' to role '{target_role}'")
-            if target_domain:
-                print(f"   Note: Domain filtering '{target_domain}' not yet implemented in network layer")
-
+            # Используем существующий broadcast через сеть
             results = await self.network.broadcast_request(
                 endpoint=f"/rpc/{method_path}",
                 data=rpc_request.dict(),
@@ -459,16 +558,14 @@ class P2PServiceLayer:
                 target_role=target_role
             )
 
-            print(f"📊 Broadcast results: {len(results)} responses")
             success_count = len([r for r in results if r.get('success')])
-            print(f"   Successful: {success_count}/{len(results)}")
 
             return {
                 "broadcast_id": rpc_request.id,
                 "results": results,
                 "success_count": success_count,
                 "total_count": len(results),
-                "target_domain": target_domain  # Добавляем в ответ для debug
+                "target_domain": target_domain
             }
 
         @self.app.get("/debug/registry")

@@ -262,12 +262,23 @@ async def example_usage():
         print("\n=== ТЕСТИРОВАНИЕ UNIVERSAL PROXY ===")
 
         # Тестируем разные варианты вызовов
-        test_calls = [
-            ("universal.system.coordinator.get_system_info", lambda: universal.system.coordinator.get_system_info()),
-            ("universal.system.get_system_info", lambda: universal.system.get_system_info()),
-            ("universal.cluster.info", lambda: universal.cluster.info()),
-            ("universal.node.status", lambda: universal.node.status()),
-        ]
+        # Получаем системную информацию
+        system_info = await self.proxy.system.get_system_info()
+
+        # Получаем список файлов
+        files = await self.proxy.file_manager.list_directory(path="./data")
+
+        # Проверяем сертификат
+        cert_info = await self.proxy.certificate_manager.check_domain_certificate(
+            domain="example.com"
+        )
+
+        return {
+            "system": system_info,
+            "files": files,
+            "certificate": cert_info,
+            "processed_data": data
+        }
 
         for description, call_func in test_calls:
             try:

@@ -2,12 +2,13 @@
 
 import asyncio
 import logging
+import time
 from typing import Dict, Any, Optional
 from pathlib import Path
 
 # Интеграция с существующими компонентами
-from service_framework import ServiceManager, BaseService, service_method
-from universal_proxy import create_universal_client
+from layers.service_framework import ServiceManager, BaseService, service_method
+from layers.universal_proxy import create_universal_client
 
 
 class P2PServiceBridge:
@@ -26,6 +27,7 @@ class P2PServiceBridge:
 
         # Создаем внутреннего клиента для сервисов
         internal_client = P2PClient("internal-service-client")
+        time.sleep(5)
 
         # Подключаемся к собственному узлу
         node_address = f"{self.p2p_system.bind_address}:{self.p2p_system.port}"
