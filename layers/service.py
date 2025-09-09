@@ -1,6 +1,7 @@
 import asyncio
 import importlib
 import logging
+import os.path
 import sys
 import time
 from pathlib import Path
@@ -130,57 +131,62 @@ class AsyncRPCProxy:
 
 
 # useless code
-# class P2PServiceClient:
-#     """Клиент P2P сервисов с поддержкой await service.node.domain.method()"""
-#
-#     def __init__(self, network_layer: P2PNetworkLayer, auth_token: str):
-#         self.network = network_layer
-#         self.auth_token = auth_token
-#
-#     def __getattr__(self, name: str) -> AsyncRPCProxy:
-#         """Точка входа для цепочки прокси"""
-#         return AsyncRPCProxy(
-#             client=self.network,
-#             base_url="",  # URL определяется динамически
-#             path=name,
-#             auth_token=self.auth_token
-#         )
-#
-#     async def broadcast_call(self, method_path: str, *args, **kwargs) -> List[Dict[str, Any]]:
-#         """Широковещательный RPC вызов ко всем узлам"""
-#         payload = RPCRequest(
-#             method=method_path.split('/')[-1],
-#             params=kwargs if kwargs else list(args),
-#             id=f"broadcast_{uuid.uuid4()}"
-#         )
-#
-#         headers = {"Content-Type": "application/json"}
-#         if self.auth_token:
-#             headers["Authorization"] = f"Bearer {self.auth_token}"
-#
-#         return await self.network.broadcast_request(
-#             endpoint=f"/rpc/{method_path}",
-#             data=payload.dict(),
-#             headers=headers
-#         )
-#
-#     async def close(self):
-#         """Закрытие клиента"""
-#         await self.network.stop()
-#
-#     async def __aenter__(self):
-#         return self
-#
-#     async def __aexit__(self, exc_type, exc_val, exc_tb):
-#         await self.close()
+class P2PServiceClient:
+    """Клиент P2P сервисов с поддержкой await service.node.domain.method()"""
+
+    def __init__(self, network_layer: P2PNetworkLayer, auth_token: str):
+        self.network = network_layer
+        self.auth_token = auth_token
+
+    def __getattr__(self, name: str) -> AsyncRPCProxy:
+        """Точка входа для цепочки прокси"""
+        return AsyncRPCProxy(
+            client=self.network,
+            base_url="",  # URL определяется динамически
+            path=name,
+            auth_token=self.auth_token
+        )
+
+    async def broadcast_call(self, method_path: str, *args, **kwargs) -> List[Dict[str, Any]]:
+        """Широковещательный RPC вызов ко всем узлам"""
+        payload = RPCRequest(
+            method=method_path.split('/')[-1],
+            params=kwargs if kwargs else list(args),
+            id=f"broadcast_{uuid.uuid4()}"
+        )
+
+        headers = {"Content-Type": "application/json"}
+        if self.auth_token:
+            headers["Authorization"] = f"Bearer {self.auth_token}"
+
+        return await self.network.broadcast_request(
+            endpoint=f"/rpc/{method_path}",
+            data=payload.dict(),
+            headers=headers
+        )
+
+    async def close(self):
+        """Закрытие клиента"""
+        await self.network.stop()
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        await self.close()
 
 
 class RPCMethods:
     def __init__(self, method_registry):
         self.method_registry = method_registry
-        self.services_path = Path("../services")
+        self.services_path = Path("services")
         self.registered_services = set()
         # Запуск observer в фоновом режиме
+        if os.path.exists("services"):
+            self.services_path = Path("services")
+        else:
+            self.services_path = Path("../services")
+
         import asyncio
         asyncio.create_task(self.observer())
 

@@ -4,9 +4,21 @@
 import asyncio
 import logging
 from typing import Any, Optional, Dict, List
-
 from dataclasses import dataclass
 
+
+# === ИСПРАВЛЕНИЕ JWT ИМПОРТА ===
+# Замените в layers/service.py строку:
+# import jwt
+# на:
+# import jwt as PyJWT
+#
+# Или установите правильную библиотеку:
+# pip uninstall jwt
+# pip install PyJWT
+#
+# И в коде используйте:
+# token = PyJWT.encode(payload, JWT_SECRET_KEY, algorithm=JWT_ALGORITHM)
 
 @dataclass
 class P2PConfig:
@@ -121,8 +133,7 @@ class P2PInterfaceFactory:
         """Создание P2P интерфейса с автоматической настройкой"""
 
         # Создаем P2PClient для проекта
-        from p2p_admin import P2PClient
-        from universal_proxy import create_universal_client
+        from main import P2PClient, create_universal_client
 
         project_client = P2PClient(f"{admin_system.node_id}-{project_name}")
 
@@ -133,9 +144,8 @@ class P2PInterfaceFactory:
             # Находим координатор через gossip
             coordinators = []
             if hasattr(admin_system, 'network') and hasattr(admin_system.network, 'gossip'):
-                nodes = admin_system.network.gossip.node_registry
-                print(nodes)
-                coordinators = [f"{node.address}:{node.port}" for node in nodes.values()
+                nodes = admin_system.network.gossip.nodes
+                coordinators = [f"{node.host}:{node.port}" for node in nodes.values()
                                 if node.role == "coordinator"]
             connect_address = coordinators[0] if coordinators else "127.0.0.1:8001"
 
@@ -169,7 +179,6 @@ class P2PAdminSystemExtended:
             return self.project_interfaces[project_name]
 
         self.logger.info(f"Создание P2P интерфейса для проекта: {project_name}")
-        print(f"Создание P2P интерфейса для проекта: {project_name}")
 
         interface = await P2PInterfaceFactory.create_interface(
             self.admin_system, project_name
@@ -195,60 +204,102 @@ class P2PAdminSystemExtended:
             await self.unload_project_interface(project_name)
 
 
+# === Диагностика доступных методов ===
+
+async def diagnose_available_methods(p2p_client):
+    """Диагностика доступных RPC методов в системе"""
+    try:
+        # Получаем информацию о зарегистрированных методах
+        debug_info = await p2p_client.rpc_call("debug/registry", {})
+        print("🔍 Доступные методы:", debug_info.get('registered_methods', []))
+        return debug_info.get('registered_methods', [])
+    except Exception as e:
+        print(f"❌ Не удалось получить список методов: {e}")
+        return []
+
+
 # === Пример использования ===
 
 async def example_usage():
-    """Пример использования P2P Layer Interface"""
+    """Пример использования P2P Layer Interface с диагностикой"""
 
     # Предполагается, что admin_system уже создан и запущен
-    from p2p_admin import P2PAdminSystem
+    from p2p_admin import P2PClient
+    from universal_proxy import create_universal_client
+
+    # Создаем тестовый клиент для диагностики
+    client = P2PClient("diagnostic-client")
+    await client.connect(["127.0.0.1:8001"])
+    await client.authenticate()
+
+    # Диагностируем доступные методы
+    print("=== ДИАГНОСТИКА ДОСТУПНЫХ МЕТОДОВ ===")
+    available_methods = await diagnose_available_methods(client)
+
+    if not available_methods:
+        print("⚠️  Попробуем стандартные методы...")
+        # Попробуем стандартные методы
+        test_methods = [
+            "system/get_system_info",
+            "system/status",
+            "system/ping",
+            "cluster/info",
+            "node/status"
+        ]
+
+        for method in test_methods:
+            try:
+                result = await client.rpc_call(method, {})
+                print(f"✅ {method} - работает")
+                print(f"   Результат: {result}")
+            except Exception as e:
+                print(f"❌ {method} - не работает: {e}")
+
+    # Создание universal proxy только если методы найдены
+    if available_methods or True:  # Продолжаем тестирование
+        universal = create_universal_client(client)
+
+        print("\n=== ТЕСТИРОВАНИЕ UNIVERSAL PROXY ===")
+
+        # Тестируем разные варианты вызовов
+        test_calls = [
+            ("universal.system.coordinator.get_system_info", lambda: universal.system.coordinator.get_system_info()),
+            ("universal.system.get_system_info", lambda: universal.system.get_system_info()),
+            ("universal.cluster.info", lambda: universal.cluster.info()),
+            ("universal.node.status", lambda: universal.node.status()),
+        ]
+
+        for description, call_func in test_calls:
+            try:
+                print(f"\n🧪 Тестирую: {description}")
+                result = await call_func()
+                print(f"✅ Успех: {result}")
+            except Exception as e:
+                print(f"❌ Ошибка: {e}")
+
+    await client.close()
+
+
+# === Создание P2P интерфейса для реальной работы ===
+
+async def create_working_interface():
+    """Создание рабочего P2P интерфейса после диагностики"""
+
+    try:
+        from main import P2PAdminSystem
+    except ImportError:
+        from p2p_admin import P2PAdminSystem
 
     admin_system = P2PAdminSystem("worker", 8002, coordinator_mode=False)
     await admin_system.start(["127.0.0.1:8001"])
 
     # Создание расширенной системы
     extended_system = P2PAdminSystemExtended(admin_system)
-    print(5, extended_system)
+
     # Загрузка интерфейса для проекта
-    p2p = await extended_system.load_project_interface("simple_test")
+    p2p = await extended_system.load_project_interface("test_project")
 
-    # === Использование universal proxy напрямую ===
-
-    # Системные вызовы
-    cluster_info = await p2p.network.system.coordinator.get_system_info()
-    node_status = await p2p.network.simple_test.worker.get_system_metrics()
-    print(cluster_info, node_status)
-
-    # # Управление сертификатами
-    # cert_result = await p2p.network.certs.local_domain.install("/path/to/cert")
-    # cert_list = await p2p.network.certs.coordinator.list_certificates()
-    #
-    # # Docker операции
-    # deploy_result = await p2p.network.docker.production.deploy("nginx:latest")
-    # containers = await p2p.network.docker.worker.list_containers()
-    #
-    # # Управление сервисами
-    # restart_result = await p2p.network.services.worker.restart("nginx")
-    # service_status = await p2p.network.services.coordinator.status("nginx")
-
-    # === Использование сокращенных свойств ===
-
-    # Более короткий синтаксис
-    # info = await p2p.system.coordinator.get_info()
-    # await p2p.certs.local_domain.install(cert_path)
-    # await p2p.docker.production.deploy(image)
-    # await p2p.services.worker.restart('nginx')
-
-    # === Вспомогательные методы ===
-
-    # cluster_info = await p2p.get_cluster_info()
-    # is_alive = await p2p.ping_cluster()
-    # available_services = await p2p.list_available_services()
-    # print(cluster_info, is_alive, available_services)
-
-    # Очистка
-    await extended_system.shutdown_all_interfaces()
-
+    return p2p, extended_system
 
 if __name__ == "__main__":
     asyncio.run(example_usage())

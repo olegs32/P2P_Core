@@ -1,202 +1,143 @@
-import asyncio
-import time
-from typing import Dict, Any
 
-from layers.interface import P2PService, P2PInterface, P2PProductionNode
-from layers.universal_proxy import create_universal_client
+import asyncio
+import threading
+import importlib
+import logging
+import time
+import functools
+import inspect
+from typing import Dict, Callable, Any, List, Optional, Union
+from dataclasses import dataclass, field
+from collections import defaultdict
+from enum import Enum
+import weakref
+
+from layers.interface import P2PService, P2PInterface
+
+# === Пример использования ===
+
+# projects/test_project/main.py
+"""
+Пример проекта для интеграции с P2PAdminSystem
+"""
 
 
 class TestService(P2PService):
-    """Production тестовый сервис"""
+    """Тестовый сервис"""
 
     def __init__(self):
         super().__init__()
-        self.test_instance = TestClass()
-        self.cache = {}
+        self.test_data = {}
 
-    async def do_test(self, mode: str = "default", use_cache: bool = True, **kwargs):
-        """Выполнить тестирование с кешированием"""
-        cache_key = f"{mode}_{hash(str(kwargs))}"
-
-        if use_cache and cache_key in self.cache:
-            self.logger.info(f"Cache hit for {cache_key}")
-            return self.cache[cache_key]
+    async def do_test(self, mode: str = "default", **kwargs):
+        """Основной тестовый метод"""
+        self.logger.info(f"Executing test in mode: {mode}")
 
         # Локальная логика
-        result = self.test_instance.do_test(mode=mode, **kwargs)
-
-        # P2P вызовы с retry
-        try:
-            system_info = await self.call("system.get_system_info", timeout=5.0, retries=2)
-            metrics = await self.safe_call("monitoring.get_metrics", default={})
-
-            final_result = {
-                "result": result,
-                "system_info": system_info,
-                "metrics": metrics,
-                "timestamp": time.time()
-            }
-
-            # Кеширование
-            if use_cache:
-                self.cache[cache_key] = final_result
-
-            # Событие о завершении
-            await self.emit("test_completed", {
-                "mode": mode,
-                "success": True,
-                "cache_hit": False
-            })
-
-            return final_result
-
-        except Exception as e:
-            self.logger.error(f"Test failed: {e}")
-            await self.emit("test_failed", {"mode": mode, "error": str(e)})
-            raise
-
-    def get_cache_stats(self):
-        """Статистика кеша"""
-        return {
-            "size": len(self.cache),
-            "keys": list(self.cache.keys())
+        result = {
+            "mode": mode,
+            "data": kwargs,
+            "timestamp": time.time(),
+            "status": "completed"
         }
 
-    async def clear_cache(self):
-        """Очистка кеша"""
-        self.cache.clear()
-        self.logger.info("Cache cleared")
-        return {"status": "cache_cleared"}
+        # P2P вызовы
+        try:
+            # Вызов системных методов
+            system_info = await self.safe_call("system.get_system_metrics", default={})
+            result["system_info"] = system_info
+
+            # Сохранение результата
+            self.test_data[f"test_{time.time()}"] = result
+
+        except Exception as e:
+            result["error"] = str(e)
+
+        return result
+
+    def get_test_data(self):
+        """Получить все тестовые данные"""
+        return self.test_data
+
+    async def clear_test_data(self):
+        """Очистить тестовые данные"""
+        self.test_data.clear()
+        return {"status": "cleared", "count": 0}
 
 
 async def run(p2p: P2PInterface, config: Dict[str, Any]):
-    """Production entry point"""
+    """Entry point проекта"""
 
-    # Настройка middleware
-    @p2p.middleware
-    async def logging_middleware(phase: str, method_name: str, data: Any):
-        if phase == 'before':
-            p2p.logger.info(f"Calling {method_name} with args: {len(str(data))} chars")
-        else:
-            p2p.logger.info(f"Method {method_name} completed")
-        return data
+    p2p.logger.info(f"🚀 Starting test project with config: {config}")
 
-    @p2p.middleware
-    async def metrics_middleware(phase: str, method_name: str, data: Any):
-        if phase == 'before':
-            # Можно отправить метрики в мониторинг
-            await p2p.safe_call("monitoring.record_call", method=method_name)
-        return data
-
-    # Регистрация сервиса
+    # Создание и регистрация сервиса
     service = TestService()
-    p2p.register_class(service, **config.get('method_defaults', {}))
+    p2p.register_class(service)
 
     # Дополнительные методы через декораторы
-    @p2p.query("health", description="Health check endpoint")
-    async def health():
-        return await p2p.health_check()
-
-    @p2p.command("reload_config", description="Reload configuration")
-    async def reload_config(**new_config):
-        config.update(new_config)
-        p2p.logger.info(f"Config reloaded: {config}")
-        return {"status": "reloaded", "config": config}
-
-    # Обработчики событий
-    @p2p.event_handler("system_shutdown")
-    async def on_system_shutdown(data):
-        p2p.logger.warning("System shutdown signal received")
-        await service.clear_cache()
+    @p2p.query("status")
+    async def get_status():
+        return {
+            "project": "test_project",
+            "status": "running",
+            "config": config,
+            "timestamp": time.time()
+        }
 
     # Startup задачи
     @p2p.startup
     async def on_startup():
-        p2p.logger.info(f"Production test project starting with config: {config}")
-
-        # Уведомляем систему о старте
-        await p2p.safe_call("events.emit", event_type="project_started", data={
-            "project": "production_test",
-            "config": config
-        })
+        p2p.logger.info("📋 Test project initialized!")
 
     # Shutdown задачи
     @p2p.shutdown
     async def on_shutdown():
-        p2p.logger.info("Production test project shutting down")
-        await service.clear_cache()
-
-        await p2p.safe_call("events.emit", event_type="project_stopped", data={
-            "project": "production_test"
-        })
+        p2p.logger.info("🛑 Test project shutting down")
 
     # Основной цикл
     try:
         while True:
             await asyncio.sleep(60)
-
             # Периодические задачи
             stats = p2p.get_stats()
-            p2p.logger.info(f"Hourly stats: {stats['total_calls']} calls")
-
-            # Очистка старого кеша
-            if len(service.cache) > 100:
-                service.cache.clear()
-                p2p.logger.info("Cache auto-cleared due to size limit")
+            p2p.logger.debug(f"Hourly stats: {stats['total_calls']} calls")
 
     except KeyboardInterrupt:
         p2p.logger.info("Received shutdown signal")
-    except Exception as e:
-        p2p.logger.error(f"Unexpected error in main loop: {e}")
-        raise
 
 
-# Использование
-async def main():
-    # Создание production ноды
-    node = P2PProductionNode("production-main")
-    await node.start(["127.0.0.1:8001"])
+# Пример использования
+async def example_usage():
+    """Пример использования системы"""
 
-    # Загрузка проектов
-    await node.load_project("production_test", "projects.production_test", {
-        "debug": False,
-        "cache_enabled": True,
-        "method_defaults": {
-            "timeout": 30.0,
-            "retries": 3,
-            "rate_limit": 60
-        }
-    })
+    # Предполагаем, что admin_system и universal_proxy уже созданы
+    # admin_system = P2PAdminSystem(...)
+    # universal_proxy = create_universal_client(...)
 
-    # Тестирование через universal client
-    universal = create_universal_client(node.client)
+    # Создание расширенной системы
+    # extended_system = P2PAdminSystemWithProjects(admin_system, universal_proxy)
 
-    try:
-        # Health check
-        health = await universal.production_test.health()
-        print(f"Health: {health}")
+    # Загрузка проекта
+    # await extended_system.load_project("test_project", "projects.test_project", {
+    #     "debug": True,
+    #     "timeout": 30
+    # })
 
-        # Основной тест
-        result = await universal.production_test.do_test(mode="production", data={"test": True})
-        print(f"Test result: {result}")
+    # Вызов методов проекта через RPC
+    # client = P2PClient("test-client")
+    # await client.connect(["127.0.0.1:8001"])
+    # await client.authenticate()
 
-        # Статистика
-        stats = await universal.production_test.get_stats()
-        print(f"Stats: {stats}")
+    # result = await client.rpc_call("test_project/do_test", {
+    #     "mode": "production",
+    #     "data": {"test": True}
+    # })
 
-        # Список методов
-        methods = await universal.production_test.get_methods()
-        print(f"Available methods: {list(methods.keys())}")
+    # print(f"Test result: {result}")
 
-    except Exception as e:
-        print(f"Error during testing: {e}")
-
-    # Мониторинг проектов
-    while True:
-        await asyncio.sleep(30)
-        status = node.get_projects_status()
-        print(f"📊 Projects status: {status}")
+    pass
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    asyncio.run(example_usage())
+

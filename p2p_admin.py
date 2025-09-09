@@ -128,13 +128,13 @@ class P2PAdminSystem:
         self.rpc = RPCMethods(method_registry)
 
         # Регистрация административных методов
-        self._setup_admin_methods()
+        # self._setup_admin_methods()
 
         # Добавляем систему в глобальный список для graceful shutdown
         active_systems.append(self)
         # TODO: add register methods
 
-    def _setup_admin_methods(self):
+    async def _setup_admin_methods(self):
         """Настройка административных методов"""
         try:
             # Создание экземпляров методов
@@ -144,7 +144,7 @@ class P2PAdminSystem:
             self._bind_cache_to_methods(system_methods)
 
             # Регистрация методов для RPC
-            self.rpc.register_rpc_methods("system", system_methods)
+            await self.rpc.register_rpc_methods("system", system_methods)
 
             self.logger.info("Зарегистрированы administrative методы: system")
 
@@ -169,6 +169,7 @@ class P2PAdminSystem:
             return
 
         try:
+            await self._setup_admin_methods()
             self.logger.info(f"Запуск P2P Admin System")
             self.logger.info(f"Node ID: {self.node_id}")
             self.logger.info(f"Address: {self.bind_address}:{self.port}")

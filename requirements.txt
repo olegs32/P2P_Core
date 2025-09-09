@@ -4,3 +4,5 @@ fastapi~=0.115.14
 pydantic~=2.10.6
 starlette~=0.46.2
 uvicorn~=0.31.1
+PyJWT~=2.10.1
+psutil
