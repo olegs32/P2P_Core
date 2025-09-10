@@ -78,7 +78,7 @@ class SystemMethods:
         """Получение текущих метрик системы (не кешируется)"""
         try:
             return {
-                "cpu_percent": psutil.cpu_percent(interval=1),
+                "cpu_percent": psutil.cpu_percent(interval=None),
                 "memory": {
                     "percent": psutil.virtual_memory().percent,
                     "available": psutil.virtual_memory().available,
