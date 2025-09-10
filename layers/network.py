@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from typing import Set, Dict, List, Optional, Any
 import json
 import random
@@ -77,6 +78,7 @@ class SimpleGossipProtocol:
         self.failure_timeout = 30  # секунд
         self.cleanup_interval = 60  # секунд
         self.max_gossip_targets = 3  # максимум узлов для gossip за раз
+        self.log = logging.getLogger('Gossip')
 
     async def start(self, join_addresses: List[str] = None):
         """Запуск gossip узла"""
@@ -99,8 +101,8 @@ class SimpleGossipProtocol:
         asyncio.create_task(self._failure_detection_loop())
         asyncio.create_task(self._cleanup_loop())
 
-        print(f"Gossip node started: {self.node_id} on {self.bind_address}:{self.bind_port}")
-        print(f"Role: {'Coordinator' if self.coordinator_mode else 'Worker'}")
+        self.log.info(f"Gossip node started: {self.node_id} on {self.bind_address}:{self.bind_port}")
+        self.log.info(f"Role: {'Coordinator' if self.coordinator_mode else 'Worker'}")
 
     async def _join_cluster(self):
         """Присоединение к существующему кластеру"""
@@ -131,16 +133,16 @@ class SimpleGossipProtocol:
                             self.node_registry[node_info.node_id] = node_info
                             await self._notify_listeners(node_info.node_id, 'alive', node_info)
 
-                    print(f"✅ Successfully joined cluster via {bootstrap_addr}")
-                    print(f"   Discovered {len(cluster_info.get('nodes', []))} nodes")
+                    self.log.info(f"✅ Successfully joined cluster via {bootstrap_addr}")
+                    self.log.info(f"   Discovered {len(cluster_info.get('nodes', []))} nodes")
                     break
 
             except Exception as e:
-                print(f"❌ Failed to join via {bootstrap_addr}: {e}")
+                self.log.info(f"❌ Failed to join via {bootstrap_addr}: {e}")
                 continue
         else:
             if self.bootstrap_nodes:
-                print("⚠️  Could not join any bootstrap nodes, running in isolated mode")
+                self.log.info("⚠️  Could not join any bootstrap nodes, running in isolated mode")
 
     async def _gossip_loop(self):
         """Основной цикл gossip обмена"""
@@ -170,7 +172,7 @@ class SimpleGossipProtocol:
                     await asyncio.gather(*tasks, return_exceptions=True)
 
             except Exception as e:
-                print(f"❌ Error in gossip loop: {e}")
+                self.log.info(f"❌ Error in gossip loop: {e}")
 
     async def _send_gossip_message(self, target_node: NodeInfo):
         """Отправка gossip сообщения узлу"""
@@ -197,11 +199,11 @@ class SimpleGossipProtocol:
                     target_node.status = 'alive'
                     await self._notify_listeners(target_node.node_id, 'alive', target_node)
             else:
-                print(f"⚠️  Gossip failed to {target_node.node_id}: HTTP {response.status_code}")
+                self.log.info(f"⚠️  Gossip failed to {target_node.node_id}: HTTP {response.status_code}")
                 target_node.status = 'suspected'
 
         except Exception as e:
-            print(f"❌ Failed to send gossip to {target_node.node_id}: {e}")
+            self.log.info(f"❌ Failed to send gossip to {target_node.node_id}: {e}")
             # Пометка узла как подозрительного
             if target_node.status == 'alive':
                 target_node.status = 'suspected'
@@ -222,7 +224,7 @@ class SimpleGossipProtocol:
                     # Новый узел
                     self.node_registry[node_info.node_id] = node_info
                     await self._notify_listeners(node_info.node_id, 'alive', node_info)
-                    print(f"🆕 Discovered new node: {node_info.node_id} ({node_info.role})")
+                    self.log.info(f"🆕 Discovered new node: {node_info.node_id} ({node_info.role})")
 
                 elif existing_node.last_seen < node_info.last_seen:
                     # Обновление информации об узле
@@ -233,7 +235,7 @@ class SimpleGossipProtocol:
                         await self._notify_listeners(node_info.node_id, node_info.status, node_info)
 
         except Exception as e:
-            print(f"❌ Error processing gossip response: {e}")
+            self.log.info(f"❌ Error processing gossip response: {e}")
 
     async def _failure_detection_loop(self):
         """Цикл обнаружения отказов узлов"""
@@ -254,15 +256,15 @@ class SimpleGossipProtocol:
                             old_status = node_info.status
                             node_info.status = 'dead'
                             await self._notify_listeners(node_id, 'dead', node_info)
-                            print(f"💀 Node marked as dead: {node_id} (last seen {time_since_seen:.1f}s ago)")
+                            self.log.info(f"💀 Node marked as dead: {node_id} (last seen {time_since_seen:.1f}s ago)")
 
                     elif time_since_seen > self.failure_timeout // 2:
                         if node_info.status == 'alive':
                             node_info.status = 'suspected'
-                            print(f"🤔 Node suspected: {node_id}")
+                            self.log.info(f"🤔 Node suspected: {node_id}")
 
             except Exception as e:
-                print(f"❌ Error in failure detection: {e}")
+                self.log.info(f"❌ Error in failure detection: {e}")
 
     async def _cleanup_loop(self):
         """Цикл очистки мертвых узлов"""
@@ -284,10 +286,10 @@ class SimpleGossipProtocol:
                 # Удаление мертвых узлов
                 for node_id in nodes_to_remove:
                     del self.node_registry[node_id]
-                    print(f"🗑️  Removed dead node from registry: {node_id}")
+                    self.log.info(f"🗑️  Removed dead node from registry: {node_id}")
 
             except Exception as e:
-                print(f"❌ Error in cleanup loop: {e}")
+                self.log.info(f"❌ Error in cleanup loop: {e}")
 
     async def _notify_listeners(self, node_id: str, status: str, node_info: NodeInfo):
         """Уведомление слушателей о событиях узлов"""
@@ -295,7 +297,7 @@ class SimpleGossipProtocol:
             try:
                 await listener(node_id, status, node_info)
             except Exception as e:
-                print(f"❌ Error notifying listener: {e}")
+                self.log.info(f"❌ Error notifying listener: {e}")
 
     def add_discovery_listener(self, listener):
         """Добавление слушателя событий обнаружения"""
@@ -345,7 +347,7 @@ class SimpleGossipProtocol:
             self.node_registry[node_info.node_id] = node_info
             await self._notify_listeners(node_info.node_id, 'alive', node_info)
 
-            print(f"🤝 Node joined: {node_info.node_id} from {node_info.address}:{node_info.port}")
+            self.log.info(f"🤝 Node joined: {node_info.node_id} from {node_info.address}:{node_info.port}")
 
             # Возврат текущего состояния кластера
             return {
@@ -357,7 +359,7 @@ class SimpleGossipProtocol:
             }
 
         except Exception as e:
-            print(f"❌ Error handling join request: {e}")
+            self.log.info(f"❌ Error handling join request: {e}")
             return {'status': 'error', 'message': str(e)}
 
     async def handle_gossip_exchange(self, gossip_data: Dict) -> Dict:
@@ -374,7 +376,7 @@ class SimpleGossipProtocol:
             }
 
         except Exception as e:
-            print(f"❌ Error handling gossip exchange: {e}")
+            self.log.info(f"❌ Error handling gossip exchange: {e}")
             return {'status': 'error', 'message': str(e)}
 
     def get_cluster_stats(self) -> Dict[str, Any]:
@@ -400,7 +402,7 @@ class SimpleGossipProtocol:
         self.running = False
         if self.http_client:
             await self.http_client.aclose()
-        print(f"🛑 Gossip node stopped: {self.node_id}")
+            self.log.info(f"🛑 Gossip node stopped: {self.node_id}")
 
 
 class P2PNetworkLayer:
@@ -409,14 +411,35 @@ class P2PNetworkLayer:
     def __init__(self, transport_layer,
                  node_id: str, bind_address: str = "127.0.0.1", bind_port: int = 8000,
                  coordinator_mode: bool = False):
+        self.log = logging.getLogger('Network')
+        if bind_address == '0.0.0.0':
+            self.advertise_address = self._get_local_ip()
+        else:
+            self.advertise_address = bind_address
         self.transport = transport_layer
-        self.gossip = SimpleGossipProtocol(node_id, bind_address, bind_port, coordinator_mode)
+        self.gossip = SimpleGossipProtocol(node_id, self.advertise_address, bind_port, coordinator_mode)
         self.load_balancer_index = 0
 
         # Статистика запросов
         self.request_stats = {}
         self.request_history = []
         self.max_history_size = 1000
+
+    def _get_local_ip(self):
+        """Получить локальный IP для рекламы при bind 0.0.0.0"""
+        import socket
+        try:
+            # Создаем временное соединение чтобы определить локальный IP
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+                s.connect(("8.8.8.8", 80))  # Не отправляет данные, просто определяет маршрут
+                local_ip = s.getsockname()[0]
+            return local_ip
+        except Exception:
+            # Fallback на получение IP через hostname
+            try:
+                return socket.gethostbyname(socket.gethostname())
+            except Exception:
+                return '127.0.0.1'  # Последний fallback
 
     async def start(self, join_addresses: List[str] = None):
         """Запуск сетевого уровня"""
@@ -428,13 +451,13 @@ class P2PNetworkLayer:
     async def _on_node_discovered(self, node_id: str, status: str, node_info: NodeInfo):
         """Обработчик обнаружения новых узлов"""
         if status == 'alive':
-            print(f"✅ Node discovered: {node_id} at {node_info.address}:{node_info.port} ({node_info.role})")
+            self.log.info(f"✅ Node discovered: {node_id} at {node_info.address}:{node_info.port} ({node_info.role})")
         elif status == 'dead':
-            print(f"❌ Node lost: {node_id}")
+            self.log.info(f"❌ Node lost: {node_id}")
             # Очистка статистики для потерянного узла
             self.request_stats.pop(node_id, None)
         elif status == 'suspected':
-            print(f"🤔 Node suspected: {node_id}")
+            self.log.info(f"🤔 Node suspected: {node_id}")
 
     def select_target_node(self, exclude_nodes: Set[str] = None,
                            prefer_role: str = None) -> Optional[NodeInfo]:
@@ -512,7 +535,7 @@ class P2PNetworkLayer:
 
             except Exception as e:
                 last_error = e
-                print(f"❌ Request failed to {target_node.node_id}: {e}")
+                self.log.info(f"❌ Request failed to {target_node.node_id}: {e}")
 
                 # Увеличение штрафа для проблемного узла
                 self.request_stats[target_node.node_id] = \
@@ -562,7 +585,7 @@ class P2PNetworkLayer:
         if not target_nodes:
             return []
 
-        print(f"📡 Broadcasting to {len(target_nodes)} nodes" +
+        self.log.info(f"📡 Broadcasting to {len(target_nodes)} nodes" +
               (f" (role: {target_role})" if target_role else ""))
 
         results = []
@@ -582,7 +605,7 @@ class P2PNetworkLayer:
                 timeout=30.0
             )
         except asyncio.TimeoutError:
-            print("⚠️  Broadcast timeout after 30 seconds")
+            self.log.info("⚠️  Broadcast timeout after 30 seconds")
             completed_results = [asyncio.TimeoutError("Broadcast timeout") for _ in tasks]
 
         for i, result in enumerate(completed_results):
@@ -600,7 +623,7 @@ class P2PNetworkLayer:
                 })
 
         success_count = len([r for r in results if r.get('success')])
-        print(f"📊 Broadcast completed: {success_count}/{len(results)} successful")
+        self.log.info(f"📊 Broadcast completed: {success_count}/{len(results)} successful")
 
         return results
 
@@ -611,7 +634,7 @@ class P2PNetworkLayer:
         try:
             return await self.transport.send_request(node_url, endpoint, data, headers)
         except Exception as e:
-            print(f"❌ Broadcast request failed to {node.node_id}: {e}")
+            self.log.info(f"❌ Broadcast request failed to {node.node_id}: {e}")
             raise e
 
     def get_cluster_status(self) -> Dict[str, Any]:
@@ -651,4 +674,4 @@ class P2PNetworkLayer:
         """Остановка сетевого уровня"""
         await self.gossip.stop()
         await self.transport.close_all()
-        print(f"🛑 Network layer stopped")
+        self.log.info(f"🛑 Network layer stopped")

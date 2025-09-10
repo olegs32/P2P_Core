@@ -19,9 +19,9 @@ from layers.network import P2PNetworkLayer
 from layers.local_service_bridge import create_local_service_bridge
 
 # JWT конфигурация
-JWT_SECRET_KEY = "your-super-secret-key-change-this-in-production"
-JWT_ALGORITHM = "HS256"
-JWT_EXPIRATION_HOURS = 24
+JWT_SECRET_KEY = os.getenv('JWT_SECRET_KEY', 'fallback-dev-key-only')
+JWT_ALGORITHM = os.getenv('JWT_ALGORITHM', 'HS256')
+JWT_EXPIRATION_HOURS = int(os.getenv('JWT_EXPIRATION_HOURS', '24'))
 
 method_registry: Dict[str, Any] = {}
 
@@ -46,6 +46,32 @@ class GossipJoinRequest(BaseModel):
     capabilities: List[str]
     metadata: Dict[str, Any]
 
+
+def get_exe_dir():
+    """Получить директорию exe файла"""
+    if getattr(sys, 'frozen', False):
+        return Path(sys.executable).parent
+    else:
+        return Path(__file__).parent
+
+
+def get_services_path():
+    """Получить путь к папке services"""
+    exe_dir = get_exe_dir()
+    services_path = exe_dir / "services"
+    log = logging.getLogger('Path')
+    log.info(services_path)
+    if not services_path.exists():
+        services_path.mkdir(exist_ok=True)
+
+    if not services_path.exists():
+        services_path = Path.cwd() / "services"
+        log.info(services_path)
+
+    if not services_path.exists():
+        services_path.mkdir(exist_ok=True)
+
+    return services_path
 
 class P2PAuthBearer(HTTPBearer):
     """P2P аутентификация через Bearer токен"""
@@ -131,13 +157,9 @@ class RPCMethods:
         self.local_service_layer = SimpleLocalServiceLayer(method_registry)
         self.local_bridge = None
 
-        if os.path.exists("services"):
-            self.services_path = Path("services")
-        else:
-            self.services_path = Path("../services")
+        self.services_path = get_services_path()
 
-        # Запуск observer в фоновом режиме
-        asyncio.create_task(self.observer())
+        # asyncio.create_task(self.observer())
 
     async def register_rpc_methods(self, path: str, methods_instance):
         """Регистрация RPC методов с локальным прокси"""
@@ -193,6 +215,7 @@ class RPCMethods:
             logging.error(f"Ошибка загрузки {service_dir}/main.py или core_service.py: {e}")
             return None
 
+    # В service.py добавить отладку в scan_services():
     async def scan_services(self):
         """Сканирование папок сервисов и регистрация новых методов"""
         try:
@@ -200,15 +223,19 @@ class RPCMethods:
                 logging.warning(f"Директория сервисов не найдена: {self.services_path}")
                 return
 
+            logging.info(f"Scanning services directory: {self.services_path}")
+
             # Получаем все поддиректории в services
             for service_dir in self.services_path.iterdir():
                 if not service_dir.is_dir():
                     continue
 
                 service_name = service_dir.name
+                logging.info(f"Found service directory: {service_name}")
 
                 # Проверяем, не зарегистрирован ли уже этот сервис
                 if service_name in self.registered_services:
+                    logging.info(f"Service {service_name} already registered, skipping")
                     continue
 
                 # Проверяем, что методы сервиса еще не зарегистрированы
@@ -218,13 +245,17 @@ class RPCMethods:
                 )
 
                 if service_methods_exist:
+                    logging.info(f"Methods for {service_name} already exist, marking as registered")
                     self.registered_services.add(service_name)
                     continue
 
                 # Загружаем класс сервиса
                 service_class = self.load_core_service(service_dir)
                 if service_class is None:
+                    logging.warning(f"No service class found in {service_dir}")
                     continue
+
+                logging.info(f"Loaded service class for {service_name}: {service_class}")
 
                 # Создаем экземпляр класса и регистрируем методы
                 try:
@@ -232,39 +263,55 @@ class RPCMethods:
                     local_proxy = None
                     if self.local_bridge:
                         local_proxy = self.local_bridge.get_proxy()
+                        logging.info(f"Created local proxy for {service_name}")
+                    else:
+                        logging.warning(f"No local bridge available for {service_name}")
 
                     # Создаем экземпляр с локальным прокси
                     if hasattr(service_class, '__init__'):
                         # Для BaseService
                         methods_instance = service_class(service_name, local_proxy)
+                        logging.info(f"Created BaseService instance for {service_name}")
+
+                        # ДОБАВЛЕНО: Принудительная инициализация
+                        if hasattr(methods_instance, 'initialize') and asyncio.iscoroutinefunction(
+                                methods_instance.initialize):
+                            logging.info(f"Manually initializing {service_name}...")
+                            await methods_instance.initialize()
+                            logging.info(f"Service {service_name} initialized successfully")
                     else:
                         # Для старых CoreMethods
                         methods_instance = service_class()
                         if hasattr(methods_instance, 'proxy'):
                             methods_instance.proxy = local_proxy
+                        logging.info(f"Created legacy CoreMethods instance for {service_name}")
 
                     await self.register_rpc_methods(service_name, methods_instance)
                     self.registered_services.add(service_name)
-                    logging.info(f"Сервис {service_name} успешно зарегистрирован")
+                    logging.info(f"Service {service_name} успешно зарегистрирован и инициализирован")
 
                 except Exception as e:
                     logging.error(f"Ошибка создания экземпляра сервиса {service_name}: {e}")
+                    import traceback
+                    logging.error(traceback.format_exc())
 
         except Exception as e:
             logging.error(f"Ошибка сканирования сервисов: {e}")
+            import traceback
+            logging.error(traceback.format_exc())
 
-    async def observer(self):
-        """Основной цикл наблюдателя"""
-        logging.info("Запуск RPC Methods Observer...")
-
-        while True:
-            try:
-                await self.scan_services()
-                await asyncio.sleep(60)  # Проверка каждую минуту
-
-            except Exception as ex:
-                logging.exception(f"Ошибка в observer: {ex}")
-                await asyncio.sleep(60)  # Продолжаем работу даже при ошибках
+    # async def observer(self):
+    #     """Основной цикл наблюдателя"""
+    #     logging.info("Запуск RPC Methods Observer...")
+    #
+    #     while True:
+    #         try:
+    #             await self.scan_services()
+    #             await asyncio.sleep(60)  # Проверка каждую минуту
+    #
+    #         except Exception as ex:
+    #             logging.exception(f"Ошибка в observer: {ex}")
+    #             await asyncio.sleep(60)  # Продолжаем работу даже при ошибках
 
     def set_service_manager(self, service_manager):
         """Установка менеджера сервисов для локального моста"""

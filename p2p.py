@@ -1,11 +1,15 @@
 import asyncio
 import os
+import socket
 import sys
 import argparse
 import logging
 from typing import List
 from pathlib import Path
 
+import os
+from pathlib import Path
+from dotenv import load_dotenv
 # Добавляем текущую директорию в путь для импортов
 sys.path.insert(0, str(Path(__file__).parent))
 
@@ -15,7 +19,7 @@ from layers.transport import P2PTransportLayer, TransportConfig
 from layers.network import P2PNetworkLayer
 from layers.service import P2PServiceLayer
 from layers.cache import P2PMultiLevelCache, CacheConfig
-from layers.service_framework import ServiceManager
+from layers.service_framework import ServiceManager, set_global_service_manager
 
 
 def setup_logging(verbose: bool = False):
@@ -226,10 +230,13 @@ class ServiceComponent(P2PComponent):
             from layers.local_service_bridge import create_local_service_bridge
             from layers.service_framework import ServiceManager
 
+            # Создаем только ServiceManager (без Observer)
             service_manager = ServiceManager(self.rpc)
+            set_global_service_manager(service_manager)
+
             local_bridge = create_local_service_bridge(
                 self.context.list_methods(),
-                service_manager
+                service_manager  # Передаем ServiceManager
             )
 
             await local_bridge.initialize()
@@ -238,11 +245,9 @@ class ServiceComponent(P2PComponent):
 
             self.service_manager = service_manager
             self.local_bridge = local_bridge
-
-            # Устанавливаем локальный мост в сервисном слое
             self.service_layer.set_local_bridge(local_bridge)
 
-            self.logger.info("Local services system initialized")
+            self.logger.info("Local services system initialized (ServiceManager only)")
 
         except Exception as e:
             self.logger.error(f"Error initializing local services: {e}")
@@ -437,106 +442,98 @@ async def run_worker(node_id: str, port: int, bind_address: str,
 
 def create_argument_parser():
     """Создание парсера аргументов командной строки"""
+    env_config = load_environment()
+
     parser = argparse.ArgumentParser(
         description="P2P Administrative System - Distributed service computing",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Примеры использования:
-  %(prog)s coordinator                     # Координатор на порту 8001
-  %(prog)s coordinator --port 9001        # Координатор на порту 9001
-  %(prog)s worker                          # Рабочий узел на порту 8002
-  %(prog)s worker --port 9002 --coord 127.0.0.1:9001
-
-Документация API:
-  После запуска координатора откройте http://127.0.0.1:8001/docs
+  %(prog)s coordinator                     # Координатор с настройками из .env
+  %(prog)s worker                          # Рабочий узел с настройками из .env
         """
     )
 
-    parser.add_argument(
-        'mode',
-        choices=['coordinator', 'worker'],
-        help='Режим запуска системы'
-    )
-
-    parser.add_argument(
-        '--node-id',
-        default=None,
-        help='Идентификатор узла (автогенерация по умолчанию)'
-    )
-
-    parser.add_argument(
-        '--port',
-        type=int,
-        default=None,
-        help='Порт HTTP сервера (coordinator: 8001, worker: 8002+)'
-    )
-
-    parser.add_argument(
-        '--address',
-        default='127.0.0.1',
-        help='Адрес привязки сервера (по умолчанию: 127.0.0.1)'
-    )
-
-    parser.add_argument(
-        '--coord', '--coordinator',
-        default='127.0.0.1:8001',
-        help='Адрес координатора для подключения'
-    )
-
-    parser.add_argument(
-        '--redis-url',
-        default='redis://localhost:6379',
-        help='URL Redis для кеширования'
-    )
-
-    parser.add_argument(
-        '--verbose', '-v',
-        action='store_true',
-        help='Подробный вывод и отладочные логи'
-    )
+    parser.add_argument('mode', choices=['coordinator', 'worker'])
+    parser.add_argument('--node-id', default=None)
+    parser.add_argument('--port', type=int, default=None)
+    parser.add_argument('--address', default=None,
+                        help=f'Адрес привязки (по умолчанию из .env: {env_config["bind_address"]})')
+    parser.add_argument('--coord', '--coordinator', default=None,
+                        help=f'Адрес координатора (по умолчанию из .env: {env_config["coordinator_address"]})')
+    parser.add_argument('--redis-url', default=None,
+                        help=f'URL Redis (по умолчанию из .env: {env_config["redis_url"]})')
+    parser.add_argument('--verbose', '-v', action='store_true', help='Подробный вывод')
 
     return parser
 
 
+def load_environment():
+    """Загрузка переменных окружения из .env файла"""
+    env_path = Path('.env')
+    if env_path.exists():
+        load_dotenv(env_path)
+
+    return {
+        'bind_address': os.getenv('BIND_ADDRESS', '0.0.0.0'),
+        'coordinator_port': int(os.getenv('DEFAULT_COORDINATOR_PORT', '8001')),
+        'worker_port': int(os.getenv('DEFAULT_WORKER_PORT', '8002')),
+        'coordinator_address': os.getenv('COORDINATOR_ADDRESS', '192.168.53.53:8001'),
+        'redis_url': os.getenv('REDIS_URL', 'redis://localhost:6379'),
+        'log_level': os.getenv('LOG_LEVEL', 'INFO'),
+        'verbose': os.getenv('VERBOSE_LOGGING', 'false').lower() == 'true'
+    }
+
+
 async def main():
     """Главная функция приложения"""
+    env_config = load_environment()
+
     parser = create_argument_parser()
     args = parser.parse_args()
 
-    setup_logging(args.verbose)
+    # Применяем env конфиг как defaults
+    verbose = args.verbose or env_config['verbose']
+    setup_logging(verbose)
     logger = logging.getLogger("Main")
 
     try:
         if args.mode == 'coordinator':
-            node_id = args.node_id or f"coordinator-{os.getpid()}"
-            port = args.port or 8001
+            node_id = args.node_id or f"coordinator-{socket.gethostname()}"
+            port = args.port or env_config['coordinator_port']
+            bind_address = args.address or env_config['bind_address']
+            redis_url = args.redis_url or env_config['redis_url']
 
-            logger.info(f"Starting coordinator: {node_id} on {args.address}:{port}")
+            logger.info(f"Starting coordinator: {node_id} on {bind_address}:{port}")
             await run_coordinator(
                 node_id=node_id,
                 port=port,
-                bind_address=args.address,
-                redis_url=args.redis_url
+                bind_address=bind_address,
+                redis_url=redis_url
             )
 
         elif args.mode == 'worker':
-            node_id = args.node_id or f"worker-{os.getpid()}"
-            port = args.port or 8002
+            node_id = args.node_id or f"worker-{socket.gethostname()}"
+            port = args.port or env_config['worker_port']
+            bind_address = args.address or env_config['bind_address']
+            coordinator = args.coord or env_config['coordinator_address']
+            redis_url = args.redis_url or env_config['redis_url']
 
-            logger.info(f"Starting worker: {node_id} on {args.address}:{port}")
+            logger.info(f"Starting worker: {node_id} on {bind_address}:{port}")
+            logger.info(f"Connecting to coordinator: {coordinator}")
             await run_worker(
                 node_id=node_id,
                 port=port,
-                bind_address=args.address,
-                coordinator_addresses=[args.coord],
-                redis_url=args.redis_url
+                bind_address=bind_address,
+                coordinator_addresses=[coordinator],
+                redis_url=redis_url
             )
 
     except KeyboardInterrupt:
         logger.info("Program interrupted by user")
     except Exception as e:
         logger.error(f"Critical error: {e}")
-        if args.verbose:
+        if verbose:
             import traceback
             logger.error(traceback.format_exc())
         return 1

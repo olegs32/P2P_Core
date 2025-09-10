@@ -73,7 +73,7 @@ class P2PComponent:
         self.context = context
         self.state = ComponentState.NOT_INITIALIZED
         self.metrics = ComponentMetrics()
-        self.logger = logging.getLogger(f"Component.{name}")
+        self.logger = logging.getLogger(f"{name}")
         self._dependencies: List[str] = []
         self._dependents: List[str] = []
 
@@ -155,7 +155,7 @@ class P2PApplicationContext:
 
     def __init__(self, config: P2PConfig):
         self.config = config
-        self.logger = logging.getLogger("ApplicationContext")
+        self.logger = logging.getLogger("AppContext")
 
         # Реестр компонентов вместо глобальных переменных
         self._components: Dict[str, P2PComponent] = {}
