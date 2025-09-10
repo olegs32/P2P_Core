@@ -10,13 +10,13 @@ class LocalServiceBridge:
     def __init__(self, method_registry: Dict[str, Any], service_manager):
         self.method_registry = method_registry
         self.service_manager = service_manager
-        self.logger = logging.getLogger("LocalServiceBridge")
+        self.logger = logging.getLogger("ServiceBridge")
 
     async def initialize(self):
         """Инициализация локального моста"""
-        self.logger.info("Initializing local service bridge...")
+        self.logger.info("Initializing  service bridge...")
         self.local_proxy = SimpleLocalProxy(self.method_registry)
-        self.logger.info("Local service bridge initialized")
+        self.logger.info("Service bridge initialized")
 
     def get_proxy(self, remote_client=None):
         """Получить локальный прокси"""
@@ -50,7 +50,7 @@ class ServiceMethodProxy:
         self.service_name = service_name
         self.method_registry = method_registry
         self.target_node = target_node
-        self.logger = logging.getLogger(f"ServiceProxy.{service_name}")
+        self.logger = logging.getLogger(f"Proxy.{service_name}")
 
     def __getattr__(self, attr_name: str):
         """Получить callable для метода или прокси для узла"""

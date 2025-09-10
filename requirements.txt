@@ -2,7 +2,9 @@ cachetools~=5.5.2
 httpx~=0.28.1
 fastapi~=0.115.14
 pydantic~=2.10.6
-starlette~=0.46.2
+starlette~=0.47.2
 uvicorn~=0.31.1
 PyJWT~=2.10.1
-psutil
+psutil~=7.0.0
+pyinstaller
+python-dotenv~=1.1.1

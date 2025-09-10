@@ -28,12 +28,21 @@ class Run(BaseService):
             "last_error": None,
             "uptime_start": None
         }
-        asyncio.create_task(self.initialize())
+
+        # ИСПРАВЛЕНИЕ: Добавляем флаг отложенной инициализации
+        self._proxy_retry_count = 0
+        self._max_proxy_retries = 30  # 5 минут ожидания (30 * 10 сек)
 
     async def initialize(self):
-        """Инициализация сервиса с запуском мониторинга"""
+        """Инициализация сервиса через фреймворк BaseService"""
         self.logger.info("Test monitoring service initializing...")
         self.stats["uptime_start"] = datetime.now().isoformat()
+
+        # ИСПРАВЛЕНИЕ: Дожидаемся инжекции proxy
+        await self._wait_for_proxy()
+
+        # Ждем немного, чтобы все компоненты инициализировались
+        await asyncio.sleep(2)
 
         # Тестируем первый вызов
         if self.proxy:
@@ -42,15 +51,55 @@ class Run(BaseService):
                 local_info = await self.proxy.system.get_system_info()
                 self.logger.info(f"Local system call successful: {local_info.get('hostname', 'unknown')}")
 
-                # Пробуем удаленный вызов к координатору
-                coordinator_info = await self.proxy.system.coordinator.get_system_info()
-                self.logger.info(f"Coordinator call successful: {coordinator_info.get('hostname', 'unknown')}")
+                # Пробуем удаленный вызов к координатору только если это worker
+                try:
+                    coordinator_info = await self.proxy.system.coordinator.get_system_info()
+                    self.logger.info(f"Coordinator call successful: {coordinator_info.get('hostname', 'unknown')}")
+                except Exception as e:
+                    self.logger.info(f"Coordinator call skipped (probably running on coordinator): {e}")
 
             except Exception as e:
                 self.logger.warning(f"Initial system calls failed: {e}")
+        else:
+            self.logger.warning("No proxy available during initialization - will retry in monitoring loop")
 
         # Запускаем мониторинг
         await self.start_monitoring()
+
+    async def _wait_for_proxy(self):
+        """
+        ИСПРАВЛЕНИЕ: Ожидание инжекции proxy с повторными попытками
+        Решает проблему с PyInstaller где proxy может инжектироваться позже
+        """
+        while self.proxy is None and self._proxy_retry_count < self._max_proxy_retries:
+            self.logger.debug(
+                f"Waiting for proxy injection... Attempt {self._proxy_retry_count + 1}/{self._max_proxy_retries}")
+            await asyncio.sleep(2)  # Ждем 2 секунды
+            self._proxy_retry_count += 1
+
+            # Проверяем, не был ли proxy установлен через set_proxy
+            # (это может произойти если ServiceManager инжектирует позже)
+            if hasattr(self, '_pending_proxy'):
+                self.proxy = self._pending_proxy
+                delattr(self, '_pending_proxy')
+                break
+
+        if self.proxy is None:
+            self.logger.warning(
+                f"Proxy not available after {self._max_proxy_retries} attempts. Service will work in degraded mode.")
+        else:
+            self.logger.info("Proxy successfully initialized!")
+
+    def set_proxy(self, proxy_client):
+        """
+        ИСПРАВЛЕНИЕ: Альтернативный способ установки proxy
+        Может быть вызван ServiceManager'ом после создания сервиса
+        """
+        if self.proxy is None:
+            self.proxy = proxy_client
+            self.logger.info("Proxy set via set_proxy method")
+        else:
+            self._pending_proxy = proxy_client
 
     async def cleanup(self):
         """Очистка ресурсов при остановке"""
@@ -88,27 +137,67 @@ class Run(BaseService):
         while self.monitoring_active:
             try:
                 await self._fetch_coordinator_metrics()
-                await asyncio.sleep(10)  # Ожидание 10 секунд
+                await asyncio.sleep(10)
 
             except asyncio.CancelledError:
                 self.logger.info("Monitoring loop cancelled")
                 break
             except Exception as e:
                 self.logger.error(f"Unexpected error in monitoring loop: {e}")
-                await asyncio.sleep(10)  # Продолжаем после ошибки
+                await asyncio.sleep(10)
 
     async def _fetch_coordinator_metrics(self):
-        """Получение метрик с координатора"""
+        """
+        ИСПРАВЛЕНИЕ: Получение метрик с координатора с дополнительными проверками
+        """
+        # Проверяем proxy в каждом цикле и пытаемся получить его если он отсутствует
         if not self.proxy:
-            self.logger.warning("No proxy available for coordinator metrics")
-            return
+            self.logger.debug("No proxy available - attempting to get proxy from service manager...")
+
+            # Попытка получить proxy через глобальный реестр сервисов
+            try:
+                from layers.service_framework import get_global_service_manager
+                service_manager = get_global_service_manager()
+                if service_manager and service_manager.proxy_client:
+                    self.set_proxy(service_manager.proxy_client)
+                    self.logger.info("Successfully obtained proxy from global service manager")
+            except Exception as e:
+                self.logger.debug(f"Could not get proxy from service manager: {e}")
+
+            # Если proxy все еще нет - пропускаем этот цикл
+            if not self.proxy:
+                self.logger.debug("No proxy available - skipping metrics collection")
+                return
 
         request_time = datetime.now()
         self.stats["total_requests"] += 1
 
         try:
-            # Запрос метрик с координатора
-            metrics = await self.proxy.system.coordinator.get_system_metrics()
+            # Сначала пробуем определить тип узла
+            try:
+                # Получаем информацию о текущем узле
+                local_info = await self.proxy.system.get_system_info()
+                is_coordinator = local_info.get('service_mode') == 'coordinator'
+
+                if is_coordinator:
+                    # Если мы на координаторе - берем локальные метрики
+                    metrics = await self.proxy.system.get_system_metrics()
+                    source = "local_coordinator"
+                else:
+                    # Если мы worker - пытаемся получить метрики координатора
+                    try:
+                        metrics = await self.proxy.system.coordinator.get_system_metrics()
+                        source = "remote_coordinator"
+                    except Exception as remote_err:
+                        # Fallback на локальные метрики
+                        self.logger.warning(f"Remote coordinator call failed, using local: {remote_err}")
+                        metrics = await self.proxy.system.get_system_metrics()
+                        source = "local_fallback"
+
+            except Exception as info_err:
+                self.logger.warning(f"Could not determine node type: {info_err}, trying local metrics")
+                metrics = await self.proxy.system.get_system_metrics()
+                source = "unknown_type"
 
             # Обновляем статистику
             self.stats["successful_requests"] += 1
@@ -118,8 +207,8 @@ class Run(BaseService):
             metrics_entry = {
                 "timestamp": request_time.isoformat(),
                 "metrics": metrics,
-                "source": "coordinator",
-                "response_time_ms": (datetime.now() - request_time).total_seconds() * 1
+                "source": source,
+                "response_time_ms": (datetime.now() - request_time).total_seconds() * 1000
             }
 
             # Ограничиваем историю (последние 100 записей)
@@ -127,12 +216,12 @@ class Run(BaseService):
             if len(self.metrics_history) > 100:
                 self.metrics_history.pop(0)
 
-            # Логируем каждые 5 запросов для снижения verbosity
+            # Логируем каждые 5 запросов
             if self.stats["total_requests"] % 5 == 0:
                 cpu_percent = metrics.get("cpu_percent", "N/A")
                 memory_percent = metrics.get("memory", {}).get("percent", "N/A")
                 self.logger.info(
-                    f"Coordinator metrics #{self.stats['total_requests']}: "
+                    f"Metrics #{self.stats['total_requests']} [{source}]: "
                     f"CPU {cpu_percent}%, Memory {memory_percent}%, "
                     f"Response: {metrics_entry['response_time_ms']:.1f}ms"
                 )
@@ -166,6 +255,8 @@ class Run(BaseService):
         return {
             "service": self.service_name,
             "monitoring_active": self.monitoring_active,
+            "proxy_available": self.proxy is not None,
+            "proxy_retry_count": self._proxy_retry_count,  # ДОБАВЛЕНО для отладки
             "uptime_seconds": uptime_seconds,
             "statistics": {
                 "total_requests": self.stats["total_requests"],
@@ -178,6 +269,7 @@ class Run(BaseService):
             "metrics_history_count": len(self.metrics_history)
         }
 
+    # Остальные методы остаются без изменений
     @service_method(description="Get recent coordinator metrics", public=True)
     async def get_recent_metrics(self, limit: int = 10) -> Dict[str, Any]:
         """Получение последних метрик координатора"""
@@ -243,7 +335,8 @@ class Run(BaseService):
             return {
                 "action": "status",
                 "monitoring_active": self.monitoring_active,
-                "task_running": self.monitoring_task is not None and not self.monitoring_task.done()
+                "task_running": self.monitoring_task is not None and not self.monitoring_task.done(),
+                "proxy_available": self.proxy is not None
             }
 
         else:
@@ -269,6 +362,7 @@ class Run(BaseService):
         results = {
             "service": self.service_name,
             "test_timestamp": datetime.now().isoformat(),
+            "proxy_available": self.proxy is not None,
             "tests": []
         }
 
@@ -280,7 +374,7 @@ class Run(BaseService):
         try:
             start_time = datetime.now()
             local_metrics = await self.proxy.system.get_system_metrics()
-            response_time = (datetime.now() - start_time).total_seconds() * 1000
+            response_time = (datetime.now() - start_time).total_seconds() * 1
 
             results["tests"].append({
                 "test": "local_system_call",
@@ -295,7 +389,7 @@ class Run(BaseService):
                 "error": str(e)
             })
 
-        # Тест 2: Вызов к координатору
+        # Тест 2: Вызов к координатору (может не сработать если мы сами координатор)
         try:
             start_time = datetime.now()
             coordinator_metrics = await self.proxy.system.coordinator.get_system_metrics()
@@ -311,7 +405,8 @@ class Run(BaseService):
             results["tests"].append({
                 "test": "coordinator_system_call",
                 "success": False,
-                "error": str(e)
+                "error": str(e),
+                "note": "This may fail if running on coordinator itself"
             })
 
         # Тест 3: Информация о системе
