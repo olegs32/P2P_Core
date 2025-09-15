@@ -1,0 +1,109 @@
+{
+  "name": "orchestrator",
+  "version": "1.0.0",
+  "description": "Service Orchestrator for P2P Core - manages service lifecycle and distribution",
+  "author": "P2P Core Team",
+  "dependencies": [
+    "service_framework"
+  ],
+  "capabilities": [
+    "service_installation",
+    "service_management",
+    "service_distribution",
+    "service_monitoring"
+  ],
+  "exposed_methods": [
+    "install_service",
+    "uninstall_service",
+    "start_service",
+    "stop_service",
+    "restart_service",
+    "list_services",
+    "get_service_info",
+    "export_service",
+    "distribute_service",
+    "get_orchestrator_status"
+  ],
+  "required_permissions": [
+    "filesystem_write",
+    "network_access",
+    "service_management"
+  ],
+  "configuration": {
+    "services_directory": "./services",
+    "max_archive_size": "100MB",
+    "supported_formats": ["tar.gz"],
+    "auto_start_services": true,
+    "enable_distribution": true
+  },
+  "api": {
+    "install_service": {
+      "description": "Install service from tar.gz archive",
+      "parameters": {
+        "archive_data": {
+          "type": "bytes",
+          "required": true,
+          "description": "Service archive data"
+        },
+        "force_reinstall": {
+          "type": "boolean",
+          "required": false,
+          "default": false,
+          "description": "Force reinstall if service already exists"
+        }
+      },
+      "returns": {
+        "success": "boolean",
+        "service_name": "string",
+        "installed_at": "string",
+        "archive_hash": "string",
+        "auto_started": "boolean"
+      }
+    },
+    "distribute_service": {
+      "description": "Distribute service to remote nodes",
+      "parameters": {
+        "service_name": {
+          "type": "string",
+          "required": true,
+          "description": "Name of service to distribute"
+        },
+        "target_nodes": {
+          "type": "array",
+          "items": "string",
+          "required": true,
+          "description": "List of target node IDs"
+        }
+      },
+      "returns": {
+        "service_name": "string",
+        "total_nodes": "integer",
+        "successful_distributions": "integer",
+        "failed_distributions": "integer",
+        "results": "object"
+      }
+    }
+  },
+  "events": [
+    "service_installed",
+    "service_uninstalled",
+    "service_started",
+    "service_stopped",
+    "service_distributed"
+  ],
+  "health_check": {
+    "endpoint": "health_check",
+    "interval": 30,
+    "timeout": 10
+  },
+  "resource_requirements": {
+    "memory": "128MB",
+    "disk_space": "1GB",
+    "network": "required"
+  },
+  "security": {
+    "sandbox": false,
+    "trusted": true,
+    "signature_required": false
+  }
+}

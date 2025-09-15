@@ -5,7 +5,7 @@ import json
 import random
 from datetime import datetime, timedelta
 import httpx
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, field
 
 
 @dataclass
@@ -19,6 +19,7 @@ class NodeInfo:
     last_seen: datetime
     metadata: Dict[str, Any]
     status: str = "alive"  # alive, suspected, dead
+    services: Dict[str, Dict[str, Any]] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         data = asdict(self)
@@ -52,6 +53,7 @@ class SimpleGossipProtocol:
         self.node_registry: Dict[str, NodeInfo] = {}
         self.listeners = []
         self.running = False
+        self.service_info_callback = None
 
         # Информация о собственном узле
         self.self_info = NodeInfo(
@@ -77,7 +79,7 @@ class SimpleGossipProtocol:
         self.gossip_interval = 10  # секунд
         self.failure_timeout = 30  # секунд
         self.cleanup_interval = 60  # секунд
-        self.max_gossip_targets = 3  # максимум узлов для gossip за раз
+        self.max_gossip_targets = 5  # максимум узлов для gossip за раз
         self.log = logging.getLogger('Gossip')
 
     async def start(self, join_addresses: List[str] = None):
@@ -152,6 +154,7 @@ class SimpleGossipProtocol:
 
                 # Обновление времени собственного узла
                 self.self_info.last_seen = datetime.now()
+                await self._update_self_services_info()
                 self.node_registry[self.node_id] = self.self_info
 
                 # Выбор случайных узлов для gossip
@@ -338,6 +341,24 @@ class SimpleGossipProtocol:
             if node.status == 'dead'
         ]
 
+    def find_nodes_with_service(self, service_name: str) -> List[NodeInfo]:
+        """Найти узлы с определенным сервисом"""
+        nodes = []
+        for node in self.get_live_nodes():
+            if service_name in node.services:
+                nodes.append(node)
+        return nodes
+
+    def get_all_services_in_cluster(self) -> Dict[str, List[str]]:
+        """Получить все сервисы в кластере с узлами где они запущены"""
+        services = {}
+        for node in self.get_live_nodes():
+            for service_name in node.services:
+                if service_name not in services:
+                    services[service_name] = []
+                services[service_name].append(node.node_id)
+        return services
+
     async def handle_join_request(self, join_data: Dict) -> Dict:
         """Обработка запроса на присоединение нового узла"""
         try:
@@ -403,6 +424,19 @@ class SimpleGossipProtocol:
         if self.http_client:
             await self.http_client.aclose()
             self.log.info(f"🛑 Gossip node stopped: {self.node_id}")
+
+    def set_service_info_provider(self, callback):
+        """Установить callback для получения информации о сервисах"""
+        self.service_info_callback = callback
+
+    async def _update_self_services_info(self):
+        """Обновить информацию о сервисах на текущем узле"""
+        if self.service_info_callback:
+            try:
+                services_info = await self.service_info_callback()
+                self.self_info.services = services_info
+            except Exception as e:
+                print(f"Error updating services info: {e}")
 
 
 class P2PNetworkLayer:

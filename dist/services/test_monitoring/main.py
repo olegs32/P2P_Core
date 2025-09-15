@@ -64,7 +64,7 @@ class Run(BaseService):
             self.logger.warning("No proxy available during initialization - will retry in monitoring loop")
 
         # Запускаем мониторинг
-        await self.start_monitoring()
+        # await self.start_monitoring()
 
     async def _wait_for_proxy(self):
         """

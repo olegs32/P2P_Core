@@ -297,6 +297,24 @@ class ServiceManager:
         # Устанавливаем как глобальный менеджер
         set_global_service_manager(self)
 
+    async def get_services_info_for_gossip(self):
+        """Получить информацию о сервисах для gossip протокола"""
+        services_info = {}
+        for service_name, service_instance in self.services.items():
+            try:
+                info = await service_instance.get_service_info()
+                services_info[service_name] = {
+                    "version": info.get("version", "1.0.0"),
+                    "status": info.get("status", "unknown"),
+                    "methods": info.get("exposed_methods", []),
+                    "description": info.get("description", ""),
+                    "metadata": info.get("metadata", {})
+                }
+            except Exception as e:
+                self.logger.error(f"Error getting info for service {service_name}: {e}")
+
+        return services_info
+
     def set_proxy_client(self, proxy_client):
         """Улучшенная установка proxy клиента"""
         self.proxy_client = proxy_client
@@ -407,10 +425,9 @@ class ServiceManager:
         """Инициализация всех найденных сервисов"""
         services_dir = Path("services")
 
-
         """Получить директорию exe файла"""
         if getattr(sys, 'frozen', False):
-            exe_dir =  Path(sys.executable).parent
+            exe_dir = Path(sys.executable).parent
         else:
             exe_dir = Path(__file__).parent
 
@@ -424,8 +441,6 @@ class ServiceManager:
             services_path = Path.cwd() / "services"
             log.info(services_path)
             services_dir.mkdir(exist_ok=True)
-
-
 
         if not services_dir.exists():
             self.logger.info("Services directory not found, skipping service initialization")

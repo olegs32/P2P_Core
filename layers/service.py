@@ -59,6 +59,9 @@ def get_services_path():
     """Получить путь к папке services"""
     exe_dir = get_exe_dir()
     services_path = exe_dir / "services"
+    if 'PycharmProjects' in str(services_path):
+        services_path = exe_dir / ".." / "dist" / "services"
+
     log = logging.getLogger('Path')
     log.info(services_path)
     if not services_path.exists():

@@ -1,15 +1,14 @@
+import argparse
 import asyncio
+import logging
 import os
 import socket
 import sys
-import argparse
-import logging
+from pathlib import Path
 from typing import List
-from pathlib import Path
 
-import os
-from pathlib import Path
 from dotenv import load_dotenv
+
 # Добавляем текущую директорию в путь для импортов
 sys.path.insert(0, str(Path(__file__).parent))
 
@@ -19,8 +18,18 @@ from layers.transport import P2PTransportLayer, TransportConfig
 from layers.network import P2PNetworkLayer
 from layers.service import P2PServiceLayer
 from layers.cache import P2PMultiLevelCache, CacheConfig
-from layers.service_framework import ServiceManager, set_global_service_manager
+from layers.service_framework import set_global_service_manager
 
+
+
+# Настройка кодировки для Windows
+if sys.platform == 'win32':
+    os.environ['PYTHONIOENCODING'] = 'utf-8'
+    import locale
+    try:
+        locale.setlocale(locale.LC_ALL, 'en_US.UTF-8')
+    except:
+        pass
 
 def setup_logging(verbose: bool = False):
     """Настройка системы логирования"""
@@ -126,6 +135,17 @@ class NetworkComponent(P2PComponent):
 
         # Получаем координаторы для подключения из контекста
         join_addresses = self.context.get_shared("join_addresses", [])
+
+        def setup_service_gossip_integration():
+            service_manager = self.context.get_shared("service_manager")
+            if service_manager:
+                self.network.gossip.set_service_info_provider(
+                    service_manager.get_services_info_for_gossip
+                )
+                self.logger.info("Service info provider connected to gossip")
+
+        # Вызвать после инициализации сервисов или через callback
+        self.context.set_shared("setup_service_gossip", setup_service_gossip_integration)
         await self.network.start(join_addresses)
 
         if join_addresses:
@@ -230,7 +250,6 @@ class ServiceComponent(P2PComponent):
             from layers.local_service_bridge import create_local_service_bridge
             from layers.service_framework import ServiceManager
 
-            # Создаем только ServiceManager (без Observer)
             service_manager = ServiceManager(self.rpc)
             set_global_service_manager(service_manager)
 
@@ -246,8 +265,12 @@ class ServiceComponent(P2PComponent):
             self.service_manager = service_manager
             self.local_bridge = local_bridge
             self.service_layer.set_local_bridge(local_bridge)
-
-            self.logger.info("Local services system initialized (ServiceManager only)")
+            self.context.set_shared("service_manager", service_manager)
+            setup_gossip = self.context.get_shared("setup_service_gossip")
+            if setup_gossip:
+                setup_gossip()
+                self.logger.info("Gossip setup finish")
+            self.logger.info("Local services system initialized")
 
         except Exception as e:
             self.logger.error(f"Error initializing local services: {e}")
@@ -470,7 +493,14 @@ def create_argument_parser():
 
 def load_environment():
     """Загрузка переменных окружения из .env файла"""
-    env_path = Path('.env')
+    if getattr(sys, 'frozen', False):
+        work_dir = Path(sys.executable).parent
+    else:
+        work_dir = Path(__file__).parent
+    if str(__file__).endswith(".py"):
+        env_path = work_dir / "dist" / ".env"
+    else:
+        env_path = Path('.env')
     if env_path.exists():
         load_dotenv(env_path)
 
