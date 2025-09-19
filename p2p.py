@@ -185,55 +185,100 @@ class ServiceComponent(P2PComponent):
         if not cache:
             raise RuntimeError("Cache not available")
 
-        # Создаем сервисный слой с инжекцией method_registry из контекста
+        # Создаем сервисный слой
         self.service_layer = P2PServiceLayer(network)
 
         # Инициализируем менеджер сервисов
         from layers.service import RPCMethods
-
-        # Используем method_registry из контекста вместо глобального
         self.rpc = RPCMethods(self.context.list_methods())
+        self.rpc.method_registry = self.context.list_methods()
 
-        # Устанавливаем связки
-        self.rpc.method_registry = self.context.list_methods()  # Прямая ссылка
+        # ВАЖНО: Создаем ServiceManager ПЕРЕД регистрацией system service
+        from layers.local_service_bridge import create_local_service_bridge
+        from layers.service_framework import ServiceManager
 
-        # Инициализируем административные методы
+        service_manager = ServiceManager(self.rpc)
+        set_global_service_manager(service_manager)
+
+        local_bridge = create_local_service_bridge(
+            self.context.list_methods(),
+            service_manager
+        )
+        await local_bridge.initialize()
+        service_manager.set_proxy_client(local_bridge.get_proxy())
+
+        self.service_manager = service_manager
+        self.local_bridge = local_bridge
+        self.service_layer.set_local_bridge(local_bridge)
+        self.context.set_shared("service_manager", service_manager)
+
+        # ТЕПЕРЬ можем регистрировать system service
         await self._setup_admin_methods(cache)
 
-        # Инициализируем локальные сервисы
-        await self._initialize_local_services()
+        # Остальные сервисы
+        await service_manager.initialize_all_services()
+
+        setup_gossip = self.context.get_shared("setup_service_gossip")
+        if setup_gossip:
+            setup_gossip()
+            self.logger.info("Gossip setup finish")
 
         self.context.set_shared("service_layer", self.service_layer)
         self.context.set_shared("rpc", self.rpc)
 
+        self.logger.info("Local services system initialized")
         self.logger.info("Service layer initialized")
 
     async def _setup_admin_methods(self, cache):
         """Настройка административных методов"""
         try:
-            from methods.system import SystemMethods
-            system_methods = SystemMethods(cache)
+            from methods.system import SystemService
+            system_service = SystemService("system", None)
 
-            # Привязка кеша к методам с декораторами
-            self._bind_cache_to_methods(system_methods, cache)
+            # Инициализируем сервис
+            await system_service.initialize()
 
-            # Регистрация методов в контексте вместо глобального registry
-            await self._register_methods_in_context("system", system_methods)
+            # Привязка кеша
+            if hasattr(system_service, 'cache'):
+                system_service.cache = cache
+            self._bind_cache_to_methods(system_service, cache)
+
+            # Регистрируем методы в context (для RPC endpoint)
+            await self._register_methods_in_context("system", system_service)
+
+            # ServiceManager теперь ДОЛЖЕН быть доступен
+            from layers.service_framework import get_global_service_manager
+            manager = get_global_service_manager()
+            if manager:
+                # Правильно регистрируем в ServiceManager
+                await manager.initialize_service(system_service)
+                self.logger.info(f"System service registered in ServiceManager with metrics")
+            else:
+                self.logger.error("ServiceManager STILL not available - this is a bug!")
 
             self.logger.info("Administrative methods registered: system")
 
         except Exception as e:
             self.logger.error(f"Error setting up admin methods: {e}")
+            import traceback
+            self.logger.error(traceback.format_exc())
             raise
 
     async def _register_methods_in_context(self, path: str, methods_instance):
         """Регистрация методов в контексте приложения"""
         import inspect
+        from layers.service import method_registry as global_method_registry
 
         for name, method in inspect.getmembers(methods_instance, predicate=inspect.ismethod):
             if not name.startswith('_'):
                 method_path = f"{path}/{name}"
+
+                # Регистрируем в context
                 self.context.register_method(method_path, method)
+
+                # ИСПРАВЛЕНИЕ: ТАКЖЕ регистрируем в глобальном method_registry для RPC
+                global_method_registry[method_path] = method
+
                 self.logger.debug(f"Registered method: {method_path}")
 
     def _bind_cache_to_methods(self, methods_instance, cache):

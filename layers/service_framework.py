@@ -1,15 +1,18 @@
-# service_framework.py - Фреймворк для сервисов P2P системы
+# service_framework.py - Фреймворк для сервисов P2P системы с интегрированными метриками
 
 import asyncio
 import inspect
 import logging
+import time
 from abc import ABC, abstractmethod
-from typing import Dict, Any, List, Optional, Callable, Type
+from typing import Dict, Any, List, Optional, Callable, Type, Union
 from pathlib import Path
 import importlib.util
 import sys
 from dataclasses import dataclass, field
 from enum import Enum
+from collections import defaultdict, deque
+import threading
 
 
 class ServiceStatus(Enum):
@@ -19,6 +22,24 @@ class ServiceStatus(Enum):
     STOPPING = "stopping"
     STOPPED = "stopped"
     ERROR = "error"
+
+
+class MetricType(Enum):
+    """Типы метрик"""
+    GAUGE = "gauge"  # Текущее значение
+    COUNTER = "counter"  # Накопительный счетчик
+    TIMER = "timer"  # Timing метрики
+    HISTOGRAM = "histogram"  # Распределение значений
+
+
+@dataclass
+class MetricEntry:
+    """Запись метрики"""
+    name: str
+    value: Any
+    metric_type: MetricType
+    timestamp: float
+    service_id: str
 
 
 @dataclass
@@ -35,34 +56,326 @@ class ServiceInfo:
     metadata: Dict[str, Any] = field(default_factory=dict)
 
 
+class MetricsState:
+    """Реактивная система метрик для сервиса"""
+
+    def __init__(self, service_name: str, manager_callback: Callable = None):
+        self.service_name = service_name
+        self.data: Dict[str, Dict] = {}  # name -> {value, type, timestamp, history}
+        self.manager_callback = manager_callback
+        self.last_update = time.time()
+        self.throttle_interval = 1.0  # Максимум 1 push в секунду на метрику
+        self.last_push = {}  # name -> timestamp последнего push
+        self.history_size = 100  # Размер истории для каждой метрики
+        self._lock = threading.Lock()
+
+        # Автоматические метрики
+        self._setup_automatic_metrics()
+
+    def _setup_automatic_metrics(self):
+        """Настройка автоматических метрик"""
+        # Сначала создаем счетчик обновлений БЕЗ вызова set()
+        current_time = time.time()
+        self.data["metrics_updates_total"] = {
+            'value': 0,
+            'type': MetricType.COUNTER,
+            'timestamp': current_time,
+            'history': deque(maxlen=self.history_size),
+            'update_count': 0
+        }
+
+        # Теперь можно использовать обычный set()
+        self.set("service_startup_time", current_time, MetricType.GAUGE)
+
+    def set(self, name: str, value: Any, metric_type: MetricType = MetricType.GAUGE, force_push: bool = False):
+        """Установка значения метрики с автоматическим push при изменении"""
+        current_time = time.time()
+
+        with self._lock:
+            # Проверяем изменение значения
+            old_data = self.data.get(name, {})
+            old_value = old_data.get('value')
+
+            # Инициализируем структуру метрики если нужно
+            if name not in self.data:
+                self.data[name] = {
+                    'value': None,
+                    'type': metric_type,
+                    'timestamp': current_time,
+                    'history': deque(maxlen=self.history_size),
+                    'update_count': 0
+                }
+
+            metric_data = self.data[name]
+
+            # Обновляем значение и историю
+            if metric_type == MetricType.COUNTER and old_value is not None:
+                # Для счетчиков - инкрементальное обновление
+                if isinstance(value, (int, float)) and value > 0:
+                    new_value = old_value + value
+                else:
+                    new_value = value
+            else:
+                new_value = value
+
+            # Проверяем необходимость push (изменилось ли значение)
+            value_changed = old_value != new_value
+            should_push = force_push or value_changed
+
+            # Throttling check
+            last_push_time = self.last_push.get(name, 0)
+            throttle_passed = (current_time - last_push_time) >= self.throttle_interval
+
+            if should_push and throttle_passed:
+                # Обновляем данные
+                metric_data['value'] = new_value
+                metric_data['timestamp'] = current_time
+                metric_data['update_count'] += 1
+                metric_data['history'].append({
+                    'value': new_value,
+                    'timestamp': current_time
+                })
+
+                self.last_update = current_time
+                self.last_push[name] = current_time
+
+                # Обновляем счетчик метрик
+                if name != "metrics_updates_total" and "metrics_updates_total" in self.data:
+                    self.data["metrics_updates_total"]["value"] += 1
+
+                # Push в ServiceManager
+                if self.manager_callback and value_changed:
+                    try:
+                        self.manager_callback(name, new_value, current_time, metric_type)
+                    except Exception as e:
+                        logging.getLogger(f"Metrics.{self.service_name}").error(
+                            f"Failed to push metric {name}: {e}"
+                        )
+
+            elif should_push and not throttle_passed:
+                # Обновляем локально, но без push (throttling)
+                metric_data['value'] = new_value
+                metric_data['timestamp'] = current_time
+                self.last_update = current_time
+
+    def gauge(self, name: str, value: Union[int, float]):
+        """Установка gauge метрики"""
+        self.set(name, value, MetricType.GAUGE)
+
+    def counter(self, name: str, value: Union[int, float] = 1, increment: bool = True):
+        """Обновление counter метрики"""
+        if increment:
+            self.set(name, value, MetricType.COUNTER)  # Будет добавлено к существующему
+        else:
+            # Установка абсолютного значения
+            current_time = time.time()
+            with self._lock:
+                if name not in self.data:
+                    self.data[name] = {
+                        'value': 0,
+                        'type': MetricType.COUNTER,
+                        'timestamp': current_time,
+                        'history': deque(maxlen=self.history_size),
+                        'update_count': 0
+                    }
+                self.data[name]['value'] = value
+                self.data[name]['timestamp'] = current_time
+
+    def timer(self, name: str, duration_ms: float):
+        """Записать timing метрику"""
+        self.set(name, duration_ms, MetricType.TIMER)
+
+    def histogram(self, name: str, value: Union[int, float]):
+        """Записать histogram значение"""
+        self.set(name, value, MetricType.HISTOGRAM)
+
+    def increment(self, name: str, value: Union[int, float] = 1):
+        """Инкремент counter"""
+        self.counter(name, value, increment=True)
+
+    def timing_context(self, name: str):
+        """Context manager для измерения времени"""
+        return TimingContext(self, name)
+
+    def get_metric(self, name: str) -> Optional[Dict]:
+        """Получить метрику по имени"""
+        return self.data.get(name)
+
+    def get_all_metrics(self) -> Dict[str, Any]:
+        """Получить все метрики"""
+        with self._lock:
+            return {
+                name: {
+                    'value': data['value'],
+                    'type': data['type'].value,
+                    'timestamp': data['timestamp'],
+                    'update_count': data['update_count']
+                }
+                for name, data in self.data.items()
+            }
+
+    def get_metrics_summary(self) -> Dict[str, Any]:
+        """Получить краткую сводку метрик"""
+        with self._lock:
+            return {
+                'total_metrics': len(self.data),
+                'last_update': self.last_update,
+                'update_count': self.data.get('metrics_updates_total', {}).get('value', 0)
+            }
+
+
+class TimingContext:
+    """Context manager для измерения времени выполнения"""
+
+    def __init__(self, metrics_state: MetricsState, metric_name: str):
+        self.metrics = metrics_state
+        self.metric_name = metric_name
+        self.start_time = None
+
+    def __enter__(self):
+        self.start_time = time.time()
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if self.start_time:
+            duration_ms = (time.time() - self.start_time) * 1000
+            self.metrics.timer(self.metric_name, duration_ms)
+
+
 def service_method(
         description: str = "",
         public: bool = True,
         cache_ttl: int = 0,
-        requires_auth: bool = True
+        requires_auth: bool = True,
+        track_metrics: bool = True
 ):
+    """Декоратор для методов сервиса с автоматическими метриками"""
+
     def decorator(func):
         func._service_method = True
         func._service_description = description
         func._service_public = public
         func._service_cache_ttl = cache_ttl
         func._service_requires_auth = requires_auth
+        func._service_track_metrics = track_metrics
+
+        if track_metrics:
+            # Wrapper для автоматических метрик
+            original_func = func
+
+            async def metrics_wrapper(*args, **kwargs):
+                service_instance = args[0] if args else None
+                if hasattr(service_instance, 'metrics'):
+                    method_name = func.__name__
+
+                    # Метрики вызовов
+                    service_instance.metrics.increment(f"method_{method_name}_calls")
+
+                    # Timing метрика
+                    start_time = time.time()
+                    try:
+                        result = await original_func(*args, **kwargs)
+                        service_instance.metrics.increment(f"method_{method_name}_success")
+                        return result
+                    except Exception as e:
+                        service_instance.metrics.increment(f"method_{method_name}_errors")
+                        raise
+                    finally:
+                        duration_ms = (time.time() - start_time) * 1000
+                        service_instance.metrics.timer(f"method_{method_name}_duration_ms", duration_ms)
+                else:
+                    return await original_func(*args, **kwargs)
+
+            metrics_wrapper.__name__ = func.__name__
+            metrics_wrapper.__doc__ = func.__doc__
+            metrics_wrapper._service_method = True
+            metrics_wrapper._service_description = description
+            metrics_wrapper._service_public = public
+            metrics_wrapper._service_cache_ttl = cache_ttl
+            metrics_wrapper._service_requires_auth = requires_auth
+            metrics_wrapper._service_track_metrics = track_metrics
+
+            return metrics_wrapper
+
         return func
 
     return decorator
 
 
 class BaseService(ABC):
-    """Базовый класс для всех сервисов"""
+    """Базовый класс для всех сервисов с интегрированными метриками"""
 
     def __init__(self, service_name: str, proxy_client=None):
         self._proxy_set_callback = None
         self.service_name = service_name
-        self.proxy = proxy_client  # Инжектированный proxy
+        self.proxy = proxy_client
         self.logger = logging.getLogger(f"Service.{service_name}")
         self.status = ServiceStatus.STOPPED
         self.info = ServiceInfo(name=service_name)
+
+        # Инициализация системы метрик
+        self.metrics = MetricsState(
+            service_name=service_name,
+            manager_callback=self._push_metrics_to_manager
+        )
+
         self._extract_service_info()
+
+        # Регистрируем базовые метрики
+        self._setup_base_metrics()
+
+    def _setup_base_metrics(self):
+        """Настройка базовых метрик сервиса"""
+        import psutil
+        import os
+
+        # Базовая информация о сервисе
+        self.metrics.gauge("service_pid", os.getpid())
+        self.metrics.gauge("service_status", 0)  # 0=stopped, 1=starting, 2=running, 3=stopping, 4=error
+
+        # Запускаем background задачу для системных метрик
+        asyncio.create_task(self._update_system_metrics())
+
+    async def _update_system_metrics(self):
+        """Background задача для обновления системных метрик"""
+        while self.status in [ServiceStatus.STARTING, ServiceStatus.RUNNING]:
+            try:
+                import psutil
+                process = psutil.Process()
+
+                # Память
+                memory_info = process.memory_info()
+                self.metrics.gauge("memory_usage_bytes", memory_info.rss)
+                self.metrics.gauge("memory_usage_mb", memory_info.rss / 1024 / 1024)
+
+                # CPU (требует интервала)
+                cpu_percent = process.cpu_percent()
+                if cpu_percent > 0:  # Избегаем 0 при первом вызове
+                    self.metrics.gauge("cpu_usage_percent", cpu_percent)
+
+                # Файловые дескрипторы
+                try:
+                    self.metrics.gauge("open_files", process.num_fds())
+                except (AttributeError, psutil.AccessDenied):
+                    pass  # Не доступно на некоторых системах
+
+                # Потоки
+                self.metrics.gauge("thread_count", process.num_threads())
+
+            except Exception as e:
+                self.logger.warning(f"Error updating system metrics: {e}")
+
+            await asyncio.sleep(30)  # Обновление каждые 30 секунд
+
+    def _push_metrics_to_manager(self, metric_name: str, value: Any, timestamp: float, metric_type: MetricType):
+        """Callback для отправки метрик в ServiceManager"""
+        # Будет подключен ServiceManager при регистрации
+        manager = get_global_service_manager()
+        if manager and hasattr(manager, 'on_metrics_push'):
+            try:
+                manager.on_metrics_push(self.service_name, metric_name, value, timestamp, metric_type)
+            except Exception as e:
+                self.logger.error(f"Failed to push metric to manager: {e}")
 
     def _extract_service_info(self):
         """Извлекает информацию о сервисе из методов класса"""
@@ -73,6 +386,18 @@ class BaseService(ABC):
 
         self.info.exposed_methods = methods
         self.info.description = self.__class__.__doc__ or ""
+
+    def metric(self, name: str, value: Any, metric_type: str = "gauge"):
+        """Удобный сеттер для метрик"""
+        if isinstance(metric_type, str):
+            try:
+                metric_type_enum = MetricType(metric_type.lower())
+            except ValueError:
+                metric_type_enum = MetricType.GAUGE
+        else:
+            metric_type_enum = metric_type
+
+        self.metrics.set(name, value, metric_type_enum)
 
     @abstractmethod
     async def initialize(self):
@@ -88,12 +413,20 @@ class BaseService(ABC):
         """Запуск сервиса"""
         try:
             self.status = ServiceStatus.STARTING
+            self.metrics.gauge("service_status", 1)
             self.logger.info(f"Starting service {self.service_name}")
+
             await self.initialize()
+
             self.status = ServiceStatus.RUNNING
+            self.metrics.gauge("service_status", 2)
+            self.metrics.gauge("service_uptime_start", time.time())
             self.logger.info(f"Service {self.service_name} started successfully")
+
         except Exception as e:
             self.status = ServiceStatus.ERROR
+            self.metrics.gauge("service_status", 4)
+            self.metrics.increment("service_start_errors")
             self.logger.error(f"Failed to start service {self.service_name}: {e}")
             raise
 
@@ -101,38 +434,76 @@ class BaseService(ABC):
         """Остановка сервиса"""
         try:
             self.status = ServiceStatus.STOPPING
+            self.metrics.gauge("service_status", 3)
             self.logger.info(f"Stopping service {self.service_name}")
+
             await self.cleanup()
+
             self.status = ServiceStatus.STOPPED
+            self.metrics.gauge("service_status", 0)
+
+            # Финальные метрики
+            uptime_start = self.metrics.get_metric("service_uptime_start")
+            if uptime_start and uptime_start['value']:
+                total_uptime = time.time() - uptime_start['value']
+                self.metrics.gauge("service_total_uptime_seconds", total_uptime)
+
             self.logger.info(f"Service {self.service_name} stopped")
+
         except Exception as e:
             self.status = ServiceStatus.ERROR
+            self.metrics.gauge("service_status", 4)
             self.logger.error(f"Error stopping service {self.service_name}: {e}")
             raise
 
-    @service_method(description="Get service information", public=True)
+    @service_method(description="Get service information", public=True, track_metrics=False)
     async def get_service_info(self) -> Dict[str, Any]:
         """Получить информацию о сервисе"""
+        uptime = 0
+        uptime_start = self.metrics.get_metric("service_uptime_start")
+        if uptime_start and uptime_start['value'] and self.status == ServiceStatus.RUNNING:
+            uptime = time.time() - uptime_start['value']
+
         return {
             "name": self.info.name,
             "version": self.info.version,
             "description": self.info.description,
             "status": self.status.value,
+            "uptime_seconds": uptime,
             "exposed_methods": self.info.exposed_methods,
             "dependencies": self.info.dependencies,
             "domain": self.info.domain,
-            "metadata": self.info.metadata
+            "metadata": self.info.metadata,
+            "metrics_summary": self.metrics.get_metrics_summary()
         }
 
-    @service_method(description="Health check", public=True)
+    @service_method(description="Health check", public=True, track_metrics=False)
     async def health_check(self) -> Dict[str, Any]:
         """Проверка состояния сервиса"""
         return {
             "status": "healthy" if self.status == ServiceStatus.RUNNING else "unhealthy",
             "service": self.service_name,
-            "uptime": 0,  # TODO: реализовать подсчет uptime
-            "last_check": asyncio.get_event_loop().time()
+            "uptime": self._get_uptime(),
+            "last_metrics_update": self.metrics.last_update,
+            "total_metrics": len(self.metrics.data),
+            "last_check": time.time()
         }
+
+    @service_method(description="Get service metrics", public=True, track_metrics=False)
+    async def get_metrics(self) -> Dict[str, Any]:
+        """Получить все метрики сервиса"""
+        return {
+            "service_name": self.service_name,
+            "timestamp": time.time(),
+            "metrics": self.metrics.get_all_metrics()
+        }
+
+    def _get_uptime(self) -> float:
+        """Получить uptime сервиса"""
+        uptime_start = self.metrics.get_metric("service_uptime_start")
+        if uptime_start and uptime_start['value'] and self.status == ServiceStatus.RUNNING:
+            return time.time() - uptime_start['value']
+        return 0
 
     def set_proxy(self, proxy_client):
         """
@@ -159,6 +530,163 @@ class BaseService(ABC):
     def on_proxy_set(self, callback):
         """Установить callback который вызывается когда proxy установлен"""
         self._proxy_set_callback = callback
+
+
+class ReactiveMetricsCollector:
+    """Реактивный сборщик метрик для ServiceManager"""
+
+    def __init__(self):
+        self.services: Dict[str, Dict] = {}  # service_id -> service_metrics_state
+        self.aggregated_metrics: Dict[str, Any] = {}
+        self.health_threshold = 90  # секунд для определения dead сервиса
+        self.logger = logging.getLogger("MetricsCollector")
+        self._lock = threading.Lock()
+
+        # Запуск background задач
+        asyncio.create_task(self._health_monitor_loop())
+        asyncio.create_task(self._aggregation_loop())
+
+    def register_service(self, service_id: str, service_instance):
+        """Регистрация сервиса в системе метрик"""
+        with self._lock:
+            self.services[service_id] = {
+                'service_instance': service_instance,
+                'last_seen': time.time(),
+                'status': 'alive',
+                'metrics': {},
+                'total_updates': 0
+            }
+
+        self.logger.info(f"Service {service_id} registered in metrics system")
+
+    def on_metrics_push(self, service_id: str, metric_name: str, value: Any, timestamp: float, metric_type: MetricType):
+        """Обработка push обновлений от сервисов"""
+        current_time = time.time()
+
+        with self._lock:
+            if service_id not in self.services:
+                # Автоматическая регистрация при первом push
+                self.services[service_id] = {
+                    'service_instance': None,
+                    'last_seen': current_time,
+                    'status': 'alive',
+                    'metrics': {},
+                    'total_updates': 0
+                }
+                self.logger.info(f"Auto-registered service {service_id} from metrics push")
+
+            service_data = self.services[service_id]
+            service_data['last_seen'] = current_time
+            service_data['status'] = 'alive'
+            service_data['total_updates'] += 1
+
+            # Сохраняем метрику
+            service_data['metrics'][metric_name] = {
+                'value': value,
+                'timestamp': timestamp,
+                'type': metric_type.value if isinstance(metric_type, MetricType) else metric_type
+            }
+
+        self.logger.debug(f"Received metric from {service_id}: {metric_name} = {value}")
+
+    async def _health_monitor_loop(self):
+        """Background проверка здоровья сервисов"""
+        while True:
+            try:
+                current_time = time.time()
+                dead_services = []
+
+                with self._lock:
+                    for service_id, service_data in self.services.items():
+                        last_seen = service_data['last_seen']
+                        time_since_seen = current_time - last_seen
+
+                        if time_since_seen > self.health_threshold:
+                            if service_data['status'] != 'dead':
+                                service_data['status'] = 'dead'
+                                dead_services.append(service_id)
+                        else:
+                            if service_data['status'] == 'dead':
+                                service_data['status'] = 'alive'
+                                self.logger.info(f"Service {service_id} recovered")
+
+                # Логируем мертвые сервисы
+                for service_id in dead_services:
+                    self.logger.warning(
+                        f"Service {service_id} marked as dead (no activity for {self.health_threshold}s)")
+
+            except Exception as e:
+                self.logger.error(f"Error in health monitor loop: {e}")
+
+            await asyncio.sleep(30)  # Проверка каждые 30 секунд
+
+    async def _aggregation_loop(self):
+        """Background агрегация метрик"""
+        while True:
+            try:
+                self._update_aggregated_metrics()
+            except Exception as e:
+                self.logger.error(f"Error in aggregation loop: {e}")
+
+            await asyncio.sleep(60)  # Агрегация каждую минуту
+
+    def _update_aggregated_metrics(self):
+        """Обновление агрегированных метрик узла"""
+        current_time = time.time()
+
+        with self._lock:
+            alive_services = [s for s in self.services.values() if s['status'] == 'alive']
+
+            # Базовые метрики узла
+            self.aggregated_metrics = {
+                'node_metrics_timestamp': current_time,
+                'total_services': len(self.services),
+                'alive_services': len(alive_services),
+                'dead_services': len(self.services) - len(alive_services),
+                'total_metrics_updates': sum(s['total_updates'] for s in self.services.values()),
+                'services': {}
+            }
+
+            # Агрегированные метрики по сервисам
+            for service_id, service_data in self.services.items():
+                if service_data['status'] == 'alive':
+                    self.aggregated_metrics['services'][service_id] = {
+                        'status': service_data['status'],
+                        'last_seen': service_data['last_seen'],
+                        'metrics_count': len(service_data['metrics']),
+                        'total_updates': service_data['total_updates']
+                    }
+
+    def get_service_metrics(self, service_id: str) -> Optional[Dict]:
+        """Получить метрики конкретного сервиса"""
+        with self._lock:
+            service_data = self.services.get(service_id)
+            if service_data:
+                return {
+                    'service_id': service_id,
+                    'status': service_data['status'],
+                    'last_seen': service_data['last_seen'],
+                    'metrics': service_data['metrics'].copy(),
+                    'total_updates': service_data['total_updates']
+                }
+        return None
+
+    def get_aggregated_metrics(self) -> Dict[str, Any]:
+        """Получить агрегированные метрики узла"""
+        with self._lock:
+            return self.aggregated_metrics.copy()
+
+    def get_all_services_health(self) -> Dict[str, Any]:
+        """Получить health status всех сервисов"""
+        with self._lock:
+            return {
+                service_id: {
+                    'status': data['status'],
+                    'last_seen': data['last_seen'],
+                    'uptime': time.time() - data['last_seen'] if data['status'] == 'alive' else 0
+                }
+                for service_id, data in self.services.items()
+            }
 
 
 class ServiceRegistry:
@@ -285,7 +813,7 @@ class ServiceLoader:
 
 
 class ServiceManager:
-    """Менеджер сервисов с улучшенной инжекцией proxy"""
+    """Менеджер сервисов с улучшенной инжекцией proxy и интегрированными метриками"""
 
     def __init__(self, rpc_handler):
         self.rpc = rpc_handler
@@ -293,6 +821,9 @@ class ServiceManager:
         self.registry = ServiceRegistry(rpc_handler)
         self.proxy_client = None
         self.logger = logging.getLogger("ServiceManager")
+
+        # Интегрированная система метрик
+        self.metrics_collector = ReactiveMetricsCollector()
 
         # Устанавливаем как глобальный менеджер
         set_global_service_manager(self)
@@ -308,12 +839,17 @@ class ServiceManager:
                     "status": info.get("status", "unknown"),
                     "methods": info.get("exposed_methods", []),
                     "description": info.get("description", ""),
-                    "metadata": info.get("metadata", {})
+                    "metadata": info.get("metadata", {}),
+                    "metrics_summary": info.get("metrics_summary", {})
                 }
             except Exception as e:
                 self.logger.error(f"Error getting info for service {service_name}: {e}")
 
         return services_info
+
+    def on_metrics_push(self, service_id: str, metric_name: str, value: Any, timestamp: float, metric_type: MetricType):
+        """Обработка push метрик от сервисов"""
+        self.metrics_collector.on_metrics_push(service_id, metric_name, value, timestamp, metric_type)
 
     def set_proxy_client(self, proxy_client):
         """Улучшенная установка proxy клиента"""
@@ -390,8 +926,14 @@ class ServiceManager:
             if hasattr(service_instance, 'initialize'):
                 await service_instance.initialize()
 
+            # Регистрируем в системе метрик
+            self.metrics_collector.register_service(service_instance.service_name, service_instance)
+
             # Регистрируем публичные методы
             await self._register_service_methods(service_instance)
+
+            # Добавляем в локальный реестр
+            self.services[service_instance.service_name] = service_instance
 
             self.logger.info(f"Service initialized: {service_instance.service_name}")
 
@@ -399,8 +941,6 @@ class ServiceManager:
             self.logger.error(f"Failed to initialize service {service_instance.service_name}: {e}")
             import traceback
             traceback.print_exc()
-
-    # Остальные методы ServiceManager остаются без изменений...
 
     async def _register_service_methods(self, service_instance: BaseService):
         """Регистрация методов сервиса в RPC"""
@@ -480,6 +1020,20 @@ class ServiceManager:
 
         self.services.clear()
         self.logger.info("All services shutdown completed")
+
+    # === Новые методы для работы с метриками ===
+
+    def get_service_metrics(self, service_name: str) -> Optional[Dict]:
+        """Получить метрики конкретного сервиса"""
+        return self.metrics_collector.get_service_metrics(service_name)
+
+    def get_all_services_metrics(self) -> Dict[str, Any]:
+        """Получить метрики всех сервисов"""
+        return self.metrics_collector.get_aggregated_metrics()
+
+    def get_services_health(self) -> Dict[str, Any]:
+        """Получить health статус всех сервисов"""
+        return self.metrics_collector.get_all_services_health()
 
 
 _global_service_manager = None
