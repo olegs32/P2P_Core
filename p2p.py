@@ -4,6 +4,7 @@ import logging
 import os
 import socket
 import sys
+import time
 from pathlib import Path
 from typing import List
 
@@ -16,10 +17,11 @@ sys.path.insert(0, str(Path(__file__).parent))
 from layers.application_context import P2PApplicationContext, P2PConfig, P2PComponent
 from layers.transport import P2PTransportLayer, TransportConfig
 from layers.network import P2PNetworkLayer
-from layers.service import P2PServiceLayer
 from layers.cache import P2PMultiLevelCache, CacheConfig
-from layers.service_framework import set_global_service_manager
-
+from layers.service import (
+    P2PServiceHandler, BaseService, ServiceManager,
+    service_method, P2PAuthBearer, method_registry,
+    RPCRequest, RPCResponse, P2PServiceHandler )
 
 
 # Настройка кодировки для Windows
@@ -169,7 +171,7 @@ class NetworkComponent(P2PComponent):
 
 
 class ServiceComponent(P2PComponent):
-    """Компонент сервисного уровня"""
+    """Компонент сервисного уровня с объединенной архитектурой"""
 
     def __init__(self, context: P2PApplicationContext):
         super().__init__("service", context)
@@ -185,54 +187,62 @@ class ServiceComponent(P2PComponent):
         if not cache:
             raise RuntimeError("Cache not available")
 
-        # Создаем сервисный слой
-        self.service_layer = P2PServiceLayer(network)
+        # Создаем объединенный сервисный обработчик
+        from layers.service import P2PServiceHandler, set_global_service_manager
 
-        # Инициализируем менеджер сервисов
-        from layers.service import RPCMethods
-        self.rpc = RPCMethods(self.context.list_methods())
-        self.rpc.method_registry = self.context.list_methods()
+        # P2PServiceHandler уже включает ServiceManager внутри себя
+        self.service_handler = P2PServiceHandler(network_layer=network)
+        self.service_manager = self.service_handler.service_manager
 
-        # ВАЖНО: Создаем ServiceManager ПЕРЕД регистрацией system service
+        # Устанавливаем глобальный менеджер
+        set_global_service_manager(self.service_manager)
+
+        # Создаем local bridge
         from layers.local_service_bridge import create_local_service_bridge
-        from layers.service_framework import ServiceManager
-
-        service_manager = ServiceManager(self.rpc)
-        set_global_service_manager(service_manager)
 
         local_bridge = create_local_service_bridge(
             self.context.list_methods(),
-            service_manager
+            self.service_manager
         )
         await local_bridge.initialize()
-        service_manager.set_proxy_client(local_bridge.get_proxy())
 
-        self.service_manager = service_manager
+        # Устанавливаем proxy клиент
+        self.service_manager.set_proxy_client(local_bridge.get_proxy())
+
+        # Сохраняем ссылки
         self.local_bridge = local_bridge
-        self.service_layer.set_local_bridge(local_bridge)
-        self.context.set_shared("service_manager", service_manager)
 
-        # ТЕПЕРЬ можем регистрировать system service
+        # Устанавливаем в контексте
+        self.context.set_shared("service_manager", self.service_manager)
+        self.context.set_shared("service_handler", self.service_handler)
+        self.context.set_shared("local_bridge", local_bridge)
+
+        # Настройка административных методов
         await self._setup_admin_methods(cache)
 
-        # Остальные сервисы
-        await service_manager.initialize_all_services()
+        # Инициализация всех сервисов через объединенный handler
+        await self.service_handler.initialize_all()
 
+        # Настройка gossip если необходимо
         setup_gossip = self.context.get_shared("setup_service_gossip")
         if setup_gossip:
             setup_gossip()
-            self.logger.info("Gossip setup finish")
+            self.logger.info("Gossip setup finished")
 
-        self.context.set_shared("service_layer", self.service_layer)
-        self.context.set_shared("rpc", self.rpc)
+        # Регистрация в контексте для обратной совместимости
+        self.context.set_shared("service_layer", self.service_handler)
+        self.context.set_shared("rpc", self.service_handler)
 
-        self.logger.info("Local services system initialized")
-        self.logger.info("Service layer initialized")
+        self.logger.info("Service component initialized with unified architecture")
 
     async def _setup_admin_methods(self, cache):
         """Настройка административных методов"""
         try:
+            # Импортируем из нового объединенного файла
             from methods.system import SystemService
+            from layers.service import method_registry as global_method_registry
+
+            # Создаем system service
             system_service = SystemService("system", None)
 
             # Инициализируем сервис
@@ -243,18 +253,11 @@ class ServiceComponent(P2PComponent):
                 system_service.cache = cache
             self._bind_cache_to_methods(system_service, cache)
 
-            # Регистрируем методы в context (для RPC endpoint)
+            # Регистрируем методы в context и глобальном реестре
             await self._register_methods_in_context("system", system_service)
 
-            # ServiceManager теперь ДОЛЖЕН быть доступен
-            from layers.service_framework import get_global_service_manager
-            manager = get_global_service_manager()
-            if manager:
-                # Правильно регистрируем в ServiceManager
-                await manager.initialize_service(system_service)
-                self.logger.info(f"System service registered in ServiceManager with metrics")
-            else:
-                self.logger.error("ServiceManager STILL not available - this is a bug!")
+            # Регистрируем в ServiceManager через новую архитектуру
+            await self.service_manager.initialize_service(system_service)
 
             self.logger.info("Administrative methods registered: system")
 
@@ -276,7 +279,7 @@ class ServiceComponent(P2PComponent):
                 # Регистрируем в context
                 self.context.register_method(method_path, method)
 
-                # ИСПРАВЛЕНИЕ: ТАКЖЕ регистрируем в глобальном method_registry для RPC
+                # Регистрируем в глобальном method_registry для RPC
                 global_method_registry[method_path] = method
 
                 self.logger.debug(f"Registered method: {method_path}")
@@ -289,45 +292,150 @@ class ServiceComponent(P2PComponent):
                 if hasattr(method, '__wrapped__') and hasattr(method, '__name__'):
                     method._cache = cache
 
-    async def _initialize_local_services(self):
-        """Инициализация системы локальных сервисов"""
+    async def _do_shutdown(self):
+        """Graceful shutdown всех сервисов"""
         try:
-            from layers.local_service_bridge import create_local_service_bridge
-            from layers.service_framework import ServiceManager
+            # Используем объединенный метод shutdown
+            if hasattr(self, 'service_handler'):
+                await self.service_handler.shutdown_all()
+            elif hasattr(self, 'service_manager'):
+                await self.service_manager.shutdown_all_services()
 
-            service_manager = ServiceManager(self.rpc)
-            set_global_service_manager(service_manager)
-
-            local_bridge = create_local_service_bridge(
-                self.context.list_methods(),
-                service_manager  # Передаем ServiceManager
-            )
-
-            await local_bridge.initialize()
-            service_manager.set_proxy_client(local_bridge.get_proxy())
-            await service_manager.initialize_all_services()
-
-            self.service_manager = service_manager
-            self.local_bridge = local_bridge
-            self.service_layer.set_local_bridge(local_bridge)
-            self.context.set_shared("service_manager", service_manager)
-            setup_gossip = self.context.get_shared("setup_service_gossip")
-            if setup_gossip:
-                setup_gossip()
-                self.logger.info("Gossip setup finish")
-            self.logger.info("Local services system initialized")
+            self.logger.info("Service component shutdown completed")
 
         except Exception as e:
-            self.logger.error(f"Error initializing local services: {e}")
-            raise
+            self.logger.error(f"Error during service shutdown: {e}")
 
-    async def _do_shutdown(self):
+    # =====================================================
+    # ДОПОЛНИТЕЛЬНЫЕ МЕТОДЫ ДЛЯ ИНТЕГРАЦИИ
+    # =====================================================
+
+    def get_service_handler(self) -> 'P2PServiceHandler':
+        """Получить основной сервисный обработчик"""
+        return getattr(self, 'service_handler', None)
+
+    def get_service_manager(self) -> 'ServiceManager':
+        """Получить менеджер сервисов"""
+        return getattr(self, 'service_manager', None)
+
+    def get_local_bridge(self):
+        """Получить локальный мост сервисов"""
+        return getattr(self, 'local_bridge', None)
+
+    async def reload_service(self, service_name: str):
+        """Перезагрузка конкретного сервиса"""
         if hasattr(self, 'service_manager'):
-            await self.service_manager.shutdown_all_services()
+            await self.service_manager.registry.reload_service(service_name)
+        else:
+            self.logger.error("Service manager not initialized")
 
-        self.logger.info("Service layer shutdown")
+    def get_service_metrics(self, service_name: str = None):
+        """Получить метрики сервиса(ов)"""
+        if not hasattr(self, 'service_manager'):
+            return {}
 
+        if service_name:
+            service = self.service_manager.registry.get_service(service_name)
+            if service:
+                return {
+                    "counters": service.metrics.counters,
+                    "gauges": service.metrics.gauges,
+                    "timers": {k: len(v) for k, v in service.metrics.timers.items()},
+                    "last_updated": service.metrics.last_updated
+                }
+            return {}
+        else:
+            # Возвращаем метрики всех сервисов
+            all_metrics = {}
+            for svc_name, service in self.service_manager.services.items():
+                all_metrics[svc_name] = {
+                    "counters": service.metrics.counters,
+                    "gauges": service.metrics.gauges,
+                    "timers": {k: len(v) for k, v in service.metrics.timers.items()},
+                    "status": service.status.value
+                }
+            return all_metrics
 
+    def get_health_status(self) -> dict:
+        """Получить статус здоровья всех сервисов"""
+        if not hasattr(self, 'service_manager'):
+            return {"status": "error", "message": "Service manager not initialized"}
+
+        try:
+            from layers.service import ServiceStatus
+
+            healthy_services = 0
+            total_services = len(self.service_manager.services)
+            service_statuses = {}
+
+            for service_name, service in self.service_manager.services.items():
+                status = service.status.value
+                service_statuses[service_name] = status
+
+                if service.status == ServiceStatus.RUNNING:
+                    healthy_services += 1
+
+            return {
+                "status": "healthy" if healthy_services == total_services else "degraded",
+                "services": {
+                    "total": total_services,
+                    "healthy": healthy_services,
+                    "degraded": total_services - healthy_services
+                },
+                "service_statuses": service_statuses,
+                "timestamp": time.time()
+            }
+
+        except Exception as e:
+            self.logger.error(f"Error getting health status: {e}")
+            return {"status": "error", "message": str(e)}
+
+    # =====================================================
+    # BACKWARD COMPATIBILITY МЕТОДЫ
+    # =====================================================
+
+    def get_rpc_handler(self):
+        """Обратная совместимость: получить RPC обработчик"""
+        return self.get_service_handler()
+
+    async def register_external_service(self, service_name: str, service_instance):
+        """Регистрация внешнего сервиса"""
+        if hasattr(self, 'service_manager'):
+            await self.service_manager.initialize_service(service_instance)
+            self.logger.info(f"External service registered: {service_name}")
+        else:
+            self.logger.error("Cannot register external service: ServiceManager not available")
+
+    def list_available_methods(self) -> list:
+        """Список всех доступных методов"""
+        if hasattr(self, 'service_handler'):
+            from layers.service import method_registry
+            return list(method_registry.keys())
+        return []
+
+    def get_service_info_for_gossip(self) -> dict:
+        """Получить информацию о сервисах для gossip протокола"""
+        if hasattr(self, 'service_manager'):
+            try:
+                # Используем метод из ServiceManager если он есть
+                if hasattr(self.service_manager, 'get_services_info_for_gossip'):
+                    return asyncio.create_task(
+                        self.service_manager.get_services_info_for_gossip()
+                    )
+                else:
+                    # Fallback: создаем базовую информацию
+                    services_info = {}
+                    for service_name, service in self.service_manager.services.items():
+                        services_info[service_name] = {
+                            "status": service.status.value,
+                            "methods": service.info.exposed_methods,
+                            "version": service.info.version
+                        }
+                    return services_info
+            except Exception as e:
+                self.logger.error(f"Error getting service info for gossip: {e}")
+
+        return {}
 class WebServerComponent(P2PComponent):
     """Компонент веб-сервера"""
 
@@ -450,11 +558,41 @@ async def run_coordinator(node_id: str, port: int, bind_address: str, redis_url:
         if not health["healthy"]:
             raise RuntimeError(f"System is not healthy: {health}")
 
+        # Определяем отображаемый адрес для логов
+        display_address = "127.0.0.1" if bind_address == "0.0.0.0" else bind_address
+
         logger.info("Coordinator started successfully")
+        logger.info(f"Binding to: {bind_address}:{port}")
         logger.info(f"Available endpoints:")
-        logger.info(f"  Health: http://{bind_address}:{port}/health")
-        logger.info(f"  API Docs: http://{bind_address}:{port}/docs")
-        logger.info(f"  Cluster Status: http://{bind_address}:{port}/cluster/status")
+
+        # Основные пользовательские эндпоинты
+        logger.info(f"  Health Check: http://{display_address}:{port}/health")
+        logger.info(f"  RPC Interface: http://{display_address}:{port}/rpc")
+
+        # Документация API
+        logger.info(f"  API Documentation: http://{display_address}:{port}/docs")
+        logger.info(f"  ReDoc Documentation: http://{display_address}:{port}/redoc")
+        logger.info(f"  OpenAPI Schema: http://{display_address}:{port}/openapi.json")
+
+        # Управление сервисами
+        logger.info(f"  Services List: http://{display_address}:{port}/services")
+        logger.info(f"  Service Info: http://{display_address}:{port}/services/{{service_name}}")
+        logger.info(f"  Service Restart: http://{display_address}:{port}/services/{{service_name}}/restart")
+
+        # Метрики и мониторинг
+        logger.info(f"  System Metrics: http://{display_address}:{port}/metrics")
+        logger.info(f"  Service Metrics: http://{display_address}:{port}/metrics/{{service_name}}")
+
+        # Кластер и сеть
+        logger.info(f"  Cluster Nodes: http://{display_address}:{port}/cluster/nodes")
+
+        # Аутентификация
+        logger.info(f"  Auth Token: http://{display_address}:{port}/auth/token")
+        logger.info(f"  Auth Revoke: http://{display_address}:{port}/auth/revoke")
+
+        # Внутренние эндпоинты (для отладки)
+        logger.info(f"  Internal Gossip Join: http://{display_address}:{port}/internal/gossip/join")
+        logger.info(f"  Internal Gossip Exchange: http://{display_address}:{port}/internal/gossip/exchange")
 
         # Ждем сигнал shutdown
         await app_context.wait_for_shutdown()
@@ -492,10 +630,32 @@ async def run_worker(node_id: str, port: int, bind_address: str,
         if not health["healthy"]:
             raise RuntimeError(f"System is not healthy: {health}")
 
+        # Определяем отображаемый адрес для логов
+        display_address = "127.0.0.1" if bind_address == "0.0.0.0" else bind_address
+
         logger.info("Worker started successfully")
+        logger.info(f"Binding to: {bind_address}:{port}")
+        logger.info(f"Connected to coordinators: {', '.join(coordinator_addresses)}")
         logger.info(f"Available endpoints:")
-        logger.info(f"  Health: http://{bind_address}:{port}/health")
-        logger.info(f"  API Docs: http://{bind_address}:{port}/docs")
+
+        # Основные пользовательские эндпоинты
+        logger.info(f"  Health Check: http://{display_address}:{port}/health")
+        logger.info(f"  RPC Interface: http://{display_address}:{port}/rpc")
+
+        # Документация API
+        logger.info(f"  API Documentation: http://{display_address}:{port}/docs")
+        logger.info(f"  ReDoc Documentation: http://{display_address}:{port}/redoc")
+
+        # Управление сервисами
+        logger.info(f"  Services List: http://{display_address}:{port}/services")
+        logger.info(f"  Service Info: http://{display_address}:{port}/services/{{service_name}}")
+
+        # Метрики и мониторинг
+        logger.info(f"  System Metrics: http://{display_address}:{port}/metrics")
+        logger.info(f"  Service Metrics: http://{display_address}:{port}/metrics/{{service_name}}")
+
+        # Кластер и сеть
+        logger.info(f"  Cluster Nodes: http://{display_address}:{port}/cluster/nodes")
 
         # Ждем сигнал shutdown
         await app_context.wait_for_shutdown()
@@ -506,7 +666,6 @@ async def run_worker(node_id: str, port: int, bind_address: str,
     finally:
         # Graceful shutdown
         await app_context.shutdown_all()
-
 
 def create_argument_parser():
     """Создание парсера аргументов командной строки"""

@@ -40,6 +40,38 @@ class NodeInfo:
         return (datetime.now() - self.last_seen).total_seconds() < timeout_seconds
 
 
+class ConnectionManager:
+    """Менеджер подключений с пулингом"""
+
+    def __init__(self, max_connections: int = 100, max_keepalive: int = 20):
+        self.clients: Dict[str, httpx.AsyncClient] = {}
+        self.limits = httpx.Limits(
+            max_connections=max_connections,
+            max_keepalive_connections=max_keepalive
+        )
+        self._lock = asyncio.Lock()
+
+    async def get_client(self, base_url: str) -> httpx.AsyncClient:
+        """Получить клиент для базового URL с переиспользованием соединений"""
+        async with self._lock:
+            if base_url not in self.clients:
+                self.clients[base_url] = httpx.AsyncClient(
+                    base_url=base_url,
+                    limits=self.limits,
+                    timeout=httpx.Timeout(30.0)
+                )
+            return self.clients[base_url]
+
+    async def close_all(self):
+        """Закрыть все соединения"""
+        for client in self.clients.values():
+            await client.aclose()
+        self.clients.clear()
+
+
+connection_manager = ConnectionManager()
+
+
 class SimpleGossipProtocol:
     """Упрощенная реализация gossip протокола без внешних зависимостей"""
 
@@ -620,7 +652,7 @@ class P2PNetworkLayer:
             return []
 
         self.log.info(f"📡 Broadcasting to {len(target_nodes)} nodes" +
-              (f" (role: {target_role})" if target_role else ""))
+                      (f" (role: {target_role})" if target_role else ""))
 
         results = []
         tasks = []
@@ -664,12 +696,14 @@ class P2PNetworkLayer:
     async def _safe_broadcast_request(self, node: NodeInfo, node_url: str,
                                       endpoint: str, data: Dict[str, Any],
                                       headers: Dict[str, str]):
-        """Безопасный запрос для broadcast с обработкой ошибок"""
+        """Безопасный запрос для broadcast с переиспользованием соединений"""
         try:
-            return await self.transport.send_request(node_url, endpoint, data, headers)
+            client = await connection_manager.get_client(f"http://{node.address}:{node.port}")
+            response = await client.post(endpoint, json=data, headers=headers)
+            return response.json()
         except Exception as e:
             self.log.info(f"❌ Broadcast request failed to {node.node_id}: {e}")
-            raise e
+            raise
 
     def get_cluster_status(self) -> Dict[str, Any]:
         """Получение статуса кластера"""

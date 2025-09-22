@@ -2,7 +2,7 @@ import asyncio
 import logging
 from typing import Dict, Any, Optional
 from datetime import datetime
-from layers.service_framework import BaseService, service_method
+from layers.service import BaseService, service_method, get_global_service_manager
 
 
 class Run(BaseService):
@@ -156,7 +156,6 @@ class Run(BaseService):
 
             # Попытка получить proxy через глобальный реестр сервисов
             try:
-                from layers.service_framework import get_global_service_manager
                 service_manager = get_global_service_manager()
                 if service_manager and service_manager.proxy_client:
                     self.set_proxy(service_manager.proxy_client)

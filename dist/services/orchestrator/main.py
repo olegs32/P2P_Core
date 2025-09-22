@@ -10,10 +10,8 @@ from datetime import datetime
 import logging
 import sys
 import os
-try:
-    from layers.service_framework import BaseService, service_method, ServiceStatus, get_global_service_manager
-except ImportError:
-    from service_framework import BaseService, service_method, ServiceStatus, get_global_service_manager
+from layers.service import BaseService, service_method, get_global_service_manager
+
 
 
 class ServiceOrchestratorError(Exception):
@@ -484,9 +482,37 @@ class ServiceOrchestrator(BaseService):
         }
 
     @service_method(description="Get detailed service information", public=True)
-    async def get_service_info(self, service_name: str) -> Dict[str, Any]:
+    async def get_service_info(self) -> Dict[str, Any]:
         """
-        Получить детальную информацию о сервисе
+        Получение информации о самом сервисе orchestrator (переопределение базового метода)
+
+        Returns:
+            Информация о сервисе orchestrator
+        """
+        # Вызываем базовый метод для получения стандартной информации
+        base_info = await super().get_service_info()
+
+        # Добавляем специфичную для orchestrator информацию
+        manager = get_global_service_manager()
+
+        orchestrator_info = {
+            **base_info,
+            "orchestrator_specific": {
+                "services_directory": str(self.services_dir),
+                "total_installed": len(self.installed_services),
+                "total_running": len(manager.services) if manager else 0,
+                "proxy_available": self.proxy is not None,
+                "service_manager_available": manager is not None,
+                "installed_services": list(self.installed_services.keys())
+            }
+        }
+
+        return orchestrator_info
+
+    @service_method(description="Get detailed information about specific service", public=True)
+    async def get_service_details(self, service_name: str) -> Dict[str, Any]:
+        """
+        Получить детальную информацию о конкретном сервисе
 
         Args:
             service_name: Имя сервиса

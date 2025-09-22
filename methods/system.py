@@ -1,16 +1,75 @@
+import logging
 import platform
+import re
 import shutil
 import socket
 from datetime import datetime
 import psutil
 import os
 import subprocess
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Optional
 import asyncio
 from fastapi import HTTPException
-from layers.cache import P2PMultiLevelCache, cached_rpc
-from layers.service_framework import BaseService, service_method
+
+from layers.cache import P2PMultiLevelCache
+from layers.service import (
+    P2PServiceHandler, BaseService, ServiceManager,
+    service_method, P2PAuthBearer, method_registry,
+    RPCRequest, RPCResponse
+)
 import time
+
+
+class CommandValidator:
+    """Валидатор команд для безопасного выполнения"""
+
+    ALLOWED_COMMANDS = {
+        # Информационные команды
+        'ls', 'dir', 'ps', 'tasklist', 'df', 'free', 'uptime', 'whoami',
+        'pwd', 'cd', 'echo', 'cat', 'type', 'find', 'where', 'which',
+        # Системные команды
+        'systemctl', 'service', 'netstat', 'ipconfig', 'ifconfig',
+        # Архивирование
+        'tar', 'zip', 'unzip',
+    }
+
+    DANGEROUS_PATTERNS = [
+        r'[|&;`$(){}[\]*?~<>!]',  # Опасные символы shell
+        r'\.\.',  # Path traversal
+        r'sudo|su\s',  # Elevation
+        r'rm\s+-rf',  # Dangerous deletion
+        r'format\s+[a-z]',  # Format drive
+        r'del\s+/[a-z]',  # Windows deletion
+        r'shutdown|reboot',  # System control
+        r'wget|curl.*http',  # Network downloads
+    ]
+
+    @classmethod
+    def validate_command(cls, command: str) -> tuple[bool, Optional[str]]:
+        """
+        Валидация команды
+        Returns: (is_valid, error_message)
+        """
+        if not command or not command.strip():
+            return False, "Empty command"
+
+        command = command.strip()
+
+        # Проверка на опасные паттерны
+        for pattern in cls.DANGEROUS_PATTERNS:
+            if re.search(pattern, command, re.IGNORECASE):
+                return False, f"Command contains dangerous pattern: {pattern}"
+
+        # Проверка первого слова (команда)
+        first_word = command.split()[0].lower()
+        if first_word not in cls.ALLOWED_COMMANDS:
+            return False, f"Command '{first_word}' is not in whitelist"
+
+        # Проверка длины
+        if len(command) > 500:
+            return False, "Command too long"
+
+        return True, None
 
 
 class SystemService(BaseService):
@@ -27,11 +86,11 @@ class SystemService(BaseService):
     def _setup_system_metrics(self):
         """Настройка системных метрик"""
         # Базовая информация о системе
-        self.metric("system_platform", platform.system())
-        self.metric("system_architecture", platform.machine())
-        self.metric("cpu_count", psutil.cpu_count())
-        self.metric("memory_total_bytes", psutil.virtual_memory().total)
-        self.metric("boot_time", psutil.boot_time())
+        self.metrics.gauge("system_platform", hash(platform.system()))  # Используем hash для числового значения
+        self.metrics.gauge("system_architecture", hash(platform.machine()))
+        self.metrics.gauge("cpu_count", psutil.cpu_count())
+        self.metrics.gauge("memory_total_bytes", psutil.virtual_memory().total)
+        self.metrics.gauge("boot_time", psutil.boot_time())
 
         # Запускаем мониторинг системных ресурсов
         asyncio.create_task(self._monitor_system_resources())
@@ -42,54 +101,54 @@ class SystemService(BaseService):
             try:
                 # CPU метрики
                 cpu_percent = psutil.cpu_percent(interval=0.1)
-                self.metric("cpu_usage_percent", cpu_percent)
+                self.metrics.gauge("cpu_usage_percent", cpu_percent)
 
                 # Память
                 memory = psutil.virtual_memory()
-                self.metric("memory_usage_percent", memory.percent)
-                self.metric("memory_available_bytes", memory.available)
-                self.metric("memory_used_bytes", memory.used)
+                self.metrics.gauge("memory_usage_percent", memory.percent)
+                self.metrics.gauge("memory_available_bytes", memory.available)
+                self.metrics.gauge("memory_used_bytes", memory.used)
 
                 # Диск I/O
                 disk_io = psutil.disk_io_counters()
                 if disk_io:
-                    self.metric("disk_read_bytes", disk_io.read_bytes, "counter")
-                    self.metric("disk_write_bytes", disk_io.write_bytes, "counter")
-                    self.metric("disk_read_count", disk_io.read_count, "counter")
-                    self.metric("disk_write_count", disk_io.write_count, "counter")
+                    self.metrics.gauge("disk_read_bytes", disk_io.read_bytes)
+                    self.metrics.gauge("disk_write_bytes", disk_io.write_bytes)
+                    self.metrics.gauge("disk_read_count", disk_io.read_count)
+                    self.metrics.gauge("disk_write_count", disk_io.write_count)
 
                 # Сеть I/O
                 network_io = psutil.net_io_counters()
                 if network_io:
-                    self.metric("network_bytes_sent", network_io.bytes_sent, "counter")
-                    self.metric("network_bytes_recv", network_io.bytes_recv, "counter")
-                    self.metric("network_packets_sent", network_io.packets_sent, "counter")
-                    self.metric("network_packets_recv", network_io.packets_recv, "counter")
+                    self.metrics.gauge("network_bytes_sent", network_io.bytes_sent)
+                    self.metrics.gauge("network_bytes_recv", network_io.bytes_recv)
+                    self.metrics.gauge("network_packets_sent", network_io.packets_sent)
+                    self.metrics.gauge("network_packets_recv", network_io.packets_recv)
 
                 # Load average (только на Unix)
                 if hasattr(os, 'getloadavg'):
                     load_avg = os.getloadavg()
-                    self.metric("load_average_1min", load_avg[0])
-                    self.metric("load_average_5min", load_avg[1])
-                    self.metric("load_average_15min", load_avg[2])
+                    self.metrics.gauge("load_average_1min", load_avg[0])
+                    self.metrics.gauge("load_average_5min", load_avg[1])
+                    self.metrics.gauge("load_average_15min", load_avg[2])
 
                 # Количество процессов
-                self.metric("process_count", len(psutil.pids()))
+                self.metrics.gauge("process_count", len(psutil.pids()))
 
                 # Disk usage
                 disk_info = self._get_disk_info()
                 for mount_point, usage in disk_info.items():
                     safe_mount = mount_point.replace(':', '_').replace('/', '_root')
-                    self.metric(f"disk_{safe_mount}_total_bytes", usage['total'])
-                    self.metric(f"disk_{safe_mount}_used_bytes", usage['used'])
-                    self.metric(f"disk_{safe_mount}_free_bytes", usage['free'])
+                    self.metrics.gauge(f"disk_{safe_mount}_total_bytes", usage['total'])
+                    self.metrics.gauge(f"disk_{safe_mount}_used_bytes", usage['used'])
+                    self.metrics.gauge(f"disk_{safe_mount}_free_bytes", usage['free'])
                     if usage['total'] > 0:
                         usage_percent = (usage['used'] / usage['total']) * 100
-                        self.metric(f"disk_{safe_mount}_usage_percent", usage_percent)
+                        self.metrics.gauge(f"disk_{safe_mount}_usage_percent", usage_percent)
 
             except Exception as e:
                 self.logger.warning(f"Error updating system metrics: {e}")
-                self.metric("system_monitoring_errors", 1, "counter")
+                self.metrics.increment("system_monitoring_errors")
 
             await asyncio.sleep(30)  # Обновление каждые 30 секунд
 
@@ -98,15 +157,15 @@ class SystemService(BaseService):
         self.logger.info("Initializing system service")
 
         # Получаем cache из ServiceManager если доступен
-        from layers.service_framework import get_global_service_manager
+        from layers.service import get_global_service_manager
         manager = get_global_service_manager()
         if manager and hasattr(manager, 'proxy_client'):
             # Можно получить доступ к cache через другие компоненты
             pass
 
         # Базовые системные метрики
-        self.metric("service_initialized_at", time.time())
-        self.metric("hostname", socket.gethostname())
+        self.metrics.gauge("service_initialized_at", time.time())
+        self.metrics.gauge("hostname", hash(socket.gethostname()))  # Используем hash для числового значения
 
     async def cleanup(self):
         """Очистка ресурсов"""
@@ -124,26 +183,29 @@ class SystemService(BaseService):
     async def get_system_info(self) -> Dict[str, Any]:
         """Получение информации о системе"""
         try:
-            with self.metrics.timing_context("get_system_info_duration"):
-                self.metric("get_system_info_calls", 1, "counter")
+            start_time = time.time()
+            self.metrics.increment("get_system_info_calls")
 
-                info = {
-                    "hostname": socket.gethostname(),
-                    "platform": platform.system(),
-                    "architecture": platform.machine(),
-                    "cpu_count": psutil.cpu_count(),
-                    "memory_total": psutil.virtual_memory().total,
-                    "boot_time": psutil.boot_time(),
-                    "disk_usage": self._get_disk_info(),
-                    "network_interfaces": list(psutil.net_if_addrs().keys()),
-                    "timestamp": datetime.now().isoformat()
-                }
+            info = {
+                "hostname": socket.gethostname(),
+                "platform": platform.system(),
+                "architecture": platform.machine(),
+                "cpu_count": psutil.cpu_count(),
+                "memory_total": psutil.virtual_memory().total,
+                "boot_time": psutil.boot_time(),
+                "disk_usage": self._get_disk_info(),
+                "network_interfaces": list(psutil.net_if_addrs().keys()),
+                "timestamp": datetime.now().isoformat()
+            }
 
-                self.metric("get_system_info_success", 1, "counter")
-                return info
+            # Записываем время выполнения
+            duration_ms = (time.time() - start_time) * 1000
+            self.metrics.timer("get_system_info_duration_ms", duration_ms)
+            self.metrics.increment("get_system_info_success")
+            return info
 
         except Exception as e:
-            self.metric("get_system_info_errors", 1, "counter")
+            self.metrics.increment("get_system_info_errors")
             raise HTTPException(status_code=500, detail=f"Failed to get system info: {e}")
 
     def _get_disk_info(self) -> Dict[str, Any]:
@@ -188,77 +250,95 @@ class SystemService(BaseService):
     async def get_system_metrics(self) -> Dict[str, Any]:
         """Получение текущих метрик системы (не кешируется)"""
         try:
-            with self.metrics.timing_context("get_system_metrics_duration"):
-                self.metric("get_system_metrics_calls", 1, "counter")
+            start_time = time.time()
+            self.metrics.increment("get_system_metrics_calls")
 
-                metrics = {
-                    "cpu_percent": psutil.cpu_percent(interval=0.001),
-                    "memory": {
-                        "percent": psutil.virtual_memory().percent,
-                        "available": psutil.virtual_memory().available,
-                        "used": psutil.virtual_memory().used
-                    },
-                    "disk_io": psutil.disk_io_counters()._asdict() if psutil.disk_io_counters() else {},
-                    "network_io": psutil.net_io_counters()._asdict() if psutil.net_io_counters() else {},
-                    "load_average": list(os.getloadavg()) if hasattr(os, 'getloadavg') else [0, 0, 0],
-                    "process_count": len(psutil.pids()),
-                    "timestamp": datetime.now().isoformat()
-                }
+            metrics = {
+                "cpu_percent": psutil.cpu_percent(interval=0.001),
+                "memory": {
+                    "percent": psutil.virtual_memory().percent,
+                    "available": psutil.virtual_memory().available,
+                    "used": psutil.virtual_memory().used
+                },
+                "disk_io": psutil.disk_io_counters()._asdict() if psutil.disk_io_counters() else {},
+                "network_io": psutil.net_io_counters()._asdict() if psutil.net_io_counters() else {},
+                "load_average": list(os.getloadavg()) if hasattr(os, 'getloadavg') else [0, 0, 0],
+                "process_count": len(psutil.pids()),
+                "timestamp": datetime.now().isoformat()
+            }
 
-                # Обновляем метрики сервиса
-                self.metric("last_metrics_cpu_percent", metrics["cpu_percent"])
-                self.metric("last_metrics_memory_percent", metrics["memory"]["percent"])
-                self.metric("get_system_metrics_success", 1, "counter")
+            # Обновляем метрики сервиса
+            self.metrics.gauge("last_metrics_cpu_percent", metrics["cpu_percent"])
+            self.metrics.gauge("last_metrics_memory_percent", metrics["memory"]["percent"])
 
-                return metrics
+            duration_ms = (time.time() - start_time) * 1000
+            self.metrics.timer("get_system_metrics_duration_ms", duration_ms)
+            self.metrics.increment("get_system_metrics_success")
+
+            return metrics
 
         except Exception as e:
-            self.metric("get_system_metrics_errors", 1, "counter")
+            self.metrics.increment("get_system_metrics_errors")
             raise HTTPException(status_code=500, detail=f"Failed to get system metrics: {e}")
 
     @service_method(description="Execute system command", public=True)
     async def execute_command(self, command: str, timeout: int = 30, working_dir: str = None) -> Dict[str, Any]:
         """Выполнение системной команды с принудительным использованием синхронного subprocess на Windows"""
+        # Валидация команды
+        is_valid, error_msg = CommandValidator.validate_command(command)
+        if not is_valid:
+            return {
+                "command": command,
+                "error": f"Command validation failed: {error_msg}",
+                "success": False,
+                "security_blocked": True,
+                "timestamp": datetime.now().isoformat()
+            }
 
-        with self.metrics.timing_context("execute_command_duration"):
-            self.metric("execute_command_calls", 1, "counter")
+        # Логирование для аудита
+        logging.getLogger("SystemSecurity").warning(
+            f"Executing command: {command} by user: {working_dir}"
+        )
 
-            if not command or command.strip() == "":
-                self.metric("execute_command_invalid", 1, "counter")
-                raise HTTPException(status_code=400, detail="Command cannot be empty")
+        start_time = time.time()
+        self.metrics.increment("execute_command_calls")
 
-            # Базовая защита от опасных команд
-            dangerous_commands = ['rm -rf', 'format', 'del /q', 'shutdown', 'reboot', 'rmdir /s']
-            if any(dangerous in command.lower() for dangerous in dangerous_commands):
-                self.metric("execute_command_blocked", 1, "counter")
-                raise HTTPException(status_code=403, detail="Dangerous command not allowed")
+        if not command or command.strip() == "":
+            self.metrics.increment("execute_command_invalid")
+            raise HTTPException(status_code=400, detail="Command cannot be empty")
 
-            # Ограничиваем таймаут
-            max_timeout = 60
-            if timeout > max_timeout:
-                timeout = max_timeout
+        # Базовая защита от опасных команд
+        dangerous_commands = ['rm -rf', 'format', 'del /q', 'shutdown', 'reboot', 'rmdir /s']
+        if any(dangerous in command.lower() for dangerous in dangerous_commands):
+            self.metrics.increment("execute_command_blocked")
+            raise HTTPException(status_code=403, detail="Dangerous command not allowed")
 
-            try:
-                if self.is_windows:
-                    result = await self._execute_windows_command(command, timeout, working_dir)
-                else:
-                    result = await self._execute_unix_command(command, timeout, working_dir)
+        # Ограничиваем таймаут
+        max_timeout = 60
+        if timeout > max_timeout:
+            timeout = max_timeout
 
-                if result.get("success", False):
-                    self.metric("execute_command_success", 1, "counter")
-                else:
-                    self.metric("execute_command_failed", 1, "counter")
+        try:
+            if self.is_windows:
+                result = await self._execute_windows_command(command, timeout, working_dir)
+            else:
+                result = await self._execute_unix_command(command, timeout, working_dir)
 
-                # Метрики по длительности
-                if "timeout" not in result.get("error", ""):
-                    execution_time = result.get("execution_time", 0)
-                    self.metric("command_execution_time_ms", execution_time * 1000, "timer")
+            if result.get("success", False):
+                self.metrics.increment("execute_command_success")
+            else:
+                self.metrics.increment("execute_command_failed")
 
-                return result
+            # Метрики по длительности
+            if "timeout" not in result.get("error", ""):
+                execution_time = result.get("execution_time", 0)
+                self.metrics.timer("command_execution_time_ms", execution_time * 1000)
 
-            except Exception as e:
-                self.metric("execute_command_errors", 1, "counter")
-                raise HTTPException(status_code=500, detail=f"Command execution error: {e}")
+            return result
+
+        except Exception as e:
+            self.metrics.increment("execute_command_errors")
+            raise HTTPException(status_code=500, detail=f"Command execution error: {e}")
 
     async def _execute_windows_command(self, command: str, timeout: int, working_dir: str) -> Dict[str, Any]:
         """Выполнение команды на Windows через синхронный subprocess"""
@@ -422,126 +502,139 @@ class SystemService(BaseService):
     @service_method(description="Execute simple test command", public=True)
     async def execute_simple_test(self) -> Dict[str, Any]:
         """Простой тест команды для отладки"""
-        with self.metrics.timing_context("execute_simple_test_duration"):
-            self.metric("execute_simple_test_calls", 1, "counter")
+        start_time = time.time()
+        self.metrics.increment("execute_simple_test_calls")
 
-            if self.is_windows:
-                result = await self.execute_command("echo Hello World", timeout=5)
-            else:
-                result = await self.execute_command("echo 'Hello World'", timeout=5)
+        if self.is_windows:
+            result = await self.execute_command("echo Hello World", timeout=5)
+        else:
+            result = await self.execute_command("echo 'Hello World'", timeout=5)
 
-            if result.get("success", False):
-                self.metric("execute_simple_test_success", 1, "counter")
-            else:
-                self.metric("execute_simple_test_failed", 1, "counter")
+        if result.get("success", False):
+            self.metrics.increment("execute_simple_test_success")
+        else:
+            self.metrics.increment("execute_simple_test_failed")
 
-            return result
+        duration_ms = (time.time() - start_time) * 1000
+        self.metrics.timer("execute_simple_test_duration_ms", duration_ms)
+
+        return result
 
     @service_method(description="Get detailed process list", public=True)
     async def list_processes(self, filter_name: str = None) -> List[Dict[str, Any]]:
         """Список системных процессов"""
-        with self.metrics.timing_context("list_processes_duration"):
-            self.metric("list_processes_calls", 1, "counter")
+        start_time = time.time()
+        self.metrics.increment("list_processes_calls")
 
-            processes = []
-            process_count = 0
+        processes = []
+        process_count = 0
 
-            for proc in psutil.process_iter(['pid', 'name', 'username', 'cpu_percent', 'memory_percent']):
-                try:
-                    proc_info = proc.info
-                    if filter_name and filter_name not in proc_info['name']:
-                        continue
-                    processes.append(proc_info)
-                    process_count += 1
-                except (psutil.NoSuchProcess, psutil.AccessDenied):
+        for proc in psutil.process_iter(['pid', 'name', 'username', 'cpu_percent', 'memory_percent']):
+            try:
+                proc_info = proc.info
+                if filter_name and filter_name not in proc_info['name']:
                     continue
+                processes.append(proc_info)
+                process_count += 1
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
 
-            self.metric("list_processes_returned", process_count)
-            self.metric("list_processes_success", 1, "counter")
+        self.metrics.gauge("list_processes_returned", process_count)
+        self.metrics.increment("list_processes_success")
 
-            return processes
+        duration_ms = (time.time() - start_time) * 1000
+        self.metrics.timer("list_processes_duration_ms", duration_ms)
+
+        return processes
 
     @service_method(description="Get detailed process information", public=True)
     async def get_process_info(self, pid: int) -> Dict[str, Any]:
         """Детальная информация о процессе"""
-        with self.metrics.timing_context("get_process_info_duration"):
-            self.metric("get_process_info_calls", 1, "counter")
+        start_time = time.time()
+        self.metrics.increment("get_process_info_calls")
 
-            try:
-                proc = psutil.Process(pid)
-                info = {
-                    "pid": proc.pid,
-                    "name": proc.name(),
-                    "status": proc.status(),
-                    "username": proc.username(),
-                    "cpu_percent": proc.cpu_percent(),
-                    "memory_percent": proc.memory_percent(),
-                    "memory_info": proc.memory_info()._asdict(),
-                    "create_time": proc.create_time(),
-                    "cmdline": proc.cmdline(),
-                    "connections": len(proc.connections())
-                }
+        try:
+            proc = psutil.Process(pid)
+            info = {
+                "pid": proc.pid,
+                "name": proc.name(),
+                "status": proc.status(),
+                "username": proc.username(),
+                "cpu_percent": proc.cpu_percent(),
+                "memory_percent": proc.memory_percent(),
+                "memory_info": proc.memory_info()._asdict(),
+                "create_time": proc.create_time(),
+                "cmdline": proc.cmdline(),
+                "connections": len(proc.connections())
+            }
 
-                self.metric("get_process_info_success", 1, "counter")
-                return info
+            self.metrics.increment("get_process_info_success")
+            duration_ms = (time.time() - start_time) * 1000
+            self.metrics.timer("get_process_info_duration_ms", duration_ms)
+            return info
 
-            except psutil.NoSuchProcess:
-                self.metric("get_process_info_not_found", 1, "counter")
-                raise HTTPException(status_code=404, detail=f"Process {pid} not found")
+        except psutil.NoSuchProcess:
+            self.metrics.increment("get_process_info_not_found")
+            raise HTTPException(status_code=404, detail=f"Process {pid} not found")
 
     @service_method(description="Terminate process", public=True)
     async def terminate_process(self, pid: int, force: bool = False) -> Dict[str, Any]:
         """Завершение процесса"""
-        with self.metrics.timing_context("terminate_process_duration"):
-            self.metric("terminate_process_calls", 1, "counter")
+        start_time = time.time()
+        self.metrics.increment("terminate_process_calls")
 
-            try:
-                proc = psutil.Process(pid)
-                proc_name = proc.name()
+        try:
+            proc = psutil.Process(pid)
+            proc_name = proc.name()
 
-                if force:
-                    proc.kill()
-                    action = "killed"
-                    self.metric("terminate_process_killed", 1, "counter")
-                else:
-                    proc.terminate()
-                    action = "terminated"
-                    self.metric("terminate_process_terminated", 1, "counter")
+            if force:
+                proc.kill()
+                action = "killed"
+                self.metrics.increment("terminate_process_killed")
+            else:
+                proc.terminate()
+                action = "terminated"
+                self.metrics.increment("terminate_process_terminated")
 
-                result = {
-                    "pid": pid,
-                    "name": proc_name,
-                    "action": action,
-                    "success": True
-                }
+            result = {
+                "pid": pid,
+                "name": proc_name,
+                "action": action,
+                "success": True
+            }
 
-                self.metric("terminate_process_success", 1, "counter")
-                return result
+            self.metrics.increment("terminate_process_success")
+            duration_ms = (time.time() - start_time) * 1000
+            self.metrics.timer("terminate_process_duration_ms", duration_ms)
+            return result
 
-            except psutil.NoSuchProcess:
-                self.metric("terminate_process_not_found", 1, "counter")
-                raise HTTPException(status_code=404, detail=f"Process {pid} not found")
-            except psutil.AccessDenied:
-                self.metric("terminate_process_access_denied", 1, "counter")
-                raise HTTPException(status_code=403, detail=f"Access denied for process {pid}")
+        except psutil.NoSuchProcess:
+            self.metrics.increment("terminate_process_not_found")
+            raise HTTPException(status_code=404, detail=f"Process {pid} not found")
+        except psutil.AccessDenied:
+            self.metrics.increment("terminate_process_access_denied")
+            raise HTTPException(status_code=403, detail=f"Access denied for process {pid}")
 
     @service_method(description="List system services", public=True)
     async def list_services(self) -> List[Dict[str, Any]]:
         """Список системных сервисов"""
-        with self.metrics.timing_context("list_services_duration"):
-            self.metric("list_services_calls", 1, "counter")
+        start_time = time.time()
+        self.metrics.increment("list_services_calls")
 
-            try:
-                if self.is_windows:
-                    # Windows services через WMI или другие методы
-                    return await self._list_windows_services()
-                else:
-                    # Linux systemctl
-                    return await self._list_linux_services()
+        try:
+            if self.is_windows:
+                # Windows services через WMI или другие методы
+                return await self._list_windows_services()
+            else:
+                # Linux systemctl
+                return await self._list_linux_services()
 
-            except Exception as e:
-                self.metric("list_services_errors", 1, "counter")
-                raise HTTPException(status_code=500, detail=f"Failed to list services: {e}")
+        except Exception as e:
+            self.metrics.increment("list_services_errors")
+            raise HTTPException(status_code=500, detail=f"Failed to list services: {e}")
+        finally:
+            duration_ms = (time.time() - start_time) * 1000
+            self.metrics.timer("list_services_duration_ms", duration_ms)
 
     async def _list_linux_services(self) -> List[Dict[str, Any]]:
         """Список Linux сервисов через systemctl"""
@@ -565,12 +658,12 @@ class SystemService(BaseService):
                             "description": ' '.join(parts[4:])
                         })
 
-            self.metric("list_services_linux_count", len(services))
-            self.metric("list_services_success", 1, "counter")
+            self.metrics.gauge("list_services_linux_count", len(services))
+            self.metrics.increment("list_services_success")
             return services
 
         except Exception as e:
-            self.metric("list_services_linux_errors", 1, "counter")
+            self.metrics.increment("list_services_linux_errors")
             raise e
 
     async def _list_windows_services(self) -> List[Dict[str, Any]]:
@@ -592,51 +685,53 @@ class SystemService(BaseService):
                     else:
                         services = [services_data]  # Один сервис
 
-                    self.metric("list_services_windows_count", len(services))
-                    self.metric("list_services_success", 1, "counter")
+                    self.metrics.gauge("list_services_windows_count", len(services))
+                    self.metrics.increment("list_services_success")
                     return services
                 except json.JSONDecodeError:
                     pass
 
             # Fallback - возвращаем пустой список
-            self.metric("list_services_windows_fallback", 1, "counter")
+            self.metrics.increment("list_services_windows_fallback")
             return []
 
         except Exception as e:
-            self.metric("list_services_windows_errors", 1, "counter")
+            self.metrics.increment("list_services_windows_errors")
             return []
 
     @service_method(description="Control system service", public=True)
     async def service_action(self, service_name: str, action: str) -> Dict[str, Any]:
         """Выполнение действия над сервисом"""
-        with self.metrics.timing_context("service_action_duration"):
-            self.metric("service_action_calls", 1, "counter")
+        start_time = time.time()
+        self.metrics.increment("service_action_calls")
 
-            if action not in ['start', 'stop', 'restart', 'enable', 'disable', 'status']:
-                self.metric("service_action_invalid", 1, "counter")
-                raise HTTPException(status_code=400, detail=f"Invalid action: {action}")
+        if action not in ['start', 'stop', 'restart', 'enable', 'disable', 'status']:
+            self.metrics.increment("service_action_invalid")
+            raise HTTPException(status_code=400, detail=f"Invalid action: {action}")
 
-            try:
-                if self.is_windows:
-                    result = await self._windows_service_action(service_name, action)
-                else:
-                    result = await self._linux_service_action(service_name, action)
+        try:
+            if self.is_windows:
+                result = await self._windows_service_action(service_name, action)
+            else:
+                result = await self._linux_service_action(service_name, action)
 
-                if result.get("success", False):
-                    self.metric(f"service_action_{action}_success", 1, "counter")
-                else:
-                    self.metric(f"service_action_{action}_failed", 1, "counter")
+            if result.get("success", False):
+                self.metrics.increment(f"service_action_{action}_success")
+            else:
+                self.metrics.increment(f"service_action_{action}_failed")
 
-                return result
+            duration_ms = (time.time() - start_time) * 1000
+            self.metrics.timer("service_action_duration_ms", duration_ms)
+            return result
 
-            except Exception as e:
-                self.metric("service_action_errors", 1, "counter")
-                return {
-                    "service": service_name,
-                    "action": action,
-                    "error": str(e),
-                    "success": False
-                }
+        except Exception as e:
+            self.metrics.increment("service_action_errors")
+            return {
+                "service": service_name,
+                "action": action,
+                "error": str(e),
+                "success": False
+            }
 
     async def _linux_service_action(self, service_name: str, action: str) -> Dict[str, Any]:
         """Действие над Linux сервисом"""
@@ -697,26 +792,8 @@ class SystemService(BaseService):
             "success": result.get("success", False)
         }
 
-    async def initialize(self):
-        """Инициализация системного сервиса"""
-        self.logger.info("Initializing system service")
 
-        # Получаем cache из ServiceManager если доступен
-        from layers.service_framework import get_global_service_manager
-        manager = get_global_service_manager()
-        if manager and hasattr(manager, 'proxy_client'):
-            pass
-
-        # Базовые системные метрики
-        self.metric("service_initialized_at", time.time())
-        self.metric("hostname", socket.gethostname())
-
-        # ДОБАВИТЬ: принудительно запускаем метрики
-        self.metric("system_service_active", 1)
-        self.logger.info(f"System service initialized with {len(self.metrics.data)} metrics")
-
-
-# Для backward compatibility с старым кодом
+# Для backward compatibility со старым кодом
 class SystemMethods(SystemService):
     """Backward compatibility wrapper"""
 

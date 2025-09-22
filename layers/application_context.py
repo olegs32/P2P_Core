@@ -10,6 +10,7 @@ application_context.py - Централизованное управление �
 
 import asyncio
 import logging
+import time
 from typing import Dict, Any, Optional, List
 from enum import Enum
 from dataclasses import dataclass, field

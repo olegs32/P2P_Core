@@ -176,6 +176,7 @@ async def test_basic_metrics():
 
         # Вызов simple test
         test_result = await client.call_service_method("system", "execute_simple_test")
+        print(type(test_result), test_result)
         if test_result.get('result', {}).get('success'):
             print(f"   ✅ execute_simple_test successful")
         else:
@@ -390,6 +391,8 @@ async def main():
     except KeyboardInterrupt:
         print("\n❌ Tests interrupted by user")
     except Exception as e:
+        import traceback
+        print(traceback.format_exc())
         print(f"\n❌ Test suite error: {e}")
 
 
