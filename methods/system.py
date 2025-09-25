@@ -86,7 +86,7 @@ class SystemService(BaseService):
     def _setup_system_metrics(self):
         """Настройка системных метрик"""
         # Базовая информация о системе
-        self.metrics.gauge("system_platform", hash(platform.system()))  # Используем hash для числового значения
+        self.metrics.gauge("system_platform", hash(platform.system()))  # Хешируем строку
         self.metrics.gauge("system_architecture", hash(platform.machine()))
         self.metrics.gauge("cpu_count", psutil.cpu_count())
         self.metrics.gauge("memory_total_bytes", psutil.virtual_memory().total)
@@ -94,63 +94,6 @@ class SystemService(BaseService):
 
         # Запускаем мониторинг системных ресурсов
         asyncio.create_task(self._monitor_system_resources())
-
-    async def _monitor_system_resources(self):
-        """Background мониторинг системных ресурсов"""
-        while self.status.value == "running":
-            try:
-                # CPU метрики
-                cpu_percent = psutil.cpu_percent(interval=0.1)
-                self.metrics.gauge("cpu_usage_percent", cpu_percent)
-
-                # Память
-                memory = psutil.virtual_memory()
-                self.metrics.gauge("memory_usage_percent", memory.percent)
-                self.metrics.gauge("memory_available_bytes", memory.available)
-                self.metrics.gauge("memory_used_bytes", memory.used)
-
-                # Диск I/O
-                disk_io = psutil.disk_io_counters()
-                if disk_io:
-                    self.metrics.gauge("disk_read_bytes", disk_io.read_bytes)
-                    self.metrics.gauge("disk_write_bytes", disk_io.write_bytes)
-                    self.metrics.gauge("disk_read_count", disk_io.read_count)
-                    self.metrics.gauge("disk_write_count", disk_io.write_count)
-
-                # Сеть I/O
-                network_io = psutil.net_io_counters()
-                if network_io:
-                    self.metrics.gauge("network_bytes_sent", network_io.bytes_sent)
-                    self.metrics.gauge("network_bytes_recv", network_io.bytes_recv)
-                    self.metrics.gauge("network_packets_sent", network_io.packets_sent)
-                    self.metrics.gauge("network_packets_recv", network_io.packets_recv)
-
-                # Load average (только на Unix)
-                if hasattr(os, 'getloadavg'):
-                    load_avg = os.getloadavg()
-                    self.metrics.gauge("load_average_1min", load_avg[0])
-                    self.metrics.gauge("load_average_5min", load_avg[1])
-                    self.metrics.gauge("load_average_15min", load_avg[2])
-
-                # Количество процессов
-                self.metrics.gauge("process_count", len(psutil.pids()))
-
-                # Disk usage
-                disk_info = self._get_disk_info()
-                for mount_point, usage in disk_info.items():
-                    safe_mount = mount_point.replace(':', '_').replace('/', '_root')
-                    self.metrics.gauge(f"disk_{safe_mount}_total_bytes", usage['total'])
-                    self.metrics.gauge(f"disk_{safe_mount}_used_bytes", usage['used'])
-                    self.metrics.gauge(f"disk_{safe_mount}_free_bytes", usage['free'])
-                    if usage['total'] > 0:
-                        usage_percent = (usage['used'] / usage['total']) * 100
-                        self.metrics.gauge(f"disk_{safe_mount}_usage_percent", usage_percent)
-
-            except Exception as e:
-                self.logger.warning(f"Error updating system metrics: {e}")
-                self.metrics.increment("system_monitoring_errors")
-
-            await asyncio.sleep(30)  # Обновление каждые 30 секунд
 
     async def initialize(self):
         """Инициализация системного сервиса"""
@@ -160,16 +103,83 @@ class SystemService(BaseService):
         from layers.service import get_global_service_manager
         manager = get_global_service_manager()
         if manager and hasattr(manager, 'proxy_client'):
-            # Можно получить доступ к cache через другие компоненты
             pass
 
         # Базовые системные метрики
         self.metrics.gauge("service_initialized_at", time.time())
-        self.metrics.gauge("hostname", hash(socket.gethostname()))  # Используем hash для числового значения
+        self.metrics.gauge("hostname", hash(socket.gethostname()))  # Хешируем строку
 
-    async def cleanup(self):
-        """Очистка ресурсов"""
-        self.logger.info("Cleaning up system service")
+        # ИСПРАВЛЕНИЕ: принудительно запускаем метрики
+        self.metrics.gauge("system_service_active", 1)
+        self.logger.info(f"System service initialized with {len(self.metrics.data)} metrics")
+
+    def _collect_system_resources_sync(self) -> Dict[str, Any]:
+        """Синхронный сбор системных ресурсов"""
+        metrics = {}
+        try:
+            # CPU метрики
+            metrics["cpu_usage_percent"] = psutil.cpu_percent(interval=0.1)
+
+            # Память (быстро)
+            memory = psutil.virtual_memory()
+            metrics["memory_usage_percent"] = memory.percent
+            metrics["memory_available_bytes"] = memory.available
+            metrics["memory_used_bytes"] = memory.used
+
+            # Остальные метрики только если быстро
+            try:
+                metrics["process_count"] = len(psutil.pids())
+            except:
+                pass
+
+            # Дисковые метрики только изредка
+            if hasattr(self, '_disk_metrics_counter'):
+                self._disk_metrics_counter += 1
+            else:
+                self._disk_metrics_counter = 1
+
+            if self._disk_metrics_counter % 5 == 0:  # Раз в 5 минут
+                try:
+                    disk_io = psutil.disk_io_counters()
+                    if disk_io:
+                        metrics.update({
+                            "disk_read_bytes": disk_io.read_bytes,
+                            "disk_write_bytes": disk_io.write_bytes,
+                            "disk_read_count": disk_io.read_count,
+                            "disk_write_count": disk_io.write_count,
+                        })
+                except:
+                    pass
+
+        except Exception as e:
+            pass
+
+        return metrics
+
+    async def _monitor_system_resources(self):
+        """Background мониторинг системных ресурсов - только для SystemService"""
+        # ТОЛЬКО system сервис должен собирать системные метрики
+        if self.service_name != "system":
+            return
+
+        await asyncio.sleep(10)  # Задержка перед началом
+
+        while self.status.value == "running":
+            try:
+                # Запускаем в executor чтобы не блокировать
+                loop = asyncio.get_event_loop()
+                system_metrics = await loop.run_in_executor(
+                    None, self._collect_system_resources_sync
+                )
+
+                # ИСПРАВЛЕНИЕ: используем self.metrics.gauge() вместо self.metric()
+                for metric_name, value in system_metrics.items():
+                    self.metrics.gauge(metric_name, value)
+
+            except Exception as e:
+                self.logger.warning(f"Error monitoring system resources: {e}")
+
+            await asyncio.sleep(60)  # Раз в минуту
 
     def _bind_cache_to_methods(self, cache):
         """Привязка кеша к методам с декораторами"""

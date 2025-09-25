@@ -219,6 +219,28 @@ class MetricsState:
         else:
             self.gauges[key] = float(value) if isinstance(value, (int, float)) else value
 
+    from contextlib import asynccontextmanager
+
+    @asynccontextmanager
+    async def timing_context(self, name: str):
+        """Context manager для измерения времени выполнения"""
+        start_time = time.time()
+        try:
+            yield
+        finally:
+            duration_ms = (time.time() - start_time) * 1000
+            self.timer(name, duration_ms)
+
+    def metric(self, name: str, value: Any, metric_type: str = "gauge"):
+        """Универсальный метод для установки метрик"""
+        if metric_type == "counter":
+            self.counters[name] = value
+        elif metric_type == "gauge":
+            self.gauges[name] = value
+        elif metric_type == "timer":
+            self.timers[name].append(value)
+        self.last_updated[name] = time.time()
+
 
 class ReactiveMetricsCollector:
     """Реактивная система сбора метрик для ServiceManager"""
@@ -227,7 +249,9 @@ class ReactiveMetricsCollector:
         self.services: Dict[str, Dict] = {}
         self.aggregated_metrics: Dict[str, Any] = {}
         self.thresholds: Dict[str, Dict] = {}
-        self.health_threshold = 90  # секунд для определения dead сервиса
+        # Увеличиваем порог до 3 минут (heartbeat каждые 30 сек)
+        self.health_threshold = 180  # секунд для определения dead сервиса
+        self.warning_threshold = 90  # предупреждение через 90 сек
         self._lock = Lock()
         self.logger = logging.getLogger("MetricsCollector")
 
@@ -249,8 +273,18 @@ class ReactiveMetricsCollector:
         self.logger.info(f"Service registered in metrics: {service_id}")
 
     def on_metrics_push(self, service_id: str, metric_name: str, value: Any, timestamp: float, metric_type: MetricType):
-        """Обработка push метрик от сервисов"""
+        """Обработка push метрик от сервисов - оптимизированная версия"""
+
+        # Подготавливаем данные ВНЕ блокировки
+        metric_data = {
+            'value': value,
+            'timestamp': timestamp,
+            'type': metric_type.value
+        }
+
+        # МИНИМАЛЬНОЕ время под блокировкой
         with self._lock:
+            # Быстрая инициализация сервиса
             if service_id not in self.services:
                 self.services[service_id] = {
                     'status': 'alive',
@@ -260,45 +294,96 @@ class ReactiveMetricsCollector:
                 }
 
             service_data = self.services[service_id]
+
+            # Атомарные обновления
             service_data['last_seen'] = timestamp
             service_data['total_metrics_received'] += 1
+            service_data['metrics'][metric_name] = metric_data
 
-            # Сохранение метрики
-            service_data['metrics'][metric_name] = {
-                'value': value,
-                'timestamp': timestamp,
-                'type': metric_type.value
-            }
-
-            # Агрегация в общие метрики
+            # Быстрая агрегация
             if service_id not in self.aggregated_metrics:
                 self.aggregated_metrics[service_id] = {}
+            self.aggregated_metrics[service_id][metric_name] = metric_data
 
-            self.aggregated_metrics[service_id][metric_name] = {
-                'value': value,
-                'timestamp': timestamp,
-                'type': metric_type.value
-            }
+            # Heartbeat обработка
+            if metric_name == 'service_heartbeat':
+                service_data['status'] = 'alive'
+
+        # Логирование ВНЕ блокировки
+        if metric_name == 'service_heartbeat':
+            self.logger.debug(f"Heartbeat received from {service_id} at {timestamp}")
 
     async def _health_monitor_loop(self):
-        """Фоновый мониторинг здоровья сервисов"""
+        """Фоновый мониторинг здоровья сервисов - оптимизированный"""
         while True:
             try:
                 current_time = time.time()
+
+                # Получаем снимок данных с минимальной блокировкой
                 with self._lock:
-                    for service_id, service_data in self.services.items():
-                        last_seen = service_data['last_seen']
+                    services_to_check = [
+                        (service_id, {
+                            'last_seen': data['last_seen'],
+                            'status': data['status'],
+                            'heartbeat_time': data.get('metrics', {}).get('service_heartbeat', {}).get('value', 0)
+                        })
+                        for service_id, data in self.services.items()
+                    ]
 
-                        # Проверяем не "умер" ли сервис
-                        if current_time - last_seen > self.health_threshold:
-                            if service_data['status'] != 'dead':
-                                service_data['status'] = 'dead'
-                                self.logger.warning(
-                                    f"Service {service_id} marked as dead (last seen: {current_time - last_seen:.1f}s ago)")
-                        else:
-                            service_data['status'] = 'alive'
+                # Обработка без блокировки
+                status_updates = {}
+                for service_id, service_info in services_to_check:
+                    last_seen = service_info['last_seen']
+                    heartbeat_time = service_info['heartbeat_time']
+                    old_status = service_info['status']
 
-                await asyncio.sleep(30)  # Проверка каждые 30 секунд
+                    # Используем heartbeat время если оно новее
+                    effective_time = max(last_seen, heartbeat_time) if heartbeat_time > 0 else last_seen
+                    time_since_seen = current_time - effective_time
+
+                    # Определяем новый статус
+                    new_status = old_status
+                    if time_since_seen > self.health_threshold:
+                        new_status = 'dead'
+                    elif time_since_seen > self.warning_threshold:
+                        new_status = 'suspected'
+                    else:
+                        new_status = 'alive'
+
+                    if new_status != old_status:
+                        status_updates[service_id] = {
+                            'old_status': old_status,
+                            'new_status': new_status,
+                            'time_since_seen': time_since_seen,
+                            'effective_time': effective_time
+                        }
+
+                # Применяем обновления статусов одной быстрой операцией
+                if status_updates:
+                    with self._lock:
+                        for service_id, update in status_updates.items():
+                            if service_id in self.services:
+                                self.services[service_id]['status'] = update['new_status']
+                                # Обновляем last_seen если использовали heartbeat
+                                if update['effective_time'] > self.services[service_id]['last_seen']:
+                                    self.services[service_id]['last_seen'] = update['effective_time']
+
+                    # Логирование вне блокировки
+                    for service_id, update in status_updates.items():
+                        if update['new_status'] == 'dead':
+                            self.logger.warning(
+                                f"Service {service_id} marked as DEAD "
+                                f"(no heartbeat for {update['time_since_seen']:.1f}s)"
+                            )
+                        elif update['new_status'] == 'suspected':
+                            self.logger.info(
+                                f"Service {service_id} suspected "
+                                f"(no heartbeat for {update['time_since_seen']:.1f}s)"
+                            )
+                        elif update['old_status'] in ['dead', 'suspected']:
+                            self.logger.info(f"Service {service_id} recovered")
+
+                await asyncio.sleep(30)
 
             except Exception as e:
                 self.logger.error(f"Error in health monitor loop: {e}")
@@ -317,32 +402,45 @@ class ReactiveMetricsCollector:
                 await asyncio.sleep(60)
 
     def get_aggregated_metrics(self) -> Dict[str, Any]:
-        """Получить агрегированные метрики узла без deadlock"""
-        # Копируем данные под lock'ом
+        """Получить агрегированные метрики узла - быстрая версия"""
+        current_time = time.time()
+
+        # БЫСТРОЕ копирование данных под блокировкой
         with self._lock:
-            services_copy = {
-                service_id: {
+            # Копируем только необходимые данные
+            services_snapshot = {}
+            for service_id, data in self.services.items():
+                services_snapshot[service_id] = {
                     'status': data['status'],
                     'last_seen': data['last_seen'],
-                    'total_metrics_received': data.get('total_metrics_received', 0)
+                    'total_metrics_received': data.get('total_metrics_received', 0),
+                    'uptime_seconds': data.get('metrics', {}).get('service_uptime_seconds', {}).get('value', 0),
+                    'uptime_start': data.get('metrics', {}).get('service_uptime_start', {}).get('value', 0)
                 }
-                for service_id, data in self.services.items()
-            }
-            aggregated_copy = dict(self.aggregated_metrics)
 
-        # Вычисляем статистику без lock'а
-        total_services = len(services_copy)
-        alive_services = sum(1 for s in services_copy.values() if s['status'] == 'alive')
-        dead_services = sum(1 for s in services_copy.values() if s['status'] == 'dead')
+            # Копируем aggregated_metrics одной операцией
+            aggregated_snapshot = dict(self.aggregated_metrics)
 
-        # Создаём health summary без lock'а
-        current_time = time.time()
+        # ВСЯ ДАЛЬНЕЙШАЯ РАБОТА БЕЗ БЛОКИРОВКИ
+        total_services = len(services_snapshot)
+        alive_services = sum(1 for s in services_snapshot.values() if s['status'] == 'alive')
+        dead_services = sum(1 for s in services_snapshot.values() if s['status'] == 'dead')
+
+        # Создаём health summary без блокировки
         health_summary = {}
-        for service_id, data in services_copy.items():
+        for service_id, data in services_snapshot.items():
+            # Используем предварительно скопированные данные
+            if data['uptime_seconds'] > 0:
+                uptime = data['uptime_seconds']
+            elif data['uptime_start'] > 0:
+                uptime = current_time - data['uptime_start']
+            else:
+                uptime = 0 if data['status'] == 'dead' else (current_time - data['last_seen'])
+
             health_summary[service_id] = {
                 'status': data['status'],
                 'last_seen': data['last_seen'],
-                'uptime': current_time - data['last_seen'] if data['status'] == 'alive' else 0,
+                'uptime': uptime,
                 'total_metrics': data['total_metrics_received']
             }
 
@@ -353,7 +451,7 @@ class ReactiveMetricsCollector:
                 'dead_services': dead_services,
                 'timestamp': current_time
             },
-            'services': aggregated_copy,
+            'services': aggregated_snapshot,
             'health_summary': health_summary
         }
 
@@ -507,7 +605,10 @@ class BaseService(ABC):
             self.status = ServiceStatus.RUNNING
             self.metrics.gauge("service_status", 2)  # 2=running
             self.metrics.gauge("service_uptime_start", time.time())
-            self._start_time = time.time()
+
+            # ИСПРАВЛЕНИЕ: НЕ перезаписываем _start_time если уже установлен
+            if not hasattr(self, '_start_time') or self._start_time is None:
+                self._start_time = time.time()
 
             # Запуск фонового мониторинга
             asyncio.create_task(self._update_system_metrics())
@@ -545,49 +646,148 @@ class BaseService(ABC):
             self.logger.debug("psutil not available - limited metrics")
 
     async def _update_system_metrics(self):
-        """Background задача для обновления системных метрик"""
+        """Background задача для обновления системных метрик - оптимизированная"""
+        self.logger.info(f"Starting heartbeat monitoring for {self.service_name}")
+
+        # РАЗНОСИМ запуск по времени для разных сервисов
+        service_delay = hash(self.service_name) % 20  # 0-20 сек задержка
+        await asyncio.sleep(service_delay)
+        self.logger.debug(f"Service {self.service_name} metrics delay: {service_delay}s")
+
         while self.status in [ServiceStatus.INITIALIZING, ServiceStatus.RUNNING]:
+            start_time = time.time()
+
             try:
+                # БЫСТРЫЙ heartbeat в любом случае
+                current_time = time.time()
+                self.metrics.gauge("service_heartbeat", current_time)
+                self.metrics.increment("heartbeat_count")
 
-                process = psutil.Process()
+                # Uptime (быстрая операция)
+                uptime_seconds = current_time - self._start_time if self._start_time else 0
+                self.metrics.gauge("service_uptime_seconds", uptime_seconds)
+                self.metrics.gauge("service_uptime_minutes", uptime_seconds / 60.0)
 
-                # Память
-                memory_info = process.memory_info()
-                self.metrics.gauge("memory_usage_bytes", memory_info.rss)
-                self.metrics.gauge("memory_usage_mb", memory_info.rss / 1024 / 1024)
+                # СИСТЕМНЫЕ МЕТРИКИ - асинхронно и с минимальным набором
+                try:
+                    # Запускаем системные вызовы в executor'е чтобы не блокировать
+                    loop = asyncio.get_event_loop()
+                    system_metrics = await loop.run_in_executor(
+                        None, self._collect_system_metrics_sync
+                    )
 
-                # CPU (требует интервала)
-                cpu_percent = process.cpu_percent()
-                if cpu_percent > 0:  # Избегаем 0 при первом вызове
-                    self.metrics.gauge("cpu_usage_percent", cpu_percent)
+                    # Быстро применяем результаты
+                    for metric_name, value in system_metrics.items():
+                        self.metrics.gauge(metric_name, value)
 
-                # Потоки
-                self.metrics.gauge("thread_count", process.num_threads())
+                except Exception as e:
+                    self.logger.debug(f"Error collecting system metrics for {self.service_name}: {e}")
+                    # Не фаталим - heartbeat всё равно отправляем
 
-                # Push метрики в ServiceManager
+                # Push метрики
                 self._push_metrics_to_manager()
 
-            except Exception as e:
-                self.logger.debug(f"Error updating system metrics: {e}")
+                # Логирование производительности
+                duration = time.time() - start_time
+                if duration > 0.1:  # Больше 100ms
+                    self.logger.warning(f"Slow metrics collection for {self.service_name}: {duration:.3f}s")
+                else:
+                    self.logger.debug(f"Metrics collected for {self.service_name} in {duration:.3f}s")
 
-            await asyncio.sleep(30)  # Обновление каждые 30 секунд
+            except Exception as e:
+                self.logger.debug(f"Error updating metrics for {self.service_name}: {e}")
+                # Emergency heartbeat
+                try:
+                    current_time = time.time()
+                    self.metrics.gauge("service_heartbeat", current_time)
+                    self.metrics.increment("heartbeat_errors")
+                    uptime_seconds = current_time - self._start_time if self._start_time else 0
+                    self.metrics.gauge("service_uptime_seconds", uptime_seconds)
+                    self._push_metrics_to_manager()
+                except Exception as emergency_error:
+                    self.logger.error(f"Failed emergency heartbeat for {self.service_name}: {emergency_error}")
+
+            await asyncio.sleep(30)
+
+        self.logger.info(f"Heartbeat monitoring stopped for {self.service_name}")
+
+    def _collect_system_metrics_sync(self) -> Dict[str, float]:
+        """Синхронный сбор системных метрик для выполнения в executor"""
+        metrics = {}
+
+        try:
+            import psutil
+            process = psutil.Process()
+
+            # ТОЛЬКО самые важные и быстрые метрики
+            memory_info = process.memory_info()
+            metrics["memory_usage_bytes"] = memory_info.rss
+            metrics["memory_usage_mb"] = memory_info.rss / 1024 / 1024
+
+            # CPU - может быть медленным, делаем с коротким интервалом
+            cpu_percent = process.cpu_percent(interval=0.01)  # Очень короткий интервал
+            if cpu_percent > 0:
+                metrics["cpu_usage_percent"] = cpu_percent
+
+            # Потоки - может быть медленным на Windows
+            try:
+                metrics["thread_count"] = process.num_threads()
+            except:
+                pass  # Пропускаем если медленно
+
+        except Exception as e:
+            # Возвращаем пустой dict при ошибке
+            pass
+
+        return metrics
 
     def _push_metrics_to_manager(self):
-        """Callback для отправки метрик в ServiceManager"""
-        # Будет подключен ServiceManager при регистрации
-        manager = get_global_service_manager()
-        if manager and hasattr(manager, 'on_metrics_push'):
-            try:
-                # Отправляем все счетчики
+        """Быстрая отправка метрик в ServiceManager"""
+        try:
+            if not hasattr(self, '_metrics_manager') or not self._metrics_manager:
+                return  # Быстрый выход если нет менеджера
+
+            current_time = time.time()
+            metrics_manager = self._metrics_manager
+
+            # Отправляем только heartbeat и uptime для минимизации блокировок
+            critical_metrics = {
+                'service_heartbeat': self.metrics.gauges.get('service_heartbeat'),
+                'service_uptime_seconds': self.metrics.gauges.get('service_uptime_seconds'),
+                'heartbeat_count': self.metrics.counters.get('heartbeat_count', 0)
+            }
+
+            # Быстрая отправка критических метрик
+            for metric_name, value in critical_metrics.items():
+                if value is not None:
+                    metric_type = MetricType.COUNTER if 'count' in metric_name else MetricType.GAUGE
+                    metrics_manager.on_metrics_push(
+                        self.service_name, metric_name, value, current_time, metric_type
+                    )
+
+            # Системные метрики отправляем реже (каждый 3-й раз)
+            if not hasattr(self, '_system_metrics_counter'):
+                self._system_metrics_counter = 0
+
+            self._system_metrics_counter += 1
+            if self._system_metrics_counter % 3 == 0:  # Каждый 3-й раз (раз в 90 секунд)
+                # Отправляем остальные метрики
                 for metric_name, value in self.metrics.counters.items():
-                    manager.on_metrics_push(self.service_name, metric_name, value, time.time(), MetricType.COUNTER)
+                    if metric_name not in critical_metrics:
+                        metrics_manager.on_metrics_push(
+                            self.service_name, metric_name, value, current_time, MetricType.COUNTER
+                        )
 
-                # Отправляем все gauge
                 for metric_name, value in self.metrics.gauges.items():
-                    manager.on_metrics_push(self.service_name, metric_name, value, time.time(), MetricType.GAUGE)
+                    if metric_name not in critical_metrics:
+                        metrics_manager.on_metrics_push(
+                            self.service_name, metric_name, value, current_time, MetricType.GAUGE
+                        )
 
-            except Exception as e:
-                self.logger.error(f"Failed to push metric to manager: {e}")
+            self.logger.debug(f"Fast metrics push completed for {self.service_name}")
+
+        except Exception as e:
+            self.logger.error(f"Failed to push metrics for {self.service_name}: {e}")
 
     def set_proxy(self, proxy_client):
         """Улучшенная установка proxy клиента"""
@@ -656,6 +856,20 @@ class BaseService(ABC):
                 "gauges": len(self.metrics.gauges),
                 "timers": len(self.metrics.timers)
             }
+        }
+
+    @service_method(description="Health check ping", public=True, requires_auth=False)
+    async def ping(self) -> Dict[str, Any]:
+        """Простой ping для проверки живости сервиса"""
+        self.metrics.increment("ping_requests")
+        self.metrics.gauge("service_heartbeat", time.time())
+
+        return {
+            "status": "alive",
+            "service": self.service_name,
+            "uptime": self._get_uptime(),
+            "timestamp": time.time(),
+            "heartbeat": True
         }
 
 
@@ -857,26 +1071,30 @@ class ServiceManager:
             return None
 
     async def initialize_service(self, service_instance: BaseService):
-        """Инициализация сервиса"""
+        """Инициализация сервиса и регистрация его методов"""
         try:
-            # Проверка proxy перед инициализацией
-            if self.proxy_client and not service_instance.proxy:
+            # Устанавливаем proxy если доступен
+            if self.proxy_client:
                 if hasattr(service_instance, 'set_proxy'):
                     service_instance.set_proxy(self.proxy_client)
+                    self.logger.info(f"Proxy successfully set for service: {service_instance.service_name}")
                 else:
                     service_instance.proxy = self.proxy_client
 
-            # Вызываем инициализацию
-            if hasattr(service_instance, 'initialize'):
-                await service_instance.initialize()
+            # КРИТИЧЕСКИ ВАЖНО: ЗАПУСКАЕМ СЕРВИС
+            await service_instance.start()  # <-- ЭТО ОТСУТСТВОВАЛО!
 
             # Регистрируем в системе метрик
             self.metrics_collector.register_service(service_instance.service_name, service_instance)
 
-            # Регистрируем публичные методы
+            # Устанавливаем обратную связь для метрик
+            service_instance._metrics_manager = self.metrics_collector
+            self.logger.debug(f"Metrics manager linked to service: {service_instance.service_name}")
+
+            # Регистрируем методы
             await self._register_service_methods(service_instance)
 
-            # Добавляем в локальный реестр
+            # Сохраняем сервис
             self.services[service_instance.service_name] = service_instance
 
             self.logger.info(f"Service initialized: {service_instance.service_name}")
