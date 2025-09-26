@@ -8,13 +8,24 @@ class LocalServiceBridge:
     """Локальный мост для вызова сервисов без сетевых запросов"""
 
     def __init__(self, method_registry: Dict[str, Any], service_manager):
+        self.local_proxy = None
         self.method_registry = method_registry
         self.service_manager = service_manager
+        self.registry = self.service_manager.registry
         self.logger = logging.getLogger("ServiceBridge")
 
     async def initialize(self):
-        """Инициализация локального моста"""
-        self.logger.info("Initializing  service bridge...")
+        """Инициализация локального моста с диагностикой"""
+        self.logger.info("Initializing service bridge...")
+
+        # ✅ DEBUG: Проверяем что registry не пустой
+        available_methods = list(self.method_registry.keys())
+        self.logger.info(f"Service bridge initialized with {len(available_methods)} methods")
+
+        if not available_methods:
+            self.logger.warning("⚠️  Method registry is EMPTY! This will cause 'method not found' errors.")
+            self.logger.warning("This usually means LocalServiceBridge was created before services were registered.")
+
         self.local_proxy = SimpleLocalProxy(self.method_registry)
         self.logger.info("Service bridge initialized")
 
@@ -23,12 +34,33 @@ class LocalServiceBridge:
         return self.local_proxy
 
     async def call_method_direct(self, service_name: str, method_name: str, **kwargs):
-        """Прямой вызов метода через реестр"""
+        """Прямой вызов метода через реестр с retry логикой против race condition"""
         method_path = f"{service_name}/{method_name}"
-        if method_path not in self.method_registry:
-            raise ValueError(f"Method {method_path} not found in registry")
-        method = self.method_registry[method_path]
-        return await method(**kwargs)
+
+        # ✅ ИСПРАВЛЕНИЕ: Retry логика для race condition
+        max_retries = 5
+        base_delay = 0.5
+
+        for attempt in range(max_retries):
+            if method_path in self.method_registry:
+                method = self.method_registry[method_path]
+                return await method(**kwargs)
+
+            if attempt < max_retries - 1:
+                delay = base_delay * (2 ** attempt)
+                self.logger.warning(
+                    f"Method {method_path} not found in registry, retrying in {delay:.1f}s (attempt {attempt + 1})")
+                await asyncio.sleep(delay)
+            else:
+                available_methods = list(self.method_registry.keys())
+                raise ValueError(
+                    f"Method {method_path} not found in local registry after {max_retries} attempts. Available: {available_methods[:10]}")
+
+    def is_system_ready(self) -> bool:
+        """Проверка готовности системы для межсервисных вызовов"""
+        return getattr(self, '_system_ready', False)
+
+
 
 
 class SimpleLocalProxy:
@@ -91,21 +123,40 @@ class MethodCaller:
         self.logger = logging.getLogger(f"Method.{service_name}.{method_name}")
 
     async def __call__(self, **kwargs):
-        """Выполнение локального или таргетированного вызова"""
+        """Выполнение вызова с устойчивостью к race condition"""
         method_path = f"{self.service_name}/{self.method_name}"
 
+        # ✅ ИСПРАВЛЕНИЕ: Retry логика вместо немедленного падения
         if method_path not in self.method_registry:
-            # Если метод не найден локально и указан целевой узел
             if self.target_node:
                 raise RuntimeError(
                     f"Method {method_path} not found in local registry. "
-                    f"Remote calls to '{self.target_node}' not implemented in local bridge. "
-                    f"Available methods: {list(self.method_registry.keys())}"
+                    f"Remote calls to '{self.target_node}' not implemented in local bridge."
                 )
             else:
-                raise RuntimeError(f"Method {method_path} not found in local registry")
+                # Пытаемся дождаться появления метода в registry
+                max_retries = 8
+                base_delay = 0.3
 
-        # Логируем тип вызова
+                for attempt in range(max_retries):
+                    # Проверяем снова - может метод уже зарегистрировался
+                    if method_path in self.method_registry:
+                        self.logger.info(f"Method {method_path} found after {attempt} retries")
+                        break
+
+                    if attempt < max_retries - 1:
+                        delay = base_delay * (1.5 ** attempt)  # Более мягкий exponential backoff
+                        self.logger.warning(
+                            f"Method {method_path} not found, waiting {delay:.1f}s (attempt {attempt + 1}/{max_retries})")
+                        await asyncio.sleep(delay)
+                    else:
+                        available_methods = list(self.method_registry.keys())
+                        raise RuntimeError(
+                            f"Method {method_path} not found in local registry after {max_retries} attempts. "
+                            f"Available methods: {available_methods[:10]}"
+                        )
+
+        # Логируем и выполняем вызов
         if self.target_node:
             self.logger.debug(f"Targeted call to {self.target_node}: {method_path}")
         else:

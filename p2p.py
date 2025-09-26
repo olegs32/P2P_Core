@@ -10,6 +10,8 @@ from typing import List
 
 from dotenv import load_dotenv
 
+from layers.local_service_bridge import create_local_service_bridge
+
 # Добавляем текущую директорию в путь для импортов
 sys.path.insert(0, str(Path(__file__).parent))
 
@@ -198,10 +200,10 @@ class ServiceComponent(P2PComponent):
         set_global_service_manager(self.service_manager)
 
         # Создаем local bridge
-        from layers.local_service_bridge import create_local_service_bridge
+        from layers.service import method_registry as global_method_registry
 
         local_bridge = create_local_service_bridge(
-            self.context.list_methods(),
+            global_method_registry,  # ✅ Глобальный registry вместо self.context.list_methods()
             self.service_manager
         )
         await local_bridge.initialize()

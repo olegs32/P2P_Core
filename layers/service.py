@@ -17,7 +17,7 @@ import logging
 import os
 import sys
 import time
-from abc import ABC
+from abc import ABC, abstractmethod
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -204,13 +204,27 @@ class MetricsState:
         self.counters[name] = self.counters.get(name, 0) + value
         self.last_updated[name] = time.time()
 
-    def gauge(self, name: str, value: float):
-        self.gauges[name] = value
-        self.last_updated[name] = time.time()
+    def gauge(self, name: str, value: Union[int, float]):
+        """Установка значения gauge с автоматическим округлением"""
+        # ✅ ИСПРАВЛЕНО: Автоматическое округление float значений
+        if isinstance(value, float):
+            self.gauges[name] = round(value, 1)
+        else:
+            self.gauges[name] = value
+        self.last_updated[name] = round(time.time(), 1)
 
     def timer(self, name: str, duration_ms: float):
-        self.timers[name].append(duration_ms)
-        self.last_updated[name] = time.time()
+        """Запись времени выполнения с округлением"""
+        if name not in self.timers:
+            self.timers[name] = []
+        # ✅ ИСПРАВЛЕНО: Округление времени до десятых миллисекунд
+        self.timers[name].append(round(duration_ms, 1))
+
+        # Ограничиваем размер для экономии памяти
+        if len(self.timers[name]) > 1000:
+            self.timers[name] = self.timers[name][-500:]
+
+        self.last_updated[name] = round(time.time(), 1)
 
     def set_data(self, key: str, value: Any):
         """Обратная совместимость: установка данных"""
@@ -401,59 +415,39 @@ class ReactiveMetricsCollector:
                 self.logger.error(f"Error in aggregation loop: {e}")
                 await asyncio.sleep(60)
 
-    def get_aggregated_metrics(self) -> Dict[str, Any]:
-        """Получить агрегированные метрики узла - быстрая версия"""
-        current_time = time.time()
+    def get_aggregated_metrics(self):
+        """Получить агрегированные метрики всех сервисов"""
+        # ✅ ИСПРАВЛЕНО: получаем сервисы из глобального менеджера через registry
+        global_manager = get_global_service_manager()
+        if not global_manager:
+            return {"error": "No global service manager available"}
 
-        # БЫСТРОЕ копирование данных под блокировкой
-        with self._lock:
-            # Копируем только необходимые данные
-            services_snapshot = {}
-            for service_id, data in self.services.items():
-                services_snapshot[service_id] = {
-                    'status': data['status'],
-                    'last_seen': data['last_seen'],
-                    'total_metrics_received': data.get('total_metrics_received', 0),
-                    'uptime_seconds': data.get('metrics', {}).get('service_uptime_seconds', {}).get('value', 0),
-                    'uptime_start': data.get('metrics', {}).get('service_uptime_start', {}).get('value', 0)
-                }
-
-            # Копируем aggregated_metrics одной операцией
-            aggregated_snapshot = dict(self.aggregated_metrics)
-
-        # ВСЯ ДАЛЬНЕЙШАЯ РАБОТА БЕЗ БЛОКИРОВКИ
-        total_services = len(services_snapshot)
-        alive_services = sum(1 for s in services_snapshot.values() if s['status'] == 'alive')
-        dead_services = sum(1 for s in services_snapshot.values() if s['status'] == 'dead')
-
-        # Создаём health summary без блокировки
-        health_summary = {}
-        for service_id, data in services_snapshot.items():
-            # Используем предварительно скопированные данные
-            if data['uptime_seconds'] > 0:
-                uptime = data['uptime_seconds']
-            elif data['uptime_start'] > 0:
-                uptime = current_time - data['uptime_start']
-            else:
-                uptime = 0 if data['status'] == 'dead' else (current_time - data['last_seen'])
-
-            health_summary[service_id] = {
-                'status': data['status'],
-                'last_seen': data['last_seen'],
-                'uptime': uptime,
-                'total_metrics': data['total_metrics_received']
-            }
-
-        return {
-            'system': {
-                'total_services': total_services,
-                'alive_services': alive_services,
-                'dead_services': dead_services,
-                'timestamp': current_time
+        aggregated = {
+            "system": {
+                "total_services": len(global_manager.registry.services),
+                "active_services": sum(1 for s in global_manager.registry.services.values()
+                                       if hasattr(s, 'status') and s.status.value == "running"),
+                "timestamp": time.time()
             },
-            'services': aggregated_snapshot,
-            'health_summary': health_summary
+            "services": {}
         }
+
+        for service_name, service_instance in global_manager.registry.services.items():
+            try:
+                if hasattr(service_instance, 'metrics'):
+                    metrics = service_instance.metrics
+                    aggregated["services"][service_name] = {
+                        "counters": dict(metrics.counters),
+                        "gauges": dict(metrics.gauges),
+                        "timer_counts": {k: len(v) for k, v in metrics.timers.items()},
+                        "last_updated": dict(metrics.last_updated)
+                    }
+                else:
+                    aggregated["services"][service_name] = {"error": "No metrics available"}
+            except Exception as e:
+                aggregated["services"][service_name] = {"error": str(e)}
+
+        return aggregated
 
     def get_all_services_health(self) -> Dict[str, Any]:
         """Получить health status всех сервисов без deadlock"""
@@ -565,6 +559,7 @@ class BaseService(ABC):
     """Базовый класс для всех сервисов с интегрированными метриками"""
 
     def __init__(self, service_name: str, proxy_client=None):
+        self.heartbeat_task = None
         self._proxy_set_callback = None
         self.service_name = service_name
         self.proxy = proxy_client
@@ -611,7 +606,9 @@ class BaseService(ABC):
                 self._start_time = time.time()
 
             # Запуск фонового мониторинга
-            asyncio.create_task(self._update_system_metrics())
+            # asyncio.create_task(self._update_system_metrics())
+            self.heartbeat_task = asyncio.create_task(self._update_system_metrics())
+            self.logger.debug(f"Base initialization completed for {self.service_name}")
 
             self.logger.info(f"Service {self.service_name} started successfully")
 
@@ -649,8 +646,8 @@ class BaseService(ABC):
         """Background задача для обновления системных метрик - оптимизированная"""
         self.logger.info(f"Starting heartbeat monitoring for {self.service_name}")
 
-        # РАЗНОСИМ запуск по времени для разных сервисов
-        service_delay = hash(self.service_name) % 20  # 0-20 сек задержка
+        # Разносим запуск по времени для разных сервисов
+        service_delay = hash(self.service_name) % 20
         await asyncio.sleep(service_delay)
         self.logger.debug(f"Service {self.service_name} metrics delay: {service_delay}s")
 
@@ -658,7 +655,7 @@ class BaseService(ABC):
             start_time = time.time()
 
             try:
-                # БЫСТРЫЙ heartbeat в любом случае
+                # ✅ БЫСТРЫЙ heartbeat в любом случае
                 current_time = time.time()
                 self.metrics.gauge("service_heartbeat", current_time)
                 self.metrics.increment("heartbeat_count")
@@ -668,31 +665,27 @@ class BaseService(ABC):
                 self.metrics.gauge("service_uptime_seconds", uptime_seconds)
                 self.metrics.gauge("service_uptime_minutes", uptime_seconds / 60.0)
 
-                # СИСТЕМНЫЕ МЕТРИКИ - асинхронно и с минимальным набором
-                try:
-                    # Запускаем системные вызовы в executor'е чтобы не блокировать
-                    loop = asyncio.get_event_loop()
-                    system_metrics = await loop.run_in_executor(
-                        None, self._collect_system_metrics_sync
-                    )
+                # ✅ СПЕЦИАЛЬНАЯ ЛОГИКА ДЛЯ SYSTEM СЕРВИСА
+                if self.service_name == "system":
+                    # Для system сервиса собираем системные метрики
+                    await self._collect_full_system_metrics()
+                else:
+                    # Для остальных сервисов - только метрики процесса
+                    try:
+                        loop = asyncio.get_event_loop()
+                        process_metrics = await loop.run_in_executor(
+                            None, self._collect_system_metrics_sync
+                        )
 
-                    # Быстро применяем результаты
-                    for metric_name, value in system_metrics.items():
-                        self.metrics.gauge(metric_name, value)
+                        # Быстро применяем результаты
+                        for metric_name, value in process_metrics.items():
+                            self.metrics.gauge(metric_name, value)
 
-                except Exception as e:
-                    self.logger.debug(f"Error collecting system metrics for {self.service_name}: {e}")
-                    # Не фаталим - heartbeat всё равно отправляем
+                    except Exception as e:
+                        self.logger.debug(f"Error collecting process metrics for {self.service_name}: {e}")
 
                 # Push метрики
                 self._push_metrics_to_manager()
-
-                # Логирование производительности
-                duration = time.time() - start_time
-                if duration > 0.1:  # Больше 100ms
-                    self.logger.warning(f"Slow metrics collection for {self.service_name}: {duration:.3f}s")
-                else:
-                    self.logger.debug(f"Metrics collected for {self.service_name} in {duration:.3f}s")
 
             except Exception as e:
                 self.logger.debug(f"Error updating metrics for {self.service_name}: {e}")
@@ -711,34 +704,46 @@ class BaseService(ABC):
 
         self.logger.info(f"Heartbeat monitoring stopped for {self.service_name}")
 
-    def _collect_system_metrics_sync(self) -> Dict[str, float]:
-        """Синхронный сбор системных метрик для выполнения в executor"""
-        metrics = {}
-
+    async def _collect_full_system_metrics(self):
+        """Полный сбор системных метрик - ТОЛЬКО для system сервиса"""
         try:
             import psutil
-            process = psutil.Process()
 
-            # ТОЛЬКО самые важные и быстрые метрики
+            # ✅ СИСТЕМНЫЕ МЕТРИКИ (только для system сервиса)
+            # CPU системы
+            cpu_percent = psutil.cpu_percent(interval=0.1)
+            self.metrics.gauge("cpu_usage_percent", cpu_percent)
+
+            # Память системы
+            memory = psutil.virtual_memory()
+            self.metrics.gauge("memory_usage_percent", memory.percent)
+            self.metrics.gauge("memory_available_bytes", memory.available)
+            self.metrics.gauge("memory_used_bytes", memory.used)
+
+            # Процессы системы
+            self.metrics.gauge("process_count", len(psutil.pids()))
+
+            self.logger.debug(f"Full system metrics collected for {self.service_name}")
+
+        except Exception as e:
+            self.logger.debug(f"Error collecting full system metrics: {e}")
+
+    def _collect_system_metrics_sync(self) -> Dict[str, float]:
+        metrics = {}
+        try:
+            import psutil
+            process = psutil.Process()  # Конкретный процесс
+
+            # ✅ ТОЛЬКО процессные метрики
             memory_info = process.memory_info()
             metrics["memory_usage_bytes"] = memory_info.rss
             metrics["memory_usage_mb"] = memory_info.rss / 1024 / 1024
+            metrics["process_cpu_percent"] = process.cpu_percent(interval=0.01)
+            metrics["thread_count"] = process.num_threads()
 
-            # CPU - может быть медленным, делаем с коротким интервалом
-            cpu_percent = process.cpu_percent(interval=0.01)  # Очень короткий интервал
-            if cpu_percent > 0:
-                metrics["cpu_usage_percent"] = cpu_percent
-
-            # Потоки - может быть медленным на Windows
-            try:
-                metrics["thread_count"] = process.num_threads()
-            except:
-                pass  # Пропускаем если медленно
-
-        except Exception as e:
-            # Возвращаем пустой dict при ошибке
+            # ❌ УБРАНО: системные метрики (общая память, CPU системы)
+        except Exception:
             pass
-
         return metrics
 
     def _push_metrics_to_manager(self):
@@ -872,6 +877,10 @@ class BaseService(ABC):
             "heartbeat": True
         }
 
+    # @abstractmethod
+    # async def initialize(self):
+    #     pass
+
 
 # =====================================================
 # SERVICE MANAGEMENT
@@ -899,17 +908,50 @@ class ServiceRegistry:
     async def start_service(self, service_name: str, service_instance: BaseService):
         """Запуск сервиса и регистрация его методов в RPC"""
         try:
-            await service_instance.start()
+            # Если сервис еще не запущен - запускаем
+            if hasattr(service_instance, 'status') and service_instance.status != ServiceStatus.RUNNING:
+                await service_instance.start()
+
+            # ✅ ОСНОВНОЕ ХРАНИЛИЩЕ: сохраняем в registry
             self.services[service_name] = service_instance
 
+            # ✅ ДОБАВЛЯЕМ: настройка метрик (перенесено из ServiceManager)
+            global_manager = get_global_service_manager()
+            if global_manager and hasattr(global_manager, 'metrics_collector'):
+                # Регистрируем в системе метрик
+                global_manager.metrics_collector.register_service(service_name, service_instance)
+
+                # Устанавливаем обратную связь для метрик
+                service_instance._metrics_manager = global_manager.metrics_collector
+                self.logger.debug(f"Metrics manager linked to service: {service_name}")
+
             # Регистрируем все публичные методы сервиса в RPC
-            await self.rpc_methods.register_rpc_methods(service_name, service_instance)
+            await self._register_service_rpc_methods(service_name, service_instance)
 
             self.logger.info(f"Service {service_name} started and registered")
 
         except Exception as e:
             self.logger.error(f"Failed to start service {service_name}: {e}")
             raise
+
+    async def _register_service_rpc_methods(self, service_name: str, service_instance: BaseService):
+        """Регистрация RPC методов сервиса"""
+        for method_name in dir(service_instance):
+            method = getattr(service_instance, method_name)
+
+            if (hasattr(method, '_service_method') and
+                    getattr(method, '_service_public', False)):
+
+                rpc_path = f"{service_name}/{method_name}"
+
+                # Регистрируем в method_registry для RPC
+                method_registry[rpc_path] = method
+
+                # Также регистрируем в RPC handler если есть соответствующий метод
+                if hasattr(self.rpc_methods, 'register_method'):
+                    await self.rpc_methods.register_method(rpc_path, method)
+
+                self.logger.info(f"Registered RPC method: {rpc_path}")
 
     async def stop_service(self, service_name: str):
         """Остановка сервиса"""
@@ -927,11 +969,11 @@ class ServiceRegistry:
         """Список всех сервисов"""
         return {
             name: {
-                "status": service.status.value,
-                "info": service.info.__dict__,
-                "methods": service.info.exposed_methods
+                "status": service.status.value if hasattr(service, 'status') else 'unknown',
+                "info": service.info.__dict__ if hasattr(service, 'info') else {},
+                "methods": service.info.exposed_methods if hasattr(service, 'info') else []
             }
-            for name, service in self.services.items()
+            for name, service in self.services.items()  # ✅ Используем self.services (единственный источник)
         }
 
 
@@ -1005,7 +1047,6 @@ class ServiceManager:
 
     def __init__(self, rpc_handler):
         self.rpc = rpc_handler
-        self.services = {}
         self.registry = ServiceRegistry(rpc_handler)
         self.proxy_client = None
         self.logger = logging.getLogger("ServiceManager")
@@ -1017,13 +1058,18 @@ class ServiceManager:
         global _global_service_manager
         _global_service_manager = self
 
+    @property
+    def services(self):
+        """Прокси к registry.services для обратной совместимости"""
+        return self.registry.services
+
     def set_proxy_client(self, proxy_client):
         """Установка proxy клиента для всех сервисов"""
         self.proxy_client = proxy_client
         self.logger.info("Setting proxy client for all services...")
 
-        # Инжектируем proxy во все уже созданные сервисы
-        for service_name, service_instance in self.services.items():
+        # ✅ ИСПРАВЛЕНО: используем registry.services вместо self.services
+        for service_name, service_instance in self.registry.services.items():
             try:
                 if hasattr(service_instance, 'set_proxy'):
                     service_instance.set_proxy(proxy_client)
@@ -1032,97 +1078,30 @@ class ServiceManager:
                     service_instance.proxy = proxy_client
                     self.logger.info(f"Proxy set directly for service: {service_name}")
             except Exception as e:
-                self.logger.error(f"Failed to inject proxy into {service_name}: {e}")
-
-    async def load_service(self, service_path: Path) -> Optional[BaseService]:
-        """Загрузка сервиса из пути"""
-        service_name = service_path.name
-        main_file = service_path / "main.py"
-
-        self.logger.info(f"Loading service {service_name} from {main_file}")
-
-        try:
-            # Создание уникального имени модуля
-            module_name = f"service_{service_name}_{hashlib.md5(str(main_file).encode()).hexdigest()[:8]}"
-
-            # Динамическая загрузка модуля
-            spec = importlib.util.spec_from_file_location(module_name, main_file)
-            if not spec:
-                self.logger.error(f"Failed to create spec for {main_file}")
-                return None
-
-            module = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(module)
-
-            # Ищем класс Run
-            if not hasattr(module, 'Run'):
-                self.logger.error(f"Service {service_name}: Class 'Run' not found in module")
-                return None
-
-            # Создаем экземпляр сервиса
-            RunClass = module.Run
-            service_instance = RunClass(service_name, self.proxy_client)
-
-            self.logger.info(f"Service instance created for {service_name}")
-            return service_instance
-
-        except Exception as e:
-            self.logger.error(f"Failed to load service {service_name}: {e}")
-            return None
+                self.logger.error(f"Failed to set proxy for service {service_name}: {e}")
 
     async def initialize_service(self, service_instance: BaseService):
-        """Инициализация сервиса и регистрация его методов"""
+        """Инициализация одного сервиса (упрощенная версия)"""
         try:
+            service_instance.status = ServiceStatus.INITIALIZING
+
             # Устанавливаем proxy если доступен
-            if self.proxy_client:
-                if hasattr(service_instance, 'set_proxy'):
-                    service_instance.set_proxy(self.proxy_client)
-                    self.logger.info(f"Proxy successfully set for service: {service_instance.service_name}")
-                else:
-                    service_instance.proxy = self.proxy_client
+            if self.proxy_client and hasattr(service_instance, 'set_proxy'):
+                service_instance.set_proxy(self.proxy_client)
 
-            # КРИТИЧЕСКИ ВАЖНО: ЗАПУСКАЕМ СЕРВИС
-            await service_instance.start()  # <-- ЭТО ОТСУТСТВОВАЛО!
+            await service_instance.initialize()
+            service_instance.status = ServiceStatus.RUNNING
 
-            # Регистрируем в системе метрик
-            self.metrics_collector.register_service(service_instance.service_name, service_instance)
-
-            # Устанавливаем обратную связь для метрик
-            service_instance._metrics_manager = self.metrics_collector
-            self.logger.debug(f"Metrics manager linked to service: {service_instance.service_name}")
-
-            # Регистрируем методы
-            await self._register_service_methods(service_instance)
-
-            # Сохраняем сервис
-            self.services[service_instance.service_name] = service_instance
+            # ✅ Просто используем registry - вся логика метрик теперь там
+            await self.registry.start_service(service_instance.service_name, service_instance)
 
             self.logger.info(f"Service initialized: {service_instance.service_name}")
 
         except Exception as e:
             self.logger.error(f"Failed to initialize service {service_instance.service_name}: {e}")
 
-    async def _register_service_methods(self, service_instance: BaseService):
-        """Регистрация методов сервиса в RPC"""
-        service_name = service_instance.service_name
-
-        for method_name in dir(service_instance):
-            method = getattr(service_instance, method_name)
-
-            if (hasattr(method, '_service_method') and
-                    getattr(method, '_service_public', False)):
-
-                rpc_path = f"{service_name}/{method_name}"
-
-                if hasattr(self.rpc, 'register_method'):
-                    await self.rpc.register_method(rpc_path, method)
-                elif hasattr(self.rpc, 'method_registry'):
-                    self.rpc.method_registry[rpc_path] = method
-
-                self.logger.info(f"Registered method: {rpc_path}")
-
     async def initialize_all_services(self):
-        """Инициализация всех найденных сервисов"""
+        """Инициализация всех найденных сервисов через ServiceLoader с улучшенной последовательностью"""
         services_dir = get_services_path()
 
         if not services_dir.exists():
@@ -1131,22 +1110,56 @@ class ServiceManager:
 
         self.logger.info(f"Scanning services directory: {services_dir.absolute()}")
 
-        for service_path in services_dir.iterdir():
-            if service_path.is_dir():
-                main_file = service_path / "main.py"
-                if main_file.exists():
-                    self.logger.info(f"Attempting to load service: {service_path.name}")
-                    service_instance = await self.load_service(service_path)
+        # ✅ УЛУЧШЕНИЕ: Поэтапная инициализация
+        service_loader = ServiceLoader(services_dir, self.registry)
+        await service_loader.discover_and_load_services(self.proxy_client)
 
-                    if service_instance:
-                        self.logger.info(f"Service {service_path.name} loaded successfully")
-                        await self.initialize_service(service_instance)
+        # ✅ НОВОЕ: Ждем готовности критических сервисов перед инициализацией остальных
+        await self._wait_for_system_services_ready()
 
-        self.logger.info(f"Initialized {len(self.services)} services")
+        # ✅ НОВОЕ: Уведомляем о готовности системы для межсервисных вызовов
+        self._mark_system_ready()
+
+        self.logger.info(f"Initialized {len(self.registry.services)} services")
+
+    async def _wait_for_system_services_ready(self):
+        """Ожидание готовности критических системных сервисов"""
+        critical_services = ["system"]  # Можно расширить список
+        max_wait_time = 10  # секунд
+        check_interval = 0.5
+
+        for service_name in critical_services:
+            waited_time = 0
+
+            while waited_time < max_wait_time:
+                service = self.registry.get_service(service_name)
+
+                if (service and
+                        hasattr(service, 'status') and
+                        service.status == ServiceStatus.RUNNING):
+
+                    # Дополнительная проверка - метод доступен через RPC
+                    if f"{service_name}/get_system_info" in method_registry:
+                        self.logger.info(f"Critical service {service_name} is ready")
+                        break
+
+                await asyncio.sleep(check_interval)
+                waited_time += check_interval
+            else:
+                self.logger.warning(f"Critical service {service_name} not ready after {max_wait_time}s")
+
+    def _mark_system_ready(self):
+        """Маркировка системы как готовой для межсервисных вызовов"""
+        # Сохраняем флаг готовности
+        if hasattr(self, 'local_bridge') and self.local_bridge:
+            self.local_bridge._system_ready = True
+
+        self.logger.info("Service system marked as ready for inter-service calls")
 
     async def shutdown_all_services(self):
         """Остановка всех сервисов"""
-        for service_name, service_instance in self.services.items():
+        # ✅ ИСПРАВЛЕНО: используем registry.services
+        for service_name, service_instance in self.registry.services.items():
             try:
                 if hasattr(service_instance, 'cleanup'):
                     await service_instance.cleanup()
@@ -1154,7 +1167,8 @@ class ServiceManager:
             except Exception as e:
                 self.logger.error(f"Error shutting down service {service_name}: {e}")
 
-        self.services.clear()
+        # ✅ ИСПРАВЛЕНО: очищаем registry вместо self.services
+        self.registry.services.clear()
 
         # Cleanup modules
         self.cleanup_service_modules()
@@ -1305,7 +1319,8 @@ class ServiceManager:
     def list_available_methods(self) -> Dict[str, List[str]]:
         """Список всех доступных методов по сервисам"""
         methods = {}
-        for service_name, service_instance in self.services.items():
+        # ✅ ИСПРАВЛЕНО: используем registry.services
+        for service_name, service_instance in self.registry.services.items():
             if hasattr(service_instance, 'info'):
                 methods[service_name] = service_instance.info.exposed_methods
             else:
@@ -1314,7 +1329,8 @@ class ServiceManager:
 
     def get_service_details(self, service_name: str) -> Optional[Dict[str, Any]]:
         """Получить детальную информацию о сервисе"""
-        service = self.services.get(service_name)
+        # ✅ ИСПРАВЛЕНО: используем registry.get_service()
+        service = self.registry.get_service(service_name)
         if not service:
             return None
 
@@ -1341,33 +1357,17 @@ class ServiceManager:
         """Получить информацию о сервисах для gossip протокола"""
         services_info = {}
 
-        for service_name, service_instance in self.services.items():
+        # ✅ ИСПРАВЛЕНО: используем registry.services
+        for service_name, service_instance in self.registry.services.items():
             try:
-                # Получаем базовую информацию о сервисе
-                info = await service_instance.get_service_info()
                 services_info[service_name] = {
-                    "version": info.get("version", "1.0.0"),
-                    "status": info.get("status", "unknown"),
-                    "methods": info.get("exposed_methods", []),
-                    "description": info.get("description", ""),
-                    "metadata": info.get("metadata", {}),
-                    "metrics_summary": info.get("metrics_summary", {}),
-                    # Дополнительная информация для gossip
-                    "uptime": time.time() - getattr(service_instance, '_start_time', time.time()),
-                    "last_seen": time.time(),
-                    "node_id": getattr(self, 'node_id', 'unknown')
+                    "status": service_instance.status.value,
+                    "methods": service_instance.info.exposed_methods,
+                    "version": service_instance.info.version
                 }
             except Exception as e:
-                self.logger.error(f"Error getting info for service {service_name}: {e}")
-                # Fallback информация при ошибке
-                services_info[service_name] = {
-                    "version": "unknown",
-                    "status": "error",
-                    "methods": [],
-                    "description": f"Error: {str(e)}",
-                    "metadata": {},
-                    "metrics_summary": {}
-                }
+                self.logger.error(f"Error getting service info for gossip: {e}")
+                services_info[service_name] = {"error": str(e)}
 
         return services_info
 
@@ -1399,34 +1399,34 @@ class ServiceManager:
             "timestamp": time.time()
         }
 
-    def get_aggregated_metrics(self):
-        """Получить агрегированные метрики всех сервисов"""
-        aggregated = {
-            "system": {
-                "total_services": len(self.services),
-                "active_services": sum(1 for s in self.services.values()
-                                       if hasattr(s, 'status') and s.status.value == "running"),
-                "timestamp": time.time()
-            },
-            "services": {}
-        }
-
-        for service_name, service_instance in self.services.items():
-            try:
-                if hasattr(service_instance, 'metrics'):
-                    metrics = service_instance.metrics
-                    aggregated["services"][service_name] = {
-                        "counters": dict(metrics.counters),
-                        "gauges": dict(metrics.gauges),
-                        "timer_counts": {k: len(v) for k, v in metrics.timers.items()},
-                        "last_updated": dict(metrics.last_updated)
-                    }
-                else:
-                    aggregated["services"][service_name] = {"error": "No metrics available"}
-            except Exception as e:
-                aggregated["services"][service_name] = {"error": str(e)}
-
-        return aggregated
+    # def get_aggregated_metrics(self):
+    #     """Получить агрегированные метрики всех сервисов"""
+    #     aggregated = {
+    #         "system": {
+    #             "total_services": len(self.services),
+    #             "active_services": sum(1 for s in self.services.values()
+    #                                    if hasattr(s, 'status') and s.status.value == "running"),
+    #             "timestamp": time.time()
+    #         },
+    #         "services": {}
+    #     }
+    #
+    #     for service_name, service_instance in self.services.items():
+    #         try:
+    #             if hasattr(service_instance, 'metrics'):
+    #                 metrics = service_instance.metrics
+    #                 aggregated["services"][service_name] = {
+    #                     "counters": dict(metrics.counters),
+    #                     "gauges": dict(metrics.gauges),
+    #                     "timer_counts": {k: len(v) for k, v in metrics.timers.items()},
+    #                     "last_updated": dict(metrics.last_updated)
+    #                 }
+    #             else:
+    #                 aggregated["services"][service_name] = {"error": "No metrics available"}
+    #         except Exception as e:
+    #             aggregated["services"][service_name] = {"error": str(e)}
+    #
+    #     return aggregated
 
 
 # =====================================================
@@ -1498,12 +1498,6 @@ class SimpleLocalServiceLayer:
         return services.get(service_name)
 
 
-# =====================================================
-# OPTIMIZED RPC HANDLING
-# =====================================================
-
-# Try to import orjson for faster JSON processing
-
 
 # =====================================================
 # GLOBAL ACCESS FUNCTIONS
@@ -1538,7 +1532,7 @@ class P2PServiceHandler:
         self.logger = logging.getLogger("P2PServiceHandler")
 
         # Local service layer для обратной совместимости
-        self.local_service_layer = SimpleLocalServiceLayer(method_registry)
+        # self.local_service_layer = SimpleLocalServiceLayer(method_registry)
 
         self._setup_endpoints()
 
@@ -1560,12 +1554,13 @@ class P2PServiceHandler:
             # Получаем все доступные методы
             all_methods = {}
 
-            # Из service manager
-            if hasattr(self.service_manager, 'services'):
-                for service_name, service_instance in self.service_manager.services.items():
-                    for method_name in service_instance.info.exposed_methods:
-                        method_path = f"{service_name}/{method_name}"
-                        all_methods[method_path] = getattr(service_instance, method_name)
+            # ✅ ИСПРАВЛЕНО: используем registry.services
+            if hasattr(self.service_manager, 'registry'):
+                for service_name, service_instance in self.service_manager.registry.services.items():
+                    if hasattr(service_instance, 'info'):
+                        for method_name in service_instance.info.exposed_methods:
+                            method_path = f"{service_name}/{method_name}"
+                            all_methods[method_path] = getattr(service_instance, method_name)
 
             # Из method_registry (для обратной совместимости)
             all_methods.update(method_registry)
@@ -1574,8 +1569,7 @@ class P2PServiceHandler:
                 available_methods = list(all_methods.keys())
                 logger.error(f"Method {path} not found. Available: {available_methods[:5]}")
                 return RPCResponse(
-                    error=f"Method {path} not found. Available: {available_methods[:5]}",
-                    id=rpc_request.id
+                    error=f"Method {path} not found. Available methods: {available_methods[:10]}"
                 )
 
             try:
@@ -1708,11 +1702,12 @@ class P2PServiceHandler:
         @self.app.get("/health")
         async def health_check():
             """Health check endpoint"""
+            # ✅ ИСПРАВЛЕНО: используем registry.services
             healthy_services = 0
-            total_services = len(self.service_manager.services)
+            total_services = len(self.service_manager.registry.services)
 
-            for service in self.service_manager.services.values():
-                if service.status == ServiceStatus.RUNNING:
+            for service in self.service_manager.registry.services.values():
+                if hasattr(service, 'status') and service.status == ServiceStatus.RUNNING:
                     healthy_services += 1
 
             return {
@@ -1793,8 +1788,8 @@ def _generate_recommendations(issues):
         recommendations.append("Call service.set_proxy(proxy_client) after service creation")
         recommendations.append("Ensure ServiceManager.set_proxy_client() is called before service initialization")
 
-    if "No global service manager available" in issues:
-        recommendations.append("Ensure ServiceManager is created and set as global")
+    if "ServiceManager has no proxy_client" in issues:
+        recommendations.append("Call ServiceManager.set_proxy_client() with valid proxy client")
 
     if not recommendations:
         recommendations.append("All proxy checks passed")
