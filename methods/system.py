@@ -14,7 +14,8 @@ from fastapi import HTTPException
 from layers.cache import P2PMultiLevelCache
 from layers.service import (
     P2PServiceHandler, BaseService, ServiceManager,
-    service_method, P2PAuthBearer, RPCRequest, RPCResponse
+    service_method, P2PAuthBearer, method_registry,
+    RPCRequest, RPCResponse
 )
 import time
 
@@ -83,131 +84,102 @@ class SystemService(BaseService):
         self._setup_system_metrics()
 
     def _setup_system_metrics(self):
-        """Настройка системных метрик - СТАТИЧЕСКИЕ данные один раз"""
+        """Настройка системных метрик"""
+        # Базовая информация о системе
+        self.metrics.gauge("system_platform", hash(platform.system()))  # Хешируем строку
+        self.metrics.gauge("system_architecture", hash(platform.machine()))
+        self.metrics.gauge("cpu_count", psutil.cpu_count())
+        self.metrics.gauge("memory_total_bytes", psutil.virtual_memory().total)
+        self.metrics.gauge("boot_time", psutil.boot_time())
 
-        # ✅ ИСПРАВЛЕНО: Читаемые коды вместо hash()
-        platform_codes = {
-            'Windows': 1, 'Linux': 2, 'Darwin': 3, 'FreeBSD': 4,
-            'OpenBSD': 5, 'NetBSD': 6, 'SunOS': 7
-        }
-
-        architecture_codes = {
-            'x86_64': 1, 'AMD64': 1, 'i386': 2, 'i686': 2,
-            'aarch64': 3, 'arm64': 3, 'armv7l': 4
-        }
-
-        platform_name = platform.system()
-        architecture = platform.machine()
-
-        # ✅ Читаемые коды: 1, 2, 3... вместо огромных чисел
-        self.metrics.gauges["system_platform"] = platform_codes.get(platform_name, 0)
-        self.metrics.gauges["system_architecture"] = architecture_codes.get(architecture, 0)
-        self.metrics.gauges["cpu_count"] = psutil.cpu_count()
-        self.metrics.gauges["memory_total_bytes"] = psutil.virtual_memory().total
-        self.metrics.gauges["boot_time"] = round(psutil.boot_time(), 1)
-
-        # Hostname как 6-значный код
-        hostname_code = abs(hash(platform.node())) % 1000000
-        self.metrics.gauges["hostname"] = hostname_code
+        # Запускаем мониторинг системных ресурсов
+        asyncio.create_task(self._monitor_system_resources())
 
     async def initialize(self):
         """Инициализация системного сервиса"""
         self.logger.info("Initializing system service")
 
-        # # Получаем cache из ServiceManager если доступен
-        # from layers.service import get_global_service_manager
-        # manager = get_global_service_manager()
-        # if manager and hasattr(manager, 'proxy_client'):
-        #     pass
+        # Получаем cache из ServiceManager если доступен
+        from layers.service import get_global_service_manager
+        manager = get_global_service_manager()
+        if manager and hasattr(manager, 'proxy_client'):
+            pass
 
         # Базовые системные метрики
-        self.metrics.gauges["service_initialized_at"] = time.time()
-        self.metrics.gauges["hostname"] = hash(socket.gethostname())  # Хешируем строку
-        self.heartbeat_task = asyncio.create_task(self._update_system_metrics())
-        self.logger.debug(f"Base initialization completed for {self.service_name}")
+        self.metrics.gauge("service_initialized_at", time.time())
+        self.metrics.gauge("hostname", hash(socket.gethostname()))  # Хешируем строку
 
         # ИСПРАВЛЕНИЕ: принудительно запускаем метрики
-        self.metrics.gauges["system_service_active"] = 1
-        # self.logger.info(f"System service initialized with {len(self.metrics)} metrics")
+        self.metrics.gauge("system_service_active", 1)
+        self.logger.info(f"System service initialized with {len(self.metrics.data)} metrics")
 
-    def _collect_system_metrics_sync(self) -> Dict[str, float]:
-        """Синхронный сбор ПРОЦЕССНЫХ метрик для выполнения в executor"""
+    def _collect_system_resources_sync(self) -> Dict[str, Any]:
+        """Синхронный сбор системных ресурсов"""
         metrics = {}
-
         try:
-            import psutil
-            process = psutil.Process()
+            # CPU метрики
+            metrics["cpu_usage_percent"] = psutil.cpu_percent(interval=0.1)
 
-            # ✅ ИСПРАВЛЕНО: Метрики процесса с округлением
-            memory_info = process.memory_info()
-            metrics["memory_usage_bytes"] = memory_info.rss
-            metrics["memory_usage_mb"] = round(memory_info.rss / 1024 / 1024, 1)
+            # Память (быстро)
+            memory = psutil.virtual_memory()
+            metrics["memory_usage_percent"] = memory.percent
+            metrics["memory_available_bytes"] = memory.available
+            metrics["memory_used_bytes"] = memory.used
 
-            # CPU процесса (не системы!)
-            cpu_percent = process.cpu_percent(interval=0.01)
-            if cpu_percent > 0:
-                metrics["process_cpu_percent"] = round(cpu_percent, 1)
-            else:
-                metrics["process_cpu_percent"] = 0
-
-            # Потоки процесса
+            # Остальные метрики только если быстро
             try:
-                metrics["thread_count"] = process.num_threads()
+                metrics["process_count"] = len(psutil.pids())
             except:
                 pass
 
-        except Exception:
+            # Дисковые метрики только изредка
+            if hasattr(self, '_disk_metrics_counter'):
+                self._disk_metrics_counter += 1
+            else:
+                self._disk_metrics_counter = 1
+
+            if self._disk_metrics_counter % 5 == 0:  # Раз в 5 минут
+                try:
+                    disk_io = psutil.disk_io_counters()
+                    if disk_io:
+                        metrics.update({
+                            "disk_read_bytes": disk_io.read_bytes,
+                            "disk_write_bytes": disk_io.write_bytes,
+                            "disk_read_count": disk_io.read_count,
+                            "disk_write_count": disk_io.write_count,
+                        })
+                except:
+                    pass
+
+        except Exception as e:
             pass
 
         return metrics
 
-    async def _update_system_metrics(self):
-        """Периодическое обновление системных метрик"""
+    async def _monitor_system_resources(self):
+        """Background мониторинг системных ресурсов - только для SystemService"""
+        # ТОЛЬКО system сервис должен собирать системные метрики
+        if self.service_name != "system":
+            return
+
+        await asyncio.sleep(10)  # Задержка перед началом
+
         while self.status.value == "running":
             try:
-                await asyncio.sleep(30)  # Обновляем каждые 30 секунд
-
                 # Запускаем в executor чтобы не блокировать
                 loop = asyncio.get_event_loop()
-                process_metrics = await loop.run_in_executor(
-                    None, self._collect_system_metrics_sync
+                system_metrics = await loop.run_in_executor(
+                    None, self._collect_system_resources_sync
                 )
 
-                # Обновляем метрики сервиса
-                for metric_name, value in process_metrics.items():
+                # ИСПРАВЛЕНИЕ: используем self.metrics.gauge() вместо self.metric()
+                for metric_name, value in system_metrics.items():
                     self.metrics.gauge(metric_name, value)
 
-                # Обновляем время последнего обновления
-                self.metrics.gauge("last_metrics_update", time.time())
-
             except Exception as e:
-                self.logger.warning(f"Error updating system metrics: {e}")
-                await asyncio.sleep(60)  # Ждем дольше при ошибке
+                self.logger.warning(f"Error monitoring system resources: {e}")
 
-    # async def _monitor_system_resources(self):
-    #     """Background мониторинг системных ресурсов - только для SystemService"""
-    #     # ТОЛЬКО system сервис должен собирать системные метрики
-    #     if self.service_name != "system":
-    #         return
-    #
-    #     await asyncio.sleep(10)  # Задержка перед началом
-    #
-    #     while self.status.value == "running":
-    #         try:
-    #             # Запускаем в executor чтобы не блокировать
-    #             loop = asyncio.get_event_loop()
-    #             system_metrics = await loop.run_in_executor(
-    #                 None, self._collect_system_resources_sync
-    #             )
-    #
-    #             # ИСПРАВЛЕНИЕ: используем self.metrics.gauge() вместо self.metric()
-    #             for metric_name, value in system_metrics.items():
-    #                 self.metrics.gauge(metric_name, value)
-    #
-    #         except Exception as e:
-    #             self.logger.warning(f"Error monitoring system resources: {e}")
-    #
-    #         await asyncio.sleep(60)  # Раз в минуту
+            await asyncio.sleep(60)  # Раз в минуту
 
     def _bind_cache_to_methods(self, cache):
         """Привязка кеша к методам с декораторами"""
@@ -306,8 +278,8 @@ class SystemService(BaseService):
             }
 
             # Обновляем метрики сервиса
-            self.metrics.gauge["last_metrics_cpu_percent"] = metrics["cpu_percent"]
-            self.metrics.gauge["last_metrics_memory_percent"] = metrics["memory"]["percent"]
+            self.metrics.gauge("last_metrics_cpu_percent", metrics["cpu_percent"])
+            self.metrics.gauge("last_metrics_memory_percent", metrics["memory"]["percent"])
 
             duration_ms = (time.time() - start_time) * 1000
             self.metrics.timer("get_system_metrics_duration_ms", duration_ms)
@@ -577,7 +549,7 @@ class SystemService(BaseService):
             except (psutil.NoSuchProcess, psutil.AccessDenied):
                 continue
 
-        self.metrics.gauges["list_processes_returned"] = process_count
+        self.metrics.gauge("list_processes_returned", process_count)
         self.metrics.increment("list_processes_success")
 
         duration_ms = (time.time() - start_time) * 1000
@@ -696,7 +668,7 @@ class SystemService(BaseService):
                             "description": ' '.join(parts[4:])
                         })
 
-            self.metrics.gauges["list_services_linux_count"] = len(services)
+            self.metrics.gauge("list_services_linux_count", len(services))
             self.metrics.increment("list_services_success")
             return services
 
@@ -723,7 +695,7 @@ class SystemService(BaseService):
                     else:
                         services = [services_data]  # Один сервис
 
-                    self.metrics.gauges["list_services_windows_count"] = len(services)
+                    self.metrics.gauge("list_services_windows_count", len(services))
                     self.metrics.increment("list_services_success")
                     return services
                 except json.JSONDecodeError:
