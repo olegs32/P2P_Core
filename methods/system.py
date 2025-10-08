@@ -14,8 +14,7 @@ from fastapi import HTTPException
 from layers.cache import P2PMultiLevelCache
 from layers.service import (
     P2PServiceHandler, BaseService, ServiceManager,
-    service_method, P2PAuthBearer, method_registry,
-    RPCRequest, RPCResponse
+    service_method, P2PAuthBearer, RPCRequest, RPCResponse
 )
 import time
 
@@ -101,35 +100,35 @@ class SystemService(BaseService):
         architecture = platform.machine()
 
         # ✅ Читаемые коды: 1, 2, 3... вместо огромных чисел
-        self.metrics.gauge("system_platform", platform_codes.get(platform_name, 0))
-        self.metrics.gauge("system_architecture", architecture_codes.get(architecture, 0))
-        self.metrics.gauge("cpu_count", psutil.cpu_count())
-        self.metrics.gauge("memory_total_bytes", psutil.virtual_memory().total)
-        self.metrics.gauge("boot_time", round(psutil.boot_time(), 1))
+        self.metrics.gauges["system_platform"] = platform_codes.get(platform_name, 0)
+        self.metrics.gauges["system_architecture"] = architecture_codes.get(architecture, 0)
+        self.metrics.gauges["cpu_count"] = psutil.cpu_count()
+        self.metrics.gauges["memory_total_bytes"] = psutil.virtual_memory().total
+        self.metrics.gauges["boot_time"] = round(psutil.boot_time(), 1)
 
         # Hostname как 6-значный код
         hostname_code = abs(hash(platform.node())) % 1000000
-        self.metrics.gauge("hostname", hostname_code)
+        self.metrics.gauges["hostname"] = hostname_code
 
     async def initialize(self):
         """Инициализация системного сервиса"""
         self.logger.info("Initializing system service")
 
-        # Получаем cache из ServiceManager если доступен
-        from layers.service import get_global_service_manager
-        manager = get_global_service_manager()
-        if manager and hasattr(manager, 'proxy_client'):
-            pass
+        # # Получаем cache из ServiceManager если доступен
+        # from layers.service import get_global_service_manager
+        # manager = get_global_service_manager()
+        # if manager and hasattr(manager, 'proxy_client'):
+        #     pass
 
         # Базовые системные метрики
-        self.metrics.gauge("service_initialized_at", time.time())
-        self.metrics.gauge("hostname", hash(socket.gethostname()))  # Хешируем строку
+        self.metrics.gauges["service_initialized_at"] = time.time()
+        self.metrics.gauges["hostname"] = hash(socket.gethostname())  # Хешируем строку
         self.heartbeat_task = asyncio.create_task(self._update_system_metrics())
         self.logger.debug(f"Base initialization completed for {self.service_name}")
 
         # ИСПРАВЛЕНИЕ: принудительно запускаем метрики
-        self.metrics.gauge("system_service_active", 1)
-        self.logger.info(f"System service initialized with {len(self.metrics.data)} metrics")
+        self.metrics.gauges["system_service_active"] = 1
+        # self.logger.info(f"System service initialized with {len(self.metrics)} metrics")
 
     def _collect_system_metrics_sync(self) -> Dict[str, float]:
         """Синхронный сбор ПРОЦЕССНЫХ метрик для выполнения в executor"""
@@ -161,6 +160,29 @@ class SystemService(BaseService):
             pass
 
         return metrics
+
+    async def _update_system_metrics(self):
+        """Периодическое обновление системных метрик"""
+        while self.status.value == "running":
+            try:
+                await asyncio.sleep(30)  # Обновляем каждые 30 секунд
+
+                # Запускаем в executor чтобы не блокировать
+                loop = asyncio.get_event_loop()
+                process_metrics = await loop.run_in_executor(
+                    None, self._collect_system_metrics_sync
+                )
+
+                # Обновляем метрики сервиса
+                for metric_name, value in process_metrics.items():
+                    self.metrics.gauge(metric_name, value)
+
+                # Обновляем время последнего обновления
+                self.metrics.gauge("last_metrics_update", time.time())
+
+            except Exception as e:
+                self.logger.warning(f"Error updating system metrics: {e}")
+                await asyncio.sleep(60)  # Ждем дольше при ошибке
 
     # async def _monitor_system_resources(self):
     #     """Background мониторинг системных ресурсов - только для SystemService"""
@@ -284,8 +306,8 @@ class SystemService(BaseService):
             }
 
             # Обновляем метрики сервиса
-            self.metrics.gauge("last_metrics_cpu_percent", metrics["cpu_percent"])
-            self.metrics.gauge("last_metrics_memory_percent", metrics["memory"]["percent"])
+            self.metrics.gauge["last_metrics_cpu_percent"] = metrics["cpu_percent"]
+            self.metrics.gauge["last_metrics_memory_percent"] = metrics["memory"]["percent"]
 
             duration_ms = (time.time() - start_time) * 1000
             self.metrics.timer("get_system_metrics_duration_ms", duration_ms)
@@ -555,7 +577,7 @@ class SystemService(BaseService):
             except (psutil.NoSuchProcess, psutil.AccessDenied):
                 continue
 
-        self.metrics.gauge("list_processes_returned", process_count)
+        self.metrics.gauges["list_processes_returned"] = process_count
         self.metrics.increment("list_processes_success")
 
         duration_ms = (time.time() - start_time) * 1000
@@ -674,7 +696,7 @@ class SystemService(BaseService):
                             "description": ' '.join(parts[4:])
                         })
 
-            self.metrics.gauge("list_services_linux_count", len(services))
+            self.metrics.gauges["list_services_linux_count"] = len(services)
             self.metrics.increment("list_services_success")
             return services
 
@@ -701,7 +723,7 @@ class SystemService(BaseService):
                     else:
                         services = [services_data]  # Один сервис
 
-                    self.metrics.gauge("list_services_windows_count", len(services))
+                    self.metrics.gauges["list_services_windows_count"] = len(services)
                     self.metrics.increment("list_services_success")
                     return services
                 except json.JSONDecodeError:

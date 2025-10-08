@@ -2,7 +2,7 @@ import asyncio
 import logging
 from typing import Dict, Any, Optional
 from datetime import datetime
-from layers.service import BaseService, service_method, get_global_service_manager
+from layers.service import BaseService, service_method
 
 
 class Run(BaseService):
@@ -152,21 +152,10 @@ class Run(BaseService):
         """
         # Проверяем proxy в каждом цикле и пытаемся получить его если он отсутствует
         if not self.proxy:
-            self.logger.debug("No proxy available - attempting to get proxy from service manager...")
-
-            # Попытка получить proxy через глобальный реестр сервисов
-            try:
-                service_manager = get_global_service_manager()
-                if service_manager and service_manager.proxy_client:
-                    self.set_proxy(service_manager.proxy_client)
-                    self.logger.info("Successfully obtained proxy from global service manager")
-            except Exception as e:
-                self.logger.debug(f"Could not get proxy from service manager: {e}")
-
-            # Если proxy все еще нет - пропускаем этот цикл
-            if not self.proxy:
-                self.logger.debug("No proxy available - skipping metrics collection")
-                return
+            self.logger.debug("No proxy available - skipping metrics collection")
+            # В новой архитектуре proxy должен быть установлен через set_proxy_client
+            # ServiceManager вызовет set_proxy() для всех сервисов при инициализации
+            return
 
         request_time = datetime.now()
         self.stats["total_requests"] += 1

@@ -22,8 +22,7 @@ from layers.network import P2PNetworkLayer
 from layers.cache import P2PMultiLevelCache, CacheConfig
 from layers.service import (
     P2PServiceHandler, BaseService, ServiceManager,
-    service_method, P2PAuthBearer, method_registry,
-    RPCRequest, RPCResponse, P2PServiceHandler )
+    service_method, P2PAuthBearer, RPCRequest, RPCResponse, P2PServiceHandler )
 
 
 # Настройка кодировки для Windows
@@ -189,21 +188,17 @@ class ServiceComponent(P2PComponent):
         if not cache:
             raise RuntimeError("Cache not available")
 
-        # Создаем объединенный сервисный обработчик
-        from layers.service import P2PServiceHandler, set_global_service_manager
+        # Создаем объединенный сервисный обработчик (БЕЗ глобальных переменных)
+        from layers.service import P2PServiceHandler
 
-        # P2PServiceHandler уже включает ServiceManager внутри себя
         self.service_handler = P2PServiceHandler(network_layer=network)
         self.service_manager = self.service_handler.service_manager
 
-        # Устанавливаем глобальный менеджер
-        set_global_service_manager(self.service_manager)
-
-        # Создаем local bridge
-        from layers.service import method_registry as global_method_registry
+        # Создаем local bridge, передавая method_registry из ServiceManager
+        from layers.local_service_bridge import create_local_service_bridge
 
         local_bridge = create_local_service_bridge(
-            global_method_registry,  # ✅ Глобальный registry вместо self.context.list_methods()
+            self.service_manager.method_registry,  # Вместо глобального method_registry
             self.service_manager
         )
         await local_bridge.initialize()
@@ -240,9 +235,7 @@ class ServiceComponent(P2PComponent):
     async def _setup_admin_methods(self, cache):
         """Настройка административных методов"""
         try:
-            # Импортируем из нового объединенного файла
             from methods.system import SystemService
-            from layers.service import method_registry as global_method_registry
 
             # Создаем system service
             system_service = SystemService("system", None)
@@ -255,7 +248,7 @@ class ServiceComponent(P2PComponent):
                 system_service.cache = cache
             self._bind_cache_to_methods(system_service, cache)
 
-            # Регистрируем методы в context и глобальном реестре
+            # Регистрируем методы в context и method_registry ServiceManager
             await self._register_methods_in_context("system", system_service)
 
             # Регистрируем в ServiceManager через новую архитектуру
@@ -272,7 +265,6 @@ class ServiceComponent(P2PComponent):
     async def _register_methods_in_context(self, path: str, methods_instance):
         """Регистрация методов в контексте приложения"""
         import inspect
-        from layers.service import method_registry as global_method_registry
 
         for name, method in inspect.getmembers(methods_instance, predicate=inspect.ismethod):
             if not name.startswith('_'):
@@ -281,8 +273,8 @@ class ServiceComponent(P2PComponent):
                 # Регистрируем в context
                 self.context.register_method(method_path, method)
 
-                # Регистрируем в глобальном method_registry для RPC
-                global_method_registry[method_path] = method
+                # Регистрируем в method_registry ServiceManager
+                self.service_manager.method_registry[method_path] = method
 
                 self.logger.debug(f"Registered method: {method_path}")
 
@@ -297,7 +289,6 @@ class ServiceComponent(P2PComponent):
     async def _do_shutdown(self):
         """Graceful shutdown всех сервисов"""
         try:
-            # Используем объединенный метод shutdown
             if hasattr(self, 'service_handler'):
                 await self.service_handler.shutdown_all()
             elif hasattr(self, 'service_manager'):
@@ -308,10 +299,7 @@ class ServiceComponent(P2PComponent):
         except Exception as e:
             self.logger.error(f"Error during service shutdown: {e}")
 
-    # =====================================================
-    # ДОПОЛНИТЕЛЬНЫЕ МЕТОДЫ ДЛЯ ИНТЕГРАЦИИ
-    # =====================================================
-
+    # Дополнительные методы для интеграции
     def get_service_handler(self) -> 'P2PServiceHandler':
         """Получить основной сервисный обработчик"""
         return getattr(self, 'service_handler', None)
@@ -324,120 +312,6 @@ class ServiceComponent(P2PComponent):
         """Получить локальный мост сервисов"""
         return getattr(self, 'local_bridge', None)
 
-    async def reload_service(self, service_name: str):
-        """Перезагрузка конкретного сервиса"""
-        if hasattr(self, 'service_manager'):
-            await self.service_manager.registry.reload_service(service_name)
-        else:
-            self.logger.error("Service manager not initialized")
-
-    def get_service_metrics(self, service_name: str = None):
-        """Получить метрики сервиса(ов)"""
-        if not hasattr(self, 'service_manager'):
-            return {}
-
-        if service_name:
-            service = self.service_manager.registry.get_service(service_name)
-            if service:
-                return {
-                    "counters": service.metrics.counters,
-                    "gauges": service.metrics.gauges,
-                    "timers": {k: len(v) for k, v in service.metrics.timers.items()},
-                    "last_updated": service.metrics.last_updated
-                }
-            return {}
-        else:
-            # Возвращаем метрики всех сервисов
-            all_metrics = {}
-            for svc_name, service in self.service_manager.services.items():
-                all_metrics[svc_name] = {
-                    "counters": service.metrics.counters,
-                    "gauges": service.metrics.gauges,
-                    "timers": {k: len(v) for k, v in service.metrics.timers.items()},
-                    "status": service.status.value
-                }
-            return all_metrics
-
-    def get_health_status(self) -> dict:
-        """Получить статус здоровья всех сервисов"""
-        if not hasattr(self, 'service_manager'):
-            return {"status": "error", "message": "Service manager not initialized"}
-
-        try:
-            from layers.service import ServiceStatus
-
-            healthy_services = 0
-            total_services = len(self.service_manager.services)
-            service_statuses = {}
-
-            for service_name, service in self.service_manager.services.items():
-                status = service.status.value
-                service_statuses[service_name] = status
-
-                if service.status == ServiceStatus.RUNNING:
-                    healthy_services += 1
-
-            return {
-                "status": "healthy" if healthy_services == total_services else "degraded",
-                "services": {
-                    "total": total_services,
-                    "healthy": healthy_services,
-                    "degraded": total_services - healthy_services
-                },
-                "service_statuses": service_statuses,
-                "timestamp": time.time()
-            }
-
-        except Exception as e:
-            self.logger.error(f"Error getting health status: {e}")
-            return {"status": "error", "message": str(e)}
-
-    # =====================================================
-    # BACKWARD COMPATIBILITY МЕТОДЫ
-    # =====================================================
-
-    def get_rpc_handler(self):
-        """Обратная совместимость: получить RPC обработчик"""
-        return self.get_service_handler()
-
-    async def register_external_service(self, service_name: str, service_instance):
-        """Регистрация внешнего сервиса"""
-        if hasattr(self, 'service_manager'):
-            await self.service_manager.initialize_service(service_instance)
-            self.logger.info(f"External service registered: {service_name}")
-        else:
-            self.logger.error("Cannot register external service: ServiceManager not available")
-
-    def list_available_methods(self) -> list:
-        """Список всех доступных методов"""
-        if hasattr(self, 'service_handler'):
-            from layers.service import method_registry
-            return list(method_registry.keys())
-        return []
-
-    def get_service_info_for_gossip(self) -> dict:
-        """Получить информацию о сервисах для gossip протокола"""
-        if hasattr(self, 'service_manager'):
-            try:
-                # Используем метод из ServiceManager если он есть
-                if hasattr(self.service_manager, 'get_services_info_for_gossip'):
-                    return asyncio.create_task(
-                        self.service_manager.get_services_info_for_gossip()
-                    )
-                else:
-                    # Fallback: создаем базовую информацию
-                    services_info = {}
-                    for service_name, service in self.service_manager.services.items():
-                        services_info[service_name] = {
-                            "status": service.status.value,
-                            "methods": service.info.exposed_methods,
-                            "version": service.info.version
-                        }
-                    return services_info
-            except Exception as e:
-                self.logger.error(f"Error getting service info for gossip: {e}")
-
-        return {}
 class WebServerComponent(P2PComponent):
     """Компонент веб-сервера"""
 

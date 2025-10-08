@@ -10,7 +10,7 @@ from datetime import datetime
 import logging
 import sys
 import os
-from layers.service import BaseService, service_method, get_global_service_manager
+from layers.service import BaseService, service_method
 
 
 
@@ -275,39 +275,30 @@ class ServiceOrchestrator(BaseService):
 
     async def _stop_service_if_running(self, service_name: str):
         """Остановить сервис если он запущен"""
-        manager = get_global_service_manager()
-        if manager and service_name in manager.services:
-            try:
-                service_instance = manager.services[service_name]
-                if hasattr(service_instance, 'cleanup'):
-                    await service_instance.cleanup()
-                del manager.services[service_name]
-                self.logger.info(f"Stopped running service: {service_name}")
-            except Exception as e:
-                self.logger.error(f"Error stopping service {service_name}: {e}")
+        # В новой архитектуре получаем ServiceManager через proxy
+        if not self.proxy:
+            self.logger.warning("No proxy available to stop service")
+            return
+
+        try:
+            # Вызываем метод остановки через ServiceManager API
+            # ServiceManager должен предоставить метод для управления сервисами
+            result = await self.proxy.service_manager.stop_service(service_name)
+            self.logger.info(f"Stopped running service: {service_name}")
+        except Exception as e:
+            self.logger.warning(f"Could not stop service {service_name}: {e}")
 
     async def _load_and_start_service(self, service_name: str) -> bool:
         """Загрузить и запустить сервис через ServiceManager"""
         try:
-            manager = get_global_service_manager()
-            if not manager:
-                self.logger.warning("No global service manager available")
+            if not self.proxy:
+                self.logger.warning("No proxy available to start service")
                 return False
 
-            service_path = self.services_dir / service_name
-            service_instance = await manager.load_service(service_path)
+            # Вызываем метод загрузки через ServiceManager API
+            result = await self.proxy.service_manager.load_and_start_service(service_name)
 
-            if service_instance:
-                # Устанавливаем proxy если доступен
-                if manager.proxy_client:
-                    if hasattr(service_instance, 'set_proxy'):
-                        service_instance.set_proxy(manager.proxy_client)
-                    else:
-                        service_instance.proxy = manager.proxy_client
-
-                await manager.initialize_service(service_instance)
-                manager.services[service_name] = service_instance
-
+            if result.get('success'):
                 self.logger.info(f"Service {service_name} loaded and started")
                 return True
             else:
@@ -457,8 +448,14 @@ class ServiceOrchestrator(BaseService):
         Returns:
             Список сервисов с их статусами
         """
-        manager = get_global_service_manager()
-        running_services = set(manager.services.keys()) if manager else set()
+        running_services = set()
+        if self.proxy:
+            try:
+                # Получаем список запущенных сервисов через API
+                services_info = await self.proxy.service_manager.list_running_services()
+                running_services = set(services_info.get('services', []))
+            except Exception as e:
+                self.logger.warning(f"Could not get running services list: {e}")
 
         services_info = {}
 
@@ -493,22 +490,28 @@ class ServiceOrchestrator(BaseService):
         base_info = await super().get_service_info()
 
         # Добавляем специфичную для orchestrator информацию
-        manager = get_global_service_manager()
+        total_running = 0
+        manager_available = False
+
+        if self.proxy:
+            try:
+                services_info = await self.proxy.service_manager.list_running_services()
+                total_running = len(services_info.get('services', []))
+                manager_available = True
+            except Exception as e:
+                self.logger.warning(f"Could not get running services count: {e}")
 
         orchestrator_info = {
             **base_info,
             "orchestrator_specific": {
                 "services_directory": str(self.services_dir),
                 "total_installed": len(self.installed_services),
-                "total_running": len(manager.services) if manager else 0,
+                "total_running": total_running,
                 "proxy_available": self.proxy is not None,
-                "service_manager_available": manager is not None,
+                "service_manager_available": manager_available,
                 "installed_services": list(self.installed_services.keys())
             }
         }
-
-        return orchestrator_info
-
     @service_method(description="Get detailed information about specific service", public=True)
     async def get_service_details(self, service_name: str) -> Dict[str, Any]:
         """
@@ -526,8 +529,13 @@ class ServiceOrchestrator(BaseService):
         metadata = self.installed_services[service_name]
         service_path = self.services_dir / service_name
 
-        manager = get_global_service_manager()
-        is_running = service_name in manager.services if manager else False
+        is_running = False
+        if self.proxy:
+            try:
+                services_info = await self.proxy.service_manager.list_running_services()
+                is_running = service_name in services_info.get('services', [])
+            except Exception as e:
+                self.logger.warning(f"Could not check if service is running: {e}")
 
         service_info = {
             "name": service_name,
@@ -539,14 +547,13 @@ class ServiceOrchestrator(BaseService):
         }
 
         # Добавляем информацию о запущенном сервисе
-        if is_running and manager:
-            running_service = manager.services[service_name]
-            if hasattr(running_service, 'get_service_info'):
-                try:
-                    running_info = await running_service.get_service_info()
-                    service_info["runtime_info"] = running_info
-                except Exception as e:
-                    self.logger.warning(f"Failed to get runtime info for {service_name}: {e}")
+        if is_running and self.proxy:
+            try:
+                # Получаем информацию о сервисе через API
+                running_info = await self.proxy.service_manager.get_service_info(service_name)
+                service_info["runtime_info"] = running_info
+            except Exception as e:
+                self.logger.warning(f"Failed to get runtime info for {service_name}: {e}")
 
         return service_info
 
@@ -671,10 +678,20 @@ class ServiceOrchestrator(BaseService):
         Returns:
             Статус оркестратора и статистика по сервисам
         """
-        manager = get_global_service_manager()
-
         total_installed = len(self.installed_services)
-        total_running = len(manager.services) if manager else 0
+        total_running = 0
+        manager_available = False
+        running_names = set()
+
+        # Получаем список запущенных сервисов через API
+        if self.proxy:
+            try:
+                services_info = await self.proxy.service_manager.list_running_services()
+                running_names = set(services_info.get('services', []))
+                total_running = len(running_names)
+                manager_available = True
+            except Exception as e:
+                self.logger.warning(f"Could not get running services for stats: {e}")
 
         # Статистика по сервисам
         service_stats = {
@@ -683,9 +700,8 @@ class ServiceOrchestrator(BaseService):
             "healthy": 0
         }
 
-        if manager:
+        if manager_available:
             installed_names = set(self.installed_services.keys())
-            running_names = set(manager.services.keys())
 
             service_stats["installed_but_not_running"] = len(installed_names - running_names)
             service_stats["running_but_not_installed"] = len(running_names - installed_names)
@@ -697,13 +713,13 @@ class ServiceOrchestrator(BaseService):
             "orchestrator_status": "running",
             "services_directory": str(self.services_dir),
             "proxy_available": self.proxy is not None,
-            "service_manager_available": manager is not None,
+            "service_manager_available": manager_available,
             "statistics": {
                 "total_installed": total_installed,
                 "total_running": total_running,
                 **service_stats
             },
-            "uptime": "N/A",  # TODO: реализовать подсчет uptime
+            "uptime": "N/A",
             "last_check": datetime.now().isoformat()
         }
 
