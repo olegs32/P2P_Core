@@ -481,10 +481,7 @@ class ServiceOrchestrator(BaseService):
     @service_method(description="Get detailed service information", public=True)
     async def get_service_info(self) -> Dict[str, Any]:
         """
-        Получение информации о самом сервисе orchestrator (переопределение базового метода)
-
-        Returns:
-            Информация о сервисе orchestrator
+        Получение информации о самом сервисе orchestrator
         """
         # Вызываем базовый метод для получения стандартной информации
         base_info = await super().get_service_info()
@@ -493,10 +490,15 @@ class ServiceOrchestrator(BaseService):
         total_running = 0
         manager_available = False
 
-        if self.proxy:
+        # Получаем ServiceManager напрямую
+        from layers.service import get_global_service_manager
+        service_manager = get_global_service_manager()
+
+        if service_manager:
             try:
-                services_info = await self.proxy.service_manager.list_running_services()
-                total_running = len(services_info.get('services', []))
+                # Прямой доступ к методам ServiceManager
+                running_services = service_manager.get_running_services()  # Нужно добавить этот метод
+                total_running = len(running_services)
                 manager_available = True
             except Exception as e:
                 self.logger.warning(f"Could not get running services count: {e}")
@@ -512,6 +514,8 @@ class ServiceOrchestrator(BaseService):
                 "installed_services": list(self.installed_services.keys())
             }
         }
+        return orchestrator_info
+
     @service_method(description="Get detailed information about specific service", public=True)
     async def get_service_details(self, service_name: str) -> Dict[str, Any]:
         """

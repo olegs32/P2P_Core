@@ -55,9 +55,7 @@ JWT_SECRET_KEY = os.getenv('JWT_SECRET_KEY', 'fallback-dev-key-only')
 JWT_ALGORITHM = os.getenv('JWT_ALGORITHM', 'HS256')
 JWT_EXPIRATION_HOURS = int(os.getenv('JWT_EXPIRATION_HOURS', '24'))
 
-# Global registries
-method_registry: Dict[str, Any] = {}
-_global_service_manager: Optional['ServiceManager'] = None
+
 
 
 # =====================================================
@@ -1013,9 +1011,8 @@ class ServiceManager:
         # Интегрированная система метрик
         self.metrics_collector = ReactiveMetricsCollector()
 
-        # Устанавливаем как глобальный менеджер
-        global _global_service_manager
-        _global_service_manager = self
+        # Устанавливаем в контексте вместо глобальной переменной
+        set_global_service_manager(self)
 
     def set_proxy_client(self, proxy_client):
         """Установка proxy клиента для всех сервисов"""
@@ -1340,7 +1337,6 @@ class ServiceManager:
     async def get_services_info_for_gossip(self):
         """Получить информацию о сервисах для gossip протокола"""
         services_info = {}
-
         for service_name, service_instance in self.services.items():
             try:
                 # Получаем базовую информацию о сервисе
@@ -1359,6 +1355,8 @@ class ServiceManager:
                 }
             except Exception as e:
                 self.logger.error(f"Error getting info for service {service_name}: {e}")
+                import traceback
+                print(traceback.format_exc())
                 # Fallback информация при ошибке
                 services_info[service_name] = {
                     "version": "unknown",
@@ -1399,34 +1397,64 @@ class ServiceManager:
             "timestamp": time.time()
         }
 
-    def get_aggregated_metrics(self):
-        """Получить агрегированные метрики всех сервисов"""
-        aggregated = {
-            "system": {
-                "total_services": len(self.services),
-                "active_services": sum(1 for s in self.services.values()
-                                       if hasattr(s, 'status') and s.status.value == "running"),
-                "timestamp": time.time()
-            },
-            "services": {}
+    # def get_aggregated_metrics(self):
+    #     """Получить агрегированные метрики всех сервисов"""
+    #     aggregated = {
+    #         "system": {
+    #             "total_services": len(self.services),
+    #             "active_services": sum(1 for s in self.services.values()
+    #                                    if hasattr(s, 'status') and s.status.value == "running"),
+    #             "timestamp": time.time()
+    #         },
+    #         "services": {}
+    #     }
+    #
+    #     for service_name, service_instance in self.services.items():
+    #         try:
+    #             if hasattr(service_instance, 'metrics'):
+    #                 metrics = service_instance.metrics
+    #                 aggregated["services"][service_name] = {
+    #                     "counters": dict(metrics.counters),
+    #                     "gauges": dict(metrics.gauges),
+    #                     "timer_counts": {k: len(v) for k, v in metrics.timers.items()},
+    #                     "last_updated": dict(metrics.last_updated)
+    #                 }
+    #             else:
+    #                 aggregated["services"][service_name] = {"error": "No metrics available"}
+    #         except Exception as e:
+    #             aggregated["services"][service_name] = {"error": str(e)}
+    #
+    #     return aggregated
+
+    def get_running_services(self) -> List[str]:
+        """Получить список запущенных сервисов"""
+        return [name for name, service in self.services.items()
+                if hasattr(service, 'status') and service.status == ServiceStatus.RUNNING]
+
+    def list_running_services(self) -> Dict[str, Any]:
+        """API метод для получения списка запущенных сервисов"""
+        return {
+            "services": self.get_running_services(),
+            "total": len(self.services)
         }
 
-        for service_name, service_instance in self.services.items():
-            try:
-                if hasattr(service_instance, 'metrics'):
-                    metrics = service_instance.metrics
-                    aggregated["services"][service_name] = {
-                        "counters": dict(metrics.counters),
-                        "gauges": dict(metrics.gauges),
-                        "timer_counts": {k: len(v) for k, v in metrics.timers.items()},
-                        "last_updated": dict(metrics.last_updated)
-                    }
-                else:
-                    aggregated["services"][service_name] = {"error": "No metrics available"}
-            except Exception as e:
-                aggregated["services"][service_name] = {"error": str(e)}
+    async def load_and_start_service(self, service_name: str) -> Dict[str, Any]:
+        """Загрузить и запустить сервис"""
+        try:
+            # Проверяем есть ли сервис в директории
+            services_dir = get_services_path()
+            service_path = services_dir / service_name
 
-        return aggregated
+            if not service_path.exists():
+                return {"success": False, "error": "Service directory not found"}
+
+            # Используем ServiceLoader для загрузки
+            loader = ServiceLoader(self.proxy_client, self.registry)
+            await loader.load_service(service_name, self.proxy_client)
+
+            return {"success": True, "message": f"Service {service_name} loaded"}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
 
 
 # =====================================================
@@ -1509,17 +1537,42 @@ class SimpleLocalServiceLayer:
 # GLOBAL ACCESS FUNCTIONS
 # =====================================================
 
-def get_global_service_manager() -> Optional['ServiceManager']:
-    """Получить глобальный менеджер сервисов"""
-    return _global_service_manager
+def get_method_registry() -> Dict[str, Any]:
+    """Получить реестр методов из контекста"""
+    try:
+        from p2p import P2PApplicationContext
+        context = P2PApplicationContext.get_current_context()
+        if context:
+            registry = context.get_shared("method_registry")
+            if registry is None:
+                registry = {}
+                context.set_shared("method_registry", registry)
+            return registry
+    except:
+        pass
+    # Fallback для обратной совместимости
+    return {}
 
+def get_global_service_manager() -> Optional['ServiceManager']:
+    """Получить глобальный менеджер сервисов из контекста"""
+    try:
+        from p2p import P2PApplicationContext
+        context = P2PApplicationContext.get_current_context()
+        if context:
+            return context.get_shared("global_service_manager")
+    except:
+        pass
+    return None
 
 def set_global_service_manager(manager: 'ServiceManager'):
-    """Установить глобальный менеджер сервисов"""
-    global _global_service_manager
-    _global_service_manager = manager
-
-
+    """Установить глобальный менеджер сервисов в контексте"""
+    try:
+        from p2p import P2PApplicationContext
+        context = P2PApplicationContext.get_current_context()
+        if context:
+            context.set_shared("global_service_manager", manager)
+    except:
+        pass
 # =====================================================
 # P2P SERVICE HANDLER (Main class for FastAPI integration)
 # =====================================================
@@ -1533,12 +1586,13 @@ class P2PServiceHandler:
     def __init__(self, network_layer=None, service_manager=None):
         self.app = FastAPI(title="P2P Service Manager", version="2.0.0")
         self.network = network_layer
-        self.service_manager = service_manager or ServiceManager(self)
+        self.service_manager = service_manager
+        # self.service_manager = service_manager or ServiceManager(self)
         self.security = P2PAuthBearer()
         self.logger = logging.getLogger("P2PServiceHandler")
 
         # Local service layer для обратной совместимости
-        self.local_service_layer = SimpleLocalServiceLayer(method_registry)
+        self.local_service_layer = SimpleLocalServiceLayer(get_method_registry())
 
         self._setup_endpoints()
 
@@ -1568,7 +1622,8 @@ class P2PServiceHandler:
                         all_methods[method_path] = getattr(service_instance, method_name)
 
             # Из method_registry (для обратной совместимости)
-            all_methods.update(method_registry)
+            registry = get_method_registry()
+            all_methods.update(registry)
 
             if path not in all_methods:
                 available_methods = list(all_methods.keys())
@@ -1738,10 +1793,11 @@ class P2PServiceHandler:
 
     async def register_rpc_methods(self, service_name: str, service_instance: BaseService):
         """Регистрация RPC методов сервиса"""
+        registry = get_method_registry()
         for method_name in service_instance.info.exposed_methods:
             method = getattr(service_instance, method_name)
             method_path = f"{service_name}/{method_name}"
-            method_registry[method_path] = method
+            registry[method_path] = method
             self.logger.info(f"Registered RPC method: {method_path}")
 
     async def initialize_all(self):
@@ -1813,7 +1869,7 @@ def create_service_manager(rpc_handler=None):
         # Создаем простой RPC handler если не передан
         class SimpleRPCHandler:
             def __init__(self):
-                self.method_registry = method_registry
+                self.method_registry = get_method_registry()
 
         rpc_handler = SimpleRPCHandler()
 
@@ -1832,7 +1888,7 @@ __all__ = [
     'RPCResponse',
     'P2PAuthBearer',
     'get_services_path',
-    'method_registry',
+    'get_method_registry',
     'get_global_service_manager',
     'set_global_service_manager',
     'ReactiveMetricsCollector',

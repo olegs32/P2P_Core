@@ -14,7 +14,7 @@ from fastapi import HTTPException
 from layers.cache import P2PMultiLevelCache
 from layers.service import (
     P2PServiceHandler, BaseService, ServiceManager,
-    service_method, P2PAuthBearer, method_registry,
+    service_method, P2PAuthBearer,
     RPCRequest, RPCResponse
 )
 import time

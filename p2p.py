@@ -20,7 +20,7 @@ from layers.network import P2PNetworkLayer
 from layers.cache import P2PMultiLevelCache, CacheConfig
 from layers.service import (
     P2PServiceHandler, BaseService, ServiceManager,
-    service_method, P2PAuthBearer, method_registry,
+    service_method, P2PAuthBearer,
     RPCRequest, RPCResponse, P2PServiceHandler )
 
 
@@ -187,6 +187,10 @@ class ServiceComponent(P2PComponent):
         if not cache:
             raise RuntimeError("Cache not available")
 
+        # Инициализируем реестр методов в контексте
+        if not self.context.get_shared("method_registry"):
+            self.context.set_shared("method_registry", {})
+
         # Создаем объединенный сервисный обработчик
         from layers.service import P2PServiceHandler, set_global_service_manager
 
@@ -194,7 +198,7 @@ class ServiceComponent(P2PComponent):
         self.service_handler = P2PServiceHandler(network_layer=network)
         self.service_manager = self.service_handler.service_manager
 
-        # Устанавливаем глобальный менеджер
+        # Устанавливаем менеджер в контексте
         set_global_service_manager(self.service_manager)
 
         # Создаем local bridge
@@ -240,7 +244,6 @@ class ServiceComponent(P2PComponent):
         try:
             # Импортируем из нового объединенного файла
             from methods.system import SystemService
-            from layers.service import method_registry as global_method_registry
 
             # Создаем system service
             system_service = SystemService("system", None)
@@ -270,8 +273,9 @@ class ServiceComponent(P2PComponent):
     async def _register_methods_in_context(self, path: str, methods_instance):
         """Регистрация методов в контексте приложения"""
         import inspect
-        from layers.service import method_registry as global_method_registry
+        from layers.service import get_method_registry
 
+        registry = get_method_registry()
         for name, method in inspect.getmembers(methods_instance, predicate=inspect.ismethod):
             if not name.startswith('_'):
                 method_path = f"{path}/{name}"
@@ -279,8 +283,8 @@ class ServiceComponent(P2PComponent):
                 # Регистрируем в context
                 self.context.register_method(method_path, method)
 
-                # Регистрируем в глобальном method_registry для RPC
-                global_method_registry[method_path] = method
+                # Регистрируем в реестре для RPC
+                registry[method_path] = method
 
                 self.logger.debug(f"Registered method: {method_path}")
 

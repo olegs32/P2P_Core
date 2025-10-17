@@ -153,7 +153,7 @@ class P2PComponent:
 
 class P2PApplicationContext:
     """Централизованный контекст приложения с управлением жизненным циклом"""
-
+    _current_context = None
     def __init__(self, config: P2PConfig):
         self.config = config
         self.logger = logging.getLogger("AppContext")
@@ -173,6 +173,19 @@ class P2PApplicationContext:
         self._shutdown_handlers: List[callable] = []
 
         self._setup_signal_handlers()
+        P2PApplicationContext.set_current_context(self)
+
+
+    @classmethod
+    def get_current_context(cls):
+        """Получить текущий активный контекст"""
+        return cls._current_context
+
+    @classmethod
+    def set_current_context(cls, context):
+        """Установить текущий активный контекст"""
+        cls._current_context = context
+
 
     def _setup_signal_handlers(self):
         """Настройка обработчиков сигналов"""
