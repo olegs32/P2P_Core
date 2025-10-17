@@ -196,16 +196,22 @@ class ServiceComponent(P2PComponent):
 
         # P2PServiceHandler уже включает ServiceManager внутри себя
         self.service_handler = P2PServiceHandler(network_layer=network)
+
+        # ИСПРАВЛЕНИЕ: Связываем method_registry из context с service_handler
+        # Чтобы методы регистрировались в правильный реестр
+        self.service_handler.method_registry = self.context._method_registry
+
         self.service_manager = self.service_handler.service_manager
 
         # Устанавливаем менеджер в контексте
         set_global_service_manager(self.service_manager)
 
         # Создаем local bridge
+        # Создаем local bridge
         from layers.local_service_bridge import create_local_service_bridge
 
         local_bridge = create_local_service_bridge(
-            self.context.list_methods(),
+            self.context._method_registry,  # <- ИЗМЕНИТЬ: прямая ссылка вместо .list_methods()
             self.service_manager
         )
         await local_bridge.initialize()

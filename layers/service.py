@@ -1111,12 +1111,20 @@ class ServiceManager:
 
                 rpc_path = f"{service_name}/{method_name}"
 
-                if hasattr(self.rpc, 'register_method'):
-                    await self.rpc.register_method(rpc_path, method)
-                elif hasattr(self.rpc, 'method_registry'):
+                # Регистрируем в method_registry напрямую
+                if hasattr(self.rpc, 'method_registry'):
                     self.rpc.method_registry[rpc_path] = method
-
-                self.logger.info(f"Registered method: {rpc_path}")
+                    self.logger.info(f"Registered method: {rpc_path}")
+                # Или через метод register_method если есть
+                elif hasattr(self.rpc, 'register_method'):
+                    await self.rpc.register_method(rpc_path, method)
+                    self.logger.info(f"Registered method: {rpc_path}")
+                # Если есть context, регистрируем там
+                elif hasattr(self.rpc, 'context') and self.rpc.context:
+                    self.rpc.context.register_method(rpc_path, method)
+                    self.logger.info(f"Registered method in context: {rpc_path}")
+                else:
+                    self.logger.warning(f"Cannot register method {rpc_path}: no registry available")
 
     async def initialize_all_services(self):
         """Инициализация всех найденных сервисов"""
@@ -1583,13 +1591,27 @@ class P2PServiceHandler:
     Объединяет всю функциональность из обоих файлов
     """
 
-    def __init__(self, network_layer=None, service_manager=None):
+    def __init__(self, network_layer=None, service_manager=None, context=None):
         self.app = FastAPI(title="P2P Service Manager", version="2.0.0")
         self.network = network_layer
-        self.service_manager = service_manager
-        # self.service_manager = service_manager or ServiceManager(self)
+        self.context = context  # ДОБАВЛЕНО: сохраняем context
+
+        # ИСПРАВЛЕНИЕ: создаем ServiceManager с передачей self (который имеет context)
+        self.service_manager = service_manager or ServiceManager(self)
+
+        # Если есть context, связываем method_registry
+        if self.context:
+            self.method_registry = self.context._method_registry
+            # КРИТИЧНО: Сразу регистрируем себя в context
+            self.context.set_shared("service_layer", self)
+            self.context.set_shared("rpc", self)
+            self.logger = logging.getLogger("P2PServiceHandler")
+            self.logger.info("Service handler registered in context")
+        else:
+            self.method_registry = {}
+            self.logger = logging.getLogger("P2PServiceHandler")
+
         self.security = P2PAuthBearer()
-        self.logger = logging.getLogger("P2PServiceHandler")
 
         # Local service layer для обратной совместимости
         self.local_service_layer = SimpleLocalServiceLayer(get_method_registry())
@@ -1712,8 +1734,14 @@ class P2PServiceHandler:
 
         @self.app.get("/services")
         async def list_services():
-            """Список всех зарегистрированных сервисов"""
-            return self.service_manager.registry.list_services()
+            return {
+                name: {
+                    "status": service.status.value,
+                    "info": service.info.__dict__ if hasattr(service, 'info') else {},
+                    "methods": service.info.exposed_methods if hasattr(service, 'info') else []
+                }
+                for name, service in self.service_manager.services.items()
+            }
 
         @self.app.get("/services/{service_name}")
         async def get_service_info(service_name: str):

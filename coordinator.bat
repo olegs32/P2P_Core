@@ -1,1 +1,1 @@
-python p2p_admin.py coordinator
+python p2p.py coordinator
