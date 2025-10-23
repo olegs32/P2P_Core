@@ -16,7 +16,9 @@ import importlib.util
 import logging
 import os
 import sys
+import threading
 import time
+from slowapi import Limiter
 from abc import ABC
 from collections import defaultdict
 from dataclasses import dataclass, field
@@ -933,6 +935,73 @@ class ServiceRegistry:
         }
 
 
+class MethodRegistry:
+    """Потокобезопасный реестр RPC методов"""
+
+    def __init__(self):
+        self._registry: Dict[str, Any] = {}
+        self._lock = threading.RLock()
+        self.logger = logging.getLogger("MethodRegistry")
+
+    def register(self, path: str, method: callable, log: bool = True) -> None:
+        """Регистрация метода"""
+        with self._lock:
+            if path in self._registry and log:
+                self.logger.warning(f"Method {path} already registered, overwriting")
+            self._registry[path] = method
+            if log:
+                self.logger.debug(f"Registered method: {path}")
+
+    def get(self, path: str, default=None) -> Optional[callable]:
+        """Получить метод"""
+        with self._lock:
+            return self._registry.get(path, default)
+
+    def unregister(self, path: str) -> bool:
+        """Удалить метод"""
+        with self._lock:
+            if path in self._registry:
+                del self._registry[path]
+                self.logger.debug(f"Unregistered method: {path}")
+                return True
+            return False
+
+    def copy(self) -> Dict[str, Any]:
+        """Копия реестра"""
+        with self._lock:
+            return self._registry.copy()
+
+    def __contains__(self, path: str) -> bool:
+        with self._lock:
+            return path in self._registry
+
+    def __len__(self) -> int:
+        with self._lock:
+            return len(self._registry)
+
+    def __getitem__(self, path: str) -> callable:
+        with self._lock:
+            return self._registry[path]
+
+    def __setitem__(self, path: str, method: callable) -> None:
+        with self._lock:
+            self._registry[path] = method
+
+    def update(self, other: Dict[str, Any]) -> None:
+        """Обновить реестр из dict"""
+        with self._lock:
+            self._registry.update(other)
+
+    def keys(self):
+        """Ключи реестра"""
+        with self._lock:
+            return list(self._registry.keys())
+
+    def items(self):
+        """Пары ключ-значение"""
+        with self._lock:
+            return list(self._registry.items())
+
 class ServiceLoader:
     """Загрузчик сервисов из файловой системы"""
 
@@ -1601,7 +1670,7 @@ class P2PServiceHandler:
 
         # Если есть context, связываем method_registry
         if self.context:
-            self.method_registry = self.context._method_registry
+            self.method_registry = self.context.list_methods()
             # КРИТИЧНО: Сразу регистрируем себя в context
             self.context.set_shared("service_layer", self)
             self.context.set_shared("rpc", self)
