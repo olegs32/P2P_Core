@@ -37,9 +37,11 @@ jwt_blacklist_file: "jwt_blacklist.json"
 
 # Безопасность - HTTPS/SSL
 https_enabled: true
-ssl_cert_file: "worker_cert.pem"
-ssl_key_file: "worker_key.pem"
-ssl_verify: false  # для самоподписанных сертификатов
+ssl_cert_file: "certs/worker_cert.pem"
+ssl_key_file: "certs/worker_key.pem"
+ssl_ca_cert_file: "certs/ca_cert.pem"      # CA сертификат для верификации
+ssl_ca_key_file: ""                         # CA ключ НЕ нужен на worker узлах
+ssl_verify: true                            # ВКЛЮЧЕНА верификация через CA
 
 # Rate Limiting (worker обрабатывает меньше запросов)
 rate_limit_enabled: true

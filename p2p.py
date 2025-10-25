@@ -470,15 +470,28 @@ class WebServerComponent(P2PComponent):
 
             cert_file = self.context.config.ssl_cert_file
             key_file = self.context.config.ssl_key_file
+            ca_cert_file = getattr(self.context.config, 'ssl_ca_cert_file', None)
+            ca_key_file = getattr(self.context.config, 'ssl_ca_key_file', None)
 
-            # Убедимся что сертификаты существуют
-            if ensure_certificates_exist(cert_file, key_file, self.context.config.node_id):
+            # Убедимся что сертификаты существуют (с поддержкой CA)
+            if ensure_certificates_exist(
+                cert_file, key_file,
+                self.context.config.node_id,
+                ca_cert_file=ca_cert_file,
+                ca_key_file=ca_key_file
+            ):
                 ssl_config = {
                     "ssl_keyfile": key_file,
                     "ssl_certfile": cert_file
                 }
                 protocol = "https"
-                self.logger.info(f"HTTPS enabled with certificates: {cert_file}, {key_file}")
+
+                if ca_cert_file and self.context.config.ssl_verify:
+                    self.logger.info(f"HTTPS enabled with CA verification")
+                    self.logger.info(f"  Node cert: {cert_file}")
+                    self.logger.info(f"  CA cert: {ca_cert_file}")
+                else:
+                    self.logger.info(f"HTTPS enabled (self-signed): {cert_file}")
             else:
                 self.logger.warning("Failed to setup HTTPS, falling back to HTTP")
 

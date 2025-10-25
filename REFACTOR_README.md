@@ -34,10 +34,13 @@ config = P2PConfig.from_yaml('config/coordinator.yaml')
 - `rate_limit_rpc_burst`: 20
 - `rate_limit_health_burst`: 50
 
-#### HTTPS/SSL
+#### HTTPS/SSL с Certificate Authority
 - `https_enabled`: true
-- `ssl_cert_file`: "node_cert.pem"
-- `ssl_key_file`: "node_key.pem"
+- `ssl_cert_file`: "certs/node_cert.pem"
+- `ssl_key_file`: "certs/node_key.pem"
+- `ssl_ca_cert_file`: "certs/ca_cert.pem" (CA сертификат для верификации)
+- `ssl_ca_key_file`: "certs/ca_key.pem" (CA ключ, только для coordinator)
+- `ssl_verify`: true (включает проверку сертификатов через CA)
 
 #### Persistence
 - `jwt_blacklist_file`: "jwt_blacklist.json"
@@ -146,33 +149,76 @@ services = persistence.load_services()
 
 ---
 
-### 7. HTTPS с самоподписанными сертификатами
+### 7. HTTPS с Certificate Authority (CA)
 
-#### Генерация сертификатов
+Система использует полноценную инфраструктуру CA для безопасной коммуникации между узлами.
+
+#### Генерация CA и сертификатов узлов
+
+**Автоматическая генерация:**
 ```bash
-# Автоматическая генерация для coordinator и worker
-./scripts/generate_certs.sh
+# Генерирует CA и подписанные сертификаты для всех узлов
+./scripts/generate_ca_certs.sh
 ```
 
 **Создаваемые файлы:**
-- `coordinator_cert.pem`, `coordinator_key.pem`
-- `worker_cert.pem`, `worker_key.pem`
+```
+certs/
+├── ca_cert.pem           # CA сертификат (распространять на все узлы)
+├── ca_key.pem            # CA приватный ключ (ХРАНИТЬ В БЕЗОПАСНОСТИ!)
+├── coordinator_cert.pem  # Сертификат координатора (подписан CA)
+├── coordinator_key.pem   # Приватный ключ координатора
+├── worker_cert.pem       # Сертификат worker (подписан CA)
+└── worker_key.pem        # Приватный ключ worker
+```
 
-**Срок действия:** 10 лет (3650 дней)
+**Срок действия:**
+- CA сертификат: 10 лет (3650 дней)
+- Сертификаты узлов: 1 год (365 дней)
 
-#### Программная генерация
+#### Программная генерация CA
+
 ```python
-from layers.ssl_helper import generate_self_signed_cert
+from layers.ssl_helper import generate_ca_certificate
 
-generate_self_signed_cert(
-    "node_cert.pem",
-    "node_key.pem",
-    common_name="coordinator-1"
+# Генерация CA (выполняется один раз)
+generate_ca_certificate(
+    ca_cert_file="certs/ca_cert.pem",
+    ca_key_file="certs/ca_key.pem",
+    common_name="P2P Network CA"
+)
+```
+
+#### Генерация сертификата узла, подписанного CA
+
+```python
+from layers.ssl_helper import generate_signed_certificate
+
+# Генерация сертификата для узла
+generate_signed_certificate(
+    cert_file="certs/node_cert.pem",
+    key_file="certs/node_key.pem",
+    ca_cert_file="certs/ca_cert.pem",
+    ca_key_file="certs/ca_key.pem",
+    common_name="worker-1",
+    san_dns=["localhost", "*.local", "worker-1"],
+    san_ips=["127.0.0.1"]
 )
 ```
 
 #### Автоматическое создание при запуске
-Если сертификаты отсутствуют, они автоматически создаются при старте сервера.
+Если CA существует, но сертификаты узла отсутствуют, они автоматически создаются и подписываются CA при старте сервера.
+
+#### SSL Verification
+Система поддерживает проверку сертификатов через CA:
+- **Coordinator**: проверяет клиентские сертификаты worker узлов
+- **Worker**: проверяет сертификат coordinator при подключении
+- **Включение**: `ssl_verify: true` в конфигурации
+
+**Важно:**
+- CA сертификат (`ca_cert.pem`) должен быть распространен на все узлы
+- CA приватный ключ (`ca_key.pem`) храните в безопасности и используйте только для подписи новых сертификатов
+- Worker узлам НЕ нужен CA приватный ключ - только CA сертификат для верификации
 
 ---
 
@@ -242,10 +288,13 @@ rate_limit_rpc_burst: 40
 rate_limit_health_requests: 600
 rate_limit_health_burst: 100
 
-# HTTPS
+# HTTPS с CA
 https_enabled: true
-ssl_cert_file: "coordinator_cert.pem"
-ssl_key_file: "coordinator_key.pem"
+ssl_cert_file: "certs/coordinator_cert.pem"
+ssl_key_file: "certs/coordinator_key.pem"
+ssl_ca_cert_file: "certs/ca_cert.pem"      # CA сертификат для верификации
+ssl_ca_key_file: "certs/ca_key.pem"        # CA ключ для подписи (только coordinator)
+ssl_verify: true                            # Включена проверка сертификатов
 
 # Persistence
 state_directory: "data/coordinator"
@@ -304,10 +353,12 @@ curl https://localhost:8001/cluster/nodes
 - Разные лимиты для разных типов запросов
 - Автоматический Retry-After
 
-### HTTPS
-- Самоподписанные сертификаты
+### HTTPS с Certificate Authority
+- Полноценная инфраструктура CA с подписанными сертификатами
+- SSL/TLS верификация между узлами (mutual TLS)
 - TLS 1.2+ only
 - Безопасные cipher suites
+- Автоматическая проверка сертификатов через CA
 
 ---
 
@@ -317,7 +368,23 @@ curl https://localhost:8001/cluster/nodes
 **Решение:**
 ```bash
 pip install cryptography
-./scripts/generate_certs.sh
+./scripts/generate_ca_certs.sh
+```
+
+### Проблема: SSL verification fails
+**Причина:** CA сертификат не распространен на все узлы или истек срок действия
+
+**Решение:**
+1. Убедитесь, что `ca_cert.pem` присутствует на всех узлах
+2. Проверьте срок действия сертификатов:
+```bash
+openssl x509 -in certs/ca_cert.pem -noout -dates
+openssl x509 -in certs/worker_cert.pem -noout -dates
+```
+3. При необходимости перегенерируйте сертификаты:
+```bash
+rm -rf certs/
+./scripts/generate_ca_certs.sh
 ```
 
 ### Проблема: Rate limiting слишком строгий
@@ -346,7 +413,9 @@ gossip_interval_max: 60  # увеличить максимум
 - LZ4 compression для gossip
 - Rate Limiting по эндпоинтам
 - Persistence для всех состояний
-- HTTPS с самоподписанными сертификатами
+- HTTPS с полноценной инфраструктурой Certificate Authority (CA)
+- SSL/TLS верификация между узлами с CA
+- Автоматическая генерация и подпись сертификатов через CA
 
 **Fixed:**
 - Циклические зависимости в method_registry
@@ -356,6 +425,7 @@ gossip_interval_max: 60  # увеличить максимум
 - Централизованная конфигурация
 - Производительность gossip протокола
 - Безопасность JWT аутентификации
+- Безопасность межузловой коммуникации (mutual TLS с CA)
 
 ---
 

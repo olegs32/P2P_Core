@@ -78,7 +78,9 @@ class P2PConfig:
     https_enabled: bool = True
     ssl_cert_file: str = "node_cert.pem"
     ssl_key_file: str = "node_key.pem"
-    ssl_verify: bool = False  # для самоподписанных сертификатов
+    ssl_ca_cert_file: str = "certs/ca_cert.pem"  # CA сертификат для верификации
+    ssl_ca_key_file: str = "certs/ca_key.pem"    # CA ключ для подписания (только на CA сервере)
+    ssl_verify: bool = True  # верификация сертификатов через CA
 
     # Rate Limiting
     rate_limit_enabled: bool = True
@@ -490,7 +492,9 @@ class NetworkComponent(P2PComponent):
             self.context.config.node_id,
             self.context.config.bind_address,
             self.context.config.port,
-            self.context.config.coordinator_mode
+            self.context.config.coordinator_mode,
+            ssl_verify=self.context.config.ssl_verify,
+            ca_cert_file=self.context.config.ssl_ca_cert_file
         )
 
         # Настройка gossip с адаптивными интервалами и компрессией

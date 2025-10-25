@@ -135,13 +135,34 @@ class SimpleGossipProtocol:
 
         self.log = logging.getLogger('Gossip')
 
-    async def start(self, join_addresses: List[str] = None):
-        """Запуск gossip узла"""
+    async def start(self, join_addresses: List[str] = None, ssl_verify: bool = True, ca_cert_file: str = None):
+        """
+        Запуск gossip узла
+
+        Args:
+            join_addresses: адреса bootstrap узлов
+            ssl_verify: верифицировать ли SSL сертификаты
+            ca_cert_file: путь к CA сертификату для верификации
+        """
         self.running = True
 
-        # Инициализация HTTP клиента
+        # Инициализация HTTP клиента с SSL поддержкой
         timeout = httpx.Timeout(connect=5.0, read=10.0, write=5.0, pool=5.0)
-        self.http_client = httpx.AsyncClient(timeout=timeout)
+
+        # Настройка SSL верификации
+        if ssl_verify and ca_cert_file:
+            from layers.ssl_helper import create_client_ssl_context
+            ssl_context = create_client_ssl_context(verify=True, ca_cert_file=ca_cert_file)
+            self.http_client = httpx.AsyncClient(timeout=timeout, verify=ssl_context)
+            self.log.info(f"HTTPS client configured with CA verification: {ca_cert_file}")
+        elif not ssl_verify:
+            # Отключаем верификацию (не рекомендуется)
+            self.http_client = httpx.AsyncClient(timeout=timeout, verify=False)
+            self.log.warning("HTTPS client configured WITHOUT verification (insecure)")
+        else:
+            # Стандартная верификация
+            self.http_client = httpx.AsyncClient(timeout=timeout)
+            self.log.info("HTTPS client configured with system CA verification")
 
         # Добавление себя в реестр
         self.node_registry[self.node_id] = self.self_info
@@ -170,8 +191,9 @@ class SimpleGossipProtocol:
                 else:
                     host, port = bootstrap_addr, 8000
 
-                # Отправка запроса на присоединение
-                url = f"http://{host}:{port}/internal/gossip/join"
+                # Отправка запроса на присоединение (используем https если включена верификация)
+                protocol = "https" if hasattr(self, 'http_client') and self.http_client.verify else "http"
+                url = f"{protocol}://{host}:{port}/internal/gossip/join"
                 join_data = {
                     'node_info': self.self_info.to_dict(),
                     'timestamp': datetime.now().isoformat()
@@ -601,7 +623,7 @@ class P2PNetworkLayer:
 
     def __init__(self, transport_layer,
                  node_id: str, bind_address: str = "127.0.0.1", bind_port: int = 8000,
-                 coordinator_mode: bool = False):
+                 coordinator_mode: bool = False, ssl_verify: bool = True, ca_cert_file: str = None):
         self.log = logging.getLogger('Network')
         if bind_address == '0.0.0.0':
             self.advertise_address = self._get_local_ip()
@@ -610,6 +632,10 @@ class P2PNetworkLayer:
         self.transport = transport_layer
         self.gossip = SimpleGossipProtocol(node_id, self.advertise_address, bind_port, coordinator_mode)
         self.load_balancer_index = 0
+
+        # SSL параметры для HTTPS клиента
+        self.ssl_verify = ssl_verify
+        self.ca_cert_file = ca_cert_file
 
         # Статистика запросов
         self.request_stats = {}
@@ -634,7 +660,7 @@ class P2PNetworkLayer:
 
     async def start(self, join_addresses: List[str] = None):
         """Запуск сетевого уровня"""
-        await self.gossip.start(join_addresses)
+        await self.gossip.start(join_addresses, ssl_verify=self.ssl_verify, ca_cert_file=self.ca_cert_file)
 
         # Добавление слушателя событий обнаружения
         self.gossip.add_discovery_listener(self._on_node_discovered)
