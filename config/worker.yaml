@@ -24,6 +24,7 @@ failure_timeout: 60
 gossip_state_file: "gossip_state.json"
 coordinator_addresses:        # адреса координаторов для подключения
   - "192.168.53.53:8001"
+  - "127.0.0.1:8001"
 
 # Сервисы
 services_directory: "services"

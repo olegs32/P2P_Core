@@ -55,6 +55,7 @@ class P2PConfig:
     read_timeout: float = 45.0
 
     # Gossip конфигурация
+    gossip_interval:int = 30
     gossip_interval_min: int = 5  # минимальный интервал (низкая нагрузка)
     gossip_interval_max: int = 30  # максимальный интервал (высокая нагрузка)
     gossip_interval_current: int = 15  # текущий интервал (адаптивный)
