@@ -55,7 +55,7 @@ class P2PConfig:
     read_timeout: float = 45.0
 
     # Gossip конфигурация
-    gossip_interval:int = 30
+    gossip_interval: int = 30
     gossip_interval_min: int = 5  # минимальный интервал (низкая нагрузка)
     gossip_interval_max: int = 30  # максимальный интервал (высокая нагрузка)
     gossip_interval_current: int = 15  # текущий интервал (адаптивный)
@@ -66,10 +66,10 @@ class P2PConfig:
     coordinator_addresses: list = None  # адреса координаторов для worker узлов
     message_count: int = 0  # количество сообщений за интервал
     adjust_interval_period: int = 60  # период адаптации (секунды)
-    compression_enabled: bool =True  # LZ4 компрессия
+    compression_enabled: bool = True  # LZ4 компрессия
     compression_threshold: int = 1024  # байты
     max_gossip_targets: int = 5
-    cleanup_interval:int = 60
+    cleanup_interval: int = 60
 
     # Сервисы
     services_directory: str = "services"
@@ -86,7 +86,7 @@ class P2PConfig:
     ssl_cert_file: str = "certs/node_cert.cer"
     ssl_key_file: str = "certs/node_key.key"
     ssl_ca_cert_file: str = "certs/ca_cert.cer"  # CA сертификат для верификации
-    ssl_ca_key_file: str = "certs/ca_key.key"    # CA ключ для подписания (только на CA сервере)
+    ssl_ca_key_file: str = "certs/ca_key.key"  # CA ключ для подписания (только на CA сервере)
     ssl_verify: bool = True  # верификация сертификатов через CA
 
     # Rate Limiting
@@ -217,6 +217,7 @@ class P2PComponent:
 class P2PApplicationContext:
     """Централизованный контекст приложения с управлением жизненным циклом"""
     _current_context = None
+
     def __init__(self, config: P2PConfig):
         self.config = config
         self.logger = logging.getLogger("AppContext")
@@ -238,7 +239,6 @@ class P2PApplicationContext:
         self._setup_signal_handlers()
         P2PApplicationContext.set_current_context(self)
 
-
     @classmethod
     def get_current_context(cls):
         """Получить текущий активный контекст"""
@@ -248,7 +248,6 @@ class P2PApplicationContext:
     def set_current_context(cls, context):
         """Установить текущий активный контекст"""
         cls._current_context = context
-
 
     def _setup_signal_handlers(self):
         """Настройка обработчиков сигналов"""
@@ -534,13 +533,25 @@ class NetworkComponent(P2PComponent):
             self.context.config.port,
             self.context.config.coordinator_mode,
             ssl_verify=self.context.config.ssl_verify,
-            ca_cert_file=self.context.config.ssl_ca_cert_file,
-            context=self.context
+            ca_cert_file=self.context.config.ssl_ca_cert_file
         )
 
         # Настройка gossip из конфигурации
         self.network.gossip.gossip_interval = self.context.config.gossip_interval
         self.network.gossip.failure_timeout = self.context.config.failure_timeout
+        self.network.gossip.gossip_interval = self.context.config.gossip_interval_current
+        self.network.gossip.gossip_interval_min = self.context.config.gossip_interval_min
+        self.network.gossip.gossip_interval_max = self.context.config.gossip_interval_max
+
+        # Adaptive gossip interval
+        self.network.gossip.message_count = self.context.config.message_count  # количество сообщений за интервал
+        self.network.gossip.adjust_interval_period = self.context.config.adjust_interval_period  # период адаптации (секунды)
+
+        # LZ4 компрессия
+        self.network.gossip.compression_enabled = self.context.config.compression_enabled
+        self.network.gossip.compression_threshold = self.context.config.compression_threshold  # байты
+        self.network.gossip.max_gossip_targets = self.context.config.max_gossip_targets
+        self.network.gossip.cleanup_interval = self.context.config.cleanup_interval
 
         # Получаем координаторы для подключения из контекста
         join_addresses = self.context.get_shared("join_addresses", [])
@@ -892,10 +903,10 @@ class WebServerComponent(P2PComponent):
 
             # Убедимся что сертификаты существуют (с поддержкой CA)
             if ensure_certificates_exist(
-                cert_file, key_file,
-                self.context.config.node_id,
-                ca_cert_file=ca_cert_file,
-                ca_key_file=ca_key_file
+                    cert_file, key_file,
+                    self.context.config.node_id,
+                    ca_cert_file=ca_cert_file,
+                    ca_key_file=ca_key_file
             ):
                 ssl_config = {
                     "ssl_keyfile": key_file,

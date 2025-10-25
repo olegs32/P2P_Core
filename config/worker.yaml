@@ -17,11 +17,17 @@ read_timeout: 45.0
 # Gossip конфигурация (адаптивные интервалы)
 gossip_interval_min: 1        # минимальный интервал при низкой нагрузке
 gossip_interval_max: 30       # максимальный интервал при высокой нагрузке
-gossip_interval_current: 15   # начальный интервал (worker реже обновляется)
+gossip_interval_current: 10   # начальный интервал
 gossip_compression_enabled: true
 gossip_compression_threshold: 1024  # сжимать сообщения больше 1KB
 failure_timeout: 60
 gossip_state_file: "gossip_state.json"
+message_count: 0  # количество сообщений за интервал
+adjust_interval_period: 60  # период адаптации (секунды)
+compression_enabled: True # LZ4 компрессия
+compression_threshold: 1024  # байты
+max_gossip_targets:  5
+cleanup_interval: 60
 coordinator_addresses:        # адреса координаторов для подключения
   - "127.0.0.1:8001"
 

@@ -13,6 +13,7 @@ from layers.application_context import P2PApplicationContext
 # LZ4 компрессия для gossip сообщений
 try:
     import lz4.frame
+
     LZ4_AVAILABLE = True
 except ImportError:
     LZ4_AVAILABLE = False
@@ -112,8 +113,7 @@ class ConnectionManager:
 class SimpleGossipProtocol:
     """Упрощенная реализация gossip протокола без внешних зависимостей"""
 
-    def __init__(self, node_id: str, bind_address: str, bind_port: int, coordinator_mode: bool = False,
-                 context: P2PApplicationContext = None):
+    def __init__(self, node_id: str, bind_address: str, bind_port: int, coordinator_mode: bool = False):
 
         self.ca_cert_file = None
         self.ssl_verify = None
@@ -150,24 +150,7 @@ class SimpleGossipProtocol:
         self.bootstrap_nodes: List[str] = []
 
         # Параметры gossip протокола
-
-        self.gossip_interval = self.context.config.gossip_interval_current
-        self.gossip_interval_min = self.context.config.gossip_interval_min
-        self.gossip_interval_max = self.context.config.gossip_interval_max
-        self.failure_timeout = self.context.config.failure_timeout
-        self.compression_enabled = self.context.config.gossip_compression_enabled
-        self.compression_threshold = self.context.config.gossip_compression_threshold
-
-        # Adaptive gossip interval
-        self.message_count = self.context.config.message_count  # количество сообщений за интервал
         self.last_interval_adjust = time.time()
-        self.adjust_interval_period = self.context.config.adjust_interval_period  # период адаптации (секунды)
-
-        # LZ4 компрессия
-        self.compression_enabled = self.context.config.compression_enabled
-        self.compression_threshold = self.context.config.compression_threshold  # байты
-        self.max_gossip_targets = self.context.config.max_gossip_targets
-        self.cleanup_interval = self.context.config.cleanup_interval
 
         self.log = logging.getLogger('Gossip')
 
@@ -384,7 +367,7 @@ class SimpleGossipProtocol:
             # Линейная интерполяция между min и max
             ratio = (messages_per_second - 1) / 4  # 0 to 1
             target_interval = self.gossip_interval_min + \
-                (self.gossip_interval_max - self.gossip_interval_min) * ratio
+                              (self.gossip_interval_max - self.gossip_interval_min) * ratio
         else:
             target_interval = self.gossip_interval_max
 
@@ -677,16 +660,14 @@ class P2PNetworkLayer:
 
     def __init__(self, transport_layer,
                  node_id: str, bind_address: str = "127.0.0.1", bind_port: int = 8000,
-                 coordinator_mode: bool = False, ssl_verify: bool = True, ca_cert_file: str = None,
-                 context = None):
+                 coordinator_mode: bool = False, ssl_verify: bool = True, ca_cert_file: str = None):
         self.log = logging.getLogger('Network')
         if bind_address == '0.0.0.0':
             self.advertise_address = self._get_local_ip()
         else:
             self.advertise_address = bind_address
         self.transport = transport_layer
-        print('context', context)
-        self.gossip = SimpleGossipProtocol(node_id, self.advertise_address, bind_port, coordinator_mode, context)
+        self.gossip = SimpleGossipProtocol(node_id, self.advertise_address, bind_port, coordinator_mode)
         self.load_balancer_index = 0
 
         # SSL параметры для HTTPS клиента
