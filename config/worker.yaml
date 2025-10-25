@@ -22,6 +22,8 @@ gossip_compression_enabled: true
 gossip_compression_threshold: 1024  # сжимать сообщения больше 1KB
 failure_timeout: 60
 gossip_state_file: "gossip_state.json"
+coordinator_addresses:        # адреса координаторов для подключения
+  - "192.168.53.53:8001"
 
 # Сервисы
 services_directory: "services"

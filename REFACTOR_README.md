@@ -191,15 +191,31 @@ pip install -r requirements.txt
 
 ## Запуск
 
-### Coordinator
+### Новый способ (YAML конфигурация)
+
+#### Coordinator
 ```bash
 python p2p.py --config config/coordinator.yaml
 ```
 
-### Worker
+#### Worker
 ```bash
 python p2p.py --config config/worker.yaml
 ```
+
+### Legacy способ (для обратной совместимости)
+
+#### Coordinator
+```bash
+python p2p.py coordinator --port 8001 --address 0.0.0.0
+```
+
+#### Worker
+```bash
+python p2p.py worker --port 8002 --coord 192.168.53.53:8001
+```
+
+**Примечание:** Рекомендуется использовать новый способ с `--config` для получения всех новых возможностей.
 
 ---
 

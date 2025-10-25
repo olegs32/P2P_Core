@@ -62,6 +62,7 @@ class P2PConfig:
     gossip_compression_threshold: int = 1024  # минимальный размер для сжатия (байты)
     failure_timeout: int = 60
     gossip_state_file: str = "gossip_state.json"  # файл для сохранения состояния
+    coordinator_addresses: list = None  # адреса координаторов для worker узлов
 
     # Сервисы
     services_directory: str = "services"

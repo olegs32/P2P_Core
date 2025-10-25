@@ -702,6 +702,138 @@ async def run_worker(node_id: str, port: int, bind_address: str,
         # Graceful shutdown
         await app_context.shutdown_all()
 
+
+async def run_coordinator_from_config(config: P2PConfig):
+    """Запуск координатора из готового P2PConfig объекта"""
+    logger = logging.getLogger("Coordinator")
+
+    # Создаем приложение
+    app_context = await create_coordinator_application(config)
+
+    try:
+        # Инициализируем все компоненты
+        await app_context.initialize_all()
+
+        # Проверяем здоровье системы
+        health = app_context.health_check()
+        if not health["healthy"]:
+            raise RuntimeError(f"System is not healthy: {health}")
+
+        # Определяем отображаемый адрес для логов
+        display_address = "127.0.0.1" if config.bind_address == "0.0.0.0" else config.bind_address
+        protocol = "https" if config.https_enabled else "http"
+
+        logger.info("Coordinator started successfully")
+        logger.info(f"Binding to: {config.bind_address}:{config.port}")
+        logger.info(f"Available endpoints:")
+
+        # Основные пользовательские эндпоинты
+        logger.info(f"  Health Check: {protocol}://{display_address}:{config.port}/health")
+        logger.info(f"  RPC Interface: {protocol}://{display_address}:{config.port}/rpc")
+
+        # Документация API
+        logger.info(f"  API Documentation: {protocol}://{display_address}:{config.port}/docs")
+        logger.info(f"  ReDoc Documentation: {protocol}://{display_address}:{config.port}/redoc")
+
+        # Управление сервисами
+        logger.info(f"  Services List: {protocol}://{display_address}:{config.port}/services")
+        logger.info(f"  Service Info: {protocol}://{display_address}:{config.port}/services/{{service_name}}")
+
+        # Метрики и мониторинг
+        logger.info(f"  System Metrics: {protocol}://{display_address}:{config.port}/metrics")
+        logger.info(f"  Service Metrics: {protocol}://{display_address}:{config.port}/metrics/{{service_name}}")
+
+        # Кластер и сеть
+        logger.info(f"  Cluster Nodes: {protocol}://{display_address}:{config.port}/cluster/nodes")
+
+        # Аутентификация
+        logger.info(f"  Auth Token: {protocol}://{display_address}:{config.port}/auth/token")
+        logger.info(f"  Auth Revoke: {protocol}://{display_address}:{config.port}/auth/revoke")
+
+        # Конфигурация
+        logger.info(f"Configuration:")
+        logger.info(f"  Rate Limiting: {'enabled' if config.rate_limit_enabled else 'disabled'}")
+        logger.info(f"  HTTPS: {'enabled' if config.https_enabled else 'disabled'}")
+        logger.info(f"  Gossip Compression: {'enabled' if config.gossip_compression_enabled else 'disabled'}")
+        logger.info(f"  Adaptive Gossip: {config.gossip_interval_min}-{config.gossip_interval_max}s")
+
+        # Ждем сигнал shutdown
+        await app_context.wait_for_shutdown()
+
+    except Exception as e:
+        logger.error(f"Coordinator error: {e}")
+        raise
+    finally:
+        # Graceful shutdown
+        await app_context.shutdown_all()
+
+
+async def run_worker_from_config(config: P2PConfig):
+    """Запуск worker узла из готового P2PConfig объекта"""
+    logger = logging.getLogger("Worker")
+
+    # Для worker нужен coordinator_addresses - берем из конфига
+    coordinator_addresses = config.coordinator_addresses or []
+
+    # Создаем приложение
+    app_context = await create_worker_application(config, coordinator_addresses)
+
+    try:
+        # Инициализируем все компоненты
+        await app_context.initialize_all()
+
+        # Проверяем здоровье системы
+        health = app_context.health_check()
+        if not health["healthy"]:
+            raise RuntimeError(f"System is not healthy: {health}")
+
+        # Определяем отображаемый адрес для логов
+        display_address = "127.0.0.1" if config.bind_address == "0.0.0.0" else config.bind_address
+        protocol = "https" if config.https_enabled else "http"
+
+        logger.info("Worker started successfully")
+        logger.info(f"Binding to: {config.bind_address}:{config.port}")
+        if coordinator_addresses:
+            logger.info(f"Connected to coordinators: {', '.join(coordinator_addresses)}")
+        logger.info(f"Available endpoints:")
+
+        # Основные пользовательские эндпоинты
+        logger.info(f"  Health Check: {protocol}://{display_address}:{config.port}/health")
+        logger.info(f"  RPC Interface: {protocol}://{display_address}:{config.port}/rpc")
+
+        # Документация API
+        logger.info(f"  API Documentation: {protocol}://{display_address}:{config.port}/docs")
+        logger.info(f"  ReDoc Documentation: {protocol}://{display_address}:{config.port}/redoc")
+
+        # Управление сервисами
+        logger.info(f"  Services List: {protocol}://{display_address}:{config.port}/services")
+        logger.info(f"  Service Info: {protocol}://{display_address}:{config.port}/services/{{service_name}}")
+
+        # Метрики и мониторинг
+        logger.info(f"  System Metrics: {protocol}://{display_address}:{config.port}/metrics")
+        logger.info(f"  Service Metrics: {protocol}://{display_address}:{config.port}/metrics/{{service_name}}")
+
+        # Кластер и сеть
+        logger.info(f"  Cluster Nodes: {protocol}://{display_address}:{config.port}/cluster/nodes")
+
+        # Конфигурация
+        logger.info(f"Configuration:")
+        logger.info(f"  Rate Limiting: {'enabled' if config.rate_limit_enabled else 'disabled'}")
+        logger.info(f"  HTTPS: {'enabled' if config.https_enabled else 'disabled'}")
+        logger.info(f"  Gossip Compression: {'enabled' if config.gossip_compression_enabled else 'disabled'}")
+        logger.info(f"  Adaptive Gossip: {config.gossip_interval_min}-{config.gossip_interval_max}s")
+
+        # Ждем сигнал shutdown
+        await app_context.wait_for_shutdown()
+
+    except Exception as e:
+        logger.error(f"Worker error: {e}")
+        raise
+    finally:
+        # Graceful shutdown
+        await app_context.shutdown_all()
+
+
 def create_argument_parser():
     """Создание парсера аргументов командной строки"""
     env_config = load_environment()
@@ -711,12 +843,19 @@ def create_argument_parser():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Примеры использования:
-  %(prog)s coordinator                     # Координатор с настройками из .env
-  %(prog)s worker                          # Рабочий узел с настройками из .env
+  %(prog)s --config config/coordinator.yaml    # Загрузка из YAML конфигурации
+  %(prog)s coordinator                          # Координатор с настройками из .env (legacy)
+  %(prog)s worker                               # Рабочий узел с настройками из .env (legacy)
         """
     )
 
-    parser.add_argument('mode', choices=['coordinator', 'worker'])
+    # Новый метод: загрузка из YAML конфигурации
+    parser.add_argument('--config', type=str, default=None,
+                        help='Путь к YAML файлу конфигурации (например, config/coordinator.yaml)')
+
+    # Legacy метод: старые аргументы для обратной совместимости
+    parser.add_argument('mode', nargs='?', choices=['coordinator', 'worker'], default=None,
+                        help='Режим работы (используется если не указан --config)')
     parser.add_argument('--node-id', default=None)
     parser.add_argument('--port', type=int, default=None)
     parser.add_argument('--address', default=None,
@@ -767,7 +906,21 @@ async def main():
     logger = logging.getLogger("Main")
 
     try:
-        if args.mode == 'coordinator':
+        # Новый метод: загрузка из YAML конфигурации
+        if args.config:
+            logger.info(f"Loading configuration from: {args.config}")
+            config = P2PConfig.from_yaml(args.config)
+
+            logger.info(f"Starting {config.node_id} ({'coordinator' if config.coordinator_mode else 'worker'})")
+            logger.info(f"Binding to: {config.bind_address}:{config.port}")
+
+            if config.coordinator_mode:
+                await run_coordinator_from_config(config)
+            else:
+                await run_worker_from_config(config)
+
+        # Legacy метод: старые аргументы для обратной совместимости
+        elif args.mode == 'coordinator':
             node_id = args.node_id or f"coordinator-{socket.gethostname()}"
             port = args.port or env_config['coordinator_port']
             bind_address = args.address or env_config['bind_address']
@@ -797,6 +950,11 @@ async def main():
                 coordinator_addresses=[coordinator],
                 redis_url=redis_url
             )
+
+        else:
+            parser.print_help()
+            logger.error("Необходимо указать либо --config, либо mode (coordinator/worker)")
+            sys.exit(1)
 
     except KeyboardInterrupt:
         logger.info("Program interrupted by user")
