@@ -76,10 +76,10 @@ class P2PConfig:
 
     # Безопасность - HTTPS/SSL
     https_enabled: bool = True
-    ssl_cert_file: str = "node_cert.pem"
-    ssl_key_file: str = "node_key.pem"
-    ssl_ca_cert_file: str = "certs/ca_cert.pem"  # CA сертификат для верификации
-    ssl_ca_key_file: str = "certs/ca_key.pem"    # CA ключ для подписания (только на CA сервере)
+    ssl_cert_file: str = "certs/node_cert.cer"
+    ssl_key_file: str = "certs/node_key.key"
+    ssl_ca_cert_file: str = "certs/ca_cert.cer"  # CA сертификат для верификации
+    ssl_ca_key_file: str = "certs/ca_key.key"    # CA ключ для подписания (только на CA сервере)
     ssl_verify: bool = True  # верификация сертификатов через CA
 
     # Rate Limiting

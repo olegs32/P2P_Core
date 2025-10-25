@@ -5,10 +5,10 @@ echo "=== Очистка старых сертификатов ==="
 # Переходим в корень проекта
 cd "$(dirname "$0")/.." || exit 1
 
-# Удаляем старые самоподписанные сертификаты
-echo "Удаляем старые .pem файлы..."
-rm -vf *.pem
-rm -vf certs/*.pem
+# Удаляем старые сертификаты (и .pem и .cer/.key форматы)
+echo "Удаляем старые сертификаты..."
+rm -vf *.pem *.cer *.key
+rm -vf certs/*.pem certs/*.cer certs/*.key
 rm -vrf certs/
 
 echo ""
