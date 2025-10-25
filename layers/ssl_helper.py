@@ -87,6 +87,10 @@ def generate_ca_certificate(
         ).add_extension(
             x509.SubjectKeyIdentifier.from_public_key(ca_private_key.public_key()),
             critical=False,
+        ).add_extension(
+            # Authority Key Identifier - для самоподписанного CA ссылается на себя
+            x509.AuthorityKeyIdentifier.from_issuer_public_key(ca_private_key.public_key()),
+            critical=False,
         ).sign(ca_private_key, hashes.SHA256(), default_backend())
 
         # Создание директории если не существует
@@ -235,6 +239,14 @@ def generate_signed_certificate(
                 x509.oid.ExtendedKeyUsageOID.SERVER_AUTH,
                 x509.oid.ExtendedKeyUsageOID.CLIENT_AUTH,
             ]),
+            critical=False,
+        ).add_extension(
+            # Subject Key Identifier для самого сертификата
+            x509.SubjectKeyIdentifier.from_public_key(private_key.public_key()),
+            critical=False,
+        ).add_extension(
+            # Authority Key Identifier - ссылка на CA который подписал
+            x509.AuthorityKeyIdentifier.from_issuer_public_key(ca_private_key.public_key()),
             critical=False,
         ).sign(ca_private_key, hashes.SHA256(), default_backend())
 
