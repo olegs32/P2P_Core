@@ -583,3 +583,319 @@ def _is_ca_certificate(cert) -> bool:
         return basic_constraints.value.ca
     except:
         return False
+
+
+def get_certificate_fingerprint(cert_file: str) -> Optional[str]:
+    """
+    Получить SHA256 отпечаток сертификата
+
+    Args:
+        cert_file: путь к файлу сертификата
+
+    Returns:
+        Hex-строка с отпечатком или None
+    """
+    try:
+        from cryptography import x509
+        from cryptography.hazmat.backends import default_backend
+        from cryptography.hazmat.primitives import hashes
+
+        if not Path(cert_file).exists():
+            return None
+
+        with open(cert_file, 'rb') as f:
+            cert_data = f.read()
+
+        cert = x509.load_pem_x509_certificate(cert_data, default_backend())
+        fingerprint = cert.fingerprint(hashes.SHA256())
+
+        return fingerprint.hex()
+
+    except Exception as e:
+        logger.error(f"Failed to get certificate fingerprint: {e}")
+        return None
+
+
+def get_certificate_san(cert_file: str) -> Tuple[list, list]:
+    """
+    Получить IP адреса и DNS имена из SubjectAlternativeName сертификата
+
+    Args:
+        cert_file: путь к файлу сертификата
+
+    Returns:
+        Tuple из (список IP адресов, список DNS имен)
+    """
+    try:
+        from cryptography import x509
+        from cryptography.hazmat.backends import default_backend
+        from cryptography.x509.oid import ExtensionOID
+
+        if not Path(cert_file).exists():
+            return [], []
+
+        with open(cert_file, 'rb') as f:
+            cert_data = f.read()
+
+        cert = x509.load_pem_x509_certificate(cert_data, default_backend())
+
+        try:
+            san_ext = cert.extensions.get_extension_for_oid(ExtensionOID.SUBJECT_ALTERNATIVE_NAME)
+            san = san_ext.value
+
+            ips = [str(ip.value) for ip in san.get_values_for_type(x509.IPAddress)]
+            dns_names = [str(dns.value) for dns in san.get_values_for_type(x509.DNSName)]
+
+            return ips, dns_names
+
+        except x509.ExtensionNotFound:
+            return [], []
+
+    except Exception as e:
+        logger.error(f"Failed to get certificate SAN: {e}")
+        return [], []
+
+
+def get_current_network_info() -> Tuple[list, str]:
+    """
+    Получить текущие IP адреса и hostname машины
+
+    Returns:
+        Tuple из (список IP адресов, hostname)
+    """
+    import socket
+    import platform
+
+    try:
+        # Получаем hostname
+        hostname = platform.node()
+
+        # Получаем все IP адреса (исключая loopback)
+        ip_addresses = []
+
+        # Получаем IP адреса через socket
+        try:
+            # Получаем IP адрес по hostname
+            primary_ip = socket.gethostbyname(hostname)
+            if primary_ip and primary_ip != '127.0.0.1':
+                ip_addresses.append(primary_ip)
+        except:
+            pass
+
+        # Пробуем получить все сетевые интерфейсы
+        try:
+            import netifaces
+            for interface in netifaces.interfaces():
+                addrs = netifaces.ifaddresses(interface)
+                if netifaces.AF_INET in addrs:
+                    for addr_info in addrs[netifaces.AF_INET]:
+                        ip = addr_info.get('addr')
+                        if ip and ip != '127.0.0.1' and not ip.startswith('169.254'):
+                            if ip not in ip_addresses:
+                                ip_addresses.append(ip)
+        except ImportError:
+            # netifaces не установлен, используем альтернативный метод
+            try:
+                # Создаем временный сокет для получения IP
+                s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                s.connect(("8.8.8.8", 80))
+                local_ip = s.getsockname()[0]
+                s.close()
+
+                if local_ip and local_ip != '127.0.0.1' and local_ip not in ip_addresses:
+                    ip_addresses.append(local_ip)
+            except:
+                pass
+
+        # Всегда добавляем localhost в конец
+        if '127.0.0.1' not in ip_addresses:
+            ip_addresses.append('127.0.0.1')
+
+        logger.debug(f"Current network info - hostname: {hostname}, IPs: {ip_addresses}")
+        return ip_addresses, hostname
+
+    except Exception as e:
+        logger.error(f"Failed to get current network info: {e}")
+        return ['127.0.0.1'], 'localhost'
+
+
+def needs_certificate_renewal(cert_file: str, ca_cert_file: str = None) -> Tuple[bool, str]:
+    """
+    Проверить нужно ли обновление сертификата
+
+    Проверяет:
+    - Существование сертификата
+    - Изменение IP адресов или hostname
+    - Срок действия сертификата
+
+    Args:
+        cert_file: путь к файлу сертификата
+        ca_cert_file: путь к CA сертификату (опционально)
+
+    Returns:
+        Tuple из (нужно ли обновление, причина)
+    """
+    # Проверяем существование сертификата
+    if not Path(cert_file).exists():
+        return True, "certificate_not_found"
+
+    try:
+        from cryptography import x509
+        from cryptography.hazmat.backends import default_backend
+
+        # Загружаем сертификат
+        with open(cert_file, 'rb') as f:
+            cert_data = f.read()
+
+        cert = x509.load_pem_x509_certificate(cert_data, default_backend())
+
+        # Проверяем срок действия (обновляем за 30 дней до истечения)
+        days_until_expiry = (cert.not_valid_after - datetime.utcnow()).days
+        if days_until_expiry < 30:
+            return True, f"expiring_soon_{days_until_expiry}_days"
+
+        # Получаем текущие IP и hostname
+        current_ips, current_hostname = get_current_network_info()
+
+        # Получаем IP и DNS из сертификата
+        cert_ips, cert_dns = get_certificate_san(cert_file)
+
+        # Проверяем совпадение IP адресов (исключая localhost)
+        current_ips_set = set([ip for ip in current_ips if ip != '127.0.0.1'])
+        cert_ips_set = set([ip for ip in cert_ips if ip != '127.0.0.1'])
+
+        if current_ips_set != cert_ips_set:
+            logger.info(f"IP addresses changed: cert has {cert_ips_set}, current {current_ips_set}")
+            return True, "ip_address_changed"
+
+        # Проверяем hostname
+        if current_hostname not in cert_dns:
+            logger.info(f"Hostname changed: cert has {cert_dns}, current {current_hostname}")
+            return True, "hostname_changed"
+
+        # Все проверки пройдены
+        return False, "valid"
+
+    except Exception as e:
+        logger.error(f"Failed to check certificate renewal: {e}")
+        return True, f"check_error_{str(e)}"
+
+
+def generate_challenge() -> str:
+    """
+    Генерация уникального challenge для ACME-подобной валидации
+
+    Returns:
+        Hex-строка с уникальным challenge
+    """
+    import secrets
+    return secrets.token_hex(32)
+
+
+async def request_certificate_from_coordinator(
+    node_id: str,
+    coordinator_url: str,
+    challenge: str,
+    ip_addresses: list,
+    dns_names: list,
+    old_cert_fingerprint: str = None,
+    ca_cert_file: str = None
+) -> Tuple[Optional[str], Optional[str]]:
+    """
+    Запросить новый сертификат от координатора
+
+    Args:
+        node_id: идентификатор узла
+        coordinator_url: URL координатора (например, "https://coord:8001")
+        challenge: уникальный challenge для валидации
+        ip_addresses: список IP адресов для сертификата
+        dns_names: список DNS имен для сертификата
+        old_cert_fingerprint: отпечаток старого сертификата (если обновление)
+        ca_cert_file: путь к CA сертификату для верификации
+
+    Returns:
+        Tuple из (certificate_pem, private_key_pem) или (None, None) при ошибке
+    """
+    import httpx
+
+    try:
+        # Формируем запрос
+        request_data = {
+            "node_id": node_id,
+            "challenge": challenge,
+            "ip_addresses": ip_addresses,
+            "dns_names": dns_names,
+        }
+
+        if old_cert_fingerprint:
+            request_data["old_cert_fingerprint"] = old_cert_fingerprint
+
+        # Отправляем запрос на координатор
+        # Используем HTTP без верификации для первоначального запроса
+        # (у воркера еще нет сертификата)
+
+        timeout = httpx.Timeout(30.0)
+
+        # Используем HTTP для запроса сертификата (не HTTPS, т.к. у воркера еще нет сертификата)
+        http_url = coordinator_url.replace("https://", "http://")
+
+        async with httpx.AsyncClient(timeout=timeout, verify=False) as client:
+            response = await client.post(
+                f"{http_url}/internal/cert-request",
+                json=request_data
+            )
+
+            if response.status_code == 200:
+                result = response.json()
+
+                certificate_pem = result.get("certificate")
+                private_key_pem = result.get("private_key")
+
+                if certificate_pem and private_key_pem:
+                    logger.info(f"Successfully received certificate from coordinator")
+                    return certificate_pem, private_key_pem
+                else:
+                    logger.error("Invalid response from coordinator: missing certificate or key")
+                    return None, None
+            else:
+                logger.error(f"Certificate request failed: {response.status_code} - {response.text}")
+                return None, None
+
+    except Exception as e:
+        logger.error(f"Failed to request certificate from coordinator: {e}")
+        return None, None
+
+
+def save_certificate_and_key(cert_pem: str, key_pem: str, cert_file: str, key_file: str) -> bool:
+    """
+    Сохранить сертификат и ключ в файлы
+
+    Args:
+        cert_pem: PEM-форматированный сертификат
+        key_pem: PEM-форматированный приватный ключ
+        cert_file: путь для сохранения сертификата
+        key_file: путь для сохранения ключа
+
+    Returns:
+        True если успешно сохранено
+    """
+    try:
+        # Создаем директорию если не существует
+        cert_path = Path(cert_file)
+        cert_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # Сохраняем сертификат
+        with open(cert_file, 'w') as f:
+            f.write(cert_pem)
+
+        # Сохраняем ключ
+        with open(key_file, 'w') as f:
+            f.write(key_pem)
+
+        logger.info(f"Certificate and key saved: {cert_file}, {key_file}")
+        return True
+
+    except Exception as e:
+        logger.error(f"Failed to save certificate and key: {e}")
+        return False
+

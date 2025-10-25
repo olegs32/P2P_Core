@@ -886,7 +886,12 @@ class WebServerComponent(P2PComponent):
         protocol = "http"
 
         if hasattr(self.context.config, 'https_enabled') and self.context.config.https_enabled:
-            from layers.ssl_helper import ensure_certificates_exist
+            from layers.ssl_helper import (
+                ensure_certificates_exist, needs_certificate_renewal,
+                get_certificate_fingerprint, get_current_network_info,
+                generate_challenge, request_certificate_from_coordinator,
+                save_certificate_and_key
+            )
 
             cert_file = self.context.config.ssl_cert_file
             key_file = self.context.config.ssl_key_file
@@ -901,7 +906,73 @@ class WebServerComponent(P2PComponent):
             self.logger.debug(f"  ca_key_file: {ca_key_file}")
             self.logger.debug(f"  ssl_verify: {getattr(self.context.config, 'ssl_verify', False)}")
 
+            # Проверяем нужно ли обновление сертификата (только для воркеров)
+            needs_renewal = False
+            renewal_reason = "valid"
+
+            if not self.context.config.coordinator_mode:
+                # Это воркер - проверяем сертификат
+                needs_renewal, renewal_reason = needs_certificate_renewal(cert_file, ca_cert_file)
+
+                if needs_renewal:
+                    self.logger.warning(f"Certificate renewal needed: {renewal_reason}")
+
+                    # Получаем адрес координатора
+                    coordinator_addresses = self.context.config.coordinator_addresses
+                    if not coordinator_addresses or len(coordinator_addresses) == 0:
+                        self.logger.error("No coordinator address configured, cannot request certificate")
+                    else:
+                        # Берем первый координатор
+                        coordinator_addr = coordinator_addresses[0]
+
+                        # Формируем URL координатора
+                        if '://' not in coordinator_addr:
+                            # Используем HTTP для запроса сертификата
+                            coordinator_url = f"http://{coordinator_addr}"
+                        else:
+                            coordinator_url = coordinator_addr
+
+                        self.logger.info(f"Requesting new certificate from coordinator: {coordinator_url}")
+
+                        # Генерируем challenge
+                        challenge = generate_challenge()
+
+                        # Сохраняем challenge в контекст для эндпоинта валидации
+                        self.context.set_shared("cert_challenge", challenge)
+
+                        # Получаем текущие IP и hostname
+                        current_ips, current_hostname = get_current_network_info()
+
+                        # Получаем fingerprint старого сертификата если есть
+                        old_fingerprint = None
+                        if Path(cert_file).exists():
+                            old_fingerprint = get_certificate_fingerprint(cert_file)
+
+                        # Запрашиваем сертификат
+                        cert_pem, key_pem = await request_certificate_from_coordinator(
+                            node_id=self.context.config.node_id,
+                            coordinator_url=coordinator_url,
+                            challenge=challenge,
+                            ip_addresses=current_ips,
+                            dns_names=[current_hostname],
+                            old_cert_fingerprint=old_fingerprint,
+                            ca_cert_file=ca_cert_file
+                        )
+
+                        if cert_pem and key_pem:
+                            # Сохраняем сертификат
+                            if save_certificate_and_key(cert_pem, key_pem, cert_file, key_file):
+                                self.logger.info("Certificate successfully updated from coordinator")
+                            else:
+                                self.logger.error("Failed to save certificate")
+                        else:
+                            self.logger.error("Failed to obtain certificate from coordinator")
+
+                        # Очищаем challenge из контекста
+                        self.context.set_shared("cert_challenge", None)
+
             # Убедимся что сертификаты существуют (с поддержкой CA)
+            # Для координатора или если воркер не смог получить сертификат
             if ensure_certificates_exist(
                     cert_file, key_file,
                     self.context.config.node_id,

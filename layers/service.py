@@ -1791,6 +1791,177 @@ class P2PServiceHandler:
             return {"error": "Gossip protocol not available"}
 
         # =====================================================
+        # CERTIFICATE AUTO-GENERATION ENDPOINTS (ACME-like)
+        # =====================================================
+
+        @self.app.get("/internal/cert-challenge/{challenge}")
+        async def get_cert_challenge(challenge: str):
+            """
+            Эндпоинт для валидации challenge при запросе сертификата (воркер)
+            Координатор стучится на этот эндпоинт чтобы подтвердить что воркер контролирует IP
+            """
+            # Получаем challenge из контекста
+            stored_challenge = self.context.get_shared("cert_challenge")
+
+            if not stored_challenge:
+                raise HTTPException(status_code=404, detail="No challenge found")
+
+            if stored_challenge != challenge:
+                raise HTTPException(status_code=403, detail="Invalid challenge")
+
+            return {
+                "challenge": challenge,
+                "node_id": self.context.config.node_id,
+                "timestamp": __import__('time').time()
+            }
+
+        @self.app.post("/internal/cert-request")
+        async def request_certificate(request: Dict[str, Any]):
+            """
+            Эндпоинт для запроса генерации сертификата (координатор)
+            Воркер присылает запрос с challenge, координатор валидирует и генерирует сертификат
+            """
+            # Проверяем что это координатор
+            if not self.context.config.coordinator_mode:
+                raise HTTPException(
+                    status_code=403,
+                    detail="Certificate generation is only available on coordinator nodes"
+                )
+
+            # Извлекаем данные запроса
+            node_id = request.get("node_id")
+            challenge = request.get("challenge")
+            ip_addresses = request.get("ip_addresses", [])
+            dns_names = request.get("dns_names", [])
+            old_cert_fingerprint = request.get("old_cert_fingerprint")
+
+            if not node_id or not challenge:
+                raise HTTPException(status_code=400, detail="Missing node_id or challenge")
+
+            if not ip_addresses:
+                raise HTTPException(status_code=400, detail="At least one IP address is required")
+
+            # Определяем IP воркера для валидации
+            # Берем первый не-локальный IP из списка
+            worker_ip = None
+            for ip in ip_addresses:
+                if ip != '127.0.0.1':
+                    worker_ip = ip
+                    break
+
+            if not worker_ip:
+                raise HTTPException(status_code=400, detail="No valid IP address found")
+
+            # Валидируем challenge стучась на воркер
+            import httpx
+            try:
+                # Используем HTTP (не HTTPS) для валидации, т.к. у воркера еще нет сертификата
+                validation_url = f"http://{worker_ip}:{self.context.config.port}/internal/cert-challenge/{challenge}"
+
+                timeout = httpx.Timeout(10.0)
+                async with httpx.AsyncClient(timeout=timeout, verify=False) as client:
+                    response = await client.get(validation_url)
+
+                    if response.status_code != 200:
+                        raise HTTPException(
+                            status_code=403,
+                            detail=f"Challenge validation failed: {response.status_code}"
+                        )
+
+                    validation_data = response.json()
+
+                    if validation_data.get("challenge") != challenge:
+                        raise HTTPException(
+                            status_code=403,
+                            detail="Challenge mismatch"
+                        )
+
+                    if validation_data.get("node_id") != node_id:
+                        raise HTTPException(
+                            status_code=403,
+                            detail="Node ID mismatch"
+                        )
+
+            except httpx.RequestError as e:
+                raise HTTPException(
+                    status_code=503,
+                    detail=f"Failed to validate challenge: {str(e)}"
+                )
+
+            # Challenge валиден, генерируем сертификат
+            from layers.ssl_helper import generate_signed_certificate
+            import tempfile
+            import os
+
+            try:
+                # Создаем временные файлы для сертификата и ключа
+                with tempfile.NamedTemporaryFile(mode='w', suffix='.cer', delete=False) as cert_tmp:
+                    cert_tmp_path = cert_tmp.name
+
+                with tempfile.NamedTemporaryFile(mode='w', suffix='.key', delete=False) as key_tmp:
+                    key_tmp_path = key_tmp.name
+
+                # Генерируем сертификат подписанный CA
+                ca_cert_file = self.context.config.ssl_ca_cert_file
+                ca_key_file = self.context.config.ssl_ca_key_file
+
+                success = generate_signed_certificate(
+                    cert_file=cert_tmp_path,
+                    key_file=key_tmp_path,
+                    ca_cert_file=ca_cert_file,
+                    ca_key_file=ca_key_file,
+                    common_name=node_id,
+                    san_ips=ip_addresses,
+                    san_dns=dns_names,
+                    days_valid=365
+                )
+
+                if not success:
+                    raise HTTPException(
+                        status_code=500,
+                        detail="Failed to generate certificate"
+                    )
+
+                # Читаем сгенерированные файлы
+                with open(cert_tmp_path, 'r') as f:
+                    certificate_pem = f.read()
+
+                with open(key_tmp_path, 'r') as f:
+                    private_key_pem = f.read()
+
+                # Удаляем временные файлы
+                os.unlink(cert_tmp_path)
+                os.unlink(key_tmp_path)
+
+                # Логируем событие
+                self.logger.info(f"Generated certificate for node {node_id}")
+                self.logger.info(f"  IPs: {ip_addresses}")
+                self.logger.info(f"  DNS names: {dns_names}")
+                if old_cert_fingerprint:
+                    self.logger.info(f"  Replaced cert with fingerprint: {old_cert_fingerprint}")
+
+                return {
+                    "certificate": certificate_pem,
+                    "private_key": private_key_pem,
+                    "node_id": node_id,
+                    "valid_days": 365
+                }
+
+            except Exception as e:
+                # Очистка временных файлов при ошибке
+                for tmp_file in [cert_tmp_path, key_tmp_path]:
+                    try:
+                        if os.path.exists(tmp_file):
+                            os.unlink(tmp_file)
+                    except:
+                        pass
+
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Certificate generation error: {str(e)}"
+                )
+
+        # =====================================================
         # SERVICE MANAGEMENT ENDPOINTS
         # =====================================================
 
