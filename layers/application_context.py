@@ -998,12 +998,25 @@ class WebServerComponent(P2PComponent):
                         finally:
                             # Останавливаем временный HTTP сервер
                             self.logger.info("Stopping temporary HTTP server...")
-                            temp_http_server.should_exit = True
-                            temp_server_task.cancel()
                             try:
-                                await temp_server_task
-                            except asyncio.CancelledError:
-                                pass
+                                # Правильная остановка uvicorn сервера
+                                await temp_http_server.shutdown()
+                                # Ждем завершения задачи
+                                try:
+                                    await temp_server_task
+                                except asyncio.CancelledError:
+                                    pass
+                                self.logger.info("Temporary HTTP server stopped successfully")
+                            except Exception as e:
+                                self.logger.warning(f"Error stopping temporary server: {e}")
+                                # В крайнем случае принудительно отменяем задачу
+                                temp_server_task.cancel()
+                                try:
+                                    await temp_server_task
+                                except asyncio.CancelledError:
+                                    pass
+
+                            # Даем порту время освободиться
                             await asyncio.sleep(1)
 
             # Убедимся что сертификаты существуют (с поддержкой CA)
