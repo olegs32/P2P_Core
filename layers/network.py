@@ -121,7 +121,6 @@ class SimpleGossipProtocol:
         self.bind_address = bind_address
         self.bind_port = bind_port
         self.coordinator_mode = coordinator_mode
-        self.context = context
 
         # Состояние узла
         self.node_registry: Dict[str, NodeInfo] = {}

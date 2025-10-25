@@ -47,7 +47,6 @@ https_enabled: true
 ssl_cert_file: "certs/worker_cert.cer"
 ssl_key_file: "certs/worker_key.key"
 ssl_ca_cert_file: "certs/ca_cert.cer"      # CA сертификат для верификации
-ssl_ca_key_file: "certs/ca_key.key"        # CA ключ нужен для генерации сертификата
 ssl_verify: true                            # ВКЛЮЧЕНА верификация через CA
 
 # Rate Limiting (worker обрабатывает меньше запросов)

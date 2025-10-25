@@ -111,6 +111,9 @@ class P2PConfig:
         with open(path, 'r', encoding='utf-8') as f:
             config_data = yaml.safe_load(f)
 
+        if not config_data.get('coordinator_mode'):
+            config_data['ssl_ca_key_file'] = None
+
         # Создаем экземпляр с данными из YAML
         return cls(**config_data)
 
