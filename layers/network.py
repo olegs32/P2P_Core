@@ -52,22 +52,38 @@ class NodeInfo:
 class ConnectionManager:
     """Менеджер подключений с пулингом"""
 
-    def __init__(self, max_connections: int = 100, max_keepalive: int = 20):
+    def __init__(self, max_connections: int = 100, max_keepalive: int = 20,
+                 ssl_verify: bool = True, ca_cert_file: str = None):
         self.clients: Dict[str, httpx.AsyncClient] = {}
         self.limits = httpx.Limits(
             max_connections=max_connections,
             max_keepalive_connections=max_keepalive
         )
         self._lock = asyncio.Lock()
+        self.ssl_verify = ssl_verify
+        self.ca_cert_file = ca_cert_file
 
     async def get_client(self, base_url: str) -> httpx.AsyncClient:
         """Получить клиент для базового URL с переиспользованием соединений"""
         async with self._lock:
             if base_url not in self.clients:
+                # Настройка SSL верификации
+                if self.ssl_verify and self.ca_cert_file:
+                    from pathlib import Path
+                    if Path(self.ca_cert_file).exists():
+                        verify = self.ca_cert_file
+                    else:
+                        verify = True
+                elif self.ssl_verify:
+                    verify = True
+                else:
+                    verify = False
+
                 self.clients[base_url] = httpx.AsyncClient(
                     base_url=base_url,
                     limits=self.limits,
-                    timeout=httpx.Timeout(30.0)
+                    timeout=httpx.Timeout(30.0),
+                    verify=verify
                 )
             return self.clients[base_url]
 
@@ -78,7 +94,8 @@ class ConnectionManager:
         self.clients.clear()
 
 
-connection_manager = ConnectionManager()
+# ConnectionManager теперь создается как атрибут P2PNetworkLayer с SSL параметрами
+# connection_manager = ConnectionManager()  # deprecated - не используется
 
 
 class SimpleGossipProtocol:
@@ -642,6 +659,14 @@ class P2PNetworkLayer:
         self.ssl_verify = ssl_verify
         self.ca_cert_file = ca_cert_file
 
+        # Connection manager с SSL поддержкой
+        self.connection_manager = ConnectionManager(
+            max_connections=100,
+            max_keepalive=20,
+            ssl_verify=ssl_verify,
+            ca_cert_file=ca_cert_file
+        )
+
         # Статистика запросов
         self.request_stats = {}
         self.request_history = []
@@ -854,7 +879,9 @@ class P2PNetworkLayer:
                                       headers: Dict[str, str]):
         """Безопасный запрос для broadcast с переиспользованием соединений"""
         try:
-            client = await connection_manager.get_client(f"http://{node.address}:{node.port}")
+            # Используем HTTPS если включен SSL
+            protocol = "https" if self.ssl_verify else "http"
+            client = await self.connection_manager.get_client(f"{protocol}://{node.address}:{node.port}")
             response = await client.post(endpoint, json=data, headers=headers)
             return response.json()
         except Exception as e:
@@ -898,4 +925,5 @@ class P2PNetworkLayer:
         """Остановка сетевого уровня"""
         await self.gossip.stop()
         await self.transport.close_all()
+        await self.connection_manager.close_all()
         self.log.info(f"🛑 Network layer stopped")
