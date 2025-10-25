@@ -40,9 +40,10 @@ class NodeInfo:
         data['last_seen'] = datetime.fromisoformat(data['last_seen'])
         return cls(**data)
 
-    def get_url(self) -> str:
+    def get_url(self, https: bool = True) -> str:
         """Получение URL узла"""
-        return f"http://{self.address}:{self.port}"
+        protocol = "https" if https else "http"
+        return f"{protocol}://{self.address}:{self.port}"
 
     def is_alive(self, timeout_seconds: int = 60) -> bool:
         """Проверка, жив ли узел"""
@@ -163,6 +164,10 @@ class SimpleGossipProtocol:
         """
         self.running = True
 
+        # Сохраняем SSL параметры
+        self.ssl_verify = ssl_verify
+        self.ca_cert_file = ca_cert_file
+
         # Инициализация HTTP клиента с SSL поддержкой
         timeout = httpx.Timeout(connect=5.0, read=10.0, write=5.0, pool=5.0)
 
@@ -214,7 +219,7 @@ class SimpleGossipProtocol:
                     host, port = bootstrap_addr, 8000
 
                 # Отправка запроса на присоединение (используем https если включена верификация)
-                protocol = "https" if hasattr(self, 'http_client') and self.http_client.verify else "http"
+                protocol = "https" if self.ssl_verify else "http"
                 url = f"{protocol}://{host}:{port}/internal/gossip/join"
                 join_data = {
                     'node_info': self.self_info.to_dict(),
@@ -389,7 +394,7 @@ class SimpleGossipProtocol:
                 'message_type': 'gossip'
             }
 
-            url = f"{target_node.get_url()}/internal/gossip/exchange"
+            url = f"{target_node.get_url(https=self.ssl_verify)}/internal/gossip/exchange"
             response = await self.http_client.post(url, json=gossip_data, timeout=5.0)
 
             if response.status_code == 200:
@@ -762,7 +767,7 @@ class P2PNetworkLayer:
                 raise RuntimeError(error_msg)
 
             attempted_nodes.add(target_node.node_id)
-            node_url = target_node.get_url()
+            node_url = target_node.get_url(https=self.ssl_verify)
 
             try:
                 result = await self.transport.send_request(
@@ -839,7 +844,7 @@ class P2PNetworkLayer:
         tasks = []
 
         for node in target_nodes:
-            node_url = node.get_url()
+            node_url = node.get_url(https=self.ssl_verify)
             task = asyncio.create_task(
                 self._safe_broadcast_request(node, node_url, endpoint, data, headers)
             )
