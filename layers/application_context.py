@@ -922,54 +922,83 @@ class WebServerComponent(P2PComponent):
                     if not coordinator_addresses or len(coordinator_addresses) == 0:
                         self.logger.error("No coordinator address configured, cannot request certificate")
                     else:
-                        # Берем первый координатор
-                        coordinator_addr = coordinator_addresses[0]
+                        # ВАЖНО: Сначала запускаем временный HTTP сервер для валидации challenge
+                        self.logger.info("Starting temporary HTTP server for certificate validation...")
 
-                        # Формируем URL координатора
-                        if '://' not in coordinator_addr:
-                            # Используем HTTP для запроса сертификата
-                            coordinator_url = f"http://{coordinator_addr}"
-                        else:
-                            coordinator_url = coordinator_addr
-
-                        self.logger.info(f"Requesting new certificate from coordinator: {coordinator_url}")
-
-                        # Генерируем challenge
-                        challenge = generate_challenge()
-
-                        # Сохраняем challenge в контекст для эндпоинта валидации
-                        self.context.set_shared("cert_challenge", challenge)
-
-                        # Получаем текущие IP и hostname
-                        current_ips, current_hostname = get_current_network_info()
-
-                        # Получаем fingerprint старого сертификата если есть
-                        old_fingerprint = None
-                        if Path(cert_file).exists():
-                            old_fingerprint = get_certificate_fingerprint(cert_file)
-
-                        # Запрашиваем сертификат
-                        cert_pem, key_pem = await request_certificate_from_coordinator(
-                            node_id=self.context.config.node_id,
-                            coordinator_url=coordinator_url,
-                            challenge=challenge,
-                            ip_addresses=current_ips,
-                            dns_names=[current_hostname],
-                            old_cert_fingerprint=old_fingerprint,
-                            ca_cert_file=ca_cert_file
+                        temp_config = uvicorn.Config(
+                            app=service_layer.app,
+                            host=self.context.config.bind_address,
+                            port=self.context.config.port,
+                            log_level="warning",
+                            access_log=False,
                         )
+                        temp_http_server = uvicorn.Server(temp_config)
 
-                        if cert_pem and key_pem:
-                            # Сохраняем сертификат
-                            if save_certificate_and_key(cert_pem, key_pem, cert_file, key_file):
-                                self.logger.info("Certificate successfully updated from coordinator")
+                        # Запускаем сервер в фоновой задаче
+                        temp_server_task = asyncio.create_task(temp_http_server.serve())
+
+                        # Даем серверу время на запуск
+                        await asyncio.sleep(2)
+
+                        try:
+                            # Берем первый координатор
+                            coordinator_addr = coordinator_addresses[0]
+
+                            # Формируем URL координатора (без протокола, будет добавлен HTTPS)
+                            if '://' not in coordinator_addr:
+                                coordinator_url = coordinator_addr
                             else:
-                                self.logger.error("Failed to save certificate")
-                        else:
-                            self.logger.error("Failed to obtain certificate from coordinator")
+                                coordinator_url = coordinator_addr.replace("http://", "").replace("https://", "")
 
-                        # Очищаем challenge из контекста
-                        self.context.set_shared("cert_challenge", None)
+                            self.logger.info(f"Requesting new certificate from coordinator: {coordinator_url}")
+
+                            # Генерируем challenge
+                            challenge = generate_challenge()
+
+                            # Сохраняем challenge в контекст для эндпоинта валидации
+                            self.context.set_shared("cert_challenge", challenge)
+
+                            # Получаем текущие IP и hostname
+                            current_ips, current_hostname = get_current_network_info()
+
+                            # Получаем fingerprint старого сертификата если есть
+                            old_fingerprint = None
+                            if Path(cert_file).exists():
+                                old_fingerprint = get_certificate_fingerprint(cert_file)
+
+                            # Запрашиваем сертификат
+                            cert_pem, key_pem = await request_certificate_from_coordinator(
+                                node_id=self.context.config.node_id,
+                                coordinator_url=coordinator_url,
+                                challenge=challenge,
+                                ip_addresses=current_ips,
+                                dns_names=[current_hostname],
+                                old_cert_fingerprint=old_fingerprint,
+                                ca_cert_file=ca_cert_file
+                            )
+
+                            if cert_pem and key_pem:
+                                # Сохраняем сертификат
+                                if save_certificate_and_key(cert_pem, key_pem, cert_file, key_file):
+                                    self.logger.info("Certificate successfully updated from coordinator")
+                                else:
+                                    self.logger.error("Failed to save certificate")
+                            else:
+                                self.logger.error("Failed to obtain certificate from coordinator")
+
+                            # Очищаем challenge из контекста
+                            self.context.set_shared("cert_challenge", None)
+
+                        finally:
+                            # Останавливаем временный HTTP сервер
+                            self.logger.info("Stopping temporary HTTP server...")
+                            temp_http_server.should_exit = True
+                            temp_server_task.cancel()
+                            try:
+                                await temp_server_task
+                            except asyncio.CancelledError:
+                                pass
+                            await asyncio.sleep(1)
 
             # Убедимся что сертификаты существуют (с поддержкой CA)
             # Для координатора или если воркер не смог получить сертификат
