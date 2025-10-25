@@ -15,7 +15,7 @@ connect_timeout: 15.0
 read_timeout: 45.0
 
 # Gossip конфигурация (адаптивные интервалы)
-gossip_interval_min: 5        # минимальный интервал при низкой нагрузке
+gossip_interval_min: 1        # минимальный интервал при низкой нагрузке
 gossip_interval_max: 30       # максимальный интервал при высокой нагрузке
 gossip_interval_current: 15   # начальный интервал (worker реже обновляется)
 gossip_compression_enabled: true

@@ -64,6 +64,12 @@ class P2PConfig:
     failure_timeout: int = 60
     gossip_state_file: str = "gossip_state.json"  # файл для сохранения состояния
     coordinator_addresses: list = None  # адреса координаторов для worker узлов
+    message_count: int = 0  # количество сообщений за интервал
+    adjust_interval_period: int = 60  # период адаптации (секунды)
+    compression_enabled: bool =True  # LZ4 компрессия
+    compression_threshold: int = 1024  # байты
+    max_gossip_targets: int = 5
+    cleanup_interval:int = 60
 
     # Сервисы
     services_directory: str = "services"
@@ -480,6 +486,8 @@ class NetworkComponent(P2PComponent):
     def __init__(self, context):
         super().__init__("network", context)
         self.add_dependency("transport")  # Зависит от транспорта
+        # self.context = context
+
 
     async def _do_initialize(self):
         from layers.network import P2PNetworkLayer
@@ -487,7 +495,6 @@ class NetworkComponent(P2PComponent):
         transport = self.context.get_shared("transport")
         if not transport:
             raise RuntimeError("Transport not available")
-
         self.network = P2PNetworkLayer(
             transport,
             self.context.config.node_id,
@@ -495,16 +502,12 @@ class NetworkComponent(P2PComponent):
             self.context.config.port,
             self.context.config.coordinator_mode,
             ssl_verify=self.context.config.ssl_verify,
-            ca_cert_file=self.context.config.ssl_ca_cert_file
+            ca_cert_file=self.context.config.ssl_ca_cert_file,
+            context=self.context
         )
 
         # Настройка gossip с адаптивными интервалами и компрессией
-        self.network.gossip.gossip_interval = self.context.config.gossip_interval_current
-        self.network.gossip.gossip_interval_min = self.context.config.gossip_interval_min
-        self.network.gossip.gossip_interval_max = self.context.config.gossip_interval_max
-        self.network.gossip.failure_timeout = self.context.config.failure_timeout
-        self.network.gossip.compression_enabled = self.context.config.gossip_compression_enabled
-        self.network.gossip.compression_threshold = self.context.config.gossip_compression_threshold
+
 
         self.context.set_shared("network", self.network)
 
