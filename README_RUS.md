@@ -339,18 +339,6 @@ P2P_Core/
 └── docs/                         # Документация
 ```
 
-### Тестирование
-
-```bash
-# Unit тесты
-python -m pytest tests/
-
-# Интеграционные тесты  
-python -m pytest tests/integration/
-
-# Нагрузочное тестирование
-python tests/load_test.py
-```
 
 ### Вклад в разработку
 
@@ -371,44 +359,15 @@ python tests/load_test.py
 - **Масштабирование**: Протестировано до 100 узлов в production
 - **Память**: ~50МБ базовое потребление памяти на узел
 
-### Советы по оптимизации
-
-1. **Дизайн сервисов:**
-   - Правильно используйте async/await
-   - Реализуйте правильные стратегии кеширования
-   - Минимизируйте межсервисные зависимости
-
-2. **Сетевая оптимизация:**
-   - Настройте интервалы gossip под вашу сеть
-   - Используйте HTTP/2 connection pooling
-   - Реализуйте батчинг запросов где возможно
-
-3. **Стратегия кеширования:**
-   - Кешируйте часто запрашиваемые данные
-   - Используйте подходящие TTL значения
-   - Мониторьте cache hit rates
-
-## Лицензия
-
-MIT License - см. файл [LICENSE](LICENSE) для деталей.
-
-## Поддержка
-
-- **Issues**: [GitHub Issues](https://github.com/your-username/P2P_Core/issues)
-- **Документация**: [Wiki](https://github.com/your-username/P2P_Core/wiki)
-- **Обсуждения**: [GitHub Discussions](https://github.com/your-username/P2P_Core/discussions)
 
 ## Дорожная карта
 
-- [ ] Интеграция с service mesh
-- [ ] Kubernetes оператор
-- [ ] Экспорт метрик в Prometheus
-- [ ] Паттерн Circuit breaker
-- [ ] Поддержка распределенного трейсинга
+- [ ] в gossip добавить метрики
+- [ ] оркестрация сервисов
+- [ ] crypto-persistent storage
 - [ ] Web UI дашборд
-- [ ] Шаблоны сервисов для БД
-- [ ] Интеграция с очередями сообщений
+- [ ] mqtt управление (интеграция с hassio)
 
 ---
 
-**Построено на Python 3.7+ • FastAPI • Redis • asyncio**
+**Построено с любовью на Python 3.7+ • FastAPI • Redis • asyncio**
