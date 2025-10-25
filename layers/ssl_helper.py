@@ -49,8 +49,8 @@ def generate_ca_certificate(
         # Создание CA сертификата
         subject = issuer = x509.Name([
             x509.NameAttribute(NameOID.COUNTRY_NAME, "RU"),
-            x509.NameAttribute(NameOID.STATE_OR_PROVINCE_NAME, "Moscow"),
-            x509.NameAttribute(NameOID.LOCALITY_NAME, "Moscow"),
+            x509.NameAttribute(NameOID.STATE_OR_PROVINCE_NAME, "Desert"),
+            x509.NameAttribute(NameOID.LOCALITY_NAME, "Mountain"),
             x509.NameAttribute(NameOID.ORGANIZATION_NAME, "P2P Network"),
             x509.NameAttribute(NameOID.ORGANIZATIONAL_UNIT_NAME, "Certificate Authority"),
             x509.NameAttribute(NameOID.COMMON_NAME, common_name),
@@ -179,8 +179,8 @@ def generate_signed_certificate(
         # Создание субъекта
         subject = x509.Name([
             x509.NameAttribute(NameOID.COUNTRY_NAME, "RU"),
-            x509.NameAttribute(NameOID.STATE_OR_PROVINCE_NAME, "Moscow"),
-            x509.NameAttribute(NameOID.LOCALITY_NAME, "Moscow"),
+            x509.NameAttribute(NameOID.STATE_OR_PROVINCE_NAME, "Desert"),
+            x509.NameAttribute(NameOID.LOCALITY_NAME, "System"),
             x509.NameAttribute(NameOID.ORGANIZATION_NAME, "P2P Network"),
             x509.NameAttribute(NameOID.ORGANIZATIONAL_UNIT_NAME, "IT"),
             x509.NameAttribute(NameOID.COMMON_NAME, common_name),
@@ -192,13 +192,16 @@ def generate_signed_certificate(
         if san_dns:
             for dns in san_dns:
                 san_list.append(x509.DNSName(dns))
+                san_list.append(x509.DNSName("localhost"))
         else:
             san_list.append(x509.DNSName("localhost"))
             san_list.append(x509.DNSName("*.local"))
 
         if san_ips:
             for ip in san_ips:
+                san_list.append(x509.IPAddress(ipaddress.IPv4Address("127.0.0.1")))
                 san_list.append(x509.IPAddress(ipaddress.ip_address(ip)))
+
         else:
             san_list.append(x509.IPAddress(ipaddress.IPv4Address("127.0.0.1")))
 
@@ -439,11 +442,14 @@ def ensure_certificates_exist(
         if not ensure_ca_exists(ca_cert_file, ca_key_file):
             logger.error("Failed to ensure CA exists")
             return False
-
+        import platform, socket
+        my_name = platform.node()
+        my_ip = socket.gethostbyname(my_name)
         return generate_signed_certificate(
-            cert_file, key_file, ca_cert_file, ca_key_file, common_name
+            cert_file, key_file, ca_cert_file, ca_key_file, common_name, san_ips=[my_ip], san_dns=[my_name]
         )
     else:
+        # request4new cert
         # Иначе генерируем самоподписанный
         if ca_cert_file or ca_key_file:
             logger.warning(f"Incomplete CA parameters (cert: {bool(ca_cert_file and ca_cert_file.strip())}, key: {bool(ca_key_file and ca_key_file.strip())})")
@@ -558,7 +564,8 @@ def get_certificate_info(cert_file: str) -> Optional[dict]:
             "not_valid_after": cert.not_valid_after.isoformat(),
             "is_valid": datetime.utcnow() < cert.not_valid_after,
             "days_until_expiry": (cert.not_valid_after - datetime.utcnow()).days,
-            "is_ca": _is_ca_certificate(cert)
+            "is_ca": _is_ca_certificate(cert),
+            "ips": cert.extensions
         }
 
     except Exception as e:
