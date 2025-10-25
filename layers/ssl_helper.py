@@ -89,6 +89,10 @@ def generate_ca_certificate(
             critical=False,
         ).sign(ca_private_key, hashes.SHA256(), default_backend())
 
+        # Создание директории если не существует
+        ca_key_path = Path(ca_key_file)
+        ca_key_path.parent.mkdir(parents=True, exist_ok=True)
+
         # Сохранение CA приватного ключа
         with open(ca_key_file, "wb") as f:
             f.write(ca_private_key.private_bytes(
@@ -234,6 +238,10 @@ def generate_signed_certificate(
             critical=False,
         ).sign(ca_private_key, hashes.SHA256(), default_backend())
 
+        # Создание директории если не существует
+        key_path = Path(key_file)
+        key_path.parent.mkdir(parents=True, exist_ok=True)
+
         # Сохранение приватного ключа
         with open(key_file, "wb") as f:
             f.write(private_key.private_bytes(
@@ -321,6 +329,10 @@ def generate_self_signed_cert(
             ]),
             critical=False,
         ).sign(private_key, hashes.SHA256(), default_backend())
+
+        # Создание директории если не существует
+        key_path = Path(key_file)
+        key_path.parent.mkdir(parents=True, exist_ok=True)
 
         # Сохранение приватного ключа
         with open(key_file, "wb") as f:
