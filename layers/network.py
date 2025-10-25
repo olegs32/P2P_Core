@@ -151,18 +151,23 @@ class SimpleGossipProtocol:
 
         # Настройка SSL верификации
         if ssl_verify and ca_cert_file:
-            from layers.ssl_helper import create_client_ssl_context
-            ssl_context = create_client_ssl_context(verify=True, ca_cert_file=ca_cert_file)
-            self.http_client = httpx.AsyncClient(timeout=timeout, verify=ssl_context)
-            self.log.info(f"HTTPS client configured with CA verification: {ca_cert_file}")
-        elif not ssl_verify:
+            # Верификация через CA
+            from pathlib import Path
+            if Path(ca_cert_file).exists():
+                # httpx принимает путь к CA файлу в параметре verify
+                self.http_client = httpx.AsyncClient(timeout=timeout, verify=ca_cert_file)
+                self.log.info(f"HTTPS client configured with CA verification: {ca_cert_file}")
+            else:
+                self.log.warning(f"CA cert file not found: {ca_cert_file}, using default verification")
+                self.http_client = httpx.AsyncClient(timeout=timeout, verify=True)
+        elif ssl_verify:
+            # Стандартная верификация (системные CA)
+            self.http_client = httpx.AsyncClient(timeout=timeout, verify=True)
+            self.log.info("HTTPS client configured with system CA verification")
+        else:
             # Отключаем верификацию (не рекомендуется)
             self.http_client = httpx.AsyncClient(timeout=timeout, verify=False)
             self.log.warning("HTTPS client configured WITHOUT verification (insecure)")
-        else:
-            # Стандартная верификация
-            self.http_client = httpx.AsyncClient(timeout=timeout)
-            self.log.info("HTTPS client configured with system CA verification")
 
         # Добавление себя в реестр
         self.node_registry[self.node_id] = self.self_info
