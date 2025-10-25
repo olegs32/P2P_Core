@@ -830,20 +830,36 @@ async def request_certificate_from_coordinator(
         if old_cert_fingerprint:
             request_data["old_cert_fingerprint"] = old_cert_fingerprint
 
-        # Отправляем запрос на координатор
-        # Используем HTTP без верификации для первоначального запроса
-        # (у воркера еще нет сертификата)
+        # Формируем HTTPS URL для координатора
+        if '://' not in coordinator_url:
+            # Если не указан протокол, добавляем https://
+            https_url = f"https://{coordinator_url}"
+        else:
+            # Заменяем http на https если нужно
+            https_url = coordinator_url.replace("http://", "https://")
 
         timeout = httpx.Timeout(30.0)
 
-        # Используем HTTP для запроса сертификата (не HTTPS, т.к. у воркера еще нет сертификата)
-        http_url = coordinator_url.replace("https://", "http://")
+        # Используем HTTPS с CA верификацией
+        verify_param = False  # По умолчанию без верификации
 
-        async with httpx.AsyncClient(timeout=timeout, verify=False) as client:
+        if ca_cert_file and Path(ca_cert_file).exists():
+            # Используем CA сертификат для верификации
+            verify_param = str(Path(ca_cert_file).resolve())
+            logger.info(f"Using CA certificate for verification: {verify_param}")
+        else:
+            logger.warning("No CA certificate available, using HTTPS without verification")
+
+        logger.info(f"Sending certificate request to: {https_url}/internal/cert-request")
+        logger.debug(f"Request data: node_id={node_id}, IPs={ip_addresses}, DNS={dns_names}")
+
+        async with httpx.AsyncClient(timeout=timeout, verify=verify_param) as client:
             response = await client.post(
-                f"{http_url}/internal/cert-request",
+                f"{https_url}/internal/cert-request",
                 json=request_data
             )
+
+            logger.info(f"Certificate request response: {response.status_code}")
 
             if response.status_code == 200:
                 result = response.json()
@@ -858,11 +874,26 @@ async def request_certificate_from_coordinator(
                     logger.error("Invalid response from coordinator: missing certificate or key")
                     return None, None
             else:
-                logger.error(f"Certificate request failed: {response.status_code} - {response.text}")
+                logger.error(f"Certificate request failed: {response.status_code}")
+                try:
+                    error_detail = response.json()
+                    logger.error(f"Error details: {error_detail}")
+                except:
+                    logger.error(f"Response text: {response.text[:500]}")
                 return None, None
 
+    except httpx.ConnectError as e:
+        logger.error(f"Failed to connect to coordinator: {e}")
+        logger.error(f"  URL: {https_url}/internal/cert-request")
+        logger.error(f"  Make sure coordinator is running and accessible")
+        return None, None
+    except httpx.TimeoutException as e:
+        logger.error(f"Request timeout while contacting coordinator: {e}")
+        return None, None
     except Exception as e:
         logger.error(f"Failed to request certificate from coordinator: {e}")
+        import traceback
+        logger.error(f"Traceback: {traceback.format_exc()}")
         return None, None
 
 
