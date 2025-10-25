@@ -926,12 +926,14 @@ class WebServerComponent(P2PComponent):
                         self.logger.error("No coordinator address configured, cannot request certificate")
                     else:
                         # ВАЖНО: Сначала запускаем временный HTTP сервер для валидации challenge
-                        self.logger.info("Starting temporary HTTP server for certificate validation...")
+                        # Используем отдельный порт 8802 для временного сервера
+                        temp_port = 8802
+                        self.logger.info(f"Starting temporary HTTP server on port {temp_port} for certificate validation...")
 
                         temp_config = uvicorn.Config(
                             app=service_layer.app,
                             host=self.context.config.bind_address,
-                            port=self.context.config.port,
+                            port=temp_port,
                             log_level="warning",
                             access_log=False,
                         )
@@ -977,7 +979,8 @@ class WebServerComponent(P2PComponent):
                                 ip_addresses=current_ips,
                                 dns_names=[current_hostname],
                                 old_cert_fingerprint=old_fingerprint,
-                                ca_cert_file=ca_cert_file
+                                ca_cert_file=ca_cert_file,
+                                challenge_port=temp_port  # Передаем порт для валидации
                             )
 
                             if cert_pem and key_pem:

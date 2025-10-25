@@ -1834,6 +1834,7 @@ class P2PServiceHandler:
             ip_addresses = request.get("ip_addresses", [])
             dns_names = request.get("dns_names", [])
             old_cert_fingerprint = request.get("old_cert_fingerprint")
+            challenge_port = request.get("challenge_port")  # Порт для валидации challenge
 
             if not node_id or not challenge:
                 raise HTTPException(status_code=400, detail="Missing node_id or challenge")
@@ -1852,11 +1853,17 @@ class P2PServiceHandler:
             if not worker_ip:
                 raise HTTPException(status_code=400, detail="No valid IP address found")
 
+            # Определяем порт для валидации
+            # Если передан challenge_port - используем его, иначе используем порт из конфига
+            validation_port = challenge_port if challenge_port else self.context.config.port
+
             # Валидируем challenge стучась на воркер
             import httpx
             try:
                 # Используем HTTP (не HTTPS) для валидации, т.к. у воркера еще нет сертификата
-                validation_url = f"http://{worker_ip}:{self.context.config.port}/internal/cert-challenge/{challenge}"
+                validation_url = f"http://{worker_ip}:{validation_port}/internal/cert-challenge/{challenge}"
+
+                self.logger.info(f"Validating challenge for {node_id} at {validation_url}")
 
                 timeout = httpx.Timeout(10.0)
                 async with httpx.AsyncClient(timeout=timeout, verify=False) as client:

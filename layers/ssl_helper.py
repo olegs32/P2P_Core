@@ -281,100 +281,6 @@ def generate_signed_certificate(
         return False
 
 
-def generate_self_signed_cert(
-    cert_file: str,
-    key_file: str,
-    common_name: str = "P2P Node",
-    days_valid: int = 3650
-) -> bool:
-    """
-    Генерация самоподписанного SSL сертификата (legacy, не рекомендуется)
-
-    Args:
-        cert_file: путь к файлу сертификата
-        key_file: путь к файлу приватного ключа
-        common_name: Common Name для сертификата
-        days_valid: количество дней действия (по умолчанию 10 лет)
-
-    Returns:
-        True если успешно сгенерирован
-    """
-    try:
-        from cryptography import x509
-        from cryptography.x509.oid import NameOID
-        from cryptography.hazmat.primitives import hashes
-        from cryptography.hazmat.primitives.asymmetric import rsa
-        from cryptography.hazmat.primitives import serialization
-        from cryptography.hazmat.backends import default_backend
-
-        # Генерация приватного ключа
-        private_key = rsa.generate_private_key(
-            public_exponent=65537,
-            key_size=2048,
-            backend=default_backend()
-        )
-
-        # Создание сертификата
-        subject = issuer = x509.Name([
-            x509.NameAttribute(NameOID.COUNTRY_NAME, "RU"),
-            x509.NameAttribute(NameOID.STATE_OR_PROVINCE_NAME, "Moscow"),
-            x509.NameAttribute(NameOID.LOCALITY_NAME, "Moscow"),
-            x509.NameAttribute(NameOID.ORGANIZATION_NAME, "P2P Network"),
-            x509.NameAttribute(NameOID.ORGANIZATIONAL_UNIT_NAME, "IT"),
-            x509.NameAttribute(NameOID.COMMON_NAME, common_name),
-        ])
-
-        cert = x509.CertificateBuilder().subject_name(
-            subject
-        ).issuer_name(
-            issuer
-        ).public_key(
-            private_key.public_key()
-        ).serial_number(
-            x509.random_serial_number()
-        ).not_valid_before(
-            datetime.utcnow()
-        ).not_valid_after(
-            datetime.utcnow() + timedelta(days=days_valid)
-        ).add_extension(
-            x509.SubjectAlternativeName([
-                x509.DNSName("localhost"),
-                x509.DNSName("*.local"),
-                x509.IPAddress(__import__('ipaddress').IPv4Address("127.0.0.1")),
-            ]),
-            critical=False,
-        ).sign(private_key, hashes.SHA256(), default_backend())
-
-        # Создание директории если не существует
-        key_path = Path(key_file)
-        key_path.parent.mkdir(parents=True, exist_ok=True)
-
-        # Сохранение приватного ключа
-        with open(key_file, "wb") as f:
-            f.write(private_key.private_bytes(
-                encoding=serialization.Encoding.PEM,
-                format=serialization.PrivateFormat.TraditionalOpenSSL,
-                encryption_algorithm=serialization.NoEncryption()
-            ))
-
-        # Сохранение сертификата
-        with open(cert_file, "wb") as f:
-            f.write(cert.public_bytes(serialization.Encoding.PEM))
-
-        logger.info(f"Generated self-signed certificate: {cert_file}")
-        logger.info(f"Private key saved to: {key_file}")
-        logger.info(f"Certificate valid for {days_valid} days")
-
-        return True
-
-    except ImportError:
-        logger.error("cryptography package not installed. Install with: pip install cryptography")
-        return False
-    except Exception as e:
-        logger.error(f"Failed to generate certificate: {e}")
-        return False
-
-
 def ensure_ca_exists(ca_cert_file: str, ca_key_file: str) -> bool:
     """
     Проверить наличие CA и создать если отсутствует
@@ -407,15 +313,21 @@ def ensure_certificates_exist(
     """
     Проверить наличие сертификатов и создать если отсутствуют
 
+    ВАЖНО: Self-signed сертификаты больше не поддерживаются.
+    Все сертификаты должны быть подписаны CA.
+
     Args:
         cert_file: путь к файлу сертификата
         key_file: путь к файлу приватного ключа
         common_name: Common Name для сертификата
-        ca_cert_file: путь к CA сертификату (если используется CA)
-        ca_key_file: путь к CA ключу (если используется CA)
+        ca_cert_file: путь к CA сертификату (ОБЯЗАТЕЛЬНО)
+        ca_key_file: путь к CA ключу (ОБЯЗАТЕЛЬНО)
 
     Returns:
         True если сертификаты доступны
+
+    Raises:
+        RuntimeError: если CA параметры не предоставлены или сертификат не может быть сгенерирован
     """
     cert_path = Path(cert_file)
     key_path = Path(key_file)
@@ -424,7 +336,7 @@ def ensure_certificates_exist(
         logger.info(f"SSL certificates found: {cert_file}, {key_file}")
         return True
 
-    logger.warning(f"SSL certificates not found, generating new ones...")
+    logger.warning(f"SSL certificates not found")
     logger.debug(f"Certificate generation parameters:")
     logger.debug(f"  cert_file: {cert_file}")
     logger.debug(f"  key_file: {key_file}")
@@ -432,31 +344,41 @@ def ensure_certificates_exist(
     logger.debug(f"  ca_cert_file: {ca_cert_file}")
     logger.debug(f"  ca_key_file: {ca_key_file}")
 
-    # Если указан CA, генерируем подписанный сертификат
-    # Проверяем что пути не пустые строки
-    if ca_cert_file and ca_cert_file.strip() and ca_key_file and ca_key_file.strip():
-        logger.info(f"CA parameters provided, will generate CA-signed certificate")
-        logger.info(f"  CA cert: {ca_cert_file}")
-        logger.info(f"  CA key: {ca_key_file}")
-        # Убедимся что CA существует
-        if not ensure_ca_exists(ca_cert_file, ca_key_file):
-            logger.error("Failed to ensure CA exists")
-            return False
-        import platform, socket
-        my_name = platform.node()
-        my_ip = socket.gethostbyname(my_name)
-        return generate_signed_certificate(
-            cert_file, key_file, ca_cert_file, ca_key_file, common_name, san_ips=[my_ip], san_dns=[my_name]
+    # Проверяем что CA параметры предоставлены
+    if not ca_cert_file or not ca_cert_file.strip() or not ca_key_file or not ca_key_file.strip():
+        logger.error("CA parameters not provided - cannot generate certificate")
+        logger.error("Self-signed certificates are no longer supported")
+        logger.error("For coordinator: ensure CA certificate is generated")
+        logger.error("For worker: request certificate from coordinator via /internal/cert-request")
+        raise RuntimeError(
+            "Cannot generate certificate without CA. "
+            "Self-signed certificates are not supported. "
+            "Workers should request certificates from coordinator."
         )
-    else:
-        # request4new cert
-        # Иначе генерируем самоподписанный
-        if ca_cert_file or ca_key_file:
-            logger.warning(f"Incomplete CA parameters (cert: {bool(ca_cert_file and ca_cert_file.strip())}, key: {bool(ca_key_file and ca_key_file.strip())})")
-        logger.warning("CA parameters not provided, generating self-signed certificate")
-        logger.warning(f"  ca_cert_file is {'None' if not ca_cert_file else repr(ca_cert_file)}")
-        logger.warning(f"  ca_key_file is {'None' if not ca_key_file else repr(ca_key_file)}")
-        return generate_self_signed_cert(cert_file, key_file, common_name)
+
+    # Генерируем подписанный CA сертификат
+    logger.info(f"CA parameters provided, will generate CA-signed certificate")
+    logger.info(f"  CA cert: {ca_cert_file}")
+    logger.info(f"  CA key: {ca_key_file}")
+
+    # Убедимся что CA существует
+    if not ensure_ca_exists(ca_cert_file, ca_key_file):
+        logger.error("Failed to ensure CA exists")
+        raise RuntimeError("CA certificate does not exist and could not be created")
+
+    import platform, socket
+    my_name = platform.node()
+    my_ip = socket.gethostbyname(my_name)
+
+    success = generate_signed_certificate(
+        cert_file, key_file, ca_cert_file, ca_key_file, common_name,
+        san_ips=[my_ip], san_dns=[my_name]
+    )
+
+    if not success:
+        raise RuntimeError("Failed to generate CA-signed certificate")
+
+    return True
 
 
 def create_ssl_context(
@@ -799,7 +721,8 @@ async def request_certificate_from_coordinator(
     ip_addresses: list,
     dns_names: list,
     old_cert_fingerprint: str = None,
-    ca_cert_file: str = None
+    ca_cert_file: str = None,
+    challenge_port: int = None
 ) -> Tuple[Optional[str], Optional[str]]:
     """
     Запросить новый сертификат от координатора
@@ -812,6 +735,7 @@ async def request_certificate_from_coordinator(
         dns_names: список DNS имен для сертификата
         old_cert_fingerprint: отпечаток старого сертификата (если обновление)
         ca_cert_file: путь к CA сертификату для верификации
+        challenge_port: порт для валидации challenge (если отличается от основного)
 
     Returns:
         Tuple из (certificate_pem, private_key_pem) или (None, None) при ошибке
@@ -829,6 +753,9 @@ async def request_certificate_from_coordinator(
 
         if old_cert_fingerprint:
             request_data["old_cert_fingerprint"] = old_cert_fingerprint
+
+        if challenge_port:
+            request_data["challenge_port"] = challenge_port
 
         # Формируем HTTPS URL для координатора
         if '://' not in coordinator_url:
