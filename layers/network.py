@@ -3,9 +3,18 @@ import logging
 from typing import Set, Dict, List, Optional, Any
 import json
 import random
+import time
 from datetime import datetime, timedelta
 import httpx
 from dataclasses import dataclass, asdict, field
+
+# LZ4 компрессия для gossip сообщений
+try:
+    import lz4.frame
+    LZ4_AVAILABLE = True
+except ImportError:
+    LZ4_AVAILABLE = False
+    logging.getLogger("Gossip").warning("LZ4 not available, compression disabled")
 
 
 @dataclass
@@ -108,10 +117,22 @@ class SimpleGossipProtocol:
         self.bootstrap_nodes: List[str] = []
 
         # Параметры gossip протокола
-        self.gossip_interval = 10  # секунд
+        self.gossip_interval = 10  # секунд (будет переопределен из config)
+        self.gossip_interval_min = 5  # минимальный интервал при низкой нагрузке
+        self.gossip_interval_max = 30  # максимальный интервал при высокой нагрузке
         self.failure_timeout = 30  # секунд
         self.cleanup_interval = 60  # секунд
         self.max_gossip_targets = 5  # максимум узлов для gossip за раз
+
+        # Adaptive gossip interval
+        self.message_count = 0  # количество сообщений за интервал
+        self.last_interval_adjust = time.time()
+        self.adjust_interval_period = 60  # период адаптации (секунды)
+
+        # LZ4 компрессия
+        self.compression_enabled = True
+        self.compression_threshold = 1024  # байты
+
         self.log = logging.getLogger('Gossip')
 
     async def start(self, join_addresses: List[str] = None):
@@ -182,6 +203,9 @@ class SimpleGossipProtocol:
         """Основной цикл gossip обмена"""
         while self.running:
             try:
+                # Адаптивная регулировка интервала
+                self._adjust_gossip_interval()
+
                 await asyncio.sleep(self.gossip_interval)
 
                 # Обновление времени собственного узла
@@ -206,8 +230,109 @@ class SimpleGossipProtocol:
                     tasks = [self._send_gossip_message(target) for target in gossip_targets]
                     await asyncio.gather(*tasks, return_exceptions=True)
 
+                    # Увеличиваем счетчик сообщений для адаптации
+                    self.message_count += len(gossip_targets)
+
             except Exception as e:
                 self.log.info(f"❌ Error in gossip loop: {e}")
+
+    def _compress_data(self, data: dict) -> tuple[bytes, bool]:
+        """
+        Сжать данные используя LZ4
+        Returns: (compressed_data, is_compressed)
+        """
+        json_data = json.dumps(data).encode('utf-8')
+
+        # Проверяем нужна ли компрессия
+        if not self.compression_enabled or not LZ4_AVAILABLE:
+            return json_data, False
+
+        # Сжимаем только если данные больше порога
+        if len(json_data) < self.compression_threshold:
+            return json_data, False
+
+        try:
+            compressed = lz4.frame.compress(json_data)
+            # Проверяем что сжатие дало выигрыш
+            if len(compressed) < len(json_data):
+                compression_ratio = len(compressed) / len(json_data)
+                self.log.debug(
+                    f"Compressed gossip: {len(json_data)} -> {len(compressed)} bytes "
+                    f"(ratio: {compression_ratio:.2f})"
+                )
+                return compressed, True
+            else:
+                return json_data, False
+        except Exception as e:
+            self.log.warning(f"Compression failed: {e}")
+            return json_data, False
+
+    def _decompress_data(self, data: bytes, is_compressed: bool) -> dict:
+        """
+        Декомпрессировать данные
+        """
+        try:
+            if is_compressed and LZ4_AVAILABLE:
+                decompressed = lz4.frame.decompress(data)
+                return json.loads(decompressed.decode('utf-8'))
+            else:
+                return json.loads(data.decode('utf-8'))
+        except Exception as e:
+            self.log.error(f"Decompression failed: {e}")
+            raise
+
+    def _adjust_gossip_interval(self):
+        """
+        Адаптивная регулировка интервала gossip на основе нагрузки
+        Высокая нагрузка = больший интервал
+        Низкая нагрузка = меньший интервал
+        """
+        now = time.time()
+        elapsed = now - self.last_interval_adjust
+
+        # Регулируем интервал раз в минуту
+        if elapsed < self.adjust_interval_period:
+            return
+
+        # Вычисляем нагрузку (сообщений в секунду)
+        messages_per_second = self.message_count / elapsed
+
+        # Определяем новый интервал на основе нагрузки
+        # Низкая нагрузка (<1 msg/s) -> минимальный интервал
+        # Средняя нагрузка (1-5 msg/s) -> средний интервал
+        # Высокая нагрузка (>5 msg/s) -> максимальный интервал
+
+        if messages_per_second < 1:
+            target_interval = self.gossip_interval_min
+        elif messages_per_second < 5:
+            # Линейная интерполяция между min и max
+            ratio = (messages_per_second - 1) / 4  # 0 to 1
+            target_interval = self.gossip_interval_min + \
+                (self.gossip_interval_max - self.gossip_interval_min) * ratio
+        else:
+            target_interval = self.gossip_interval_max
+
+        # Плавная адаптация (изменяем не более чем на 20% за раз)
+        if target_interval > self.gossip_interval:
+            self.gossip_interval = min(
+                target_interval,
+                self.gossip_interval * 1.2
+            )
+        elif target_interval < self.gossip_interval:
+            self.gossip_interval = max(
+                target_interval,
+                self.gossip_interval * 0.8
+            )
+
+        self.log.info(
+            f"Adaptive gossip: {messages_per_second:.2f} msg/s -> "
+            f"interval={self.gossip_interval:.1f}s "
+            f"(range: {self.gossip_interval_min}-{self.gossip_interval_max}s)"
+        )
+
+        # Сброс счетчиков
+        self.message_count = 0
+        self.last_interval_adjust = now
 
     async def _send_gossip_message(self, target_node: NodeInfo):
         """Отправка gossip сообщения узлу"""

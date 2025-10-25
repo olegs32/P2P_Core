@@ -187,19 +187,18 @@ class ServiceComponent(P2PComponent):
         if not cache:
             raise RuntimeError("Cache not available")
 
-        # Инициализируем реестр методов в контексте
-        if not self.context.get_shared("method_registry"):
-            self.context.set_shared("method_registry", {})
-
         # Создаем объединенный сервисный обработчик
         from layers.service import P2PServiceHandler, set_global_service_manager
 
         # P2PServiceHandler уже включает ServiceManager внутри себя
-        self.service_handler = P2PServiceHandler(network_layer=network)
+        # Передаем context чтобы использовать единый method_registry
+        self.service_handler = P2PServiceHandler(
+            network_layer=network,
+            context=self.context
+        )
 
-        # ИСПРАВЛЕНИЕ: Связываем method_registry из context с service_handler
-        # Чтобы методы регистрировались в правильный реестр
-        self.service_handler.method_registry = self.context._method_registry
+        # method_registry уже связан через context в P2PServiceHandler
+        # ЕДИНЫЙ ИСТОЧНИК ИСТИНЫ: context._method_registry
 
         self.service_manager = self.service_handler.service_manager
 
@@ -417,10 +416,12 @@ class ServiceComponent(P2PComponent):
             self.logger.error("Cannot register external service: ServiceManager not available")
 
     def list_available_methods(self) -> list:
-        """Список всех доступных методов"""
-        if hasattr(self, 'service_handler'):
-            from layers.service import method_registry
-            return list(method_registry.keys())
+        """
+        Список всех доступных методов
+        ЕДИНЫЙ ИСТОЧНИК ИСТИНЫ: context._method_registry
+        """
+        if self.context:
+            return list(self.context._method_registry.keys())
         return []
 
     def get_service_info_for_gossip(self) -> dict:
@@ -460,6 +461,27 @@ class WebServerComponent(P2PComponent):
 
         import uvicorn
 
+        # Настройка HTTPS если включен
+        ssl_config = {}
+        protocol = "http"
+
+        if hasattr(self.context.config, 'https_enabled') and self.context.config.https_enabled:
+            from layers.ssl_helper import ensure_certificates_exist
+
+            cert_file = self.context.config.ssl_cert_file
+            key_file = self.context.config.ssl_key_file
+
+            # Убедимся что сертификаты существуют
+            if ensure_certificates_exist(cert_file, key_file, self.context.config.node_id):
+                ssl_config = {
+                    "ssl_keyfile": key_file,
+                    "ssl_certfile": cert_file
+                }
+                protocol = "https"
+                self.logger.info(f"HTTPS enabled with certificates: {cert_file}, {key_file}")
+            else:
+                self.logger.warning("Failed to setup HTTPS, falling back to HTTP")
+
         self.config = uvicorn.Config(
             app=service_layer.app,
             host=self.context.config.bind_address,
@@ -467,7 +489,8 @@ class WebServerComponent(P2PComponent):
             log_level="warning",
             access_log=False,
             server_header=False,
-            date_header=False
+            date_header=False,
+            **ssl_config
         )
 
         self.server = uvicorn.Server(self.config)
@@ -475,7 +498,9 @@ class WebServerComponent(P2PComponent):
         # Запускаем сервер в фоновой задаче
         self.server_task = asyncio.create_task(self.server.serve())
 
-        self.logger.info(f"Web server started on {self.context.config.bind_address}:{self.context.config.port}")
+        self.logger.info(
+            f"Web server started on {protocol}://{self.context.config.bind_address}:{self.context.config.port}"
+        )
 
         # Ждем немного чтобы сервер успел запуститься
         await asyncio.sleep(1)

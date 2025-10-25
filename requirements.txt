@@ -8,3 +8,8 @@ PyJWT~=2.10.1
 psutil~=7.0.0
 pyinstaller
 python-dotenv~=1.1.1
+
+# New dependencies for refactored features
+pyyaml~=6.0.2              # YAML configuration
+lz4~=4.3.3                 # LZ4 compression for gossip
+cryptography~=44.0.0       # SSL/TLS certificate generation

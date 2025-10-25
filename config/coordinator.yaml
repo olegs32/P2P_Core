@@ -1,0 +1,52 @@
+# Конфигурация для P2P Coordinator Node
+
+# Основные настройки
+node_id: "coordinator-1"
+port: 8001
+bind_address: "0.0.0.0"
+coordinator_mode: true
+
+# Redis конфигурация
+redis_url: "redis://localhost:6379"
+redis_enabled: true
+
+# Транспортная конфигурация
+connect_timeout: 15.0
+read_timeout: 45.0
+
+# Gossip конфигурация (адаптивные интервалы)
+gossip_interval_min: 5        # минимальный интервал при низкой нагрузке
+gossip_interval_max: 30       # максимальный интервал при высокой нагрузке
+gossip_interval_current: 10   # начальный интервал
+gossip_compression_enabled: true
+gossip_compression_threshold: 1024  # сжимать сообщения больше 1KB
+failure_timeout: 60
+gossip_state_file: "gossip_state.json"
+
+# Сервисы
+services_directory: "services"
+scan_interval: 60
+service_state_file: "service_state.json"
+
+# Безопасность - JWT
+jwt_secret: "your-super-secret-coordinator-key-change-this-in-production"
+jwt_expiration_hours: 24
+jwt_blacklist_file: "jwt_blacklist.json"
+
+# Безопасность - HTTPS/SSL
+https_enabled: true
+ssl_cert_file: "coordinator_cert.pem"
+ssl_key_file: "coordinator_key.pem"
+ssl_verify: false  # для самоподписанных сертификатов
+
+# Rate Limiting (координатор принимает больше запросов)
+rate_limit_enabled: true
+rate_limit_rpc_requests: 200     # RPC: 200 запросов в минуту
+rate_limit_rpc_burst: 40         # RPC burst: 40
+rate_limit_health_requests: 600  # Health: 600 запросов в минуту
+rate_limit_health_burst: 100     # Health burst: 100
+rate_limit_default_requests: 300 # Default: 300 запросов в минуту
+rate_limit_default_burst: 50     # Default burst: 50
+
+# Persistence
+state_directory: "data/coordinator"

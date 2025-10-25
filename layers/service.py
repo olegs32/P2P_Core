@@ -63,16 +63,38 @@ JWT_EXPIRATION_HOURS = int(os.getenv('JWT_EXPIRATION_HOURS', '24'))
 # =====================================================
 
 class JWTBlacklist:
-    """JWT Token blacklist для отзыва токенов"""
+    """
+    JWT Token blacklist для отзыва токенов с persistence
+    """
 
-    def __init__(self):
+    def __init__(self, persistence_file: Optional[str] = None):
         self.blacklisted_tokens: Set[str] = set()
         self.token_exp_times: Dict[str, float] = {}
+        self.persistence = None
+        self.logger = logging.getLogger("JWTBlacklist")
+
+        # Инициализация persistence если указан файл
+        if persistence_file:
+            try:
+                from layers.persistence import JWTBlacklistPersistence
+                from pathlib import Path
+                self.persistence = JWTBlacklistPersistence(Path(persistence_file))
+                self.persistence.load()
+                self.blacklisted_tokens = self.persistence.blacklisted_tokens
+                self.token_exp_times = self.persistence.token_exp_times
+                self.logger.info(f"Loaded {len(self.blacklisted_tokens)} blacklisted tokens from {persistence_file}")
+            except Exception as e:
+                self.logger.error(f"Failed to initialize persistence: {e}")
 
     def blacklist_token(self, token: str, exp_time: float):
         """Добавить токен в blacklist"""
         self.blacklisted_tokens.add(token)
         self.token_exp_times[token] = exp_time
+
+        # Сохранить в persistence
+        if self.persistence:
+            self.persistence.add_token(token, exp_time)
+            self.persistence.save()
 
         # Очистка просроченных токенов
         current_time = time.time()
@@ -84,13 +106,42 @@ class JWTBlacklist:
             self.blacklisted_tokens.discard(token)
             self.token_exp_times.pop(token, None)
 
+        if expired_tokens and self.persistence:
+            self.persistence.save()
+
     def is_blacklisted(self, token: str) -> bool:
         """Проверить, находится ли токен в blacklist"""
         return token in self.blacklisted_tokens
 
+    async def start_auto_save(self):
+        """Запустить автосохранение"""
+        if self.persistence:
+            await self.persistence.start_auto_save()
+
 
 # Global blacklist instance
 jwt_blacklist = JWTBlacklist()
+
+
+def init_jwt_blacklist_with_persistence(config) -> JWTBlacklist:
+    """
+    Инициализировать JWT blacklist с persistence из конфига
+
+    Args:
+        config: экземпляр P2PConfig
+
+    Returns:
+        JWTBlacklist с настроенным persistence
+    """
+    global jwt_blacklist
+
+    if hasattr(config, 'jwt_blacklist_file'):
+        blacklist_file = config.get_state_path(config.jwt_blacklist_file)
+        jwt_blacklist = JWTBlacklist(str(blacklist_file))
+    else:
+        jwt_blacklist = JWTBlacklist()
+
+    return jwt_blacklist
 
 
 class P2PAuthBearer(HTTPBearer):
@@ -1546,18 +1597,18 @@ class SimpleLocalServiceLayer:
 # =====================================================
 
 def get_method_registry() -> Dict[str, Any]:
-    """Получить реестр методов из контекста"""
+    """
+    Получить реестр методов из контекста
+    ЕДИНЫЙ ИСТОЧНИК ИСТИНЫ: context._method_registry
+    """
     try:
-        from p2p import P2PApplicationContext
+        from layers.application_context import P2PApplicationContext
         context = P2PApplicationContext.get_current_context()
         if context:
-            registry = context.get_shared("method_registry")
-            if registry is None:
-                registry = {}
-                context.set_shared("method_registry", registry)
-            return registry
-    except:
-        pass
+            # Используем _method_registry напрямую - единый источник истины
+            return context._method_registry
+    except Exception as e:
+        logging.getLogger("MethodRegistry").debug(f"No context available: {e}")
     # Fallback для обратной совместимости
     return {}
 
@@ -1607,6 +1658,17 @@ class P2PServiceHandler:
             self.context.set_shared("rpc", self)
             self.logger = logging.getLogger("P2PServiceHandler")
             self.logger.info("Service handler registered in context")
+
+            # Настройка Rate Limiting если включен в конфиге
+            if hasattr(self.context.config, 'rate_limit_enabled') and self.context.config.rate_limit_enabled:
+                from layers.rate_limiter import configure_rate_limiter_from_config, RateLimitMiddleware
+                rate_limiter = configure_rate_limiter_from_config(self.context.config)
+                self.app.add_middleware(RateLimitMiddleware, rate_limiter=rate_limiter)
+                self.logger.info("Rate limiting enabled")
+
+            # Инициализация JWT blacklist с persistence
+            init_jwt_blacklist_with_persistence(self.context.config)
+            self.logger.info("JWT blacklist initialized with persistence")
         else:
             self.method_registry = {}
             self.logger = logging.getLogger("P2PServiceHandler")

@@ -11,9 +11,10 @@ application_context.py - Централизованное управление �
 import asyncio
 import logging
 import time
+import yaml
 from typing import Dict, Any, Optional, List
 from enum import Enum
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, asdict
 from pathlib import Path
 
 
@@ -54,16 +55,68 @@ class P2PConfig:
     read_timeout: float = 45.0
 
     # Gossip конфигурация
-    gossip_interval: int = 15
+    gossip_interval_min: int = 5  # минимальный интервал (низкая нагрузка)
+    gossip_interval_max: int = 30  # максимальный интервал (высокая нагрузка)
+    gossip_interval_current: int = 15  # текущий интервал (адаптивный)
+    gossip_compression_enabled: bool = True  # LZ4 компрессия для gossip сообщений
+    gossip_compression_threshold: int = 1024  # минимальный размер для сжатия (байты)
     failure_timeout: int = 60
+    gossip_state_file: str = "gossip_state.json"  # файл для сохранения состояния
 
     # Сервисы
     services_directory: str = "services"
     scan_interval: int = 60
+    service_state_file: str = "service_state.json"  # файл для сохранения состояния сервисов
 
-    # Безопасность
+    # Безопасность - JWT
     jwt_secret: str = "change-this-in-production"
     jwt_expiration_hours: int = 24
+    jwt_blacklist_file: str = "jwt_blacklist.json"  # файл для сохранения blacklist
+
+    # Безопасность - HTTPS/SSL
+    https_enabled: bool = True
+    ssl_cert_file: str = "node_cert.pem"
+    ssl_key_file: str = "node_key.pem"
+    ssl_verify: bool = False  # для самоподписанных сертификатов
+
+    # Rate Limiting
+    rate_limit_enabled: bool = True
+    rate_limit_rpc_requests: int = 100  # запросов в минуту для RPC
+    rate_limit_rpc_burst: int = 20  # burst размер для RPC
+    rate_limit_health_requests: int = 300  # запросов в минуту для health
+    rate_limit_health_burst: int = 50  # burst размер для health
+    rate_limit_default_requests: int = 200  # запросов в минуту по умолчанию
+    rate_limit_default_burst: int = 30  # burst размер по умолчанию
+
+    # Persistence
+    state_directory: str = "data"  # директория для хранения состояния
+
+    @classmethod
+    def from_yaml(cls, yaml_path: str) -> 'P2PConfig':
+        """Загрузить конфигурацию из YAML файла"""
+        path = Path(yaml_path)
+        if not path.exists():
+            raise FileNotFoundError(f"Configuration file not found: {yaml_path}")
+
+        with open(path, 'r', encoding='utf-8') as f:
+            config_data = yaml.safe_load(f)
+
+        # Создаем экземпляр с данными из YAML
+        return cls(**config_data)
+
+    def to_yaml(self, yaml_path: str) -> None:
+        """Сохранить конфигурацию в YAML файл"""
+        path = Path(yaml_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+
+        with open(path, 'w', encoding='utf-8') as f:
+            yaml.safe_dump(asdict(self), f, default_flow_style=False, allow_unicode=True)
+
+    def get_state_path(self, filename: str) -> Path:
+        """Получить полный путь к файлу состояния"""
+        state_dir = Path(self.state_directory)
+        state_dir.mkdir(parents=True, exist_ok=True)
+        return state_dir / filename
 
 
 class P2PComponent:
@@ -439,9 +492,13 @@ class NetworkComponent(P2PComponent):
             self.context.config.coordinator_mode
         )
 
-        # Настройка gossip
-        self.network.gossip.gossip_interval = self.context.config.gossip_interval
+        # Настройка gossip с адаптивными интервалами и компрессией
+        self.network.gossip.gossip_interval = self.context.config.gossip_interval_current
+        self.network.gossip.gossip_interval_min = self.context.config.gossip_interval_min
+        self.network.gossip.gossip_interval_max = self.context.config.gossip_interval_max
         self.network.gossip.failure_timeout = self.context.config.failure_timeout
+        self.network.gossip.compression_enabled = self.context.config.gossip_compression_enabled
+        self.network.gossip.compression_threshold = self.context.config.gossip_compression_threshold
 
         self.context.set_shared("network", self.network)
 

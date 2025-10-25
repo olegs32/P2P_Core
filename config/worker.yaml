@@ -1,0 +1,52 @@
+# Конфигурация для P2P Worker Node
+
+# Основные настройки
+node_id: "worker-1"
+port: 8002
+bind_address: "0.0.0.0"
+coordinator_mode: false
+
+# Redis конфигурация
+redis_url: "redis://localhost:6379"
+redis_enabled: true
+
+# Транспортная конфигурация
+connect_timeout: 15.0
+read_timeout: 45.0
+
+# Gossip конфигурация (адаптивные интервалы)
+gossip_interval_min: 5        # минимальный интервал при низкой нагрузке
+gossip_interval_max: 30       # максимальный интервал при высокой нагрузке
+gossip_interval_current: 15   # начальный интервал (worker реже обновляется)
+gossip_compression_enabled: true
+gossip_compression_threshold: 1024  # сжимать сообщения больше 1KB
+failure_timeout: 60
+gossip_state_file: "gossip_state.json"
+
+# Сервисы
+services_directory: "services"
+scan_interval: 60
+service_state_file: "service_state.json"
+
+# Безопасность - JWT
+jwt_secret: "your-super-secret-worker-key-change-this-in-production"
+jwt_expiration_hours: 24
+jwt_blacklist_file: "jwt_blacklist.json"
+
+# Безопасность - HTTPS/SSL
+https_enabled: true
+ssl_cert_file: "worker_cert.pem"
+ssl_key_file: "worker_key.pem"
+ssl_verify: false  # для самоподписанных сертификатов
+
+# Rate Limiting (worker обрабатывает меньше запросов)
+rate_limit_enabled: true
+rate_limit_rpc_requests: 100     # RPC: 100 запросов в минуту (строже)
+rate_limit_rpc_burst: 20         # RPC burst: 20
+rate_limit_health_requests: 300  # Health: 300 запросов в минуту (послабее)
+rate_limit_health_burst: 50      # Health burst: 50
+rate_limit_default_requests: 200 # Default: 200 запросов в минуту
+rate_limit_default_burst: 30     # Default burst: 30
+
+# Persistence
+state_directory: "data/worker"
