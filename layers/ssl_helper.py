@@ -430,7 +430,8 @@ def ensure_certificates_exist(
     logger.debug(f"  ca_key_file: {ca_key_file}")
 
     # Если указан CA, генерируем подписанный сертификат
-    if ca_cert_file and ca_key_file:
+    # Проверяем что пути не пустые строки
+    if ca_cert_file and ca_cert_file.strip() and ca_key_file and ca_key_file.strip():
         logger.info(f"CA parameters provided, will generate CA-signed certificate")
         logger.info(f"  CA cert: {ca_cert_file}")
         logger.info(f"  CA key: {ca_key_file}")
@@ -444,6 +445,8 @@ def ensure_certificates_exist(
         )
     else:
         # Иначе генерируем самоподписанный
+        if ca_cert_file or ca_key_file:
+            logger.warning(f"Incomplete CA parameters (cert: {bool(ca_cert_file and ca_cert_file.strip())}, key: {bool(ca_key_file and ca_key_file.strip())})")
         logger.warning("CA parameters not provided, generating self-signed certificate")
         logger.warning(f"  ca_cert_file is {'None' if not ca_cert_file else repr(ca_cert_file)}")
         logger.warning(f"  ca_key_file is {'None' if not ca_key_file else repr(ca_key_file)}")
