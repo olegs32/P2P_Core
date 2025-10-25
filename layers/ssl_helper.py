@@ -410,9 +410,18 @@ def ensure_certificates_exist(
         return True
 
     logger.warning(f"SSL certificates not found, generating new ones...")
+    logger.debug(f"Certificate generation parameters:")
+    logger.debug(f"  cert_file: {cert_file}")
+    logger.debug(f"  key_file: {key_file}")
+    logger.debug(f"  common_name: {common_name}")
+    logger.debug(f"  ca_cert_file: {ca_cert_file}")
+    logger.debug(f"  ca_key_file: {ca_key_file}")
 
     # Если указан CA, генерируем подписанный сертификат
     if ca_cert_file and ca_key_file:
+        logger.info(f"CA parameters provided, will generate CA-signed certificate")
+        logger.info(f"  CA cert: {ca_cert_file}")
+        logger.info(f"  CA key: {ca_key_file}")
         # Убедимся что CA существует
         if not ensure_ca_exists(ca_cert_file, ca_key_file):
             logger.error("Failed to ensure CA exists")
@@ -423,6 +432,9 @@ def ensure_certificates_exist(
         )
     else:
         # Иначе генерируем самоподписанный
+        logger.warning("CA parameters not provided, generating self-signed certificate")
+        logger.warning(f"  ca_cert_file is {'None' if not ca_cert_file else repr(ca_cert_file)}")
+        logger.warning(f"  ca_key_file is {'None' if not ca_key_file else repr(ca_key_file)}")
         return generate_self_signed_cert(cert_file, key_file, common_name)
 
 

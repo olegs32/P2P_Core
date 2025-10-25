@@ -470,8 +470,16 @@ class WebServerComponent(P2PComponent):
 
             cert_file = self.context.config.ssl_cert_file
             key_file = self.context.config.ssl_key_file
-            ca_cert_file = getattr(self.context.config, 'ssl_ca_cert_file', None)
-            ca_key_file = getattr(self.context.config, 'ssl_ca_key_file', None)
+            # Прямой доступ к атрибутам dataclass (вместо getattr)
+            ca_cert_file = self.context.config.ssl_ca_cert_file
+            ca_key_file = self.context.config.ssl_ca_key_file
+
+            self.logger.debug(f"SSL Configuration from config:")
+            self.logger.debug(f"  cert_file: {cert_file}")
+            self.logger.debug(f"  key_file: {key_file}")
+            self.logger.debug(f"  ca_cert_file: {ca_cert_file}")
+            self.logger.debug(f"  ca_key_file: {ca_key_file}")
+            self.logger.debug(f"  ssl_verify: {getattr(self.context.config, 'ssl_verify', False)}")
 
             # Убедимся что сертификаты существуют (с поддержкой CA)
             if ensure_certificates_exist(
