@@ -71,12 +71,20 @@ class ConnectionManager:
                 # Настройка SSL верификации
                 if self.ssl_verify and self.ca_cert_file:
                     from pathlib import Path
-                    if Path(self.ca_cert_file).exists():
-                        verify = self.ca_cert_file
+                    ca_path = Path(self.ca_cert_file)
+
+                    # Преобразуем в абсолютный путь если относительный
+                    if not ca_path.is_absolute():
+                        ca_path = Path.cwd() / ca_path
+
+                    if ca_path.exists():
+                        verify = str(ca_path.resolve())
                     else:
-                        verify = True
+                        # Если CA не найден, отключаем верификацию
+                        verify = False
                 elif self.ssl_verify:
-                    verify = True
+                    # Без CA файла отключаем верификацию (нельзя использовать системные CA с самоподписанными сертификатами)
+                    verify = False
                 else:
                     verify = False
 
@@ -175,17 +183,26 @@ class SimpleGossipProtocol:
         if ssl_verify and ca_cert_file:
             # Верификация через CA
             from pathlib import Path
-            if Path(ca_cert_file).exists():
-                # httpx принимает путь к CA файлу в параметре verify
-                self.http_client = httpx.AsyncClient(timeout=timeout, verify=ca_cert_file)
-                self.log.info(f"HTTPS client configured with CA verification: {ca_cert_file}")
+            ca_path = Path(ca_cert_file)
+
+            # Преобразуем в абсолютный путь если относительный
+            if not ca_path.is_absolute():
+                ca_path = Path.cwd() / ca_path
+
+            if ca_path.exists():
+                # httpx принимает абсолютный путь к CA файлу в параметре verify
+                ca_path_str = str(ca_path.resolve())
+                self.http_client = httpx.AsyncClient(timeout=timeout, verify=ca_path_str)
+                self.log.info(f"HTTPS client configured with CA verification: {ca_path_str}")
             else:
-                self.log.warning(f"CA cert file not found: {ca_cert_file}, using default verification")
-                self.http_client = httpx.AsyncClient(timeout=timeout, verify=True)
+                self.log.warning(f"CA cert file not found: {ca_path}, falling back to insecure mode")
+                # Если CA не найден, отключаем верификацию чтобы не использовать системные CA
+                self.http_client = httpx.AsyncClient(timeout=timeout, verify=False)
+                self.log.warning("HTTPS verification DISABLED (CA cert not found)")
         elif ssl_verify:
-            # Стандартная верификация (системные CA)
-            self.http_client = httpx.AsyncClient(timeout=timeout, verify=True)
-            self.log.info("HTTPS client configured with system CA verification")
+            # Стандартная верификация (системные CA) - не рекомендуется для самоподписанных сертификатов
+            self.http_client = httpx.AsyncClient(timeout=timeout, verify=False)
+            self.log.warning("HTTPS client configured WITHOUT verification (no CA cert provided)")
         else:
             # Отключаем верификацию (не рекомендуется)
             self.http_client = httpx.AsyncClient(timeout=timeout, verify=False)
