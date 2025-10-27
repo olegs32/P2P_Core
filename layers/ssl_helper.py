@@ -27,89 +27,67 @@ def _get_storage_manager():
 
 def _read_cert_bytes(cert_file: str) -> Optional[bytes]:
     """
-    Читать сертификат из хранилища или файловой системы
+    Читать сертификат ТОЛЬКО из защищенного хранилища
 
     Args:
         cert_file: путь к сертификату (например, certs/ca_cert.cer)
 
     Returns:
         байты сертификата или None
+
+    Raises:
+        RuntimeError: если хранилище недоступно или сертификат не найден
     """
     storage = _get_storage_manager()
 
-    # Пробуем загрузить из хранилища
-    if storage:
-        try:
-            cert_name = Path(cert_file).name
-            cert_data = storage.read_cert(cert_name)
-            logger.debug(f"Certificate loaded from secure storage: {cert_name}")
-            return cert_data
-        except FileNotFoundError:
-            pass
-        except Exception as e:
-            logger.warning(f"Failed to read from storage: {e}")
+    if not storage:
+        raise RuntimeError("Secure storage is not available - cannot read certificates")
 
-    # Fallback: загрузка из файловой системы
-    cert_path = Path(cert_file)
-    if cert_path.exists():
-        with open(cert_path, 'rb') as f:
-            logger.debug(f"Certificate loaded from filesystem: {cert_file}")
-            return f.read()
-
-    return None
+    try:
+        cert_name = Path(cert_file).name
+        cert_data = storage.read_cert(cert_name)
+        logger.debug(f"Certificate loaded from secure storage: {cert_name}")
+        return cert_data
+    except FileNotFoundError:
+        logger.error(f"Certificate not found in secure storage: {cert_name}")
+        return None
+    except Exception as e:
+        logger.error(f"Failed to read from secure storage: {e}")
+        raise RuntimeError(f"Failed to read certificate from secure storage: {e}")
 
 
 def _write_cert_bytes(cert_file: str, cert_data: bytes) -> tuple[bool, str]:
     """
-    Записать сертификат в хранилище и файловую систему
+    Записать сертификат ТОЛЬКО в защищенное хранилище
 
     Args:
         cert_file: путь к сертификату
         cert_data: байты сертификата
 
     Returns:
-        (success, location) - успешность и место сохранения ("storage", "filesystem", "both")
+        (success, location) - успешность и место сохранения ("storage")
+
+    Raises:
+        RuntimeError: если хранилище недоступно
     """
     storage = _get_storage_manager()
-    storage_success = False
-    fs_success = False
 
-    # Записываем в хранилище
-    if storage:
-        try:
-            cert_name = Path(cert_file).name
-            storage.write_cert(cert_name, cert_data)
-            logger.debug(f"Certificate saved to secure storage: {cert_name}")
-            storage_success = True
-        except Exception as e:
-            logger.warning(f"Failed to write to storage: {e}")
-    else:
-        logger.debug("Storage manager not available, skipping storage write")
+    if not storage:
+        raise RuntimeError("Secure storage is not available - cannot write certificates")
 
-    # Также записываем в файловую систему (для обратной совместимости)
     try:
-        cert_path = Path(cert_file)
-        cert_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(cert_path, 'wb') as f:
-            f.write(cert_data)
-        logger.debug(f"Certificate saved to filesystem: {cert_file}")
-        fs_success = True
-    except Exception as e:
-        logger.warning(f"Failed to write to filesystem: {e}")
-
-    if storage_success and fs_success:
-        return True, "both"
-    elif storage_success:
+        cert_name = Path(cert_file).name
+        storage.write_cert(cert_name, cert_data)
+        logger.debug(f"Certificate saved to secure storage: {cert_name}")
         return True, "storage"
-    elif fs_success:
-        return True, "filesystem"
-    else:
-        return False, "none"
+    except Exception as e:
+        logger.error(f"Failed to write to secure storage: {e}")
+        raise RuntimeError(f"Failed to write certificate to secure storage: {e}")
 
 
 def _cert_exists(cert_file: str) -> bool:
     """
-    Проверить существование сертификата в хранилище или файловой системе
+    Проверить существование сертификата ТОЛЬКО в защищенном хранилище
 
     Args:
         cert_file: путь к сертификату
@@ -119,17 +97,14 @@ def _cert_exists(cert_file: str) -> bool:
     """
     storage = _get_storage_manager()
 
-    # Проверяем хранилище
-    if storage:
-        try:
-            cert_name = Path(cert_file).name
-            if storage.exists(f"certs/{cert_name}"):
-                return True
-        except:
-            pass
+    if not storage:
+        return False
 
-    # Проверяем файловую систему
-    return Path(cert_file).exists()
+    try:
+        cert_name = Path(cert_file).name
+        return storage.exists(f"certs/{cert_name}")
+    except:
+        return False
 
 
 def generate_ca_certificate(
@@ -218,19 +193,13 @@ def generate_ca_certificate(
             format=serialization.PrivateFormat.TraditionalOpenSSL,
             encryption_algorithm=serialization.NoEncryption()
         )
-        key_success, key_location = _write_cert_bytes(ca_key_file, ca_key_data)
+        _write_cert_bytes(ca_key_file, ca_key_data)
 
         # Сохранение CA сертификата
         ca_cert_data = ca_cert.public_bytes(serialization.Encoding.PEM)
-        cert_success, cert_location = _write_cert_bytes(ca_cert_file, ca_cert_data)
+        _write_cert_bytes(ca_cert_file, ca_cert_data)
 
-        if key_location == "both" or cert_location == "both":
-            logger.info(f"Generated CA certificate (saved to secure storage + filesystem)")
-        elif key_location == "storage" or cert_location == "storage":
-            logger.info(f"Generated CA certificate (saved to secure storage)")
-        else:
-            logger.info(f"Generated CA certificate (saved to filesystem)")
-
+        logger.info(f"Generated CA certificate (saved to secure storage)")
         logger.info(f"  CA cert: {ca_cert_file}")
         logger.info(f"  CA key: {ca_key_file}")
         logger.info(f"  Valid for {days_valid} days")
@@ -383,19 +352,13 @@ def generate_signed_certificate(
             format=serialization.PrivateFormat.TraditionalOpenSSL,
             encryption_algorithm=serialization.NoEncryption()
         )
-        key_success, key_location = _write_cert_bytes(key_file, key_data)
+        _write_cert_bytes(key_file, key_data)
 
         # Сохранение сертификата
         cert_data = cert.public_bytes(serialization.Encoding.PEM)
-        cert_success, cert_location = _write_cert_bytes(cert_file, cert_data)
+        _write_cert_bytes(cert_file, cert_data)
 
-        if key_location == "both" or cert_location == "both":
-            logger.info(f"Generated signed certificate (saved to secure storage + filesystem)")
-        elif key_location == "storage" or cert_location == "storage":
-            logger.info(f"Generated signed certificate (saved to secure storage)")
-        else:
-            logger.info(f"Generated signed certificate (saved to filesystem)")
-
+        logger.info(f"Generated signed certificate (saved to secure storage)")
         logger.info(f"  Node cert: {cert_file}")
         logger.info(f"  Node key: {key_file}")
         logger.info(f"  Valid for {days_valid} days")
@@ -509,7 +472,7 @@ def create_ssl_context(
     ca_cert_file: str = None
 ) -> Optional[ssl.SSLContext]:
     """
-    Создать SSL контекст для HTTPS сервера
+    Создать SSL контекст для HTTPS сервера из защищенного хранилища (без записи на диск)
 
     Args:
         cert_file: путь к файлу сертификата
@@ -521,58 +484,58 @@ def create_ssl_context(
         SSLContext или None при ошибке
     """
     try:
-        # Проверяем наличие файлов (в хранилище или на диске)
+        # Проверяем наличие файлов в защищенном хранилище
         if not _cert_exists(cert_file) or not _cert_exists(key_file):
-            logger.error(f"Certificate files not found: {cert_file}, {key_file}")
+            logger.error(f"Certificate files not found in secure storage: {cert_file}, {key_file}")
             return None
 
         # Создание SSL контекста
         ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
 
-        # Если файлы есть на диске, используем их напрямую
-        if Path(cert_file).exists() and Path(key_file).exists():
-            ssl_context.load_cert_chain(cert_file, key_file)
-        else:
-            # Иначе загружаем из хранилища во временные файлы
-            import tempfile
-            cert_data = _read_cert_bytes(cert_file)
-            key_data = _read_cert_bytes(key_file)
+        # Загружаем сертификаты из защищенного хранилища в память
+        cert_data = _read_cert_bytes(cert_file)
+        key_data = _read_cert_bytes(key_file)
 
-            # Создаем временные файлы для SSL контекста
-            with tempfile.NamedTemporaryFile(mode='wb', delete=False, suffix='.crt') as cert_tmp:
-                cert_tmp.write(cert_data)
-                cert_tmp_path = cert_tmp.name
+        if not cert_data or not key_data:
+            logger.error(f"Failed to read certificates from secure storage")
+            return None
 
-            with tempfile.NamedTemporaryFile(mode='wb', delete=False, suffix='.key') as key_tmp:
-                key_tmp.write(key_data)
-                key_tmp_path = key_tmp.name
+        # Используем memfd_create для создания файлов в памяти (Linux 3.17+)
+        # Это НЕ записывает на диск, файл существует только в RAM
+        cert_fd = None
+        key_fd = None
 
-            try:
-                ssl_context.load_cert_chain(cert_tmp_path, key_tmp_path)
-            finally:
-                # Удаляем временные файлы
-                Path(cert_tmp_path).unlink(missing_ok=True)
-                Path(key_tmp_path).unlink(missing_ok=True)
+        try:
+            cert_fd = os.memfd_create("server_cert", 0)
+            os.write(cert_fd, cert_data)
+            cert_path = f"/proc/self/fd/{cert_fd}"
+
+            key_fd = os.memfd_create("server_key", 0)
+            os.write(key_fd, key_data)
+            key_path = f"/proc/self/fd/{key_fd}"
+
+            ssl_context.load_cert_chain(cert_path, key_path)
+            logger.debug("Certificate chain loaded from memory (via memfd)")
+
+        finally:
+            # Закрываем file descriptors (автоматически удаляет из памяти)
+            if cert_fd is not None:
+                os.close(cert_fd)
+            if key_fd is not None:
+                os.close(key_fd)
 
         if verify_mode and ca_cert_file:
             ssl_context.verify_mode = ssl.CERT_REQUIRED
 
-            # Аналогично для CA сертификата
-            if Path(ca_cert_file).exists():
-                ssl_context.load_verify_locations(cafile=ca_cert_file)
+            # Загружаем CA сертификат из памяти (используя cadata)
+            ca_data = _read_cert_bytes(ca_cert_file)
+            if ca_data:
+                # load_verify_locations поддерживает cadata для загрузки из памяти
+                ssl_context.load_verify_locations(cadata=ca_data.decode('utf-8'))
+                logger.info(f"Client certificate verification enabled with CA from secure storage")
             else:
-                ca_data = _read_cert_bytes(ca_cert_file)
-                if ca_data:
-                    import tempfile
-                    with tempfile.NamedTemporaryFile(mode='wb', delete=False, suffix='.crt') as ca_tmp:
-                        ca_tmp.write(ca_data)
-                        ca_tmp_path = ca_tmp.name
-                    try:
-                        ssl_context.load_verify_locations(cafile=ca_tmp_path)
-                    finally:
-                        Path(ca_tmp_path).unlink(missing_ok=True)
-
-            logger.info(f"Client certificate verification enabled with CA: {ca_cert_file}")
+                logger.error(f"Failed to load CA certificate from secure storage")
+                return None
         else:
             ssl_context.verify_mode = ssl.CERT_NONE
 
@@ -580,9 +543,14 @@ def create_ssl_context(
         ssl_context.minimum_version = ssl.TLSVersion.TLSv1_2
         ssl_context.set_ciphers('ECDHE+AESGCM:ECDHE+CHACHA20:DHE+AESGCM:DHE+CHACHA20:!aNULL:!MD5:!DSS')
 
-        logger.info("SSL context created successfully")
+        logger.info("SSL context created successfully from secure storage (no disk I/O)")
         return ssl_context
 
+    except AttributeError as e:
+        # memfd_create не доступен (не Linux или старая версия)
+        logger.error(f"memfd_create not available (Linux 3.17+ required): {e}")
+        logger.error("Cannot create SSL context without disk access")
+        return None
     except Exception as e:
         logger.error(f"Failed to create SSL context: {e}")
         return None
@@ -590,7 +558,7 @@ def create_ssl_context(
 
 def create_client_ssl_context(verify: bool = True, ca_cert_file: str = None) -> ssl.SSLContext:
     """
-    Создать SSL контекст для HTTPS клиента
+    Создать SSL контекст для HTTPS клиента из защищенного хранилища (без записи на диск)
 
     Args:
         verify: проверять ли серверный сертификат
@@ -602,25 +570,17 @@ def create_client_ssl_context(verify: bool = True, ca_cert_file: str = None) -> 
     ssl_context = ssl.create_default_context()
 
     if verify and ca_cert_file:
-        # Загружаем CA сертификат для верификации
-        if Path(ca_cert_file).exists():
-            ssl_context.load_verify_locations(cafile=ca_cert_file)
+        # Загружаем CA сертификат из защищенного хранилища в память
+        ca_data = _read_cert_bytes(ca_cert_file)
+        if ca_data:
+            # load_verify_locations поддерживает cadata для загрузки CA из памяти
+            ssl_context.load_verify_locations(cadata=ca_data.decode('utf-8'))
+            ssl_context.check_hostname = True
+            ssl_context.verify_mode = ssl.CERT_REQUIRED
+            logger.debug(f"Client SSL context created with CA verification from secure storage")
         else:
-            # Загружаем из хранилища
-            ca_data = _read_cert_bytes(ca_cert_file)
-            if ca_data:
-                import tempfile
-                with tempfile.NamedTemporaryFile(mode='wb', delete=False, suffix='.crt') as ca_tmp:
-                    ca_tmp.write(ca_data)
-                    ca_tmp_path = ca_tmp.name
-                try:
-                    ssl_context.load_verify_locations(cafile=ca_tmp_path)
-                finally:
-                    Path(ca_tmp_path).unlink(missing_ok=True)
-
-        ssl_context.check_hostname = True
-        ssl_context.verify_mode = ssl.CERT_REQUIRED
-        logger.debug(f"Client SSL context created with CA verification: {ca_cert_file}")
+            logger.error(f"Failed to load CA certificate from secure storage: {ca_cert_file}")
+            raise RuntimeError(f"Cannot create client SSL context without CA certificate")
     elif not verify:
         # Отключаем верификацию (не рекомендуется для production)
         ssl_context.check_hostname = False
@@ -998,7 +958,7 @@ async def request_certificate_from_coordinator(
 
 def save_certificate_and_key(cert_pem: str, key_pem: str, cert_file: str, key_file: str) -> bool:
     """
-    Сохранить сертификат и ключ в файлы
+    Сохранить сертификат и ключ ТОЛЬКО в защищенное хранилище
 
     Args:
         cert_pem: PEM-форматированный сертификат
@@ -1008,28 +968,25 @@ def save_certificate_and_key(cert_pem: str, key_pem: str, cert_file: str, key_fi
 
     Returns:
         True если успешно сохранено
+
+    Raises:
+        RuntimeError: если защищенное хранилище недоступно
     """
     try:
         # Конвертируем в байты
         cert_data = cert_pem.encode('utf-8') if isinstance(cert_pem, str) else cert_pem
         key_data = key_pem.encode('utf-8') if isinstance(key_pem, str) else key_pem
 
-        # Сохраняем сертификат (в хранилище и на диск)
-        cert_success, cert_location = _write_cert_bytes(cert_file, cert_data)
+        # Сохраняем сертификат ТОЛЬКО в защищенное хранилище
+        _write_cert_bytes(cert_file, cert_data)
 
-        # Сохраняем ключ (в хранилище и на диск)
-        key_success, key_location = _write_cert_bytes(key_file, key_data)
+        # Сохраняем ключ ТОЛЬКО в защищенное хранилище
+        _write_cert_bytes(key_file, key_data)
 
-        if cert_location == "both" or key_location == "both":
-            logger.info(f"Certificate and key saved (secure storage + filesystem): {cert_file}, {key_file}")
-        elif cert_location == "storage" or key_location == "storage":
-            logger.info(f"Certificate and key saved (secure storage): {cert_file}, {key_file}")
-        else:
-            logger.info(f"Certificate and key saved (filesystem): {cert_file}, {key_file}")
-
-        return cert_success and key_success
+        logger.info(f"Certificate and key saved to secure storage: {cert_file}, {key_file}")
+        return True
 
     except Exception as e:
         logger.error(f"Failed to save certificate and key: {e}")
-        return False
+        raise
 

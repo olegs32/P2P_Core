@@ -73,21 +73,18 @@ class ConnectionManager:
             if base_url not in self.clients:
                 # Настройка SSL верификации
                 if self.ssl_verify and self.ca_cert_file:
-                    from pathlib import Path
-                    ca_path = Path(self.ca_cert_file)
+                    # Создаем SSL контекст из защищенного хранилища
+                    from layers.ssl_helper import create_client_ssl_context
 
-                    # Преобразуем в абсолютный путь если относительный
-                    if not ca_path.is_absolute():
-                        ca_path = Path.cwd() / ca_path
-
-                    if ca_path.exists():
-                        verify = str(ca_path.resolve())
-                    else:
-                        # Если CA не найден, отключаем верификацию
-                        verify = False
+                    try:
+                        ssl_context = create_client_ssl_context(verify=True, ca_cert_file=self.ca_cert_file)
+                        verify = ssl_context
+                    except Exception as e:
+                        # Если не удалось загрузить CA из защищенного хранилища - критическая ошибка
+                        raise RuntimeError(f"Failed to create SSL context from secure storage: {e}")
                 elif self.ssl_verify:
-                    # Без CA файла отключаем верификацию (нельзя использовать системные CA с самоподписанными сертификатами)
-                    verify = False
+                    # SSL включен но CA не предоставлен - критическая ошибка
+                    raise RuntimeError("SSL verification enabled but no CA certificate provided")
                 else:
                     verify = False
 
@@ -173,28 +170,21 @@ class SimpleGossipProtocol:
 
         # Настройка SSL верификации
         if ssl_verify and ca_cert_file:
-            # Верификация через CA
-            from pathlib import Path
-            ca_path = Path(ca_cert_file)
+            # Верификация через CA из защищенного хранилища
+            from layers.ssl_helper import create_client_ssl_context
 
-            # Преобразуем в абсолютный путь если относительный
-            if not ca_path.is_absolute():
-                ca_path = Path.cwd() / ca_path
-
-            if ca_path.exists():
-                # httpx принимает абсолютный путь к CA файлу в параметре verify
-                ca_path_str = str(ca_path.resolve())
-                self.http_client = httpx.AsyncClient(timeout=timeout, verify=ca_path_str)
-                self.log.info(f"HTTPS client configured with CA verification: {ca_path_str}")
-            else:
-                self.log.warning(f"CA cert file not found: {ca_path}, falling back to insecure mode")
-                # Если CA не найден, отключаем верификацию чтобы не использовать системные CA
-                self.http_client = httpx.AsyncClient(timeout=timeout, verify=False)
-                self.log.warning("HTTPS verification DISABLED (CA cert not found)")
+            try:
+                # Создаем SSL контекст из защищенного хранилища (без записи на диск)
+                ssl_context = create_client_ssl_context(verify=True, ca_cert_file=ca_cert_file)
+                self.http_client = httpx.AsyncClient(timeout=timeout, verify=ssl_context)
+                self.log.info(f"HTTPS client configured with CA verification from secure storage")
+            except Exception as e:
+                self.log.error(f"Failed to create SSL context from secure storage: {e}")
+                raise RuntimeError(f"Cannot start gossip without CA certificate in secure storage: {e}")
         elif ssl_verify:
-            # Стандартная верификация (системные CA) - не рекомендуется для самоподписанных сертификатов
-            self.http_client = httpx.AsyncClient(timeout=timeout, verify=False)
-            self.log.warning("HTTPS client configured WITHOUT verification (no CA cert provided)")
+            # SSL включен но CA не предоставлен - ошибка
+            self.log.error("SSL verification enabled but no CA certificate provided")
+            raise RuntimeError("Cannot start gossip with SSL verification but without CA certificate")
         else:
             # Отключаем верификацию (не рекомендуется)
             self.http_client = httpx.AsyncClient(timeout=timeout, verify=False)
