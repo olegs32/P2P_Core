@@ -12,6 +12,15 @@ from datetime import datetime
 from dataclasses import asdict
 
 
+def _get_storage_manager():
+    """Получить storage manager если доступен"""
+    try:
+        from layers.storage_manager import get_storage_manager
+        return get_storage_manager()
+    except:
+        return None
+
+
 class StatePersistence:
     """
     Универсальный класс для сохранения и загрузки состояния
@@ -44,20 +53,41 @@ class StatePersistence:
             True если успешно сохранено
         """
         try:
-            # Создаем временный файл для атомарной записи
-            temp_file = self.file_path.with_suffix('.tmp')
+            # Конвертируем данные в JSON строку
+            if pretty:
+                json_content = json.dumps(data, indent=2, ensure_ascii=False, default=str)
+            else:
+                json_content = json.dumps(data, ensure_ascii=False, default=str)
 
-            with open(temp_file, 'w', encoding='utf-8') as f:
-                if pretty:
-                    json.dump(data, f, indent=2, ensure_ascii=False, default=str)
-                else:
-                    json.dump(data, f, ensure_ascii=False, default=str)
+            # Пытаемся сохранить в защищенное хранилище
+            storage = _get_storage_manager()
+            if storage:
+                try:
+                    state_name = self.file_path.name
+                    storage.write_state(state_name, json_content)
+                    self.logger.debug(f"State saved to secure storage: {state_name}")
+                except Exception as e:
+                    self.logger.warning(f"Failed to save to storage: {e}")
 
-            # Атомарное переименование
-            temp_file.replace(self.file_path)
+            # Также сохраняем на диск (для обратной совместимости)
+            try:
+                # Создаем директорию если не существует
+                self.file_path.parent.mkdir(parents=True, exist_ok=True)
+
+                # Создаем временный файл для атомарной записи
+                temp_file = self.file_path.with_suffix('.tmp')
+
+                with open(temp_file, 'w', encoding='utf-8') as f:
+                    f.write(json_content)
+
+                # Атомарное переименование
+                temp_file.replace(self.file_path)
+
+                self.logger.debug(f"State saved to filesystem: {self.file_path}")
+            except Exception as e:
+                self.logger.warning(f"Failed to save to filesystem: {e}")
 
             self._dirty = False
-            self.logger.debug(f"State saved to {self.file_path}")
             return True
 
         except Exception as e:
@@ -77,6 +107,26 @@ class StatePersistence:
         if default is None:
             default = {}
 
+        # Пытаемся загрузить из защищенного хранилища
+        storage = _get_storage_manager()
+        if storage:
+            try:
+                state_name = self.file_path.name
+                json_content = storage.read_state(state_name)
+
+                # Пустой JSON означает что файл не найден
+                if json_content and json_content != "{}":
+                    data = json.loads(json_content)
+                    self.logger.info(f"State loaded from secure storage: {state_name}")
+                    return data
+            except FileNotFoundError:
+                pass  # Fallback к файловой системе
+            except json.JSONDecodeError as e:
+                self.logger.error(f"Invalid JSON in storage: {e}")
+            except Exception as e:
+                self.logger.warning(f"Failed to load from storage: {e}")
+
+        # Fallback: загрузка из файловой системы
         if not self.file_path.exists():
             self.logger.info(f"State file not found: {self.file_path}, using defaults")
             return default
@@ -85,7 +135,7 @@ class StatePersistence:
             with open(self.file_path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
 
-            self.logger.info(f"State loaded from {self.file_path}")
+            self.logger.info(f"State loaded from filesystem: {self.file_path}")
             return data
 
         except json.JSONDecodeError as e:

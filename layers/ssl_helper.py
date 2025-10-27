@@ -8,9 +8,118 @@ import logging
 from pathlib import Path
 from typing import Optional, Tuple
 from datetime import datetime, timedelta
+import io
 
 
 logger = logging.getLogger("SSL")
+
+
+# === Вспомогательные функции для работы с хранилищем ===
+
+def _get_storage_manager():
+    """Получить storage manager если доступен"""
+    try:
+        from layers.storage_manager import get_storage_manager
+        return get_storage_manager()
+    except:
+        return None
+
+
+def _read_cert_bytes(cert_file: str) -> Optional[bytes]:
+    """
+    Читать сертификат из хранилища или файловой системы
+
+    Args:
+        cert_file: путь к сертификату (например, certs/ca_cert.cer)
+
+    Returns:
+        байты сертификата или None
+    """
+    storage = _get_storage_manager()
+
+    # Пробуем загрузить из хранилища
+    if storage:
+        try:
+            cert_name = Path(cert_file).name
+            cert_data = storage.read_cert(cert_name)
+            logger.debug(f"Certificate loaded from secure storage: {cert_name}")
+            return cert_data
+        except FileNotFoundError:
+            pass
+        except Exception as e:
+            logger.warning(f"Failed to read from storage: {e}")
+
+    # Fallback: загрузка из файловой системы
+    cert_path = Path(cert_file)
+    if cert_path.exists():
+        with open(cert_path, 'rb') as f:
+            logger.debug(f"Certificate loaded from filesystem: {cert_file}")
+            return f.read()
+
+    return None
+
+
+def _write_cert_bytes(cert_file: str, cert_data: bytes) -> bool:
+    """
+    Записать сертификат в хранилище и файловую систему
+
+    Args:
+        cert_file: путь к сертификату
+        cert_data: байты сертификата
+
+    Returns:
+        True если успешно
+    """
+    success = False
+    storage = _get_storage_manager()
+
+    # Записываем в хранилище
+    if storage:
+        try:
+            cert_name = Path(cert_file).name
+            storage.write_cert(cert_name, cert_data)
+            logger.debug(f"Certificate saved to secure storage: {cert_name}")
+            success = True
+        except Exception as e:
+            logger.warning(f"Failed to write to storage: {e}")
+
+    # Также записываем в файловую систему (для обратной совместимости)
+    try:
+        cert_path = Path(cert_file)
+        cert_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(cert_path, 'wb') as f:
+            f.write(cert_data)
+        logger.debug(f"Certificate saved to filesystem: {cert_file}")
+        success = True
+    except Exception as e:
+        logger.warning(f"Failed to write to filesystem: {e}")
+
+    return success
+
+
+def _cert_exists(cert_file: str) -> bool:
+    """
+    Проверить существование сертификата в хранилище или файловой системе
+
+    Args:
+        cert_file: путь к сертификату
+
+    Returns:
+        True если существует
+    """
+    storage = _get_storage_manager()
+
+    # Проверяем хранилище
+    if storage:
+        try:
+            cert_name = Path(cert_file).name
+            if storage.exists(f"certs/{cert_name}"):
+                return True
+        except:
+            pass
+
+    # Проверяем файловую систему
+    return Path(cert_file).exists()
 
 
 def generate_ca_certificate(
@@ -93,21 +202,17 @@ def generate_ca_certificate(
             critical=False,
         ).sign(ca_private_key, hashes.SHA256(), default_backend())
 
-        # Создание директории если не существует
-        ca_key_path = Path(ca_key_file)
-        ca_key_path.parent.mkdir(parents=True, exist_ok=True)
-
         # Сохранение CA приватного ключа
-        with open(ca_key_file, "wb") as f:
-            f.write(ca_private_key.private_bytes(
-                encoding=serialization.Encoding.PEM,
-                format=serialization.PrivateFormat.TraditionalOpenSSL,
-                encryption_algorithm=serialization.NoEncryption()
-            ))
+        ca_key_data = ca_private_key.private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.TraditionalOpenSSL,
+            encryption_algorithm=serialization.NoEncryption()
+        )
+        _write_cert_bytes(ca_key_file, ca_key_data)
 
         # Сохранение CA сертификата
-        with open(ca_cert_file, "wb") as f:
-            f.write(ca_cert.public_bytes(serialization.Encoding.PEM))
+        ca_cert_data = ca_cert.public_bytes(serialization.Encoding.PEM)
+        _write_cert_bytes(ca_cert_file, ca_cert_data)
 
         logger.info(f"Generated CA certificate: {ca_cert_file}")
         logger.info(f"CA private key saved to: {ca_key_file}")
@@ -159,15 +264,17 @@ def generate_signed_certificate(
         import ipaddress
 
         # Загрузка CA сертификата и ключа
-        with open(ca_cert_file, "rb") as f:
-            ca_cert_data = f.read()
-            ca_cert = x509.load_pem_x509_certificate(ca_cert_data, default_backend())
+        ca_cert_data = _read_cert_bytes(ca_cert_file)
+        if not ca_cert_data:
+            raise FileNotFoundError(f"CA certificate not found: {ca_cert_file}")
+        ca_cert = x509.load_pem_x509_certificate(ca_cert_data, default_backend())
 
-        with open(ca_key_file, "rb") as f:
-            ca_key_data = f.read()
-            ca_private_key = serialization.load_pem_private_key(
-                ca_key_data, password=None, backend=default_backend()
-            )
+        ca_key_data = _read_cert_bytes(ca_key_file)
+        if not ca_key_data:
+            raise FileNotFoundError(f"CA private key not found: {ca_key_file}")
+        ca_private_key = serialization.load_pem_private_key(
+            ca_key_data, password=None, backend=default_backend()
+        )
 
         # Генерация приватного ключа для узла
         private_key = rsa.generate_private_key(
@@ -253,21 +360,17 @@ def generate_signed_certificate(
             critical=False,
         ).sign(ca_private_key, hashes.SHA256(), default_backend())
 
-        # Создание директории если не существует
-        key_path = Path(key_file)
-        key_path.parent.mkdir(parents=True, exist_ok=True)
-
         # Сохранение приватного ключа
-        with open(key_file, "wb") as f:
-            f.write(private_key.private_bytes(
-                encoding=serialization.Encoding.PEM,
-                format=serialization.PrivateFormat.TraditionalOpenSSL,
-                encryption_algorithm=serialization.NoEncryption()
-            ))
+        key_data = private_key.private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.TraditionalOpenSSL,
+            encryption_algorithm=serialization.NoEncryption()
+        )
+        _write_cert_bytes(key_file, key_data)
 
         # Сохранение сертификата
-        with open(cert_file, "wb") as f:
-            f.write(cert.public_bytes(serialization.Encoding.PEM))
+        cert_data = cert.public_bytes(serialization.Encoding.PEM)
+        _write_cert_bytes(cert_file, cert_data)
 
         logger.info(f"Generated signed certificate: {cert_file}")
         logger.info(f"Private key saved to: {key_file}")
@@ -292,10 +395,7 @@ def ensure_ca_exists(ca_cert_file: str, ca_key_file: str) -> bool:
     Returns:
         True если CA доступен
     """
-    ca_cert_path = Path(ca_cert_file)
-    ca_key_path = Path(ca_key_file)
-
-    if ca_cert_path.exists() and ca_key_path.exists():
+    if _cert_exists(ca_cert_file) and _cert_exists(ca_key_file):
         logger.info(f"CA certificate found: {ca_cert_file}")
         return True
 
@@ -329,10 +429,7 @@ def ensure_certificates_exist(
     Raises:
         RuntimeError: если CA параметры не предоставлены или сертификат не может быть сгенерирован
     """
-    cert_path = Path(cert_file)
-    key_path = Path(key_file)
-
-    if cert_path.exists() and key_path.exists():
+    if _cert_exists(cert_file) and _cert_exists(key_file):
         logger.info(f"SSL certificates found: {cert_file}, {key_file}")
         return True
 
@@ -400,18 +497,57 @@ def create_ssl_context(
         SSLContext или None при ошибке
     """
     try:
-        # Проверяем наличие файлов
-        if not Path(cert_file).exists() or not Path(key_file).exists():
+        # Проверяем наличие файлов (в хранилище или на диске)
+        if not _cert_exists(cert_file) or not _cert_exists(key_file):
             logger.error(f"Certificate files not found: {cert_file}, {key_file}")
             return None
 
         # Создание SSL контекста
         ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-        ssl_context.load_cert_chain(cert_file, key_file)
+
+        # Если файлы есть на диске, используем их напрямую
+        if Path(cert_file).exists() and Path(key_file).exists():
+            ssl_context.load_cert_chain(cert_file, key_file)
+        else:
+            # Иначе загружаем из хранилища во временные файлы
+            import tempfile
+            cert_data = _read_cert_bytes(cert_file)
+            key_data = _read_cert_bytes(key_file)
+
+            # Создаем временные файлы для SSL контекста
+            with tempfile.NamedTemporaryFile(mode='wb', delete=False, suffix='.crt') as cert_tmp:
+                cert_tmp.write(cert_data)
+                cert_tmp_path = cert_tmp.name
+
+            with tempfile.NamedTemporaryFile(mode='wb', delete=False, suffix='.key') as key_tmp:
+                key_tmp.write(key_data)
+                key_tmp_path = key_tmp.name
+
+            try:
+                ssl_context.load_cert_chain(cert_tmp_path, key_tmp_path)
+            finally:
+                # Удаляем временные файлы
+                Path(cert_tmp_path).unlink(missing_ok=True)
+                Path(key_tmp_path).unlink(missing_ok=True)
 
         if verify_mode and ca_cert_file:
             ssl_context.verify_mode = ssl.CERT_REQUIRED
-            ssl_context.load_verify_locations(cafile=ca_cert_file)
+
+            # Аналогично для CA сертификата
+            if Path(ca_cert_file).exists():
+                ssl_context.load_verify_locations(cafile=ca_cert_file)
+            else:
+                ca_data = _read_cert_bytes(ca_cert_file)
+                if ca_data:
+                    import tempfile
+                    with tempfile.NamedTemporaryFile(mode='wb', delete=False, suffix='.crt') as ca_tmp:
+                        ca_tmp.write(ca_data)
+                        ca_tmp_path = ca_tmp.name
+                    try:
+                        ssl_context.load_verify_locations(cafile=ca_tmp_path)
+                    finally:
+                        Path(ca_tmp_path).unlink(missing_ok=True)
+
             logger.info(f"Client certificate verification enabled with CA: {ca_cert_file}")
         else:
             ssl_context.verify_mode = ssl.CERT_NONE
@@ -443,7 +579,21 @@ def create_client_ssl_context(verify: bool = True, ca_cert_file: str = None) -> 
 
     if verify and ca_cert_file:
         # Загружаем CA сертификат для верификации
-        ssl_context.load_verify_locations(cafile=ca_cert_file)
+        if Path(ca_cert_file).exists():
+            ssl_context.load_verify_locations(cafile=ca_cert_file)
+        else:
+            # Загружаем из хранилища
+            ca_data = _read_cert_bytes(ca_cert_file)
+            if ca_data:
+                import tempfile
+                with tempfile.NamedTemporaryFile(mode='wb', delete=False, suffix='.crt') as ca_tmp:
+                    ca_tmp.write(ca_data)
+                    ca_tmp_path = ca_tmp.name
+                try:
+                    ssl_context.load_verify_locations(cafile=ca_tmp_path)
+                finally:
+                    Path(ca_tmp_path).unlink(missing_ok=True)
+
         ssl_context.check_hostname = True
         ssl_context.verify_mode = ssl.CERT_REQUIRED
         logger.debug(f"Client SSL context created with CA verification: {ca_cert_file}")
@@ -473,8 +623,9 @@ def get_certificate_info(cert_file: str) -> Optional[dict]:
         from cryptography import x509
         from cryptography.hazmat.backends import default_backend
 
-        with open(cert_file, 'rb') as f:
-            cert_data = f.read()
+        cert_data = _read_cert_bytes(cert_file)
+        if not cert_data:
+            return None
 
         cert = x509.load_pem_x509_certificate(cert_data, default_backend())
 
@@ -522,11 +673,9 @@ def get_certificate_fingerprint(cert_file: str) -> Optional[str]:
         from cryptography.hazmat.backends import default_backend
         from cryptography.hazmat.primitives import hashes
 
-        if not Path(cert_file).exists():
+        cert_data = _read_cert_bytes(cert_file)
+        if not cert_data:
             return None
-
-        with open(cert_file, 'rb') as f:
-            cert_data = f.read()
 
         cert = x509.load_pem_x509_certificate(cert_data, default_backend())
         fingerprint = cert.fingerprint(hashes.SHA256())
@@ -553,11 +702,9 @@ def get_certificate_san(cert_file: str) -> Tuple[list, list]:
         from cryptography.hazmat.backends import default_backend
         from cryptography.x509.oid import ExtensionOID
 
-        if not Path(cert_file).exists():
+        cert_data = _read_cert_bytes(cert_file)
+        if not cert_data:
             return [], []
-
-        with open(cert_file, 'rb') as f:
-            cert_data = f.read()
 
         cert = x509.load_pem_x509_certificate(cert_data, default_backend())
 
@@ -658,7 +805,7 @@ def needs_certificate_renewal(cert_file: str, ca_cert_file: str = None) -> Tuple
         Tuple из (нужно ли обновление, причина)
     """
     # Проверяем существование сертификата
-    if not Path(cert_file).exists():
+    if not _cert_exists(cert_file):
         return True, "certificate_not_found"
 
     try:
@@ -666,8 +813,9 @@ def needs_certificate_renewal(cert_file: str, ca_cert_file: str = None) -> Tuple
         from cryptography.hazmat.backends import default_backend
 
         # Загружаем сертификат
-        with open(cert_file, 'rb') as f:
-            cert_data = f.read()
+        cert_data = _read_cert_bytes(cert_file)
+        if not cert_data:
+            return True, "certificate_not_found"
 
         cert = x509.load_pem_x509_certificate(cert_data, default_backend())
 
@@ -838,17 +986,15 @@ def save_certificate_and_key(cert_pem: str, key_pem: str, cert_file: str, key_fi
         True если успешно сохранено
     """
     try:
-        # Создаем директорию если не существует
-        cert_path = Path(cert_file)
-        cert_path.parent.mkdir(parents=True, exist_ok=True)
+        # Конвертируем в байты
+        cert_data = cert_pem.encode('utf-8') if isinstance(cert_pem, str) else cert_pem
+        key_data = key_pem.encode('utf-8') if isinstance(key_pem, str) else key_pem
 
-        # Сохраняем сертификат
-        with open(cert_file, 'w') as f:
-            f.write(cert_pem)
+        # Сохраняем сертификат (в хранилище и на диск)
+        _write_cert_bytes(cert_file, cert_data)
 
-        # Сохраняем ключ
-        with open(key_file, 'w') as f:
-            f.write(key_pem)
+        # Сохраняем ключ (в хранилище и на диск)
+        _write_cert_bytes(key_file, key_data)
 
         logger.info(f"Certificate and key saved: {cert_file}, {key_file}")
         return True
