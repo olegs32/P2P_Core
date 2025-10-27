@@ -32,6 +32,86 @@ from layers.service import (
 from layers.storage_manager import init_storage
 
 
+def prepare_certificates_after_storage(config: 'P2PConfig'):
+    """
+    Подготовка сертификатов после инициализации хранилища
+
+    Выполняется после init_storage, но до инициализации network компонентов.
+    Для координаторов - проверяет и генерирует CA и сертификаты.
+    Для воркеров - только проверяет наличие CA (сертификаты запросят позже).
+
+    Args:
+        config: конфигурация P2P узла
+    """
+    logger = logging.getLogger("CertPrep")
+
+    # Проверяем включен ли HTTPS
+    if not hasattr(config, 'https_enabled') or not config.https_enabled:
+        logger.debug("HTTPS not enabled, skipping certificate preparation")
+        return
+
+    from layers.ssl_helper import (
+        ensure_ca_exists, ensure_certificates_exist
+    )
+
+    cert_file = config.ssl_cert_file
+    key_file = config.ssl_key_file
+    ca_cert_file = config.ssl_ca_cert_file
+    ca_key_file = config.ssl_ca_key_file
+
+    logger.info("Preparing certificates after storage initialization...")
+    logger.debug(f"  cert_file: {cert_file}")
+    logger.debug(f"  key_file: {key_file}")
+    logger.debug(f"  ca_cert_file: {ca_cert_file}")
+    logger.debug(f"  ca_key_file: {ca_key_file}")
+
+    if config.coordinator_mode:
+        # Координатор: убеждаемся что CA существует
+        logger.info("Coordinator mode: ensuring CA exists...")
+
+        if not ca_cert_file or not ca_key_file:
+            logger.error("CA certificate paths not configured for coordinator")
+            raise RuntimeError("Coordinator requires CA certificate configuration")
+
+        # Создаем CA если не существует
+        if not ensure_ca_exists(ca_cert_file, ca_key_file):
+            logger.error("Failed to ensure CA exists")
+            raise RuntimeError("Could not create or verify CA certificate")
+
+        logger.info("CA certificate verified")
+
+        # Генерируем сертификат координатора если не существует
+        logger.info("Ensuring coordinator certificate exists...")
+        if not ensure_certificates_exist(
+            cert_file, key_file,
+            config.node_id,
+            ca_cert_file=ca_cert_file,
+            ca_key_file=ca_key_file
+        ):
+            logger.error("Failed to ensure coordinator certificate exists")
+            raise RuntimeError("Could not create coordinator certificate")
+
+        logger.info("Coordinator certificate ready")
+
+    else:
+        # Воркер: только проверяем что CA существует для валидации
+        logger.info("Worker mode: verifying CA certificate availability...")
+
+        if ca_cert_file:
+            # Просто проверяем что CA доступен
+            from layers.ssl_helper import _cert_exists
+            if not _cert_exists(ca_cert_file):
+                logger.warning(f"CA certificate not found: {ca_cert_file}")
+                logger.warning("Worker will need to request certificate from coordinator")
+            else:
+                logger.info("CA certificate found")
+        else:
+            logger.warning("CA certificate path not configured")
+
+        # Сертификаты воркера будут запрошены позже в WebServerComponent
+        logger.debug("Worker certificates will be requested during network initialization if needed")
+
+
 # Настройка кодировки для Windows
 if sys.platform == 'win32':
     os.environ['PYTHONIOENCODING'] = 'utf-8'
@@ -504,6 +584,9 @@ async def main():
                         logger.info(f"Loading configuration from: {args.config}")
                         config = P2PConfig.from_yaml(args.config)
 
+                        # Подготавливаем сертификаты после инициализации хранилища
+                        prepare_certificates_after_storage(config)
+
                         logger.info(f"Starting {config.node_id} ({'coordinator' if config.coordinator_mode else 'worker'})")
                         logger.info(f"Binding to: {config.bind_address}:{config.port}")
 
@@ -530,6 +613,9 @@ async def main():
 
                 logger.info(f"Loading configuration from: {args.config}")
                 config = P2PConfig.from_yaml(args.config)
+
+                # Подготавливаем сертификаты (будет использовать файловую систему)
+                prepare_certificates_after_storage(config)
 
                 logger.info(f"Starting {config.node_id} ({'coordinator' if config.coordinator_mode else 'worker'})")
                 logger.info(f"Binding to: {config.bind_address}:{config.port}")

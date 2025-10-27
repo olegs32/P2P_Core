@@ -927,7 +927,7 @@ class WebServerComponent(P2PComponent):
 
         if hasattr(self.context.config, 'https_enabled') and self.context.config.https_enabled:
             from layers.ssl_helper import (
-                ensure_certificates_exist, needs_certificate_renewal,
+                _cert_exists, needs_certificate_renewal,
                 get_certificate_fingerprint, get_current_network_info,
                 generate_challenge, request_certificate_from_coordinator,
                 save_certificate_and_key
@@ -946,11 +946,33 @@ class WebServerComponent(P2PComponent):
             self.logger.debug(f"  ca_key_file: {ca_key_file}")
             self.logger.debug(f"  ssl_verify: {getattr(self.context.config, 'ssl_verify', False)}")
 
-            # Проверяем нужно ли обновление сертификата (только для воркеров)
-            needs_renewal = False
-            renewal_reason = "valid"
+            # Координаторы уже имеют сертификаты (подготовлены после init storage)
+            if self.context.config.coordinator_mode:
+                self.logger.info("Coordinator mode: certificates should be ready from preparation phase")
 
-            if not self.context.config.coordinator_mode:
+                # Проверяем что сертификаты существуют
+                if not _cert_exists(cert_file) or not _cert_exists(key_file):
+                    self.logger.error(f"Coordinator certificates not found after preparation!")
+                    self.logger.error(f"  cert_file: {cert_file}")
+                    self.logger.error(f"  key_file: {key_file}")
+                    raise RuntimeError("Coordinator certificates missing - should have been prepared after storage init")
+
+                # Сертификаты готовы, используем их
+                ssl_config = {
+                    "ssl_keyfile": key_file,
+                    "ssl_certfile": cert_file
+                }
+                protocol = "https"
+
+                if ca_cert_file and self.context.config.ssl_verify:
+                    self.logger.info(f"HTTPS enabled with CA verification")
+                    self.logger.info(f"  Node cert: {cert_file}")
+                    self.logger.info(f"  CA cert: {ca_cert_file}")
+                else:
+                    self.logger.info(f"HTTPS enabled: {cert_file}")
+
+            # Воркеры проверяют и запрашивают сертификаты у координатора если нужно
+            elif not self.context.config.coordinator_mode:
                 # Это воркер - проверяем сертификат
                 needs_renewal, renewal_reason = needs_certificate_renewal(cert_file, ca_cert_file)
 
@@ -1056,28 +1078,23 @@ class WebServerComponent(P2PComponent):
                             # Даем порту время освободиться
                             await asyncio.sleep(1)
 
-            # Убедимся что сертификаты существуют (с поддержкой CA)
-            # Для координатора или если воркер не смог получить сертификат
-            if ensure_certificates_exist(
-                    cert_file, key_file,
-                    self.context.config.node_id,
-                    ca_cert_file=ca_cert_file,
-                    ca_key_file=ca_key_file
-            ):
-                ssl_config = {
-                    "ssl_keyfile": key_file,
-                    "ssl_certfile": cert_file
-                }
-                protocol = "https"
+                # Проверяем что сертификаты воркера готовы
+                if _cert_exists(cert_file) and _cert_exists(key_file):
+                    ssl_config = {
+                        "ssl_keyfile": key_file,
+                        "ssl_certfile": cert_file
+                    }
+                    protocol = "https"
 
-                if ca_cert_file and self.context.config.ssl_verify:
-                    self.logger.info(f"HTTPS enabled with CA verification")
-                    self.logger.info(f"  Node cert: {cert_file}")
-                    self.logger.info(f"  CA cert: {ca_cert_file}")
+                    if ca_cert_file and self.context.config.ssl_verify:
+                        self.logger.info(f"Worker HTTPS enabled with CA verification")
+                        self.logger.info(f"  Node cert: {cert_file}")
+                        self.logger.info(f"  CA cert: {ca_cert_file}")
+                    else:
+                        self.logger.info(f"Worker HTTPS enabled: {cert_file}")
                 else:
-                    self.logger.info(f"HTTPS enabled (self-signed): {cert_file}")
-            else:
-                self.logger.warning("Failed to setup HTTPS, falling back to HTTP")
+                    self.logger.warning("Worker certificates not available, falling back to HTTP")
+                    self.logger.warning("This may indicate certificate request failed")
 
         self.config = uvicorn.Config(
             app=service_layer.app,
