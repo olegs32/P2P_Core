@@ -59,7 +59,7 @@ def _read_cert_bytes(cert_file: str) -> Optional[bytes]:
     return None
 
 
-def _write_cert_bytes(cert_file: str, cert_data: bytes) -> bool:
+def _write_cert_bytes(cert_file: str, cert_data: bytes) -> tuple[bool, str]:
     """
     Записать сертификат в хранилище и файловую систему
 
@@ -68,10 +68,11 @@ def _write_cert_bytes(cert_file: str, cert_data: bytes) -> bool:
         cert_data: байты сертификата
 
     Returns:
-        True если успешно
+        (success, location) - успешность и место сохранения ("storage", "filesystem", "both")
     """
-    success = False
     storage = _get_storage_manager()
+    storage_success = False
+    fs_success = False
 
     # Записываем в хранилище
     if storage:
@@ -79,9 +80,11 @@ def _write_cert_bytes(cert_file: str, cert_data: bytes) -> bool:
             cert_name = Path(cert_file).name
             storage.write_cert(cert_name, cert_data)
             logger.debug(f"Certificate saved to secure storage: {cert_name}")
-            success = True
+            storage_success = True
         except Exception as e:
             logger.warning(f"Failed to write to storage: {e}")
+    else:
+        logger.debug("Storage manager not available, skipping storage write")
 
     # Также записываем в файловую систему (для обратной совместимости)
     try:
@@ -90,11 +93,18 @@ def _write_cert_bytes(cert_file: str, cert_data: bytes) -> bool:
         with open(cert_path, 'wb') as f:
             f.write(cert_data)
         logger.debug(f"Certificate saved to filesystem: {cert_file}")
-        success = True
+        fs_success = True
     except Exception as e:
         logger.warning(f"Failed to write to filesystem: {e}")
 
-    return success
+    if storage_success and fs_success:
+        return True, "both"
+    elif storage_success:
+        return True, "storage"
+    elif fs_success:
+        return True, "filesystem"
+    else:
+        return False, "none"
 
 
 def _cert_exists(cert_file: str) -> bool:
@@ -208,15 +218,22 @@ def generate_ca_certificate(
             format=serialization.PrivateFormat.TraditionalOpenSSL,
             encryption_algorithm=serialization.NoEncryption()
         )
-        _write_cert_bytes(ca_key_file, ca_key_data)
+        key_success, key_location = _write_cert_bytes(ca_key_file, ca_key_data)
 
         # Сохранение CA сертификата
         ca_cert_data = ca_cert.public_bytes(serialization.Encoding.PEM)
-        _write_cert_bytes(ca_cert_file, ca_cert_data)
+        cert_success, cert_location = _write_cert_bytes(ca_cert_file, ca_cert_data)
 
-        logger.info(f"Generated CA certificate: {ca_cert_file}")
-        logger.info(f"CA private key saved to: {ca_key_file}")
-        logger.info(f"CA valid for {days_valid} days")
+        if key_location == "both" or cert_location == "both":
+            logger.info(f"Generated CA certificate (saved to secure storage + filesystem)")
+        elif key_location == "storage" or cert_location == "storage":
+            logger.info(f"Generated CA certificate (saved to secure storage)")
+        else:
+            logger.info(f"Generated CA certificate (saved to filesystem)")
+
+        logger.info(f"  CA cert: {ca_cert_file}")
+        logger.info(f"  CA key: {ca_key_file}")
+        logger.info(f"  Valid for {days_valid} days")
 
         return True
 
@@ -366,16 +383,23 @@ def generate_signed_certificate(
             format=serialization.PrivateFormat.TraditionalOpenSSL,
             encryption_algorithm=serialization.NoEncryption()
         )
-        _write_cert_bytes(key_file, key_data)
+        key_success, key_location = _write_cert_bytes(key_file, key_data)
 
         # Сохранение сертификата
         cert_data = cert.public_bytes(serialization.Encoding.PEM)
-        _write_cert_bytes(cert_file, cert_data)
+        cert_success, cert_location = _write_cert_bytes(cert_file, cert_data)
 
-        logger.info(f"Generated signed certificate: {cert_file}")
-        logger.info(f"Private key saved to: {key_file}")
-        logger.info(f"Certificate valid for {days_valid} days")
-        logger.info(f"Signed by CA: {ca_cert_file}")
+        if key_location == "both" or cert_location == "both":
+            logger.info(f"Generated signed certificate (saved to secure storage + filesystem)")
+        elif key_location == "storage" or cert_location == "storage":
+            logger.info(f"Generated signed certificate (saved to secure storage)")
+        else:
+            logger.info(f"Generated signed certificate (saved to filesystem)")
+
+        logger.info(f"  Node cert: {cert_file}")
+        logger.info(f"  Node key: {key_file}")
+        logger.info(f"  Valid for {days_valid} days")
+        logger.info(f"  Signed by CA: {ca_cert_file}")
 
         return True
 
@@ -991,13 +1015,19 @@ def save_certificate_and_key(cert_pem: str, key_pem: str, cert_file: str, key_fi
         key_data = key_pem.encode('utf-8') if isinstance(key_pem, str) else key_pem
 
         # Сохраняем сертификат (в хранилище и на диск)
-        _write_cert_bytes(cert_file, cert_data)
+        cert_success, cert_location = _write_cert_bytes(cert_file, cert_data)
 
         # Сохраняем ключ (в хранилище и на диск)
-        _write_cert_bytes(key_file, key_data)
+        key_success, key_location = _write_cert_bytes(key_file, key_data)
 
-        logger.info(f"Certificate and key saved: {cert_file}, {key_file}")
-        return True
+        if cert_location == "both" or key_location == "both":
+            logger.info(f"Certificate and key saved (secure storage + filesystem): {cert_file}, {key_file}")
+        elif cert_location == "storage" or key_location == "storage":
+            logger.info(f"Certificate and key saved (secure storage): {cert_file}, {key_file}")
+        else:
+            logger.info(f"Certificate and key saved (filesystem): {cert_file}, {key_file}")
+
+        return cert_success and key_success
 
     except Exception as e:
         logger.error(f"Failed to save certificate and key: {e}")

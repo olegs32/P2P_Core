@@ -50,6 +50,14 @@ def prepare_certificates_after_storage(config: 'P2PConfig'):
         logger.debug("HTTPS not enabled, skipping certificate preparation")
         return
 
+    # Проверяем доступность storage manager
+    from layers.storage_manager import get_storage_manager
+    storage = get_storage_manager()
+    if storage:
+        logger.info("Storage manager is available - certificates will be saved to secure storage")
+    else:
+        logger.warning("Storage manager NOT available - certificates will be saved to filesystem only")
+
     from layers.ssl_helper import (
         ensure_ca_exists, ensure_certificates_exist
     )
