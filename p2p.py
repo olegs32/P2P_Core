@@ -7,6 +7,7 @@ import sys
 import time
 from pathlib import Path
 from typing import List
+from getpass import getpass
 
 from dotenv import load_dotenv
 
@@ -26,6 +27,9 @@ from layers.service import (
     P2PServiceHandler, BaseService, ServiceManager,
     service_method, P2PAuthBearer,
     RPCRequest, RPCResponse, P2PServiceHandler )
+
+# Импортируем модули безопасного хранилища
+from layers.storage_manager import init_storage
 
 
 # Настройка кодировки для Windows
@@ -404,6 +408,14 @@ def create_argument_parser():
     parser.add_argument('--config', type=str, default=None,
                         help='Путь к YAML файлу конфигурации (например, config/coordinator.yaml)')
 
+    # Безопасное хранилище
+    parser.add_argument('--password', type=str, default=None,
+                        help='Пароль для расшифровки защищенного хранилища (будет запрошен, если не указан)')
+    parser.add_argument('--storage', type=str, default='data/p2p_secure.bin',
+                        help='Путь к файлу защищенного хранилища (по умолчанию: data/p2p_secure.bin)')
+    parser.add_argument('--no-storage', action='store_true',
+                        help='Отключить использование защищенного хранилища')
+
     # Legacy метод: старые аргументы для обратной совместимости
     parser.add_argument('mode', nargs='?', choices=['coordinator', 'worker'], default=None,
                         help='Режим работы (используется если не указан --config)')
@@ -459,16 +471,73 @@ async def main():
     try:
         # Новый метод: загрузка из YAML конфигурации
         if args.config:
-            logger.info(f"Loading configuration from: {args.config}")
-            config = P2PConfig.from_yaml(args.config)
+            # Проверяем, нужно ли использовать защищенное хранилище
+            use_storage = not args.no_storage
+            storage_path = args.storage
+            password = args.password
 
-            logger.info(f"Starting {config.node_id} ({'coordinator' if config.coordinator_mode else 'worker'})")
-            logger.info(f"Binding to: {config.bind_address}:{config.port}")
+            # Проверка наличия файла хранилища
+            storage_exists = Path(storage_path).exists()
 
-            if config.coordinator_mode:
-                await run_coordinator_from_config(config)
+            # Если хранилище существует или пароль указан, запрашиваем пароль
+            if use_storage and (storage_exists or password):
+                if not password:
+                    logger.info("Secure storage detected. Please enter password.")
+                    password = getpass("Storage password: ")
+
+                    if len(password) < 8:
+                        logger.error("Password must be at least 8 characters")
+                        return 1
+
+                    if len(password) > 100:
+                        logger.error("Password must not exceed 100 characters")
+                        return 1
+
+                logger.info(f"Initializing secure storage: {storage_path}")
+
+                # Инициализируем защищенное хранилище через контекстный менеджер
+                try:
+                    with init_storage(password, storage_path):
+                        logger.info("Secure storage initialized successfully")
+
+                        # Загружаем конфигурацию (будет использовать хранилище через get_storage_manager)
+                        logger.info(f"Loading configuration from: {args.config}")
+                        config = P2PConfig.from_yaml(args.config)
+
+                        logger.info(f"Starting {config.node_id} ({'coordinator' if config.coordinator_mode else 'worker'})")
+                        logger.info(f"Binding to: {config.bind_address}:{config.port}")
+
+                        if config.coordinator_mode:
+                            await run_coordinator_from_config(config)
+                        else:
+                            await run_worker_from_config(config)
+
+                except ValueError as e:
+                    logger.error(f"Storage error: {e}")
+                    logger.error("Invalid password or corrupted storage")
+                    return 1
+                except Exception as e:
+                    logger.error(f"Failed to initialize secure storage: {e}")
+                    if verbose:
+                        import traceback
+                        logger.error(traceback.format_exc())
+                    return 1
+
             else:
-                await run_worker_from_config(config)
+                # Без защищенного хранилища (стандартный режим)
+                if use_storage and not storage_exists:
+                    logger.info("Secure storage not found, using filesystem for configuration")
+
+                logger.info(f"Loading configuration from: {args.config}")
+                config = P2PConfig.from_yaml(args.config)
+
+                logger.info(f"Starting {config.node_id} ({'coordinator' if config.coordinator_mode else 'worker'})")
+                logger.info(f"Binding to: {config.bind_address}:{config.port}")
+
+                if config.coordinator_mode:
+                    await run_coordinator_from_config(config)
+                else:
+                    await run_worker_from_config(config)
 
         # # Legacy метод: старые аргументы для обратной совместимости
         # elif args.mode == 'coordinator':

@@ -6,6 +6,7 @@ application_context.py - Централизованное управление �
 2. Управляет порядком инициализации
 3. Обеспечивает graceful shutdown
 4. Устраняет циклические зависимости
+5. Поддержка защищенного хранилища
 """
 
 import asyncio
@@ -16,6 +17,9 @@ from typing import Dict, Any, Optional, List
 from enum import Enum
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
+
+
+logger = logging.getLogger("AppContext")
 
 
 class ComponentState(Enum):
@@ -103,7 +107,40 @@ class P2PConfig:
 
     @classmethod
     def from_yaml(cls, yaml_path: str) -> 'P2PConfig':
-        """Загрузить конфигурацию из YAML файла"""
+        """
+        Загрузить конфигурацию из YAML файла
+
+        Поддерживает два режима:
+        1. Загрузка из защищенного хранилища (если storage_manager доступен)
+        2. Загрузка из обычного файла (fallback)
+        """
+        # Попытка загрузки из защищенного хранилища
+        try:
+            from layers.storage_manager import get_storage_manager
+            storage_manager = get_storage_manager()
+
+            if storage_manager:
+                # Извлечение имени файла
+                config_name = Path(yaml_path).name
+
+                logger.info(f"Loading config from secure storage: {config_name}")
+                yaml_content = storage_manager.read_config(config_name)
+
+                config_data = yaml.safe_load(yaml_content)
+
+                if not config_data.get('coordinator_mode'):
+                    config_data['ssl_ca_key_file'] = None
+
+                return cls(**config_data)
+
+        except FileNotFoundError:
+            logger.warning(f"Config not found in storage: {yaml_path}, trying file system")
+        except Exception as e:
+            logger.error(f"Error loading from storage: {e}, trying file system")
+
+        # Fallback: загрузка из обычного файла
+        logger.info(f"Loading config from file system: {yaml_path}")
+
         path = Path(yaml_path)
         if not path.exists():
             raise FileNotFoundError(f"Configuration file not found: {yaml_path}")
