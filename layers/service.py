@@ -1901,44 +1901,59 @@ class P2PServiceHandler:
             import os
 
             try:
+                cert_tmp_path = ''
+                key_tmp_path = ''
                 # Создаем временные файлы для сертификата и ключа
                 with tempfile.NamedTemporaryFile(mode='w', suffix='.cer', delete=False) as cert_tmp:
-                    cert_tmp_path = cert_tmp.name
+                    cert_tmp_path = cert_tmp
 
-                with tempfile.NamedTemporaryFile(mode='w', suffix='.key', delete=False) as key_tmp:
-                    key_tmp_path = key_tmp.name
+                    with tempfile.NamedTemporaryFile(mode='w', suffix='.key', delete=False) as key_tmp:
+                        key_tmp_path = key_tmp
 
-                # Генерируем сертификат подписанный CA
-                ca_cert_file = self.context.config.ssl_ca_cert_file
-                ca_key_file = self.context.config.ssl_ca_key_file
+                        # Генерируем сертификат подписанный CA
+                        ca_cert_file = self.context.config.ssl_ca_cert_file
+                        ca_key_file = self.context.config.ssl_ca_key_file
 
-                success = generate_signed_certificate(
-                    cert_file=cert_tmp_path,
-                    key_file=key_tmp_path,
-                    ca_cert_file=ca_cert_file,
-                    ca_key_file=ca_key_file,
-                    common_name=node_id,
-                    san_ips=ip_addresses,
-                    san_dns=dns_names,
-                    days_valid=365
-                )
+                        print(cert_tmp_path)
+                        print(key_tmp_path)
 
-                if not success:
-                    raise HTTPException(
-                        status_code=500,
-                        detail="Failed to generate certificate"
-                    )
+                        success = generate_signed_certificate(
+                            cert_file=cert_tmp_path,
+                            key_file=key_tmp_path,
+                            ca_cert_file=ca_cert_file,
+                            ca_key_file=ca_key_file,
+                            common_name=node_id,
+                            san_ips=ip_addresses,
+                            san_dns=dns_names,
+                            days_valid=365,
+                            temp=True,
+                            context=self.context
+                        )
+
+                        if not success:
+                            raise HTTPException(
+                                status_code=500,
+                                detail="Failed to generate certificate"
+                            )
+
+                        certificate_pem = ''
+                        private_key_pem = ''
 
                 # Читаем сгенерированные файлы
-                with open(cert_tmp_path, 'r') as f:
+                with open(cert_tmp_path.name, 'r') as f:
                     certificate_pem = f.read()
+                    print(certificate_pem)
 
-                with open(key_tmp_path, 'r') as f:
+                with open(key_tmp_path.name, 'r') as f:
                     private_key_pem = f.read()
+                    print(private_key_pem)
+
+                print(certificate_pem)
+                print(private_key_pem)
 
                 # Удаляем временные файлы
-                os.unlink(cert_tmp_path)
-                os.unlink(key_tmp_path)
+                # os.unlink(cert_tmp_path)
+                # os.unlink(key_tmp_path)
 
                 # Логируем событие
                 self.logger.info(f"Generated certificate for node {node_id}")

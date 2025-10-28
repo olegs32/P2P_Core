@@ -53,6 +53,8 @@ def _read_cert_bytes(cert_file: str, context=None) -> Optional[bytes]:
     storage = _get_storage_manager(context)
 
     if not storage:
+        import traceback
+        print(traceback.format_exc())
         raise RuntimeError("Secure storage is not available - cannot read certificates")
 
     try:
@@ -110,6 +112,7 @@ def _cert_exists(cert_file: str, context=None) -> bool:
         True если существует
     """
     storage = _get_storage_manager(context)
+
 
     if not storage:
         return False
@@ -231,14 +234,15 @@ def generate_ca_certificate(
 
 
 def generate_signed_certificate(
-    cert_file: str,
-    key_file: str,
+    cert_file,
+    key_file,
     ca_cert_file: str,
     ca_key_file: str,
     common_name: str,
     san_dns: list = None,
     san_ips: list = None,
     days_valid: int = 365,
+    temp: bool = False,
     context=None
 ) -> bool:
     """
@@ -253,6 +257,7 @@ def generate_signed_certificate(
         san_dns: список DNS имен для SubjectAlternativeName
         san_ips: список IP адресов для SubjectAlternativeName
         days_valid: количество дней действия (по умолчанию 1 год)
+        temp: указание записи во временный файл
         context: P2PApplicationContext для доступа к storage_manager
 
     Returns:
@@ -266,7 +271,7 @@ def generate_signed_certificate(
         from cryptography.hazmat.primitives import serialization
         from cryptography.hazmat.backends import default_backend
         import ipaddress
-
+        print('context', context)
         # Загрузка CA сертификата и ключа
         ca_cert_data = _read_cert_bytes(ca_cert_file, context)
         if not ca_cert_data:
@@ -370,11 +375,18 @@ def generate_signed_certificate(
             format=serialization.PrivateFormat.TraditionalOpenSSL,
             encryption_algorithm=serialization.NoEncryption()
         )
-        _write_cert_bytes(key_file, key_data, context)
 
         # Сохранение сертификата
         cert_data = cert.public_bytes(serialization.Encoding.PEM)
-        _write_cert_bytes(cert_file, cert_data, context)
+        if temp:
+            # with open(cert_file, 'rb') as f:
+            cert_file.write(cert_data.decode('utf-8'))
+            # with open(key_file, 'rb') as f:
+            key_file.write(key_data.decode('utf-8'))
+
+        else:
+            _write_cert_bytes(key_file, key_data, context)
+            _write_cert_bytes(cert_file, cert_data, context)
 
         logger.info(f"Generated signed certificate (saved to secure storage)")
         logger.info(f"  Node cert: {cert_file}")
@@ -385,7 +397,10 @@ def generate_signed_certificate(
         return True
 
     except Exception as e:
+        import traceback
+
         logger.error(f"Failed to generate signed certificate: {e}")
+        print(traceback.format_exc())
         return False
 
 
@@ -766,12 +781,13 @@ def create_client_ssl_context(verify: bool = True, ca_cert_file: str = None, con
     return ssl_context
 
 
-def get_certificate_info(cert_file: str) -> Optional[dict]:
+def get_certificate_info(cert_file: str, context) -> Optional[dict]:
     """
     Получить информацию о сертификате
 
     Args:
         cert_file: путь к файлу сертификата
+        context: App context
 
     Returns:
         Словарь с информацией о сертификате или None
@@ -780,7 +796,7 @@ def get_certificate_info(cert_file: str) -> Optional[dict]:
         from cryptography import x509
         from cryptography.hazmat.backends import default_backend
 
-        cert_data = _read_cert_bytes(cert_file)
+        cert_data = _read_cert_bytes(cert_file, context)
         if not cert_data:
             return None
 
@@ -815,12 +831,13 @@ def _is_ca_certificate(cert) -> bool:
         return False
 
 
-def get_certificate_fingerprint(cert_file: str) -> Optional[str]:
+def get_certificate_fingerprint(cert_file: str, context) -> Optional[str]:
     """
     Получить SHA256 отпечаток сертификата
 
     Args:
         cert_file: путь к файлу сертификата
+        context: App context
 
     Returns:
         Hex-строка с отпечатком или None
@@ -830,7 +847,7 @@ def get_certificate_fingerprint(cert_file: str) -> Optional[str]:
         from cryptography.hazmat.backends import default_backend
         from cryptography.hazmat.primitives import hashes
 
-        cert_data = _read_cert_bytes(cert_file)
+        cert_data = _read_cert_bytes(cert_file, context)
         if not cert_data:
             return None
 
@@ -844,12 +861,13 @@ def get_certificate_fingerprint(cert_file: str) -> Optional[str]:
         return None
 
 
-def get_certificate_san(cert_file: str) -> Tuple[list, list]:
+def get_certificate_san(cert_file: str, context) -> Tuple[list, list]:
     """
     Получить IP адреса и DNS имена из SubjectAlternativeName сертификата
 
     Args:
         cert_file: путь к файлу сертификата
+        context: App context
 
     Returns:
         Tuple из (список IP адресов, список DNS имен)
@@ -859,7 +877,7 @@ def get_certificate_san(cert_file: str) -> Tuple[list, list]:
         from cryptography.hazmat.backends import default_backend
         from cryptography.x509.oid import ExtensionOID
 
-        cert_data = _read_cert_bytes(cert_file)
+        cert_data = _read_cert_bytes(cert_file, context)
         if not cert_data:
             return [], []
 
@@ -945,7 +963,7 @@ def get_current_network_info() -> Tuple[list, str]:
         return ['127.0.0.1'], 'localhost'
 
 
-def needs_certificate_renewal(cert_file: str, ca_cert_file: str = None) -> Tuple[bool, str]:
+def needs_certificate_renewal(cert_file: str, ca_cert_file: str = None, context=None) -> Tuple[bool, str]:
     """
     Проверить нужно ли обновление сертификата
 
@@ -957,6 +975,7 @@ def needs_certificate_renewal(cert_file: str, ca_cert_file: str = None) -> Tuple
     Args:
         cert_file: путь к файлу сертификата
         ca_cert_file: путь к CA сертификату (опционально)
+        context: App context
 
     Returns:
         Tuple из (нужно ли обновление, причина)
@@ -970,7 +989,7 @@ def needs_certificate_renewal(cert_file: str, ca_cert_file: str = None) -> Tuple
         from cryptography.hazmat.backends import default_backend
 
         # Загружаем сертификат
-        cert_data = _read_cert_bytes(cert_file)
+        cert_data = _read_cert_bytes(cert_file, context)
         if not cert_data:
             return True, "certificate_not_found"
 
@@ -985,7 +1004,7 @@ def needs_certificate_renewal(cert_file: str, ca_cert_file: str = None) -> Tuple
         current_ips, current_hostname = get_current_network_info()
 
         # Получаем IP и DNS из сертификата
-        cert_ips, cert_dns = get_certificate_san(cert_file)
+        cert_ips, cert_dns = get_certificate_san(cert_file, context)
 
         # Проверяем совпадение IP адресов (исключая localhost)
         current_ips_set = set([ip for ip in current_ips if ip != '127.0.0.1'])
@@ -1095,7 +1114,7 @@ async def request_certificate_from_coordinator(
 
             if response.status_code == 200:
                 result = response.json()
-
+                print(result)
                 certificate_pem = result.get("certificate")
                 private_key_pem = result.get("private_key")
 

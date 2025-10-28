@@ -111,7 +111,7 @@ def prepare_certificates_after_storage(config: 'P2PConfig', context):
         if ca_cert_file:
             # Просто проверяем что CA доступен
             from layers.ssl_helper import _cert_exists
-            if not _cert_exists(ca_cert_file):
+            if not _cert_exists(ca_cert_file, context):
                 logger.warning(f"CA certificate not found: {ca_cert_file}")
                 logger.warning("Worker will need to request certificate from coordinator")
             else:
@@ -676,38 +676,6 @@ async def main():
                 logger.error("Application requires secure storage. Use --storage to specify storage path.")
                 logger.error("To create new storage, just specify a password and it will be created automatically.")
                 return 1
-
-        # # Legacy метод: старые аргументы для обратной совместимости
-        # elif args.mode == 'coordinator':
-        #     node_id = args.node_id or f"coordinator-{socket.gethostname()}"
-        #     port = args.port or env_config['coordinator_port']
-        #     bind_address = args.address or env_config['bind_address']
-        #     redis_url = args.redis_url or env_config['redis_url']
-        #
-        #     logger.info(f"Starting coordinator: {node_id} on {bind_address}:{port}")
-        #     await run_coordinator(
-        #         node_id=node_id,
-        #         port=port,
-        #         bind_address=bind_address,
-        #         redis_url=redis_url
-        #     )
-        #
-        # elif args.mode == 'worker':
-        #     node_id = args.node_id or f"worker-{socket.gethostname()}"
-        #     port = args.port or env_config['worker_port']
-        #     bind_address = args.address or env_config['bind_address']
-        #     coordinator = args.coord or env_config['coordinator_address']
-        #     redis_url = args.redis_url or env_config['redis_url']
-        #
-        #     logger.info(f"Starting worker: {node_id} on {bind_address}:{port}")
-        #     logger.info(f"Connecting to coordinator: {coordinator}")
-        #     await run_worker(
-        #         node_id=node_id,
-        #         port=port,
-        #         bind_address=bind_address,
-        #         coordinator_addresses=[coordinator],
-        #         redis_url=redis_url
-        #     )
 
         else:
             parser.print_help()

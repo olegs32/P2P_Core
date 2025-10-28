@@ -47,7 +47,7 @@ class P2PConfig:
     """Централизованная конфигурация системы"""
     node_id: str
     port: int
-    bind_address: str = "127.0.0.1"
+    bind_address: str = "0.0.0.0"
     coordinator_mode: bool = False
 
     # Redis конфигурация
@@ -952,7 +952,7 @@ class WebServerComponent(P2PComponent):
                 self.logger.info("Coordinator mode: certificates should be ready from preparation phase")
 
                 # Проверяем что сертификаты существуют
-                if not _cert_exists(cert_file) or not _cert_exists(key_file):
+                if not _cert_exists(cert_file, self.context) or not _cert_exists(key_file, self.context):
                     self.logger.error(f"Coordinator certificates not found after preparation!")
                     self.logger.error(f"  cert_file: {cert_file}")
                     self.logger.error(f"  key_file: {key_file}")
@@ -990,7 +990,7 @@ class WebServerComponent(P2PComponent):
             # Воркеры проверяют и запрашивают сертификаты у координатора если нужно
             elif not self.context.config.coordinator_mode:
                 # Это воркер - проверяем сертификат
-                needs_renewal, renewal_reason = needs_certificate_renewal(cert_file, ca_cert_file)
+                needs_renewal, renewal_reason = needs_certificate_renewal(cert_file, ca_cert_file, self.context)
 
                 if needs_renewal:
                     self.logger.warning(f"Certificate renewal needed: {renewal_reason}")
@@ -1044,7 +1044,7 @@ class WebServerComponent(P2PComponent):
                             # Получаем fingerprint старого сертификата если есть
                             old_fingerprint = None
                             if Path(cert_file).exists():
-                                old_fingerprint = get_certificate_fingerprint(cert_file)
+                                old_fingerprint = get_certificate_fingerprint(cert_file, self.context)
 
                             # Запрашиваем сертификат
                             cert_pem, key_pem = await request_certificate_from_coordinator(
@@ -1095,7 +1095,7 @@ class WebServerComponent(P2PComponent):
                             await asyncio.sleep(1)
 
                 # Проверяем что сертификаты воркера готовы
-                if _cert_exists(cert_file) and _cert_exists(key_file):
+                if _cert_exists(cert_file, self.context) and _cert_exists(key_file, self.context):
                     # Создаем SSL контекст из защищенного хранилища
                     from layers.ssl_helper import ServerSSLContext
 
@@ -1132,7 +1132,7 @@ class WebServerComponent(P2PComponent):
             app=service_layer.app,
             host=self.context.config.bind_address,
             port=self.context.config.port,
-            log_level="warning",
+            log_level="debug",
             access_log=False,
             server_header=False,
             date_header=False,
