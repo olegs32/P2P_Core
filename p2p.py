@@ -548,8 +548,6 @@ def create_argument_parser():
         epilog="""
 Примеры использования:
   %(prog)s --config config/coordinator.yaml    # Загрузка из YAML конфигурации
-  %(prog)s coordinator                          # Координатор с настройками из .env (legacy)
-  %(prog)s worker                               # Рабочий узел с настройками из .env (legacy)
         """
     )
 
@@ -560,7 +558,7 @@ def create_argument_parser():
     # Безопасное хранилище
     parser.add_argument('--password', type=str, default=None,
                         help='Пароль для расшифровки защищенного хранилища (будет запрошен, если не указан)')
-    parser.add_argument('--storage', type=str, default='data/p2p_secure.bin',
+    parser.add_argument('--storage', type=str, default='',
                         help='Путь к файлу защищенного хранилища (по умолчанию: data/p2p_secure.bin)')
     parser.add_argument('--no-storage', action='store_true',
                         help='Отключить использование защищенного хранилища')
