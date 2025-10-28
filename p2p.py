@@ -32,7 +32,7 @@ from layers.service import (
 from layers.storage_manager import init_storage
 
 
-def prepare_certificates_after_storage(config: 'P2PConfig'):
+def prepare_certificates_after_storage(config: 'P2PConfig', context):
     """
     Подготовка сертификатов после инициализации хранилища
 
@@ -42,6 +42,7 @@ def prepare_certificates_after_storage(config: 'P2PConfig'):
 
     Args:
         config: конфигурация P2P узла
+        context: P2PApplicationContext для доступа к storage_manager
     """
     logger = logging.getLogger("CertPrep")
 
@@ -50,9 +51,9 @@ def prepare_certificates_after_storage(config: 'P2PConfig'):
         logger.debug("HTTPS not enabled, skipping certificate preparation")
         return
 
-    # Проверяем доступность storage manager
+    # Проверяем доступность storage manager из контекста
     from layers.storage_manager import get_storage_manager
-    storage = get_storage_manager()
+    storage = get_storage_manager(context)
     if storage:
         logger.info("Storage manager is available - certificates will be saved to secure storage")
     else:
@@ -585,15 +586,32 @@ async def main():
 
                 # Инициализируем защищенное хранилище через контекстный менеджер
                 try:
-                    with init_storage(password, storage_path):
+                    # Создаем минимальный контекст (без config пока)
+                    # Используем простой объект с методами set_shared/get_shared
+                    class MinimalContext:
+                        def __init__(self):
+                            self._shared_state = {}
+                        def set_shared(self, key, value):
+                            self._shared_state[key] = value
+                        def get_shared(self, key, default=None):
+                            return self._shared_state.get(key, default)
+
+                    temp_context = MinimalContext()
+
+                    with init_storage(password, storage_path, temp_context):
                         logger.info("Secure storage initialized successfully")
 
                         # Загружаем конфигурацию (будет использовать хранилище через get_storage_manager)
                         logger.info(f"Loading configuration from: {args.config}")
                         config = P2PConfig.from_yaml(args.config)
 
+                        # Создаем настоящий контекст
+                        context = P2PApplicationContext(config)
+                        # Копируем storage_manager в настоящий контекст
+                        context.set_shared("storage_manager", temp_context.get_shared("storage_manager"))
+
                         # Подготавливаем сертификаты после инициализации хранилища
-                        prepare_certificates_after_storage(config)
+                        prepare_certificates_after_storage(config, context)
 
                         logger.info(f"Starting {config.node_id} ({'coordinator' if config.coordinator_mode else 'worker'})")
                         logger.info(f"Binding to: {config.bind_address}:{config.port}")
@@ -622,8 +640,11 @@ async def main():
                 logger.info(f"Loading configuration from: {args.config}")
                 config = P2PConfig.from_yaml(args.config)
 
+                # Создаем контекст (хотя storage manager не доступен)
+                context = P2PApplicationContext(config)
+
                 # Подготавливаем сертификаты (будет использовать файловую систему)
-                prepare_certificates_after_storage(config)
+                prepare_certificates_after_storage(config, context)
 
                 logger.info(f"Starting {config.node_id} ({'coordinator' if config.coordinator_mode else 'worker'})")
                 logger.info(f"Binding to: {config.bind_address}:{config.port}")

@@ -57,7 +57,7 @@ class ConnectionManager:
     """Менеджер подключений с пулингом"""
 
     def __init__(self, max_connections: int = 100, max_keepalive: int = 20,
-                 ssl_verify: bool = True, ca_cert_file: str = None):
+                 ssl_verify: bool = True, ca_cert_file: str = None, context=None):
         self.clients: Dict[str, httpx.AsyncClient] = {}
         self.limits = httpx.Limits(
             max_connections=max_connections,
@@ -66,6 +66,7 @@ class ConnectionManager:
         self._lock = asyncio.Lock()
         self.ssl_verify = ssl_verify
         self.ca_cert_file = ca_cert_file
+        self.context = context  # Для доступа к storage_manager
 
     async def get_client(self, base_url: str) -> httpx.AsyncClient:
         """Получить клиент для базового URL с переиспользованием соединений"""
@@ -77,7 +78,7 @@ class ConnectionManager:
                     from layers.ssl_helper import create_client_ssl_context
 
                     try:
-                        ssl_context = create_client_ssl_context(verify=True, ca_cert_file=self.ca_cert_file)
+                        ssl_context = create_client_ssl_context(verify=True, ca_cert_file=self.ca_cert_file, context=self.context)
                         verify = ssl_context
                     except Exception as e:
                         # Если не удалось загрузить CA из защищенного хранилища - критическая ошибка
@@ -110,10 +111,12 @@ class ConnectionManager:
 class SimpleGossipProtocol:
     """Упрощенная реализация gossip протокола без внешних зависимостей"""
 
-    def __init__(self, node_id: str, bind_address: str, bind_port: int, coordinator_mode: bool = False):
+    def __init__(self, node_id: str, bind_address: str, bind_port: int, coordinator_mode: bool = False,
+                 ssl_verify: bool = True, ca_cert_file: str = None, context=None):
 
-        self.ca_cert_file = None
-        self.ssl_verify = None
+        self.ca_cert_file = ca_cert_file
+        self.ssl_verify = ssl_verify
+        self.context = context  # Для доступа к storage_manager
         self.node_id = node_id
         self.bind_address = bind_address
         self.bind_port = bind_port
@@ -175,7 +178,7 @@ class SimpleGossipProtocol:
 
             try:
                 # Создаем SSL контекст из защищенного хранилища (без записи на диск)
-                ssl_context = create_client_ssl_context(verify=True, ca_cert_file=ca_cert_file)
+                ssl_context = create_client_ssl_context(verify=True, ca_cert_file=ca_cert_file, context=self.context)
                 self.http_client = httpx.AsyncClient(timeout=timeout, verify=ssl_context)
                 self.log.info(f"HTTPS client configured with CA verification from secure storage")
             except Exception as e:
@@ -649,14 +652,18 @@ class P2PNetworkLayer:
 
     def __init__(self, transport_layer,
                  node_id: str, bind_address: str = "127.0.0.1", bind_port: int = 8000,
-                 coordinator_mode: bool = False, ssl_verify: bool = True, ca_cert_file: str = None):
+                 coordinator_mode: bool = False, ssl_verify: bool = True, ca_cert_file: str = None,
+                 context=None):
         self.log = logging.getLogger('Network')
+        self.context = context  # Сохраняем context для доступа к storage_manager
+
         if bind_address == '0.0.0.0':
             self.advertise_address = self._get_local_ip()
         else:
             self.advertise_address = bind_address
         self.transport = transport_layer
-        self.gossip = SimpleGossipProtocol(node_id, self.advertise_address, bind_port, coordinator_mode)
+        self.gossip = SimpleGossipProtocol(node_id, self.advertise_address, bind_port, coordinator_mode,
+                                          ssl_verify=ssl_verify, ca_cert_file=ca_cert_file, context=context)
         self.load_balancer_index = 0
 
         # SSL параметры для HTTPS клиента
@@ -668,7 +675,8 @@ class P2PNetworkLayer:
             max_connections=100,
             max_keepalive=20,
             ssl_verify=ssl_verify,
-            ca_cert_file=ca_cert_file
+            ca_cert_file=ca_cert_file,
+            context=context
         )
 
         # Статистика запросов

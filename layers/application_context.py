@@ -573,7 +573,8 @@ class NetworkComponent(P2PComponent):
             self.context.config.port,
             self.context.config.coordinator_mode,
             ssl_verify=self.context.config.ssl_verify,
-            ca_cert_file=self.context.config.ssl_ca_cert_file
+            ca_cert_file=self.context.config.ssl_ca_cert_file,
+            context=self.context
         )
 
         # Настройка gossip из конфигурации
