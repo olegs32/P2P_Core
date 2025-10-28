@@ -16,21 +16,33 @@ logger = logging.getLogger("SSL")
 
 # === Вспомогательные функции для работы с хранилищем ===
 
-def _get_storage_manager():
-    """Получить storage manager если доступен"""
+def _get_storage_manager(context=None):
+    """
+    Получить storage manager из контекста
+
+    Args:
+        context: P2PApplicationContext
+
+    Returns:
+        P2PStorageManager или None
+    """
+    if context is None:
+        return None
+
     try:
         from layers.storage_manager import get_storage_manager
-        return get_storage_manager()
+        return get_storage_manager(context)
     except:
         return None
 
 
-def _read_cert_bytes(cert_file: str) -> Optional[bytes]:
+def _read_cert_bytes(cert_file: str, context=None) -> Optional[bytes]:
     """
     Читать сертификат ТОЛЬКО из защищенного хранилища
 
     Args:
         cert_file: путь к сертификату (например, certs/ca_cert.cer)
+        context: P2PApplicationContext для доступа к storage_manager
 
     Returns:
         байты сертификата или None
@@ -38,7 +50,7 @@ def _read_cert_bytes(cert_file: str) -> Optional[bytes]:
     Raises:
         RuntimeError: если хранилище недоступно или сертификат не найден
     """
-    storage = _get_storage_manager()
+    storage = _get_storage_manager(context)
 
     if not storage:
         raise RuntimeError("Secure storage is not available - cannot read certificates")
@@ -56,13 +68,14 @@ def _read_cert_bytes(cert_file: str) -> Optional[bytes]:
         raise RuntimeError(f"Failed to read certificate from secure storage: {e}")
 
 
-def _write_cert_bytes(cert_file: str, cert_data: bytes) -> tuple[bool, str]:
+def _write_cert_bytes(cert_file: str, cert_data: bytes, context=None) -> tuple[bool, str]:
     """
     Записать сертификат ТОЛЬКО в защищенное хранилище
 
     Args:
         cert_file: путь к сертификату
         cert_data: байты сертификата
+        context: P2PApplicationContext для доступа к storage_manager
 
     Returns:
         (success, location) - успешность и место сохранения ("storage")
@@ -70,7 +83,7 @@ def _write_cert_bytes(cert_file: str, cert_data: bytes) -> tuple[bool, str]:
     Raises:
         RuntimeError: если хранилище недоступно
     """
-    storage = _get_storage_manager()
+    storage = _get_storage_manager(context)
 
     if not storage:
         raise RuntimeError("Secure storage is not available - cannot write certificates")
@@ -85,17 +98,18 @@ def _write_cert_bytes(cert_file: str, cert_data: bytes) -> tuple[bool, str]:
         raise RuntimeError(f"Failed to write certificate to secure storage: {e}")
 
 
-def _cert_exists(cert_file: str) -> bool:
+def _cert_exists(cert_file: str, context=None) -> bool:
     """
     Проверить существование сертификата ТОЛЬКО в защищенном хранилище
 
     Args:
         cert_file: путь к сертификату
+        context: P2PApplicationContext для доступа к storage_manager
 
     Returns:
         True если существует
     """
-    storage = _get_storage_manager()
+    storage = _get_storage_manager(context)
 
     if not storage:
         return False
@@ -476,7 +490,12 @@ class ServerSSLContext:
     Временные файлы удаляются при завершении работы сервера.
     """
 
-    def __init__(self):
+    def __init__(self, context=None):
+        """
+        Args:
+            context: P2PApplicationContext для доступа к storage_manager
+        """
+        self.context = context
         self.ssl_context: Optional[ssl.SSLContext] = None
         self.cert_fd: Optional[int] = None
         self.key_fd: Optional[int] = None
@@ -509,12 +528,12 @@ class ServerSSLContext:
 
         try:
             # Проверяем наличие файлов в защищенном хранилище
-            if not _cert_exists(cert_file) or not _cert_exists(key_file):
+            if not _cert_exists(cert_file, self.context) or not _cert_exists(key_file, self.context):
                 raise RuntimeError(f"Certificate files not found in secure storage: {cert_file}, {key_file}")
 
             # Загружаем сертификаты из защищенного хранилища в память
-            cert_data = _read_cert_bytes(cert_file)
-            key_data = _read_cert_bytes(key_file)
+            cert_data = _read_cert_bytes(cert_file, self.context)
+            key_data = _read_cert_bytes(key_file, self.context)
 
             if not cert_data or not key_data:
                 raise RuntimeError(f"Failed to read certificates from secure storage")
@@ -536,7 +555,7 @@ class ServerSSLContext:
                 self.ssl_context.verify_mode = ssl.CERT_REQUIRED
 
                 # Загружаем CA сертификат из памяти (cadata работает везде)
-                ca_data = _read_cert_bytes(ca_cert_file)
+                ca_data = _read_cert_bytes(ca_cert_file, self.context)
                 if ca_data:
                     self.ssl_context.load_verify_locations(cadata=ca_data.decode('utf-8'))
                     logger.info(f"Client certificate verification enabled with CA from secure storage")
@@ -703,13 +722,14 @@ def create_ssl_context(
         return None
 
 
-def create_client_ssl_context(verify: bool = True, ca_cert_file: str = None) -> ssl.SSLContext:
+def create_client_ssl_context(verify: bool = True, ca_cert_file: str = None, context=None) -> ssl.SSLContext:
     """
     Создать SSL контекст для HTTPS клиента из защищенного хранилища (без записи на диск)
 
     Args:
         verify: проверять ли серверный сертификат
         ca_cert_file: путь к CA сертификату для верификации сервера
+        context: P2PApplicationContext для доступа к storage_manager
 
     Returns:
         SSLContext для клиента
@@ -718,7 +738,7 @@ def create_client_ssl_context(verify: bool = True, ca_cert_file: str = None) -> 
 
     if verify and ca_cert_file:
         # Загружаем CA сертификат из защищенного хранилища в память
-        ca_data = _read_cert_bytes(ca_cert_file)
+        ca_data = _read_cert_bytes(ca_cert_file, context)
         if ca_data:
             # load_verify_locations поддерживает cadata для загрузки CA из памяти
             ssl_context.load_verify_locations(cadata=ca_data.decode('utf-8'))

@@ -960,7 +960,7 @@ class WebServerComponent(P2PComponent):
                 # Сертификаты готовы, создаем SSL контекст из защищенного хранилища
                 from layers.ssl_helper import ServerSSLContext
 
-                self.server_ssl_context = ServerSSLContext()
+                self.server_ssl_context = ServerSSLContext(context=self.context)
                 try:
                     ssl_ctx = self.server_ssl_context.create(
                         cert_file=cert_file,
@@ -1098,7 +1098,7 @@ class WebServerComponent(P2PComponent):
                     # Создаем SSL контекст из защищенного хранилища
                     from layers.ssl_helper import ServerSSLContext
 
-                    self.server_ssl_context = ServerSSLContext()
+                    self.server_ssl_context = ServerSSLContext(context=self.context)
                     try:
                         ssl_ctx = self.server_ssl_context.create(
                             cert_file=cert_file,

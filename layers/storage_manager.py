@@ -239,42 +239,47 @@ class P2PStorageManager:
         return self.archive
 
 
-# Глобальный экземпляр менеджера (инициализируется при старте)
-_global_storage_manager: Optional[P2PStorageManager] = None
+def get_storage_manager(context=None) -> Optional[P2PStorageManager]:
+    """
+    Получить экземпляр менеджера хранилища из контекста
 
+    Args:
+        context: P2PApplicationContext (если None, вернет None)
 
-def get_storage_manager() -> Optional[P2PStorageManager]:
-    """Получить глобальный экземпляр менеджера хранилища"""
-    return _global_storage_manager
-
-
-def set_storage_manager(manager: P2PStorageManager):
-    """Установить глобальный экземпляр менеджера хранилища"""
-    global _global_storage_manager
-    _global_storage_manager = manager
+    Returns:
+        P2PStorageManager или None если не найден
+    """
+    if context is None:
+        return None
+    return context.get_shared("storage_manager")
 
 
 @contextmanager
-def init_storage(password: str, storage_path: str = "data/p2p_secure.bin"):
+def init_storage(password: str, storage_path: str = "data/p2p_secure.bin", context=None):
     """
-    Глобальная инициализация хранилища
+    Инициализация хранилища с регистрацией в контексте
 
     Args:
         password: Пароль для хранилища
         storage_path: Путь к файлу хранилища
+        context: P2PApplicationContext для регистрации storage_manager
 
     Example:
-        with init_storage(password="my_secure_password"):
+        context = P2PApplicationContext(config)
+        with init_storage(password="my_secure_password", context=context):
             # Весь код приложения здесь
-            app = create_p2p_app()
-            app.run()
+            # storage_manager доступен через context.get_shared("storage_manager")
     """
     manager = P2PStorageManager(password=password, storage_path=storage_path)
 
     with manager.initialize():
-        set_storage_manager(manager)
+        # Регистрируем в контексте если он предоставлен
+        if context is not None:
+            context.set_shared("storage_manager", manager)
 
         try:
             yield manager
         finally:
-            set_storage_manager(None)
+            # Очищаем из контекста
+            if context is not None:
+                context.set_shared("storage_manager", None)
