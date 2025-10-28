@@ -125,7 +125,8 @@ def generate_ca_certificate(
     ca_cert_file: str,
     ca_key_file: str,
     common_name: str = "P2P Network CA",
-    days_valid: int = 3650
+    days_valid: int = 3650,
+    context=None
 ) -> bool:
     """
     Генерация Certificate Authority (CA)
@@ -135,6 +136,7 @@ def generate_ca_certificate(
         ca_key_file: путь к файлу CA приватного ключа
         common_name: Common Name для CA
         days_valid: количество дней действия (по умолчанию 10 лет)
+        context: P2PApplicationContext для доступа к storage_manager
 
     Returns:
         True если успешно сгенерирован
@@ -207,11 +209,11 @@ def generate_ca_certificate(
             format=serialization.PrivateFormat.TraditionalOpenSSL,
             encryption_algorithm=serialization.NoEncryption()
         )
-        _write_cert_bytes(ca_key_file, ca_key_data)
+        _write_cert_bytes(ca_key_file, ca_key_data, context)
 
         # Сохранение CA сертификата
         ca_cert_data = ca_cert.public_bytes(serialization.Encoding.PEM)
-        _write_cert_bytes(ca_cert_file, ca_cert_data)
+        _write_cert_bytes(ca_cert_file, ca_cert_data, context)
 
         logger.info(f"Generated CA certificate (saved to secure storage)")
         logger.info(f"  CA cert: {ca_cert_file}")
@@ -236,7 +238,8 @@ def generate_signed_certificate(
     common_name: str,
     san_dns: list = None,
     san_ips: list = None,
-    days_valid: int = 365
+    days_valid: int = 365,
+    context=None
 ) -> bool:
     """
     Генерация сертификата подписанного CA
@@ -250,6 +253,7 @@ def generate_signed_certificate(
         san_dns: список DNS имен для SubjectAlternativeName
         san_ips: список IP адресов для SubjectAlternativeName
         days_valid: количество дней действия (по умолчанию 1 год)
+        context: P2PApplicationContext для доступа к storage_manager
 
     Returns:
         True если успешно сгенерирован
@@ -264,12 +268,12 @@ def generate_signed_certificate(
         import ipaddress
 
         # Загрузка CA сертификата и ключа
-        ca_cert_data = _read_cert_bytes(ca_cert_file)
+        ca_cert_data = _read_cert_bytes(ca_cert_file, context)
         if not ca_cert_data:
             raise FileNotFoundError(f"CA certificate not found: {ca_cert_file}")
         ca_cert = x509.load_pem_x509_certificate(ca_cert_data, default_backend())
 
-        ca_key_data = _read_cert_bytes(ca_key_file)
+        ca_key_data = _read_cert_bytes(ca_key_file, context)
         if not ca_key_data:
             raise FileNotFoundError(f"CA private key not found: {ca_key_file}")
         ca_private_key = serialization.load_pem_private_key(
@@ -366,11 +370,11 @@ def generate_signed_certificate(
             format=serialization.PrivateFormat.TraditionalOpenSSL,
             encryption_algorithm=serialization.NoEncryption()
         )
-        _write_cert_bytes(key_file, key_data)
+        _write_cert_bytes(key_file, key_data, context)
 
         # Сохранение сертификата
         cert_data = cert.public_bytes(serialization.Encoding.PEM)
-        _write_cert_bytes(cert_file, cert_data)
+        _write_cert_bytes(cert_file, cert_data, context)
 
         logger.info(f"Generated signed certificate (saved to secure storage)")
         logger.info(f"  Node cert: {cert_file}")
@@ -385,23 +389,24 @@ def generate_signed_certificate(
         return False
 
 
-def ensure_ca_exists(ca_cert_file: str, ca_key_file: str) -> bool:
+def ensure_ca_exists(ca_cert_file: str, ca_key_file: str, context=None) -> bool:
     """
     Проверить наличие CA и создать если отсутствует
 
     Args:
         ca_cert_file: путь к файлу CA сертификата
         ca_key_file: путь к файлу CA приватного ключа
+        context: P2PApplicationContext для доступа к storage_manager
 
     Returns:
         True если CA доступен
     """
-    if _cert_exists(ca_cert_file) and _cert_exists(ca_key_file):
+    if _cert_exists(ca_cert_file, context) and _cert_exists(ca_key_file, context):
         logger.info(f"CA certificate found: {ca_cert_file}")
         return True
 
     logger.warning("CA not found, generating new CA...")
-    return generate_ca_certificate(ca_cert_file, ca_key_file)
+    return generate_ca_certificate(ca_cert_file, ca_key_file, context=context)
 
 
 def ensure_certificates_exist(
@@ -409,7 +414,8 @@ def ensure_certificates_exist(
     key_file: str,
     common_name: str = "P2P Node",
     ca_cert_file: str = None,
-    ca_key_file: str = None
+    ca_key_file: str = None,
+    context=None
 ) -> bool:
     """
     Проверить наличие сертификатов и создать если отсутствуют
@@ -430,7 +436,7 @@ def ensure_certificates_exist(
     Raises:
         RuntimeError: если CA параметры не предоставлены или сертификат не может быть сгенерирован
     """
-    if _cert_exists(cert_file) and _cert_exists(key_file):
+    if _cert_exists(cert_file, context) and _cert_exists(key_file, context):
         logger.info(f"SSL certificates found: {cert_file}, {key_file}")
         return True
 
@@ -460,7 +466,7 @@ def ensure_certificates_exist(
     logger.info(f"  CA key: {ca_key_file}")
 
     # Убедимся что CA существует
-    if not ensure_ca_exists(ca_cert_file, ca_key_file):
+    if not ensure_ca_exists(ca_cert_file, ca_key_file, context=context):
         logger.error("Failed to ensure CA exists")
         raise RuntimeError("CA certificate does not exist and could not be created")
 
@@ -470,7 +476,7 @@ def ensure_certificates_exist(
 
     success = generate_signed_certificate(
         cert_file, key_file, ca_cert_file, ca_key_file, common_name,
-        san_ips=[my_ip], san_dns=[my_name]
+        san_ips=[my_ip], san_dns=[my_name], context=context
     )
 
     if not success:

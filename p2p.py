@@ -83,7 +83,7 @@ def prepare_certificates_after_storage(config: 'P2PConfig', context):
             raise RuntimeError("Coordinator requires CA certificate configuration")
 
         # Создаем CA если не существует
-        if not ensure_ca_exists(ca_cert_file, ca_key_file):
+        if not ensure_ca_exists(ca_cert_file, ca_key_file, context=context):
             logger.error("Failed to ensure CA exists")
             raise RuntimeError("Could not create or verify CA certificate")
 
@@ -95,7 +95,8 @@ def prepare_certificates_after_storage(config: 'P2PConfig', context):
             cert_file, key_file,
             config.node_id,
             ca_cert_file=ca_cert_file,
-            ca_key_file=ca_key_file
+            ca_key_file=ca_key_file,
+            context=context
         ):
             logger.error("Failed to ensure coordinator certificate exists")
             raise RuntimeError("Could not create coordinator certificate")
