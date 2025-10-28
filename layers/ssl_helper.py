@@ -465,6 +465,123 @@ def ensure_certificates_exist(
     return True
 
 
+class ServerSSLContext:
+    """
+    Управляемый SSL контекст для сервера с автоматическим управлением памятью
+    Использует memfd_create для хранения сертификатов в памяти без записи на диск
+    """
+
+    def __init__(self):
+        self.ssl_context: Optional[ssl.SSLContext] = None
+        self.cert_fd: Optional[int] = None
+        self.key_fd: Optional[int] = None
+        self._initialized = False
+
+    def create(self, cert_file: str, key_file: str, verify_mode: bool = False,
+               ca_cert_file: str = None) -> ssl.SSLContext:
+        """
+        Создать SSL контекст из защищенного хранилища
+
+        Args:
+            cert_file: путь к файлу сертификата в хранилище
+            key_file: путь к файлу приватного ключа в хранилище
+            verify_mode: проверять ли клиентские сертификаты
+            ca_cert_file: путь к CA сертификату для верификации клиентов
+
+        Returns:
+            SSLContext готовый к использованию
+
+        Raises:
+            RuntimeError: если не удалось создать контекст
+        """
+        if self._initialized:
+            raise RuntimeError("SSL context already initialized")
+
+        try:
+            # Проверяем наличие файлов в защищенном хранилище
+            if not _cert_exists(cert_file) or not _cert_exists(key_file):
+                raise RuntimeError(f"Certificate files not found in secure storage: {cert_file}, {key_file}")
+
+            # Загружаем сертификаты из защищенного хранилища в память
+            cert_data = _read_cert_bytes(cert_file)
+            key_data = _read_cert_bytes(key_file)
+
+            if not cert_data or not key_data:
+                raise RuntimeError(f"Failed to read certificates from secure storage")
+
+            # Создаем файлы в памяти (Linux memfd - НЕ записывает на диск)
+            self.cert_fd = os.memfd_create("server_cert", 0)
+            os.write(self.cert_fd, cert_data)
+            cert_path = f"/proc/self/fd/{self.cert_fd}"
+
+            self.key_fd = os.memfd_create("server_key", 0)
+            os.write(self.key_fd, key_data)
+            key_path = f"/proc/self/fd/{self.key_fd}"
+
+            # Создаем SSL контекст
+            self.ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+            self.ssl_context.load_cert_chain(cert_path, key_path)
+
+            logger.debug("Certificate chain loaded from memory (via memfd)")
+
+            if verify_mode and ca_cert_file:
+                self.ssl_context.verify_mode = ssl.CERT_REQUIRED
+
+                # Загружаем CA сертификат из памяти
+                ca_data = _read_cert_bytes(ca_cert_file)
+                if ca_data:
+                    self.ssl_context.load_verify_locations(cadata=ca_data.decode('utf-8'))
+                    logger.info(f"Client certificate verification enabled with CA from secure storage")
+                else:
+                    raise RuntimeError(f"Failed to load CA certificate from secure storage")
+            else:
+                self.ssl_context.verify_mode = ssl.CERT_NONE
+
+            # Безопасные настройки
+            self.ssl_context.minimum_version = ssl.TLSVersion.TLSv1_2
+            self.ssl_context.set_ciphers('ECDHE+AESGCM:ECDHE+CHACHA20:DHE+AESGCM:DHE+CHACHA20:!aNULL:!MD5:!DSS')
+
+            self._initialized = True
+            logger.info("SSL context created successfully from secure storage (no disk I/O)")
+            return self.ssl_context
+
+        except AttributeError as e:
+            # Очистка если что-то пошло не так
+            self.cleanup()
+            raise RuntimeError(f"memfd_create not available (Linux 3.17+ required): {e}")
+        except Exception as e:
+            # Очистка если что-то пошло не так
+            self.cleanup()
+            raise RuntimeError(f"Failed to create SSL context: {e}")
+
+    def cleanup(self):
+        """Очистить ресурсы (закрыть file descriptors)"""
+        if self.cert_fd is not None:
+            try:
+                os.close(self.cert_fd)
+            except:
+                pass
+            self.cert_fd = None
+
+        if self.key_fd is not None:
+            try:
+                os.close(self.key_fd)
+            except:
+                pass
+            self.key_fd = None
+
+        self.ssl_context = None
+        self._initialized = False
+        logger.debug("SSL context cleaned up")
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.cleanup()
+        return False
+
+
 def create_ssl_context(
     cert_file: str,
     key_file: str,
@@ -473,6 +590,9 @@ def create_ssl_context(
 ) -> Optional[ssl.SSLContext]:
     """
     Создать SSL контекст для HTTPS сервера из защищенного хранилища (без записи на диск)
+
+    ВНИМАНИЕ: Эта функция создает временные memfd дескрипторы которые закрываются сразу.
+    Для долгоживущих серверов (uvicorn) используйте ServerSSLContext класс!
 
     Args:
         cert_file: путь к файлу сертификата
@@ -484,73 +604,8 @@ def create_ssl_context(
         SSLContext или None при ошибке
     """
     try:
-        # Проверяем наличие файлов в защищенном хранилище
-        if not _cert_exists(cert_file) or not _cert_exists(key_file):
-            logger.error(f"Certificate files not found in secure storage: {cert_file}, {key_file}")
-            return None
-
-        # Создание SSL контекста
-        ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-
-        # Загружаем сертификаты из защищенного хранилища в память
-        cert_data = _read_cert_bytes(cert_file)
-        key_data = _read_cert_bytes(key_file)
-
-        if not cert_data or not key_data:
-            logger.error(f"Failed to read certificates from secure storage")
-            return None
-
-        # Используем memfd_create для создания файлов в памяти (Linux 3.17+)
-        # Это НЕ записывает на диск, файл существует только в RAM
-        cert_fd = None
-        key_fd = None
-
-        try:
-            cert_fd = os.memfd_create("server_cert", 0)
-            os.write(cert_fd, cert_data)
-            cert_path = f"/proc/self/fd/{cert_fd}"
-
-            key_fd = os.memfd_create("server_key", 0)
-            os.write(key_fd, key_data)
-            key_path = f"/proc/self/fd/{key_fd}"
-
-            ssl_context.load_cert_chain(cert_path, key_path)
-            logger.debug("Certificate chain loaded from memory (via memfd)")
-
-        finally:
-            # Закрываем file descriptors (автоматически удаляет из памяти)
-            if cert_fd is not None:
-                os.close(cert_fd)
-            if key_fd is not None:
-                os.close(key_fd)
-
-        if verify_mode and ca_cert_file:
-            ssl_context.verify_mode = ssl.CERT_REQUIRED
-
-            # Загружаем CA сертификат из памяти (используя cadata)
-            ca_data = _read_cert_bytes(ca_cert_file)
-            if ca_data:
-                # load_verify_locations поддерживает cadata для загрузки из памяти
-                ssl_context.load_verify_locations(cadata=ca_data.decode('utf-8'))
-                logger.info(f"Client certificate verification enabled with CA from secure storage")
-            else:
-                logger.error(f"Failed to load CA certificate from secure storage")
-                return None
-        else:
-            ssl_context.verify_mode = ssl.CERT_NONE
-
-        # Безопасные настройки
-        ssl_context.minimum_version = ssl.TLSVersion.TLSv1_2
-        ssl_context.set_ciphers('ECDHE+AESGCM:ECDHE+CHACHA20:DHE+AESGCM:DHE+CHACHA20:!aNULL:!MD5:!DSS')
-
-        logger.info("SSL context created successfully from secure storage (no disk I/O)")
-        return ssl_context
-
-    except AttributeError as e:
-        # memfd_create не доступен (не Linux или старая версия)
-        logger.error(f"memfd_create not available (Linux 3.17+ required): {e}")
-        logger.error("Cannot create SSL context without disk access")
-        return None
+        ctx = ServerSSLContext()
+        return ctx.create(cert_file, key_file, verify_mode, ca_cert_file)
     except Exception as e:
         logger.error(f"Failed to create SSL context: {e}")
         return None

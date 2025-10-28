@@ -957,19 +957,33 @@ class WebServerComponent(P2PComponent):
                     self.logger.error(f"  key_file: {key_file}")
                     raise RuntimeError("Coordinator certificates missing - should have been prepared after storage init")
 
-                # Сертификаты готовы, используем их
-                ssl_config = {
-                    "ssl_keyfile": key_file,
-                    "ssl_certfile": cert_file
-                }
-                protocol = "https"
+                # Сертификаты готовы, создаем SSL контекст из защищенного хранилища
+                from layers.ssl_helper import ServerSSLContext
 
-                if ca_cert_file and self.context.config.ssl_verify:
-                    self.logger.info(f"HTTPS enabled with CA verification")
-                    self.logger.info(f"  Node cert: {cert_file}")
-                    self.logger.info(f"  CA cert: {ca_cert_file}")
-                else:
-                    self.logger.info(f"HTTPS enabled: {cert_file}")
+                self.server_ssl_context = ServerSSLContext()
+                try:
+                    ssl_ctx = self.server_ssl_context.create(
+                        cert_file=cert_file,
+                        key_file=key_file,
+                        verify_mode=self.context.config.ssl_verify,
+                        ca_cert_file=ca_cert_file if self.context.config.ssl_verify else None
+                    )
+
+                    # uvicorn поддерживает SSLContext через параметр ssl
+                    ssl_config = {
+                        "ssl": ssl_ctx
+                    }
+                    protocol = "https"
+
+                    if ca_cert_file and self.context.config.ssl_verify:
+                        self.logger.info(f"HTTPS enabled with CA verification from secure storage")
+                        self.logger.info(f"  Node cert: {cert_file}")
+                        self.logger.info(f"  CA cert: {ca_cert_file}")
+                    else:
+                        self.logger.info(f"HTTPS enabled from secure storage: {cert_file}")
+                except Exception as e:
+                    self.logger.error(f"Failed to create SSL context: {e}")
+                    raise
 
             # Воркеры проверяют и запрашивают сертификаты у координатора если нужно
             elif not self.context.config.coordinator_mode:
@@ -1080,18 +1094,33 @@ class WebServerComponent(P2PComponent):
 
                 # Проверяем что сертификаты воркера готовы
                 if _cert_exists(cert_file) and _cert_exists(key_file):
-                    ssl_config = {
-                        "ssl_keyfile": key_file,
-                        "ssl_certfile": cert_file
-                    }
-                    protocol = "https"
+                    # Создаем SSL контекст из защищенного хранилища
+                    from layers.ssl_helper import ServerSSLContext
 
-                    if ca_cert_file and self.context.config.ssl_verify:
-                        self.logger.info(f"Worker HTTPS enabled with CA verification")
-                        self.logger.info(f"  Node cert: {cert_file}")
-                        self.logger.info(f"  CA cert: {ca_cert_file}")
-                    else:
-                        self.logger.info(f"Worker HTTPS enabled: {cert_file}")
+                    self.server_ssl_context = ServerSSLContext()
+                    try:
+                        ssl_ctx = self.server_ssl_context.create(
+                            cert_file=cert_file,
+                            key_file=key_file,
+                            verify_mode=self.context.config.ssl_verify,
+                            ca_cert_file=ca_cert_file if self.context.config.ssl_verify else None
+                        )
+
+                        # uvicorn поддерживает SSLContext через параметр ssl
+                        ssl_config = {
+                            "ssl": ssl_ctx
+                        }
+                        protocol = "https"
+
+                        if ca_cert_file and self.context.config.ssl_verify:
+                            self.logger.info(f"Worker HTTPS enabled with CA verification from secure storage")
+                            self.logger.info(f"  Node cert: {cert_file}")
+                            self.logger.info(f"  CA cert: {ca_cert_file}")
+                        else:
+                            self.logger.info(f"Worker HTTPS enabled from secure storage: {cert_file}")
+                    except Exception as e:
+                        self.logger.error(f"Failed to create SSL context: {e}")
+                        raise
                 else:
                     self.logger.warning("Worker certificates not available, falling back to HTTP")
                     self.logger.warning("This may indicate certificate request failed")
@@ -1126,5 +1155,9 @@ class WebServerComponent(P2PComponent):
                 await self.server_task
             except asyncio.CancelledError:
                 pass
+
+        # Очистка SSL контекста (закрытие memfd дескрипторов)
+        if hasattr(self, 'server_ssl_context'):
+            self.server_ssl_context.cleanup()
 
         self.logger.info("Web server shutdown")
