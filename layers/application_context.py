@@ -969,9 +969,10 @@ class WebServerComponent(P2PComponent):
                         ca_cert_file=ca_cert_file if self.context.config.ssl_verify else None
                     )
 
-                    # uvicorn поддерживает SSLContext через параметр ssl
+                    # uvicorn требует пути к файлам, используем get_cert_path/get_key_path
                     ssl_config = {
-                        "ssl": ssl_ctx
+                        "ssl_keyfile": self.server_ssl_context.get_key_path(),
+                        "ssl_certfile": self.server_ssl_context.get_cert_path()
                     }
                     protocol = "https"
 
@@ -1106,9 +1107,10 @@ class WebServerComponent(P2PComponent):
                             ca_cert_file=ca_cert_file if self.context.config.ssl_verify else None
                         )
 
-                        # uvicorn поддерживает SSLContext через параметр ssl
+                        # uvicorn требует пути к файлам, используем get_cert_path/get_key_path
                         ssl_config = {
-                            "ssl": ssl_ctx
+                            "ssl_keyfile": self.server_ssl_context.get_key_path(),
+                            "ssl_certfile": self.server_ssl_context.get_cert_path()
                         }
                         protocol = "https"
 

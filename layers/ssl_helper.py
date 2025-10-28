@@ -482,6 +482,8 @@ class ServerSSLContext:
         self.key_fd: Optional[int] = None
         self.cert_temp_path: Optional[str] = None
         self.key_temp_path: Optional[str] = None
+        self.cert_path: Optional[str] = None  # Путь для uvicorn
+        self.key_path: Optional[str] = None   # Путь для uvicorn
         self._initialized = False
         self._use_memfd = hasattr(os, 'memfd_create')  # Доступно только на Linux 3.17+
 
@@ -519,16 +521,16 @@ class ServerSSLContext:
 
             if self._use_memfd:
                 # Linux: используем memfd_create (только RAM, не диск)
-                cert_path, key_path = self._create_memfd_files(cert_data, key_data)
+                self.cert_path, self.key_path = self._create_memfd_files(cert_data, key_data)
                 logger.debug("Certificate chain loaded from memory (via memfd)")
             else:
                 # Windows/другие ОС: используем безопасные временные файлы
-                cert_path, key_path = self._create_temp_files(cert_data, key_data)
+                self.cert_path, self.key_path = self._create_temp_files(cert_data, key_data)
                 logger.debug("Certificate chain loaded from secure temporary files")
 
             # Создаем SSL контекст
             self.ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-            self.ssl_context.load_cert_chain(cert_path, key_path)
+            self.ssl_context.load_cert_chain(self.cert_path, self.key_path)
 
             if verify_mode and ca_cert_file:
                 self.ssl_context.verify_mode = ssl.CERT_REQUIRED
@@ -596,6 +598,34 @@ class ServerSSLContext:
 
         return self.cert_temp_path, self.key_temp_path
 
+    def get_cert_path(self) -> str:
+        """
+        Получить путь к файлу сертификата для uvicorn
+
+        Returns:
+            Путь к файлу сертификата (memfd или temp file)
+
+        Raises:
+            RuntimeError: если контекст не инициализирован
+        """
+        if not self._initialized or not self.cert_path:
+            raise RuntimeError("SSL context not initialized")
+        return self.cert_path
+
+    def get_key_path(self) -> str:
+        """
+        Получить путь к файлу ключа для uvicorn
+
+        Returns:
+            Путь к файлу ключа (memfd или temp file)
+
+        Raises:
+            RuntimeError: если контекст не инициализирован
+        """
+        if not self._initialized or not self.key_path:
+            raise RuntimeError("SSL context not initialized")
+        return self.key_path
+
     def cleanup(self):
         """Очистить ресурсы (закрыть file descriptors / удалить временные файлы)"""
         # Linux: закрываем memfd дескрипторы
@@ -631,6 +661,8 @@ class ServerSSLContext:
             self.key_temp_path = None
 
         self.ssl_context = None
+        self.cert_path = None
+        self.key_path = None
         self._initialized = False
         logger.debug("SSL context cleaned up")
 
