@@ -468,14 +468,22 @@ def ensure_certificates_exist(
 class ServerSSLContext:
     """
     Управляемый SSL контекст для сервера с автоматическим управлением памятью
-    Использует memfd_create для хранения сертификатов в памяти без записи на диск
+
+    Использует:
+    - Linux: memfd_create для хранения сертификатов только в RAM
+    - Windows: безопасные временные файлы с ограниченными правами доступа
+
+    Временные файлы удаляются при завершении работы сервера.
     """
 
     def __init__(self):
         self.ssl_context: Optional[ssl.SSLContext] = None
         self.cert_fd: Optional[int] = None
         self.key_fd: Optional[int] = None
+        self.cert_temp_path: Optional[str] = None
+        self.key_temp_path: Optional[str] = None
         self._initialized = False
+        self._use_memfd = hasattr(os, 'memfd_create')  # Доступно только на Linux 3.17+
 
     def create(self, cert_file: str, key_file: str, verify_mode: bool = False,
                ca_cert_file: str = None) -> ssl.SSLContext:
@@ -509,25 +517,23 @@ class ServerSSLContext:
             if not cert_data or not key_data:
                 raise RuntimeError(f"Failed to read certificates from secure storage")
 
-            # Создаем файлы в памяти (Linux memfd - НЕ записывает на диск)
-            self.cert_fd = os.memfd_create("server_cert", 0)
-            os.write(self.cert_fd, cert_data)
-            cert_path = f"/proc/self/fd/{self.cert_fd}"
-
-            self.key_fd = os.memfd_create("server_key", 0)
-            os.write(self.key_fd, key_data)
-            key_path = f"/proc/self/fd/{self.key_fd}"
+            if self._use_memfd:
+                # Linux: используем memfd_create (только RAM, не диск)
+                cert_path, key_path = self._create_memfd_files(cert_data, key_data)
+                logger.debug("Certificate chain loaded from memory (via memfd)")
+            else:
+                # Windows/другие ОС: используем безопасные временные файлы
+                cert_path, key_path = self._create_temp_files(cert_data, key_data)
+                logger.debug("Certificate chain loaded from secure temporary files")
 
             # Создаем SSL контекст
             self.ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
             self.ssl_context.load_cert_chain(cert_path, key_path)
 
-            logger.debug("Certificate chain loaded from memory (via memfd)")
-
             if verify_mode and ca_cert_file:
                 self.ssl_context.verify_mode = ssl.CERT_REQUIRED
 
-                # Загружаем CA сертификат из памяти
+                # Загружаем CA сертификат из памяти (cadata работает везде)
                 ca_data = _read_cert_bytes(ca_cert_file)
                 if ca_data:
                     self.ssl_context.load_verify_locations(cadata=ca_data.decode('utf-8'))
@@ -542,20 +548,57 @@ class ServerSSLContext:
             self.ssl_context.set_ciphers('ECDHE+AESGCM:ECDHE+CHACHA20:DHE+AESGCM:DHE+CHACHA20:!aNULL:!MD5:!DSS')
 
             self._initialized = True
-            logger.info("SSL context created successfully from secure storage (no disk I/O)")
+            logger.info("SSL context created successfully from secure storage")
             return self.ssl_context
 
-        except AttributeError as e:
-            # Очистка если что-то пошло не так
-            self.cleanup()
-            raise RuntimeError(f"memfd_create not available (Linux 3.17+ required): {e}")
         except Exception as e:
             # Очистка если что-то пошло не так
             self.cleanup()
             raise RuntimeError(f"Failed to create SSL context: {e}")
 
+    def _create_memfd_files(self, cert_data: bytes, key_data: bytes) -> tuple:
+        """Создать файлы в памяти через memfd_create (Linux)"""
+        self.cert_fd = os.memfd_create("server_cert", 0)
+        os.write(self.cert_fd, cert_data)
+        cert_path = f"/proc/self/fd/{self.cert_fd}"
+
+        self.key_fd = os.memfd_create("server_key", 0)
+        os.write(self.key_fd, key_data)
+        key_path = f"/proc/self/fd/{self.key_fd}"
+
+        return cert_path, key_path
+
+    def _create_temp_files(self, cert_data: bytes, key_data: bytes) -> tuple:
+        """Создать безопасные временные файлы (Windows/кросс-платформенно)"""
+        import tempfile
+        import stat
+
+        # Создаем временный файл для сертификата
+        cert_fd, self.cert_temp_path = tempfile.mkstemp(prefix='ssl_cert_', suffix='.pem')
+        try:
+            # Ограничиваем права доступа (только текущий пользователь)
+            os.chmod(self.cert_temp_path, stat.S_IRUSR | stat.S_IWUSR)
+            os.write(cert_fd, cert_data)
+        finally:
+            os.close(cert_fd)
+
+        # Создаем временный файл для ключа
+        key_fd, self.key_temp_path = tempfile.mkstemp(prefix='ssl_key_', suffix='.pem')
+        try:
+            # Ограничиваем права доступа (только текущий пользователь)
+            os.chmod(self.key_temp_path, stat.S_IRUSR | stat.S_IWUSR)
+            os.write(key_fd, key_data)
+        finally:
+            os.close(key_fd)
+
+        logger.debug(f"Temporary cert files created: {self.cert_temp_path}, {self.key_temp_path}")
+        logger.warning("Using temporary files for SSL (Windows mode) - files will be deleted on shutdown")
+
+        return self.cert_temp_path, self.key_temp_path
+
     def cleanup(self):
-        """Очистить ресурсы (закрыть file descriptors)"""
+        """Очистить ресурсы (закрыть file descriptors / удалить временные файлы)"""
+        # Linux: закрываем memfd дескрипторы
         if self.cert_fd is not None:
             try:
                 os.close(self.cert_fd)
@@ -569,6 +612,23 @@ class ServerSSLContext:
             except:
                 pass
             self.key_fd = None
+
+        # Windows: удаляем временные файлы
+        if self.cert_temp_path is not None:
+            try:
+                os.unlink(self.cert_temp_path)
+                logger.debug(f"Temporary cert file deleted: {self.cert_temp_path}")
+            except:
+                pass
+            self.cert_temp_path = None
+
+        if self.key_temp_path is not None:
+            try:
+                os.unlink(self.key_temp_path)
+                logger.debug(f"Temporary key file deleted: {self.key_temp_path}")
+            except:
+                pass
+            self.key_temp_path = None
 
         self.ssl_context = None
         self._initialized = False
