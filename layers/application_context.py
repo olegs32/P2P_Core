@@ -105,37 +105,134 @@ class P2PConfig:
     state_directory: str = "data"  # директория для хранения состояния
 
     @classmethod
-    def from_yaml(cls, yaml_path: str) -> 'P2PConfig':
+    def create_default(cls, node_id: str = None, coordinator_mode: bool = False) -> 'P2PConfig':
         """
-        Загрузить конфигурацию из YAML файла
+        Создать конфигурацию с дефолтными параметрами
 
-        Загрузка из защищенного хранилища (если storage_manager доступен)
+        Args:
+            node_id: ID узла (если None, генерируется автоматически)
+            coordinator_mode: True для координатора, False для воркера
+
+        Returns:
+            P2PConfig с дефолтными параметрами
         """
-        # Попытка загрузки из защищенного хранилища
-        try:
+        import socket
+
+        if node_id is None:
+            node_id = f"{'coordinator' if coordinator_mode else 'worker'}-{socket.gethostname()}"
+
+        # Дефолтные параметры для координатора и воркера
+        if coordinator_mode:
+            port = 8001
+            ssl_cert_file = "certs/coordinator_cert.cer"
+            ssl_key_file = "certs/coordinator_key.key"
+            state_directory = "data/coordinator"
+        else:
+            port = 8002
+            ssl_cert_file = "certs/worker_cert.cer"
+            ssl_key_file = "certs/worker_key.key"
+            coordinator_addresses = ["127.0.0.1:8001"]
+            state_directory = "data/worker"
+
+        logger.info(f"Creating default config for {'coordinator' if coordinator_mode else 'worker'}: {node_id}")
+
+        config = cls(
+            node_id=node_id,
+            port=port,
+            coordinator_mode=coordinator_mode,
+            ssl_cert_file=ssl_cert_file,
+            ssl_key_file=ssl_key_file,
+            state_directory=state_directory
+        )
+
+        # Для воркера устанавливаем адреса координаторов
+        if not coordinator_mode:
+            config.coordinator_addresses = coordinator_addresses
+
+        return config
+
+    def save_to_storage(self, config_name: str = None, storage_manager = None):
+        """
+        Сохранить конфигурацию в защищенное хранилище
+
+        Args:
+            config_name: имя файла конфигурации (например, "coordinator.yaml")
+            storage_manager: менеджер защищенного хранилища
+        """
+        if storage_manager is None:
             from layers.storage_manager import get_storage_manager
             storage_manager = get_storage_manager()
 
-            if storage_manager:
-                # Извлечение имени файла
-                config_name = Path(yaml_path).name
+        if not storage_manager:
+            raise RuntimeError("Storage manager is not available")
 
-                logger.info(f"Loading config from secure storage: {config_name}")
-                yaml_content = storage_manager.read_config(config_name)
+        if config_name is None:
+            config_name = f"{'coordinator' if self.coordinator_mode else 'worker'}.yaml"
 
-                config_data = yaml.safe_load(yaml_content)
+        # Конвертируем в YAML
+        from dataclasses import asdict
+        config_dict = asdict(self)
+        yaml_content = yaml.safe_dump(config_dict, default_flow_style=False, allow_unicode=True)
 
-                if not config_data.get('coordinator_mode'):
-                    config_data['ssl_ca_key_file'] = None
+        # Сохраняем в storage
+        storage_manager.write_config(config_name, yaml_content)
+        logger.info(f"Config saved to secure storage: {config_name}")
 
-                return cls(**config_data)
+    @classmethod
+    def from_yaml(cls, yaml_path: str, context = None) -> 'P2PConfig':
+        """
+        Загрузить конфигурацию из защищенного хранилища
+
+        Если конфига нет в хранилище, создает дефолтный и сохраняет его.
+
+        Args:
+            yaml_path: путь к YAML файлу (используется для определения имени конфига)
+            context: контекст приложения для доступа к storage_manager
+
+        Returns:
+            P2PConfig загруженный из хранилища или созданный дефолтный
+        """
+        from layers.storage_manager import get_storage_manager
+
+        storage_manager = get_storage_manager(context)
+
+        if not storage_manager:
+            raise RuntimeError("Storage manager is not available. Cannot load configuration without secure storage.")
+
+        # Извлечение имени файла
+        config_name = Path(yaml_path).name
+
+        try:
+            logger.info(f"Loading config from secure storage: {config_name}")
+            yaml_content = storage_manager.read_config(config_name)
+
+            config_data = yaml.safe_load(yaml_content)
+
+            if not config_data.get('coordinator_mode'):
+                config_data['ssl_ca_key_file'] = None
+
+            logger.info(f"Config loaded successfully from secure storage: {config_name}")
+            return cls(**config_data)
 
         except FileNotFoundError:
-            logger.warning(f"Config not found in storage: {yaml_path}, load defaults")
-            storage_manager.write_config(Path(yaml_path).name, str(P2PConfig.__dict__))
-        except Exception as e:
-            logger.error(f"Error loading from storage: {e}")
+            logger.warning(f"Config not found in storage: {config_name}")
+            logger.info("Creating default configuration...")
 
+            # Определяем режим по имени файла
+            coordinator_mode = "coordinator" in config_name.lower()
+
+            # Создаем дефолтный конфиг
+            default_config = cls.create_default(coordinator_mode=coordinator_mode)
+
+            # Сохраняем в хранилище
+            default_config.save_to_storage(config_name, storage_manager)
+
+            logger.info(f"Default config created and saved: {config_name}")
+            return default_config
+
+        except Exception as e:
+            logger.error(f"Error loading config from storage: {e}")
+            raise RuntimeError(f"Failed to load configuration: {e}")
 
     def to_yaml(self, yaml_path: str) -> None:
         """Сохранить конфигурацию в YAML файл"""

@@ -207,17 +207,15 @@ def setup_logging(verbose: bool = False):
 # === Factory функции для создания приложения ===
 # Примечание: Все компоненты теперь импортируются из layers.application_context
 
-@asynccontextmanager
-async def create_coordinator_application(config: P2PConfig, password: str, storage_path: str):
+async def create_coordinator_application(config: P2PConfig, storage_manager):
     """
-    Создание координатора с инициализацией хранилища и SSL
+    Создание координатора с использованием уже инициализированного хранилища
 
     Args:
         config: конфигурация P2P узла
-        password: пароль для защищенного хранилища
-        storage_path: путь к файлу хранилища
+        storage_manager: уже инициализированный менеджер хранилища
 
-    Yields:
+    Returns:
         P2PApplicationContext: полностью инициализированный контекст приложения
     """
     logger = logging.getLogger("AppFactory")
@@ -226,53 +224,47 @@ async def create_coordinator_application(config: P2PConfig, password: str, stora
     context = P2PApplicationContext(config)
     logger.info("Application context created")
 
-    # 2. Инициализируем защищенное хранилище
-    logger.info(f"Initializing secure storage: {storage_path}")
-    with init_storage(password, storage_path, context):
-        logger.info("Secure storage initialized successfully")
+    # 2. Копируем storage_manager в context
+    context.set_shared("storage_manager", storage_manager)
+    logger.info("Storage manager registered in context")
 
-        # 3. Настраиваем SSL сертификаты
-        logger.info("Setting up SSL certificates")
-        await prepare_certificates_after_storage(config, context)
-        logger.info("SSL certificates ready")
+    # 3. Настраиваем SSL сертификаты
+    logger.info("Setting up SSL certificates")
+    await prepare_certificates_after_storage(config, context)
+    logger.info("SSL certificates ready")
 
-        # 4. Регистрируем компоненты
-        logger.info("Registering application components")
-        context.register_component(TransportComponent(context))
-        context.register_component(CacheComponent(context))
-        context.register_component(NetworkComponent(context))
-        context.register_component(ServiceComponent(context))
-        context.register_component(WebServerComponent(context))
+    # 4. Регистрируем компоненты
+    logger.info("Registering application components")
+    context.register_component(TransportComponent(context))
+    context.register_component(CacheComponent(context))
+    context.register_component(NetworkComponent(context))
+    context.register_component(ServiceComponent(context))
+    context.register_component(WebServerComponent(context))
 
-        # 5. Устанавливаем порядок запуска
-        context.set_startup_order([
-            "transport",
-            "cache",
-            "network",
-            "service",
-            "webserver"
-        ])
-        logger.info("All components registered successfully")
+    # 5. Устанавливаем порядок запуска
+    context.set_startup_order([
+        "transport",
+        "cache",
+        "network",
+        "service",
+        "webserver"
+    ])
+    logger.info("All components registered successfully")
 
-        try:
-            yield context
-        finally:
-            logger.info("Cleaning up coordinator application")
+    return context
 
 
-@asynccontextmanager
 async def create_worker_application(config: P2PConfig, coordinator_addresses: List[str],
-                                   password: str, storage_path: str):
+                                   storage_manager):
     """
-    Создание рабочего узла с инициализацией хранилища и SSL
+    Создание рабочего узла с использованием уже инициализированного хранилища
 
     Args:
         config: конфигурация P2P узла
         coordinator_addresses: список адресов координаторов
-        password: пароль для защищенного хранилища
-        storage_path: путь к файлу хранилища
+        storage_manager: уже инициализированный менеджер хранилища
 
-    Yields:
+    Returns:
         P2PApplicationContext: полностью инициализированный контекст приложения
     """
     logger = logging.getLogger("AppFactory")
@@ -284,38 +276,34 @@ async def create_worker_application(config: P2PConfig, coordinator_addresses: Li
     # Сохраняем адреса координаторов в контексте
     context.set_shared("join_addresses", coordinator_addresses)
 
-    # 2. Инициализируем защищенное хранилище
-    logger.info(f"Initializing secure storage: {storage_path}")
-    with init_storage(password, storage_path, context):
-        logger.info("Secure storage initialized successfully")
+    # 2. Копируем storage_manager в context
+    context.set_shared("storage_manager", storage_manager)
+    logger.info("Storage manager registered in context")
 
-        # 3. Настраиваем SSL сертификаты
-        logger.info("Setting up SSL certificates")
-        await prepare_certificates_after_storage(config, context)
-        logger.info("SSL certificates ready")
+    # 3. Настраиваем SSL сертификаты
+    logger.info("Setting up SSL certificates")
+    await prepare_certificates_after_storage(config, context)
+    logger.info("SSL certificates ready")
 
-        # 4. Регистрируем компоненты (те же что и для координатора)
-        logger.info("Registering application components")
-        context.register_component(TransportComponent(context))
-        context.register_component(CacheComponent(context))
-        context.register_component(NetworkComponent(context))
-        context.register_component(ServiceComponent(context))
-        context.register_component(WebServerComponent(context))
+    # 4. Регистрируем компоненты (те же что и для координатора)
+    logger.info("Registering application components")
+    context.register_component(TransportComponent(context))
+    context.register_component(CacheComponent(context))
+    context.register_component(NetworkComponent(context))
+    context.register_component(ServiceComponent(context))
+    context.register_component(WebServerComponent(context))
 
-        # 5. Устанавливаем порядок запуска
-        context.set_startup_order([
-            "transport",
-            "cache",
-            "network",
-            "service",
-            "webserver"
-        ])
-        logger.info("All components registered successfully")
+    # 5. Устанавливаем порядок запуска
+    context.set_startup_order([
+        "transport",
+        "cache",
+        "network",
+        "service",
+        "webserver"
+    ])
+    logger.info("All components registered successfully")
 
-        try:
-            yield context
-        finally:
-            logger.info("Cleaning up worker application")
+    return context
 
 
 # === Основная логика запуска ===
@@ -684,21 +672,40 @@ async def main():
                         return 1
 
                 try:
-                    # Загружаем конфигурацию
-                    logger.info(f"Loading configuration from: {args.config}")
-                    config = P2PConfig.from_yaml(args.config)
+                    # Создаем минимальный контекст для инициализации storage
+                    class MinimalContext:
+                        def __init__(self):
+                            self._shared_state = {}
+                        def set_shared(self, key, value):
+                            self._shared_state[key] = value
+                        def get_shared(self, key, default=None):
+                            return self._shared_state.get(key, default)
 
-                    logger.info(f"Starting {config.node_id} ({'coordinator' if config.coordinator_mode else 'worker'})")
-                    logger.info(f"Binding to: {config.bind_address}:{config.port}")
+                    temp_context = MinimalContext()
 
-                    # Создаем приложение с полной инициализацией (хранилище + SSL + компоненты)
-                    if config.coordinator_mode:
-                        async with create_coordinator_application(config, password, storage_path) as app_context:
+                    # Инициализируем storage
+                    logger.info(f"Initializing secure storage: {storage_path}")
+                    with init_storage(password, storage_path, temp_context):
+                        logger.info("Secure storage initialized successfully")
+
+                        # Загружаем конфигурацию из storage
+                        logger.info(f"Loading configuration from: {args.config}")
+                        config = P2PConfig.from_yaml(args.config, context=temp_context)
+
+                        logger.info(f"Starting {config.node_id} ({'coordinator' if config.coordinator_mode else 'worker'})")
+                        logger.info(f"Binding to: {config.bind_address}:{config.port}")
+
+                        # Получаем storage_manager из temp_context
+                        storage_manager = temp_context.get_shared("storage_manager")
+
+                        # Создаем приложение с полной инициализацией (SSL + компоненты)
+                        if config.coordinator_mode:
+                            app_context = await create_coordinator_application(config, storage_manager)
                             await run_coordinator_from_context(app_context)
-                    else:
-                        coordinator_addresses = config.coordinator_addresses or []
-                        async with create_worker_application(config, coordinator_addresses,
-                                                            password, storage_path) as app_context:
+                        else:
+                            coordinator_addresses = config.coordinator_addresses or []
+                            app_context = await create_worker_application(config, coordinator_addresses,
+                                                                storage_manager)
                             await run_worker_from_context(app_context)
 
                 except ValueError as e:
