@@ -261,20 +261,19 @@ def init_storage(password: str, storage_path=None, context=None):
 
     Args:
         password: Пароль для хранилища
-        storage_path: Путь к файлу хранилища
+        storage_path: Путь к файлу хранилища (если None, используется дефолтный)
         context: P2PApplicationContext для регистрации storage_manager
 
     Example:
         context = P2PApplicationContext(config)
-        with init_storage(password="my_secure_password", context=context):
+        with init_storage(password="my_secure_password", storage_path="data/p2p.bin", context=context):
             # Весь код приложения здесь
             # storage_manager доступен через context.get_shared("storage_manager")
     """
     if not storage_path or storage_path == '':
-        if context.config.coordinator_mode:
-            storage_path = "data/p2p_coordinator.bin"
-        else:
-            storage_path = "data/p2p_worker.bin"
+        # Дефолтный путь без обращения к context.config
+        storage_path = "data/p2p_secure.bin"
+
     manager = P2PStorageManager(password=password, storage_path=storage_path)
 
     with manager.initialize():
