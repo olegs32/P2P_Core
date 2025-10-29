@@ -10,7 +10,6 @@ from typing import Optional, Tuple
 from datetime import datetime, timedelta
 import io
 
-
 logger = logging.getLogger("SSL")
 
 
@@ -36,7 +35,7 @@ def _get_storage_manager(context=None):
         return None
 
 
-def _read_cert_bytes(cert_file: str, context=None) -> Optional[bytes]:
+def read_cert_bytes(cert_file: str, context=None) -> Optional[bytes]:
     """
     Читать сертификат ТОЛЬКО из защищенного хранилища
 
@@ -113,7 +112,6 @@ def _cert_exists(cert_file: str, context=None) -> bool:
     """
     storage = _get_storage_manager(context)
 
-
     if not storage:
         return False
 
@@ -125,11 +123,11 @@ def _cert_exists(cert_file: str, context=None) -> bool:
 
 
 def generate_ca_certificate(
-    ca_cert_file: str,
-    ca_key_file: str,
-    common_name: str = "P2P Network CA",
-    days_valid: int = 3650,
-    context=None
+        ca_cert_file: str,
+        ca_key_file: str,
+        common_name: str = "P2P Network CA",
+        days_valid: int = 3650,
+        context=None
 ) -> bool:
     """
     Генерация Certificate Authority (CA)
@@ -234,16 +232,16 @@ def generate_ca_certificate(
 
 
 def generate_signed_certificate(
-    cert_file,
-    key_file,
-    ca_cert_file: str,
-    ca_key_file: str,
-    common_name: str,
-    san_dns: list = None,
-    san_ips: list = None,
-    days_valid: int = 365,
-    temp: bool = False,
-    context=None
+        cert_file,
+        key_file,
+        ca_cert_file: str,
+        ca_key_file: str,
+        common_name: str,
+        san_dns: list = None,
+        san_ips: list = None,
+        days_valid: int = 365,
+        temp: bool = False,
+        context=None
 ) -> bool:
     """
     Генерация сертификата подписанного CA
@@ -273,12 +271,12 @@ def generate_signed_certificate(
         import ipaddress
         print('context', context)
         # Загрузка CA сертификата и ключа
-        ca_cert_data = _read_cert_bytes(ca_cert_file, context)
+        ca_cert_data = read_cert_bytes(ca_cert_file, context)
         if not ca_cert_data:
             raise FileNotFoundError(f"CA certificate not found: {ca_cert_file}")
         ca_cert = x509.load_pem_x509_certificate(ca_cert_data, default_backend())
 
-        ca_key_data = _read_cert_bytes(ca_key_file, context)
+        ca_key_data = read_cert_bytes(ca_key_file, context)
         if not ca_key_data:
             raise FileNotFoundError(f"CA private key not found: {ca_key_file}")
         ca_private_key = serialization.load_pem_private_key(
@@ -425,12 +423,12 @@ def ensure_ca_exists(ca_cert_file: str, ca_key_file: str, context=None) -> bool:
 
 
 def ensure_certificates_exist(
-    cert_file: str,
-    key_file: str,
-    common_name: str = "P2P Node",
-    ca_cert_file: str = None,
-    ca_key_file: str = None,
-    context=None
+        cert_file: str,
+        key_file: str,
+        common_name: str = "P2P Node",
+        ca_cert_file: str = None,
+        ca_key_file: str = None,
+        context=None
 ) -> bool:
     """
     Проверить наличие сертификатов и создать если отсутствуют
@@ -523,7 +521,7 @@ class ServerSSLContext:
         self.cert_temp_path: Optional[str] = None
         self.key_temp_path: Optional[str] = None
         self.cert_path: Optional[str] = None  # Путь для uvicorn
-        self.key_path: Optional[str] = None   # Путь для uvicorn
+        self.key_path: Optional[str] = None  # Путь для uvicorn
         self._initialized = False
         self._use_memfd = hasattr(os, 'memfd_create')  # Доступно только на Linux 3.17+
 
@@ -553,8 +551,8 @@ class ServerSSLContext:
                 raise RuntimeError(f"Certificate files not found in secure storage: {cert_file}, {key_file}")
 
             # Загружаем сертификаты из защищенного хранилища в память
-            cert_data = _read_cert_bytes(cert_file, self.context)
-            key_data = _read_cert_bytes(key_file, self.context)
+            cert_data = read_cert_bytes(cert_file, self.context)
+            key_data = read_cert_bytes(key_file, self.context)
 
             if not cert_data or not key_data:
                 raise RuntimeError(f"Failed to read certificates from secure storage")
@@ -565,7 +563,7 @@ class ServerSSLContext:
                 logger.debug("Certificate chain loaded from memory (via memfd)")
             else:
                 # Windows/другие ОС: используем безопасные временные файлы
-                self.cert_path, self.key_path = self._create_temp_files(cert_data, key_data)
+                self.cert_path, self.key_path = self.create_temp_files(cert_data, key_data)
                 logger.debug("Certificate chain loaded from secure temporary files")
 
             # Создаем SSL контекст
@@ -576,7 +574,7 @@ class ServerSSLContext:
                 self.ssl_context.verify_mode = ssl.CERT_REQUIRED
 
                 # Загружаем CA сертификат из памяти (cadata работает везде)
-                ca_data = _read_cert_bytes(ca_cert_file, self.context)
+                ca_data = read_cert_bytes(ca_cert_file, self.context)
                 if ca_data:
                     self.ssl_context.load_verify_locations(cadata=ca_data.decode('utf-8'))
                     logger.info(f"Client certificate verification enabled with CA from secure storage")
@@ -610,7 +608,7 @@ class ServerSSLContext:
 
         return cert_path, key_path
 
-    def _create_temp_files(self, cert_data: bytes, key_data: bytes) -> tuple:
+    def create_temp_files(self, cert_data: bytes, key_data: bytes = None) -> tuple | str:
         """Создать безопасные временные файлы (Windows/кросс-платформенно)"""
         import tempfile
         import stat
@@ -624,19 +622,22 @@ class ServerSSLContext:
         finally:
             os.close(cert_fd)
 
-        # Создаем временный файл для ключа
-        key_fd, self.key_temp_path = tempfile.mkstemp(prefix='ssl_key_', suffix='.pem')
-        try:
-            # Ограничиваем права доступа (только текущий пользователь)
-            os.chmod(self.key_temp_path, stat.S_IRUSR | stat.S_IWUSR)
-            os.write(key_fd, key_data)
-        finally:
-            os.close(key_fd)
+        if key_data:
+            # Создаем временный файл для ключа
+            key_fd, self.key_temp_path = tempfile.mkstemp(prefix='ssl_key_', suffix='.pem')
+            try:
+                # Ограничиваем права доступа (только текущий пользователь)
+                os.chmod(self.key_temp_path, stat.S_IRUSR | stat.S_IWUSR)
+                os.write(key_fd, key_data)
+            finally:
+                os.close(key_fd)
 
         logger.debug(f"Temporary cert files created: {self.cert_temp_path}, {self.key_temp_path}")
         logger.warning("Using temporary files for SSL (Windows mode) - files will be deleted on shutdown")
-
-        return self.cert_temp_path, self.key_temp_path
+        if key_data:
+            return self.cert_temp_path, self.key_temp_path
+        else:
+            return self.cert_temp_path
 
     def get_cert_path(self) -> str:
         """
@@ -715,10 +716,10 @@ class ServerSSLContext:
 
 
 def create_ssl_context(
-    cert_file: str,
-    key_file: str,
-    verify_mode: bool = False,
-    ca_cert_file: str = None
+        cert_file: str,
+        key_file: str,
+        verify_mode: bool = False,
+        ca_cert_file: str = None
 ) -> Optional[ssl.SSLContext]:
     """
     Создать SSL контекст для HTTPS сервера из защищенного хранилища (без записи на диск)
@@ -759,7 +760,7 @@ def create_client_ssl_context(verify: bool = True, ca_cert_file: str = None, con
 
     if verify and ca_cert_file:
         # Загружаем CA сертификат из защищенного хранилища в память
-        ca_data = _read_cert_bytes(ca_cert_file, context)
+        ca_data = read_cert_bytes(ca_cert_file, context)
         if ca_data:
             # load_verify_locations поддерживает cadata для загрузки CA из памяти
             ssl_context.load_verify_locations(cadata=ca_data.decode('utf-8'))
@@ -796,7 +797,7 @@ def get_certificate_info(cert_file: str, context) -> Optional[dict]:
         from cryptography import x509
         from cryptography.hazmat.backends import default_backend
 
-        cert_data = _read_cert_bytes(cert_file, context)
+        cert_data = read_cert_bytes(cert_file, context)
         if not cert_data:
             return None
 
@@ -847,7 +848,7 @@ def get_certificate_fingerprint(cert_file: str, context) -> Optional[str]:
         from cryptography.hazmat.backends import default_backend
         from cryptography.hazmat.primitives import hashes
 
-        cert_data = _read_cert_bytes(cert_file, context)
+        cert_data = read_cert_bytes(cert_file, context)
         if not cert_data:
             return None
 
@@ -877,7 +878,7 @@ def get_certificate_san(cert_file: str, context) -> Tuple[list, list]:
         from cryptography.hazmat.backends import default_backend
         from cryptography.x509.oid import ExtensionOID
 
-        cert_data = _read_cert_bytes(cert_file, context)
+        cert_data = read_cert_bytes(cert_file, context)
         if not cert_data:
             return [], []
 
@@ -989,7 +990,7 @@ def needs_certificate_renewal(cert_file: str, ca_cert_file: str = None, context=
         from cryptography.hazmat.backends import default_backend
 
         # Загружаем сертификат
-        cert_data = _read_cert_bytes(cert_file, context)
+        cert_data = read_cert_bytes(cert_file, context)
         if not cert_data:
             return True, "certificate_not_found"
 
@@ -1039,8 +1040,8 @@ def generate_challenge() -> str:
 
 
 async def request_ca_cert_from_coordinator(
-    coordinator_url: str,
-    context = None
+        coordinator_url: str,
+        context=None
 ) -> Optional[str]:
     """
     Запросить CA сертификат от координатора (ACME-like)
@@ -1112,14 +1113,14 @@ async def request_ca_cert_from_coordinator(
 
 
 async def request_certificate_from_coordinator(
-    node_id: str,
-    coordinator_url: str,
-    challenge: str,
-    ip_addresses: list,
-    dns_names: list,
-    old_cert_fingerprint: str = None,
-    ca_cert_file: str = None,
-    challenge_port: int = None
+        node_id: str,
+        coordinator_url: str,
+        challenge: str,
+        ip_addresses: list,
+        dns_names: list,
+        old_cert_fingerprint: str = None,
+        ca_cert_file: str = None,
+        challenge_port: int = None
 ) -> Tuple[Optional[str], Optional[str]]:
     """
     Запросить новый сертификат от координатора
@@ -1166,7 +1167,7 @@ async def request_certificate_from_coordinator(
 
         # Используем HTTPS с CA верификацией
         verify_param = False  # По умолчанию без верификации
-
+        print(ca_cert_file)
         if ca_cert_file and Path(ca_cert_file).exists():
             # Используем CA сертификат для верификации
             verify_param = str(Path(ca_cert_file).resolve())
@@ -1255,4 +1256,3 @@ def save_certificate_and_key(cert_pem: str, key_pem: str, cert_file: str, key_fi
     except Exception as e:
         logger.error(f"Failed to save certificate and key: {e}")
         raise
-

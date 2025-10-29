@@ -1999,7 +1999,7 @@ class P2PServiceHandler:
 
             try:
                 # Читаем CA сертификат из защищенного хранилища
-                from layers.ssl_helper import _read_cert_bytes
+                from layers.ssl_helper import read_cert_bytes
 
                 ca_cert_file = self.context.config.ssl_ca_cert_file
 
@@ -2009,7 +2009,7 @@ class P2PServiceHandler:
                         detail="CA certificate not configured on coordinator"
                     )
 
-                ca_cert_data = _read_cert_bytes(ca_cert_file, context=self.context)
+                ca_cert_data = read_cert_bytes(ca_cert_file, context=self.context)
 
                 if not ca_cert_data:
                     raise HTTPException(

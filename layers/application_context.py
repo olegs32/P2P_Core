@@ -18,7 +18,6 @@ from enum import Enum
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
 
-
 logger = logging.getLogger("AppContext")
 
 
@@ -110,9 +109,7 @@ class P2PConfig:
         """
         Загрузить конфигурацию из YAML файла
 
-        Поддерживает два режима:
-        1. Загрузка из защищенного хранилища (если storage_manager доступен)
-        2. Загрузка из обычного файла (fallback)
+        Загрузка из защищенного хранилища (если storage_manager доступен)
         """
         # Попытка загрузки из защищенного хранилища
         try:
@@ -134,25 +131,11 @@ class P2PConfig:
                 return cls(**config_data)
 
         except FileNotFoundError:
-            logger.warning(f"Config not found in storage: {yaml_path}, trying file system")
+            logger.warning(f"Config not found in storage: {yaml_path}, load defaults")
+            storage_manager.write_config(Path(yaml_path).name, str(P2PConfig.__dict__))
         except Exception as e:
-            logger.error(f"Error loading from storage: {e}, trying file system")
+            logger.error(f"Error loading from storage: {e}")
 
-        # Fallback: загрузка из обычного файла
-        logger.info(f"Loading config from file system: {yaml_path}")
-
-        path = Path(yaml_path)
-        if not path.exists():
-            raise FileNotFoundError(f"Configuration file not found: {yaml_path}")
-
-        with open(path, 'r', encoding='utf-8') as f:
-            config_data = yaml.safe_load(f)
-
-        if not config_data.get('coordinator_mode'):
-            config_data['ssl_ca_key_file'] = None
-
-        # Создаем экземпляр с данными из YAML
-        return cls(**config_data)
 
     def to_yaml(self, yaml_path: str) -> None:
         """Сохранить конфигурацию в YAML файл"""
@@ -956,7 +939,8 @@ class WebServerComponent(P2PComponent):
                     self.logger.error(f"Coordinator certificates not found after preparation!")
                     self.logger.error(f"  cert_file: {cert_file}")
                     self.logger.error(f"  key_file: {key_file}")
-                    raise RuntimeError("Coordinator certificates missing - should have been prepared after storage init")
+                    raise RuntimeError(
+                        "Coordinator certificates missing - should have been prepared after storage init")
 
                 # Сертификаты готовы, создаем SSL контекст из защищенного хранилища
                 from layers.ssl_helper import ServerSSLContext
@@ -1003,7 +987,8 @@ class WebServerComponent(P2PComponent):
                         # ВАЖНО: Сначала запускаем временный HTTP сервер для валидации challenge
                         # Используем отдельный порт 8802 для временного сервера
                         temp_port = 8802
-                        self.logger.info(f"Starting temporary HTTP server on port {temp_port} for certificate validation...")
+                        self.logger.info(
+                            f"Starting temporary HTTP server on port {temp_port} for certificate validation...")
 
                         temp_config = uvicorn.Config(
                             app=service_layer.app,
@@ -1046,6 +1031,12 @@ class WebServerComponent(P2PComponent):
                             if Path(cert_file).exists():
                                 old_fingerprint = get_certificate_fingerprint(cert_file, self.context)
 
+                            # from layers.ssl_helper import ServerSSLContext, read_cert_bytes
+                            # ssl = ServerSSLContext(self.context)
+                            # ca_temp_cert = ssl.create_temp_files(read_cert_bytes(ca_cert_file))
+                            # print('ca_temp_cert', ca_temp_cert)
+                            print(challenge)
+
                             # Запрашиваем сертификат
                             cert_pem, key_pem = await request_certificate_from_coordinator(
                                 node_id=self.context.config.node_id,
@@ -1057,10 +1048,12 @@ class WebServerComponent(P2PComponent):
                                 ca_cert_file=ca_cert_file,
                                 challenge_port=temp_port  # Передаем порт для валидации
                             )
+                            # ssl.cleanup()
 
                             if cert_pem and key_pem:
                                 # Сохраняем сертификат
-                                if save_certificate_and_key(cert_pem, key_pem, cert_file, key_file, context=self.context):
+                                if save_certificate_and_key(cert_pem, key_pem, cert_file, key_file,
+                                                            context=self.context):
                                     self.logger.info("Certificate successfully updated from coordinator")
                                 else:
                                     self.logger.error("Failed to save certificate")
@@ -1075,6 +1068,7 @@ class WebServerComponent(P2PComponent):
                             self.logger.info("Stopping temporary HTTP server...")
                             try:
                                 # Правильная остановка uvicorn сервера
+                                temp_http_server.should_exit = True
                                 await temp_http_server.shutdown()
                                 # Ждем завершения задачи
                                 try:

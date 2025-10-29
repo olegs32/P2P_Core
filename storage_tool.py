@@ -137,7 +137,7 @@ def test_storage(password, storage_path):
             print()
 
             # Список ВСЕХ файлов в корне архива
-            print("📦 All files in archive (root):")
+            print(f"📦 All files in archive ({storage_path}):")
             all_files = manager.list_files("")
             for f in all_files:
                 print(f"  - {f}")
@@ -372,8 +372,8 @@ def extract_and_repack(password, storage_path):
 def main():
     password = 'mypass1234'
     if not input('Coordinator store? [Y,N] Y') == '':
-        # storage_path = "data/p2p_worker.bin"
-        storage_path = "p2p_secure.bin"
+        storage_path = "p2p_worker.bin"
+        # storage_path = "p2p_secure.bin"
     else:
         storage_path = "p2p_coordinator.bin"
     """Главная функция"""
