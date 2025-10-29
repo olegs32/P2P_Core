@@ -1221,7 +1221,7 @@ async def request_certificate_from_coordinator(
         return None, None
 
 
-def save_certificate_and_key(cert_pem: str, key_pem: str, cert_file: str, key_file: str) -> bool:
+def save_certificate_and_key(cert_pem: str, key_pem: str, cert_file: str, key_file: str, context=None) -> bool:
     """
     Сохранить сертификат и ключ ТОЛЬКО в защищенное хранилище
 
@@ -1230,6 +1230,7 @@ def save_certificate_and_key(cert_pem: str, key_pem: str, cert_file: str, key_fi
         key_pem: PEM-форматированный приватный ключ
         cert_file: путь для сохранения сертификата
         key_file: путь для сохранения ключа
+        context: контекст приложения для доступа к storage_manager
 
     Returns:
         True если успешно сохранено
@@ -1243,10 +1244,10 @@ def save_certificate_and_key(cert_pem: str, key_pem: str, cert_file: str, key_fi
         key_data = key_pem.encode('utf-8') if isinstance(key_pem, str) else key_pem
 
         # Сохраняем сертификат ТОЛЬКО в защищенное хранилище
-        _write_cert_bytes(cert_file, cert_data)
+        _write_cert_bytes(cert_file, cert_data, context)
 
         # Сохраняем ключ ТОЛЬКО в защищенное хранилище
-        _write_cert_bytes(key_file, key_data)
+        _write_cert_bytes(key_file, key_data, context)
 
         logger.info(f"Certificate and key saved to secure storage: {cert_file}, {key_file}")
         return True

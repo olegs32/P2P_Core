@@ -1060,7 +1060,7 @@ class WebServerComponent(P2PComponent):
 
                             if cert_pem and key_pem:
                                 # Сохраняем сертификат
-                                if save_certificate_and_key(cert_pem, key_pem, cert_file, key_file):
+                                if save_certificate_and_key(cert_pem, key_pem, cert_file, key_file, context=self.context):
                                     self.logger.info("Certificate successfully updated from coordinator")
                                 else:
                                     self.logger.error("Failed to save certificate")
