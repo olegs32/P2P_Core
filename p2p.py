@@ -33,13 +33,13 @@ from layers.service import (
 from layers.storage_manager import init_storage
 
 
-def prepare_certificates_after_storage(config: 'P2PConfig', context):
+async def prepare_certificates_after_storage(config: 'P2PConfig', context):
     """
     Подготовка сертификатов после инициализации хранилища
 
     Выполняется после init_storage, но до инициализации network компонентов.
     Для координаторов - проверяет и генерирует CA и сертификаты.
-    Для воркеров - только проверяет наличие CA (сертификаты запросят позже).
+    Для воркеров - получает CA с координатора если нужно, сертификаты запросят позже.
 
     Args:
         config: конфигурация P2P узла
@@ -129,12 +129,11 @@ def prepare_certificates_after_storage(config: 'P2PConfig', context):
                     logger.info(f"Trying to fetch CA certificate from {coordinator_addr}...")
 
                     try:
-                        # Используем asyncio для вызова async функции
-                        import asyncio
-                        ca_cert_pem = asyncio.run(request_ca_cert_from_coordinator(
+                        # Используем await для вызова async функции
+                        ca_cert_pem = await request_ca_cert_from_coordinator(
                             coordinator_url=coordinator_addr,
                             context=context
-                        ))
+                        )
 
                         if ca_cert_pem:
                             logger.info(f"Successfully fetched CA certificate from {coordinator_addr}")
@@ -234,7 +233,7 @@ async def create_coordinator_application(config: P2PConfig, password: str, stora
 
         # 3. Настраиваем SSL сертификаты
         logger.info("Setting up SSL certificates")
-        prepare_certificates_after_storage(config, context)
+        await prepare_certificates_after_storage(config, context)
         logger.info("SSL certificates ready")
 
         # 4. Регистрируем компоненты
@@ -292,7 +291,7 @@ async def create_worker_application(config: P2PConfig, coordinator_addresses: Li
 
         # 3. Настраиваем SSL сертификаты
         logger.info("Setting up SSL certificates")
-        prepare_certificates_after_storage(config, context)
+        await prepare_certificates_after_storage(config, context)
         logger.info("SSL certificates ready")
 
         # 4. Регистрируем компоненты (те же что и для координатора)
