@@ -272,7 +272,14 @@ def init_storage(password: str, storage_path=None, context=None):
     """
     if not storage_path or storage_path == '':
         # Дефолтный путь без обращения к context.config
-        storage_path = "data/p2p_secure.bin"
+        storage_path = "data/p2p_worker.bin"
+        try:
+            if context.config.coordinator_mode:
+                storage_path = "data/p2p_coordinator.bin"
+            else:
+                storage_path = "data/p2p_worker.bin"
+        except Exception:
+            pass
 
     manager = P2PStorageManager(password=password, storage_path=storage_path)
 
