@@ -151,23 +151,16 @@ class P2PConfig:
 
         return config
 
-    def save_to_storage(self, config_name: str = None, storage_manager = None):
+    def save_to_storage(self, config_name: str, storage_manager):
         """
         Сохранить конфигурацию в защищенное хранилище
 
         Args:
             config_name: имя файла конфигурации (например, "coordinator.yaml")
-            storage_manager: менеджер защищенного хранилища
+            storage_manager: менеджер защищенного хранилища (обязательный)
         """
-        if storage_manager is None:
-            from layers.storage_manager import get_storage_manager
-            storage_manager = get_storage_manager()
-
         if not storage_manager:
-            raise RuntimeError("Storage manager is not available")
-
-        if config_name is None:
-            config_name = f"{'coordinator' if self.coordinator_mode else 'worker'}.yaml"
+            raise RuntimeError("Storage manager is required to save configuration")
 
         # Конвертируем в YAML
         from dataclasses import asdict
