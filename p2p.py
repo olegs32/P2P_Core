@@ -713,10 +713,9 @@ async def main():
                     logger.error("Invalid password or corrupted storage")
                     return 1
                 except Exception as e:
+                    import traceback
                     logger.error(f"Failed to initialize application: {e}")
-                    if verbose:
-                        import traceback
-                        logger.error(traceback.format_exc())
+                    logger.error(traceback.format_exc())
                     return 1
 
             else:
