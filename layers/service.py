@@ -1983,6 +1983,57 @@ class P2PServiceHandler:
                     detail=f"Certificate generation error: {str(e)}"
                 )
 
+        @self.app.get("/internal/ca-cert")
+        async def get_ca_certificate():
+            """
+            Эндпоинт для получения CA сертификата (координатор)
+            Воркер может запросить CA сертификат для верификации HTTPS соединений
+            Возвращает только публичный сертификат CA (без ключа)
+            """
+            # Проверяем что это координатор
+            if not self.context.config.coordinator_mode:
+                raise HTTPException(
+                    status_code=403,
+                    detail="CA certificate is only available on coordinator nodes"
+                )
+
+            try:
+                # Читаем CA сертификат из защищенного хранилища
+                from layers.ssl_helper import _read_cert_bytes
+
+                ca_cert_file = self.context.config.ssl_ca_cert_file
+
+                if not ca_cert_file:
+                    raise HTTPException(
+                        status_code=500,
+                        detail="CA certificate not configured on coordinator"
+                    )
+
+                ca_cert_data = _read_cert_bytes(ca_cert_file, context=self.context)
+
+                if not ca_cert_data:
+                    raise HTTPException(
+                        status_code=500,
+                        detail="CA certificate not found in secure storage"
+                    )
+
+                # Преобразуем байты в строку PEM
+                ca_cert_pem = ca_cert_data.decode('utf-8')
+
+                self.logger.info("CA certificate requested and sent to worker")
+
+                return {
+                    "ca_certificate": ca_cert_pem,
+                    "message": "CA certificate retrieved successfully"
+                }
+
+            except Exception as e:
+                self.logger.error(f"Failed to retrieve CA certificate: {e}")
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Failed to retrieve CA certificate: {str(e)}"
+                )
+
         # =====================================================
         # SERVICE MANAGEMENT ENDPOINTS
         # =====================================================

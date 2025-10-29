@@ -1038,6 +1038,79 @@ def generate_challenge() -> str:
     return secrets.token_hex(32)
 
 
+async def request_ca_cert_from_coordinator(
+    coordinator_url: str,
+    context = None
+) -> Optional[str]:
+    """
+    Запросить CA сертификат от координатора (ACME-like)
+
+    Эта функция используется воркером при первом запуске для получения
+    CA сертификата, необходимого для верификации HTTPS соединений.
+
+    Args:
+        coordinator_url: URL координатора (например, "https://coord:8001" или "coord:8001")
+        context: контекст приложения для доступа к storage_manager
+
+    Returns:
+        CA certificate в PEM формате или None при ошибке
+    """
+    import httpx
+
+    try:
+        # Формируем HTTPS URL для координатора
+        if '://' not in coordinator_url:
+            # Если не указан протокол, пробуем сначала HTTPS
+            https_url = f"https://{coordinator_url}"
+        else:
+            # Заменяем http на https если нужно
+            https_url = coordinator_url.replace("http://", "https://")
+
+        timeout = httpx.Timeout(15.0)
+
+        logger.info(f"Requesting CA certificate from coordinator: {https_url}/internal/ca-cert")
+
+        # Используем HTTPS БЕЗ верификации, т.к. у нас еще нет CA сертификата
+        # Это безопасно для получения публичного CA сертификата
+        async with httpx.AsyncClient(timeout=timeout, verify=False) as client:
+            response = await client.get(f"{https_url}/internal/ca-cert")
+
+            logger.info(f"CA certificate request response: {response.status_code}")
+
+            if response.status_code == 200:
+                result = response.json()
+                ca_cert_pem = result.get("ca_certificate")
+
+                if ca_cert_pem:
+                    logger.info("Successfully received CA certificate from coordinator")
+                    return ca_cert_pem
+                else:
+                    logger.error("Invalid response from coordinator: missing ca_certificate")
+                    return None
+            else:
+                logger.error(f"CA certificate request failed: {response.status_code}")
+                try:
+                    error_detail = response.json()
+                    logger.error(f"Error details: {error_detail}")
+                except:
+                    logger.error(f"Response text: {response.text[:500]}")
+                return None
+
+    except httpx.ConnectError as e:
+        logger.error(f"Failed to connect to coordinator: {e}")
+        logger.error(f"  URL: {https_url}/internal/ca-cert")
+        logger.error(f"  Make sure coordinator is running and accessible")
+        return None
+    except httpx.TimeoutException as e:
+        logger.error(f"Request timeout while contacting coordinator: {e}")
+        return None
+    except Exception as e:
+        logger.error(f"Failed to request CA certificate from coordinator: {e}")
+        import traceback
+        logger.error(f"Traceback: {traceback.format_exc()}")
+        return None
+
+
 async def request_certificate_from_coordinator(
     node_id: str,
     coordinator_url: str,

@@ -105,17 +105,61 @@ def prepare_certificates_after_storage(config: 'P2PConfig', context):
         logger.info("Coordinator certificate ready")
 
     else:
-        # Воркер: только проверяем что CA существует для валидации
+        # Воркер: проверяем CA сертификат и получаем его с координатора если нужно
         logger.info("Worker mode: verifying CA certificate availability...")
 
         if ca_cert_file:
-            # Просто проверяем что CA доступен
-            from layers.ssl_helper import _cert_exists
+            from layers.ssl_helper import _cert_exists, _write_cert_bytes, request_ca_cert_from_coordinator
+
+            # Проверяем что CA доступен
             if not _cert_exists(ca_cert_file, context):
                 logger.warning(f"CA certificate not found: {ca_cert_file}")
-                logger.warning("Worker will need to request certificate from coordinator")
+                logger.info("Attempting to fetch CA certificate from coordinator (ACME-like)...")
+
+                # Получаем адреса координаторов из конфигурации
+                coordinator_addresses = getattr(config, 'coordinator_addresses', None)
+
+                if not coordinator_addresses or len(coordinator_addresses) == 0:
+                    logger.error("No coordinator addresses configured, cannot fetch CA certificate")
+                    raise RuntimeError("Worker requires CA certificate but no coordinators configured")
+
+                # Пробуем получить CA сертификат с каждого координатора
+                ca_cert_pem = None
+                for coordinator_addr in coordinator_addresses:
+                    logger.info(f"Trying to fetch CA certificate from {coordinator_addr}...")
+
+                    try:
+                        # Используем asyncio для вызова async функции
+                        import asyncio
+                        ca_cert_pem = asyncio.run(request_ca_cert_from_coordinator(
+                            coordinator_url=coordinator_addr,
+                            context=context
+                        ))
+
+                        if ca_cert_pem:
+                            logger.info(f"Successfully fetched CA certificate from {coordinator_addr}")
+                            break
+                        else:
+                            logger.warning(f"Failed to fetch CA certificate from {coordinator_addr}")
+                    except Exception as e:
+                        logger.error(f"Error fetching CA certificate from {coordinator_addr}: {e}")
+                        continue
+
+                if not ca_cert_pem:
+                    logger.error("Failed to fetch CA certificate from any coordinator")
+                    raise RuntimeError("Could not obtain CA certificate from coordinators")
+
+                # Сохраняем CA сертификат в защищенное хранилище
+                logger.info(f"Saving CA certificate to secure storage: {ca_cert_file}")
+                success, msg = _write_cert_bytes(ca_cert_file, ca_cert_pem.encode('utf-8'), context)
+
+                if not success:
+                    logger.error(f"Failed to save CA certificate: {msg}")
+                    raise RuntimeError(f"Could not save CA certificate: {msg}")
+
+                logger.info("CA certificate successfully saved to secure storage")
             else:
-                logger.info("CA certificate found")
+                logger.info("CA certificate found in secure storage")
         else:
             logger.warning("CA certificate path not configured")
 
