@@ -1093,8 +1093,17 @@ class WebServerComponent(P2PComponent):
 
                             # Даем порту время освободиться
                             await asyncio.sleep(1)
+                            self.logger.info("Temporary HTTP server cleanup completed")
 
-                # Проверяем что сертификаты воркера готовы
+                # Проверяем что сертификаты воркера готовы ПОСЛЕ получения
+                self.logger.info(f"Checking if worker certificates are ready...")
+                self.logger.info(f"  cert_file: {cert_file}")
+                self.logger.info(f"  key_file: {key_file}")
+                cert_exists_result = _cert_exists(cert_file, self.context)
+                key_exists_result = _cert_exists(key_file, self.context)
+                self.logger.info(f"  cert_exists: {cert_exists_result}")
+                self.logger.info(f"  key_exists: {key_exists_result}")
+
                 if _cert_exists(cert_file, self.context) and _cert_exists(key_file, self.context):
                     # Создаем SSL контекст из защищенного хранилища
                     from layers.ssl_helper import ServerSSLContext
