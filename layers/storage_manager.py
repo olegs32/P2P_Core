@@ -156,6 +156,39 @@ class P2PStorageManager:
 
         logger.debug(f"Certificate written: {cert_name}")
 
+    def read(self, file_name: str) -> bytes:
+        """
+        Чтение файла
+        Args:
+            file_name: Имя файла
+
+        Returns:
+            Байты файла
+        """
+        self._ensure_initialized()
+
+        file_path = f"{file_name}"
+
+        if not self.archive.exists(file_path):
+            raise FileNotFoundError(f"File not found: {file_name}")
+
+        return self.archive.read_file(file_path)
+
+    def write(self, file_name: str, file_data: bytes):
+        """
+        Запись файла
+
+        Args:
+            file_name: Имя файла
+            file_data: Байты файла
+        """
+        self._ensure_initialized()
+
+        file_path = f"{file_name}"
+        self.archive.write_file(file_path, file_data)
+
+        logger.debug(f"File written: {file_name}")
+
     def read_state(self, state_name: str) -> str:
         """
         Чтение файла состояния

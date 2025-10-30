@@ -494,6 +494,7 @@ async def run_coordinator_from_context(app_context: P2PApplicationContext):
         logger.info(f"  Gossip Compression: {'enabled' if config.gossip_compression_enabled else 'disabled'}")
         logger.info(f"  Adaptive Gossip: {config.gossip_interval_min}-{config.gossip_interval_max}s")
 
+
         # Ждем сигнал shutdown
         await app_context.wait_for_shutdown()
 
