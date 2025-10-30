@@ -48,6 +48,7 @@ class P2PConfig:
     port: int
     bind_address: str = "0.0.0.0"
     coordinator_mode: bool = False
+    version = "2.1.0"
 
     # Redis конфигурация
     redis_url: str = "redis://localhost:6379"
@@ -73,6 +74,7 @@ class P2PConfig:
     compression_threshold: int = 1024  # байты
     max_gossip_targets: int = 5
     cleanup_interval: int = 60
+    capabilities = ['coordinator' if coordinator_mode else 'worker']
 
     # Сервисы
     services_directory: str = "services"

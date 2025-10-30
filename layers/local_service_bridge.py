@@ -3,19 +3,22 @@ import asyncio
 import logging
 from typing import Dict, Any, Optional
 
+from layers.application_context import P2PApplicationContext
+
 
 class LocalServiceBridge:
     """Локальный мост для вызова сервисов без сетевых запросов"""
 
-    def __init__(self, method_registry: Dict[str, Any], service_manager):
+    def __init__(self, method_registry: Dict[str, Any], service_manager, context: P2PApplicationContext):
         self.method_registry = method_registry
         self.service_manager = service_manager
+        self.context = context
         self.logger = logging.getLogger("ServiceBridge")
 
     async def initialize(self):
         """Инициализация локального моста"""
         self.logger.info("Initializing  service bridge...")
-        self.local_proxy = SimpleLocalProxy(self.method_registry)
+        self.local_proxy = SimpleLocalProxy(self.method_registry, self.context)
         self.logger.info("Service bridge initialized")
 
     def get_proxy(self, remote_client=None):
@@ -34,19 +37,22 @@ class LocalServiceBridge:
 class SimpleLocalProxy:
     """Простой локальный прокси для вызова методов"""
 
-    def __init__(self, method_registry: Dict[str, Any]):
+    def __init__(self, method_registry: Dict[str, Any], context: P2PApplicationContext):
         self.method_registry = method_registry
+        self.context = context
         self.logger = logging.getLogger("SimpleLocalProxy")
 
     def __getattr__(self, service_name: str):
         """Получить прокси для сервиса"""
-        return ServiceMethodProxy(service_name, self.method_registry)
+        return ServiceMethodProxy(service_name, self.method_registry, context=self.context)
 
 
 class ServiceMethodProxy:
     """Прокси для методов сервиса с поддержкой таргетинга узлов"""
 
-    def __init__(self, service_name: str, method_registry: Dict[str, Any], target_node: str = None):
+    def __init__(self, service_name: str, method_registry: Dict[str, Any], context: P2PApplicationContext,
+                 target_node: str = None):
+        self.context = context
         self.service_name = service_name
         self.method_registry = method_registry
         self.target_node = target_node
@@ -56,11 +62,13 @@ class ServiceMethodProxy:
         """Получить callable для метода или прокси для узла"""
 
         # Список известных узлов/ролей для таргетинга
-        known_targets = [
-            'coordinator', 'worker', 'worker1', 'worker2', 'worker3',
-            'node1', 'node2', 'host1', 'host2', 'pc1', 'pc2',
-            'localhost', 'local', 'remote'
-        ]
+        # known_targets = [
+        #     'coordinator', 'worker', 'worker1', 'worker2', 'worker3',
+        #     'node1', 'node2', 'host1', 'host2', 'pc1', 'pc2',
+        #     'localhost', 'local', 'remote'
+        #
+        # ]
+        known_targets = self.context.get_shared('network').gossip.node_registry
 
         # Если это похоже на имя узла - создаем таргетированный прокси
         if attr_name in known_targets or attr_name.startswith(('node_', 'host_', 'pc_', 'worker_')):
@@ -68,7 +76,8 @@ class ServiceMethodProxy:
             return ServiceMethodProxy(
                 service_name=self.service_name,
                 method_registry=self.method_registry,
-                target_node=attr_name
+                target_node=attr_name,
+                context=self.context
             )
 
         # Иначе это имя метода

@@ -288,7 +288,7 @@ def get_storage_manager(context=None) -> Optional[P2PStorageManager]:
 
 
 @contextmanager
-def init_storage(password: str, storage_path=None, context=None):
+def init_storage(password: str, storage_path=None, context=None, run_type=None):
     """
     Инициализация хранилища с регистрацией в контексте
 
@@ -303,11 +303,15 @@ def init_storage(password: str, storage_path=None, context=None):
             # Весь код приложения здесь
             # storage_manager доступен через context.get_shared("storage_manager")
     """
+    if run_type is not None:
+        coordinator_mode = run_type
+    else:
+        coordinator_mode = context.config.coordinator_mode
     if not storage_path or storage_path == '':
         # Дефолтный путь без обращения к context.config
         storage_path = "data/p2p_worker.bin"
         try:
-            if context.config.coordinator_mode:
+            if coordinator_mode:
                 storage_path = "data/p2p_coordinator.bin"
             else:
                 storage_path = "data/p2p_worker.bin"

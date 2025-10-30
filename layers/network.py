@@ -114,6 +114,15 @@ class SimpleGossipProtocol:
     def __init__(self, node_id: str, bind_address: str, bind_port: int, coordinator_mode: bool = False,
                  ssl_verify: bool = True, ca_cert_file: str = None, context=None):
 
+        self.cleanup_interval = None
+        self.failure_timeout = None
+        self.gossip_interval_max = None
+        self.gossip_interval_min = None
+        self.adjust_interval_period = None
+        self.message_count = None
+        self.compression_threshold = None
+        self.compression_enabled = None
+        self.max_gossip_targets = None
         self.ca_cert_file = ca_cert_file
         self.ssl_verify = ssl_verify
         self.context = context  # Для доступа к storage_manager
@@ -134,11 +143,11 @@ class SimpleGossipProtocol:
             address=bind_address,
             port=bind_port,
             role='coordinator' if coordinator_mode else 'worker',
-            capabilities=['admin', 'rpc'],
+            capabilities=self.context.config.capabilities,
             last_seen=datetime.now(),
             metadata={
                 'started_at': datetime.now().isoformat(),
-                'version': '1.0.0'
+                'version': self.context.config.version
             }
         )
 
