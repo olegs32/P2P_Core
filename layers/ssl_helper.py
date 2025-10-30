@@ -269,7 +269,7 @@ def generate_signed_certificate(
         from cryptography.hazmat.primitives import serialization
         from cryptography.hazmat.backends import default_backend
         import ipaddress
-        print('context', context)
+
         # Загрузка CA сертификата и ключа
         ca_cert_data = read_cert_bytes(ca_cert_file, context)
         if not ca_cert_data:
@@ -1167,7 +1167,6 @@ async def request_certificate_from_coordinator(
 
         # Используем HTTPS с CA верификацией
         verify_param = False  # По умолчанию без верификации
-        print(ca_cert_file)
         if ca_cert_file and Path(ca_cert_file).exists():
             # Используем CA сертификат для верификации
             verify_param = str(Path(ca_cert_file).resolve())
@@ -1188,7 +1187,6 @@ async def request_certificate_from_coordinator(
 
             if response.status_code == 200:
                 result = response.json()
-                print(result)
                 certificate_pem = result.get("certificate")
                 private_key_pem = result.get("private_key")
 

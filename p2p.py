@@ -683,11 +683,9 @@ async def main():
                             return self._shared_state.get(key, default)
 
                     temp_context = MinimalContext()
-                    print(temp_context)
 
                     # Инициализируем storage
                     run_type = True if 'coordinator' in args.config else False
-                    print(run_type, storage_path)
                     logger.info(f"Initializing secure storage: {storage_path}")
                     with init_storage(password, storage_path, temp_context, run_type):
                         logger.info("Secure storage initialized successfully")

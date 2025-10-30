@@ -1951,14 +1951,9 @@ class P2PServiceHandler:
                 # Читаем сгенерированные файлы
                 with open(cert_tmp_path.name, 'r') as f:
                     certificate_pem = f.read()
-                    print(certificate_pem)
 
                 with open(key_tmp_path.name, 'r') as f:
                     private_key_pem = f.read()
-                    print(private_key_pem)
-
-                print(certificate_pem)
-                print(private_key_pem)
 
                 # Удаляем временные файлы
                 # os.unlink(cert_tmp_path)

@@ -57,30 +57,29 @@ class Run(BaseService):
         """Initialize dashboard service"""
         self.logger.info("Metrics Dashboard service initializing...")
 
-        # Check if this is coordinator - dashboard should only run on coordinator
-        if hasattr(self, 'context') and self.context:
-            if hasattr(self.context.config, 'coordinator_mode'):
-                is_coordinator = self.context.config.coordinator_mode
-                if not is_coordinator:
-                    self.logger.info("Dashboard service disabled on worker nodes - skipping initialization")
-                    return
-
         # Wait for proxy initialization
         await self._wait_for_proxy()
 
-        # Register HTTP endpoints
-        self._register_http_endpoints()
+        # Check if this is coordinator - dashboard should only run on coordinator
+        is_coordinator = self.context.config.coordinator_mode
+        if is_coordinator:
+            # Register HTTP endpoints
+            self._register_http_endpoints()
 
-        # Start cleanup task for stale workers
-        self.cleanup_task = asyncio.create_task(self._cleanup_loop())
+            # Start cleanup task for stale workers
+            self.cleanup_task = asyncio.create_task(self._cleanup_loop())
 
-        # Start coordinator metrics collection task
-        self.coordinator_metrics_task = asyncio.create_task(self._coordinator_metrics_loop())
+            # Start coordinator metrics collection task
+            self.coordinator_metrics_task = asyncio.create_task(self._coordinator_metrics_loop())
 
-        # Collect initial coordinator metrics
-        await self._collect_coordinator_metrics()
+            # Collect initial coordinator metrics
+            await self._collect_coordinator_metrics()
 
-        self.logger.info("Metrics Dashboard initialized successfully")
+            self.logger.info("Metrics Dashboard initialized successfully")
+            return True
+        else:
+            self.logger.info("Dashboard service disabled on worker nodes - skipping initialization")
+            return False
 
     def _register_http_endpoints(self):
         """Register HTTP endpoints for the dashboard"""
@@ -363,7 +362,7 @@ class Run(BaseService):
             interval = min(300, base_interval * 2)
         elif cpu_variance > 20 or memory_variance > 20:
             # Volatile metrics - report more frequently
-            interval = max(30, base_interval // 2)
+            interval = max(10, base_interval // 2)
         else:
             interval = base_interval
 

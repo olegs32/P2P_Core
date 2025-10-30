@@ -219,6 +219,6 @@ class MethodCaller:
             raise RuntimeError(f"Remote RPC call to {self.target_node} failed: {e}") from e
 
 
-def create_local_service_bridge(method_registry: Dict[str, Any], service_manager):
+def create_local_service_bridge(method_registry: Dict[str, Any], service_manager, context):
     """Создание локального моста сервисов"""
-    return LocalServiceBridge(method_registry, service_manager)
+    return LocalServiceBridge(method_registry, service_manager, context)
