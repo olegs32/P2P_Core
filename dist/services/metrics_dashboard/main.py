@@ -41,8 +41,9 @@ class Run(BaseService):
         # Service states
         self.service_states: Dict[str, Dict[str, Any]] = {}
 
-        # Cleanup task
+        # Background tasks
         self.cleanup_task = None
+        self.coordinator_metrics_task = None
 
         # Statistics
         self.stats = {
@@ -64,6 +65,9 @@ class Run(BaseService):
 
         # Start cleanup task for stale workers
         self.cleanup_task = asyncio.create_task(self._cleanup_loop())
+
+        # Start coordinator metrics collection task
+        self.coordinator_metrics_task = asyncio.create_task(self._coordinator_metrics_loop())
 
         # Collect initial coordinator metrics
         await self._collect_coordinator_metrics()
@@ -180,6 +184,13 @@ class Run(BaseService):
             except asyncio.CancelledError:
                 pass
 
+        if self.coordinator_metrics_task:
+            self.coordinator_metrics_task.cancel()
+            try:
+                await self.coordinator_metrics_task
+            except asyncio.CancelledError:
+                pass
+
     async def _cleanup_loop(self):
         """Remove stale worker metrics periodically"""
         while True:
@@ -191,6 +202,17 @@ class Run(BaseService):
                 break
             except Exception as e:
                 self.logger.error(f"Error in cleanup loop: {e}")
+
+    async def _coordinator_metrics_loop(self):
+        """Collect coordinator metrics periodically"""
+        while True:
+            try:
+                await asyncio.sleep(5)  # Collect every 5 seconds
+                await self._collect_coordinator_metrics()
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                self.logger.error(f"Error in coordinator metrics loop: {e}")
 
     async def _remove_stale_workers(self):
         """Remove workers that haven't reported in 10 minutes"""
@@ -219,17 +241,37 @@ class Run(BaseService):
             # Get system metrics
             metrics = await self.proxy.system.get_system_metrics()
 
-            # Get service states
-            # Note: This would need to be implemented in system service
-            # For now, we'll use a placeholder
+            # Get service states from service manager
+            services = {}
+            if hasattr(self, '_service_manager') and self._service_manager:
+                for service_name, service_instance in self._service_manager.services.items():
+                    services[service_name] = {
+                        "status": service_instance.status.value if hasattr(service_instance.status, 'value') else str(service_instance.status),
+                        "uptime": getattr(service_instance, '_start_time', 0),
+                        "description": service_instance.info.description if hasattr(service_instance, 'info') else ""
+                    }
+
+            timestamp = datetime.now()
 
             self.coordinator_metrics = {
                 "node_id": "coordinator",
-                "timestamp": datetime.now().isoformat(),
+                "timestamp": timestamp.isoformat(),
                 "metrics": metrics,
-                "services": {}  # Placeholder for service states
+                "services": services
             }
-            self.coordinator_last_update = datetime.now()
+            self.coordinator_last_update = timestamp
+
+            # Add to history for coordinator (same as workers)
+            history_entry = {
+                "timestamp": timestamp.isoformat(),
+                "cpu_percent": metrics.get("cpu_percent", 0),
+                "memory_percent": metrics.get("memory", {}).get("percent", 0),
+                "disk_percent": metrics.get("disk", {}).get("percent", 0)
+            }
+
+            self.metrics_history["coordinator"].append(history_entry)
+            if len(self.metrics_history["coordinator"]) > 100:
+                self.metrics_history["coordinator"].pop(0)
 
         except Exception as e:
             self.logger.error(f"Failed to collect coordinator metrics: {e}")
