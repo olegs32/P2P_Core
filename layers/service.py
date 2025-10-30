@@ -1129,6 +1129,11 @@ class ServiceManager:
                 else:
                     service_instance.proxy = self.proxy_client
 
+            # Передаем service_manager и context в сервис
+            service_instance._service_manager = self
+            if hasattr(self.rpc, 'context'):
+                service_instance.context = self.rpc.context
+
             # КРИТИЧЕСКИ ВАЖНО: ЗАПУСКАЕМ СЕРВИС
             await service_instance.start()  # <-- ЭТО ОТСУТСТВОВАЛО!
 

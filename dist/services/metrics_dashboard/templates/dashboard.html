@@ -1,0 +1,722 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>P2P Cluster Dashboard</title>
+
+    <!-- Bootstrap CSS -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+
+    <!-- Chart.js -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+
+    <!-- HTMX for dynamic updates -->
+    <script src="https://unpkg.com/htmx.org@1.9.10"></script>
+
+    <style>
+        :root {
+            --bg-dark: #1a1d23;
+            --bg-card: #242830;
+            --text-light: #e4e6eb;
+            --border-color: #3a3f4b;
+            --success: #28a745;
+            --warning: #ffc107;
+            --danger: #dc3545;
+            --info: #17a2b8;
+        }
+
+        body {
+            background-color: var(--bg-dark);
+            color: var(--text-light);
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+        }
+
+        .dashboard-header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            padding: 2rem 0;
+            margin-bottom: 2rem;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+        }
+
+        .stats-card {
+            background-color: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 1.5rem;
+            margin-bottom: 1.5rem;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+
+        .stats-card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+        }
+
+        .stat-value {
+            font-size: 2.5rem;
+            font-weight: bold;
+            margin-bottom: 0.5rem;
+        }
+
+        .stat-label {
+            font-size: 0.9rem;
+            color: #8b92a8;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .node-card {
+            background-color: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 1.5rem;
+            margin-bottom: 1rem;
+        }
+
+        .node-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 1rem;
+        }
+
+        .node-title {
+            font-size: 1.2rem;
+            font-weight: bold;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .status-badge {
+            padding: 0.25rem 0.75rem;
+            border-radius: 20px;
+            font-size: 0.85rem;
+            font-weight: 500;
+        }
+
+        .status-online {
+            background-color: rgba(40, 167, 69, 0.2);
+            color: var(--success);
+        }
+
+        .status-offline {
+            background-color: rgba(220, 53, 69, 0.2);
+            color: var(--danger);
+        }
+
+        .metric-row {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 1rem;
+            margin-bottom: 1rem;
+        }
+
+        .metric-item {
+            background-color: rgba(255,255,255,0.05);
+            padding: 0.75rem;
+            border-radius: 6px;
+        }
+
+        .metric-label {
+            font-size: 0.85rem;
+            color: #8b92a8;
+            margin-bottom: 0.25rem;
+        }
+
+        .metric-value {
+            font-size: 1.5rem;
+            font-weight: bold;
+        }
+
+        .progress-bar {
+            height: 8px;
+            border-radius: 4px;
+            background-color: rgba(255,255,255,0.1);
+            margin-top: 0.5rem;
+            overflow: hidden;
+        }
+
+        .progress-fill {
+            height: 100%;
+            border-radius: 4px;
+            transition: width 0.3s ease, background-color 0.3s ease;
+        }
+
+        .service-list {
+            margin-top: 1rem;
+        }
+
+        .service-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 0.75rem;
+            background-color: rgba(255,255,255,0.03);
+            border-radius: 6px;
+            margin-bottom: 0.5rem;
+        }
+
+        .service-name {
+            font-weight: 500;
+        }
+
+        .service-controls {
+            display: flex;
+            gap: 0.5rem;
+        }
+
+        .btn-sm {
+            padding: 0.25rem 0.75rem;
+            font-size: 0.85rem;
+        }
+
+        .chart-container {
+            position: relative;
+            height: 300px;
+            margin-top: 1rem;
+        }
+
+        .refresh-indicator {
+            position: fixed;
+            top: 1rem;
+            right: 1rem;
+            padding: 0.5rem 1rem;
+            background-color: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: 20px;
+            font-size: 0.85rem;
+            opacity: 0;
+            transition: opacity 0.3s;
+            z-index: 1000;
+        }
+
+        .refresh-indicator.active {
+            opacity: 1;
+        }
+    </style>
+</head>
+<body>
+    <!-- Refresh Indicator -->
+    <div id="refreshIndicator" class="refresh-indicator">
+        <span class="spinner-border spinner-border-sm me-2"></span>
+        Updating...
+    </div>
+
+    <!-- Header -->
+    <div class="dashboard-header">
+        <div class="container">
+            <h1 class="mb-2">P2P Cluster Dashboard</h1>
+            <p class="mb-0 opacity-75">Real-time monitoring and management</p>
+        </div>
+    </div>
+
+    <!-- Main Content -->
+    <div class="container">
+        <!-- Statistics Cards -->
+        <div class="row mb-4" id="statsContainer">
+            <div class="col-md-3">
+                <div class="stats-card">
+                    <div class="stat-value text-success" id="activeWorkers">0</div>
+                    <div class="stat-label">Active Workers</div>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="stats-card">
+                    <div class="stat-value text-info" id="totalServices">0</div>
+                    <div class="stat-label">Total Services</div>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="stats-card">
+                    <div class="stat-value text-primary" id="totalUpdates">0</div>
+                    <div class="stat-label">Total Updates</div>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="stats-card">
+                    <div class="stat-value text-warning" id="uptimeDisplay">0h</div>
+                    <div class="stat-label">Uptime</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Coordinator Section -->
+        <div class="row mb-4">
+            <div class="col-12">
+                <h3 class="mb-3">Coordinator</h3>
+                <div id="coordinatorCard" class="node-card">
+                    <div class="node-header">
+                        <div class="node-title">
+                            <span>Coordinator</span>
+                            <span class="status-badge status-online">Online</span>
+                        </div>
+                        <small class="text-muted" id="coordLastUpdate">Last update: -</small>
+                    </div>
+
+                    <div class="metric-row">
+                        <div class="metric-item">
+                            <div class="metric-label">CPU Usage</div>
+                            <div class="metric-value" id="coordCPU">0%</div>
+                            <div class="progress-bar">
+                                <div class="progress-fill" id="coordCPUBar" style="width: 0%; background-color: var(--success);"></div>
+                            </div>
+                        </div>
+                        <div class="metric-item">
+                            <div class="metric-label">Memory Usage</div>
+                            <div class="metric-value" id="coordMemory">0%</div>
+                            <div class="progress-bar">
+                                <div class="progress-fill" id="coordMemoryBar" style="width: 0%; background-color: var(--info);"></div>
+                            </div>
+                        </div>
+                        <div class="metric-item">
+                            <div class="metric-label">Disk Usage</div>
+                            <div class="metric-value" id="coordDisk">0%</div>
+                            <div class="progress-bar">
+                                <div class="progress-fill" id="coordDiskBar" style="width: 0%; background-color: var(--warning);"></div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="chart-container">
+                        <canvas id="coordChart"></canvas>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Workers Section -->
+        <div class="row">
+            <div class="col-12">
+                <h3 class="mb-3">Workers</h3>
+                <div id="workersContainer">
+                    <!-- Workers will be dynamically inserted here -->
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Bootstrap JS -->
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+
+    <script>
+        // Charts storage
+        let charts = {};
+
+        // Initialize coordinator chart
+        function initCoordinatorChart() {
+            const ctx = document.getElementById('coordChart').getContext('2d');
+            charts['coordinator'] = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: [],
+                    datasets: [{
+                        label: 'CPU %',
+                        data: [],
+                        borderColor: 'rgb(40, 167, 69)',
+                        backgroundColor: 'rgba(40, 167, 69, 0.1)',
+                        tension: 0.4
+                    }, {
+                        label: 'Memory %',
+                        data: [],
+                        borderColor: 'rgb(23, 162, 184)',
+                        backgroundColor: 'rgba(23, 162, 184, 0.1)',
+                        tension: 0.4
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: {
+                            labels: {
+                                color: '#e4e6eb'
+                            }
+                        }
+                    },
+                    scales: {
+                        y: {
+                            beginAtZero: true,
+                            max: 100,
+                            grid: {
+                                color: 'rgba(255, 255, 255, 0.1)'
+                            },
+                            ticks: {
+                                color: '#8b92a8'
+                            }
+                        },
+                        x: {
+                            grid: {
+                                color: 'rgba(255, 255, 255, 0.1)'
+                            },
+                            ticks: {
+                                color: '#8b92a8',
+                                maxTicksLimit: 10
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
+        // Update metrics
+        async function updateMetrics() {
+            const indicator = document.getElementById('refreshIndicator');
+            indicator.classList.add('active');
+
+            try {
+                // Fetch cluster metrics
+                const response = await fetch('/api/dashboard/metrics');
+                const data = await response.json();
+
+                // Update statistics
+                document.getElementById('activeWorkers').textContent = data.stats.active_workers || 0;
+                document.getElementById('totalServices').textContent = data.stats.total_services || 0;
+                document.getElementById('totalUpdates').textContent = data.stats.total_updates || 0;
+
+                // Update uptime
+                const uptimeSeconds = data.stats.uptime_seconds || 0;
+                const hours = Math.floor(uptimeSeconds / 3600);
+                const minutes = Math.floor((uptimeSeconds % 3600) / 60);
+                document.getElementById('uptimeDisplay').textContent = `${hours}h ${minutes}m`;
+
+                // Update coordinator metrics
+                if (data.coordinator && data.coordinator.metrics) {
+                    const metrics = data.coordinator.metrics;
+                    updateNodeMetrics('coord', metrics);
+
+                    // Fetch and update coordinator history
+                    const historyResponse = await fetch('/api/dashboard/history/coordinator');
+                    const historyData = await historyResponse.json();
+                    if (historyData.history) {
+                        updateChart('coordinator', historyData.history);
+                    }
+                }
+
+                // Update workers
+                updateWorkers(data.workers);
+
+            } catch (error) {
+                console.error('Failed to update metrics:', error);
+            } finally {
+                indicator.classList.remove('active');
+            }
+        }
+
+        // Update node metrics display
+        function updateNodeMetrics(prefix, metrics) {
+            const cpuPercent = metrics.cpu_percent || 0;
+            const memoryPercent = metrics.memory?.percent || 0;
+            const diskPercent = metrics.disk?.percent || 0;
+
+            document.getElementById(`${prefix}CPU`).textContent = `${cpuPercent.toFixed(1)}%`;
+            document.getElementById(`${prefix}Memory`).textContent = `${memoryPercent.toFixed(1)}%`;
+            document.getElementById(`${prefix}Disk`).textContent = `${diskPercent.toFixed(1)}%`;
+
+            // Update progress bars
+            updateProgressBar(`${prefix}CPUBar`, cpuPercent);
+            updateProgressBar(`${prefix}MemoryBar`, memoryPercent);
+            updateProgressBar(`${prefix}DiskBar`, diskPercent);
+        }
+
+        // Update progress bar
+        function updateProgressBar(id, value) {
+            const bar = document.getElementById(id);
+            if (bar) {
+                bar.style.width = `${value}%`;
+
+                // Change color based on value
+                if (value > 80) {
+                    bar.style.backgroundColor = 'var(--danger)';
+                } else if (value > 60) {
+                    bar.style.backgroundColor = 'var(--warning)';
+                } else {
+                    bar.style.backgroundColor = bar.id.includes('CPU') ? 'var(--success)' : 'var(--info)';
+                }
+            }
+        }
+
+        // Update chart
+        function updateChart(nodeId, history) {
+            if (!charts[nodeId]) return;
+
+            const labels = history.map(h => {
+                const date = new Date(h.timestamp);
+                return date.toLocaleTimeString();
+            });
+
+            const cpuData = history.map(h => h.cpu_percent);
+            const memoryData = history.map(h => h.memory_percent);
+
+            charts[nodeId].data.labels = labels;
+            charts[nodeId].data.datasets[0].data = cpuData;
+            charts[nodeId].data.datasets[1].data = memoryData;
+            charts[nodeId].update('none'); // Update without animation for smoother updates
+        }
+
+        // Update workers
+        function updateWorkers(workers) {
+            const container = document.getElementById('workersContainer');
+
+            if (!workers || Object.keys(workers).length === 0) {
+                container.innerHTML = '<div class="text-muted text-center p-4">No workers connected</div>';
+                return;
+            }
+
+            // Update existing workers or create new cards
+            Object.entries(workers).forEach(([workerId, workerData]) => {
+                let workerCard = document.getElementById(`worker-${workerId}`);
+
+                if (!workerCard) {
+                    // Create new worker card
+                    workerCard = createWorkerCard(workerId, workerData);
+                    container.appendChild(workerCard);
+
+                    // Initialize chart for this worker
+                    initWorkerChart(workerId);
+                }
+
+                // Update worker metrics
+                updateWorkerCard(workerId, workerData);
+
+                // Fetch and update worker history
+                fetch(`/api/dashboard/history/${workerId}`)
+                    .then(r => r.json())
+                    .then(data => {
+                        if (data.history) {
+                            updateChart(workerId, data.history);
+                        }
+                    });
+            });
+        }
+
+        // Create worker card HTML
+        function createWorkerCard(workerId, workerData) {
+            const card = document.createElement('div');
+            card.id = `worker-${workerId}`;
+            card.className = 'node-card';
+            card.innerHTML = `
+                <div class="node-header">
+                    <div class="node-title">
+                        <span>${workerId}</span>
+                        <span class="status-badge status-online">Online</span>
+                    </div>
+                    <small class="text-muted worker-last-update">Last update: -</small>
+                </div>
+
+                <div class="metric-row">
+                    <div class="metric-item">
+                        <div class="metric-label">CPU Usage</div>
+                        <div class="metric-value worker-cpu">0%</div>
+                        <div class="progress-bar">
+                            <div class="progress-fill worker-cpu-bar" style="width: 0%; background-color: var(--success);"></div>
+                        </div>
+                    </div>
+                    <div class="metric-item">
+                        <div class="metric-label">Memory Usage</div>
+                        <div class="metric-value worker-memory">0%</div>
+                        <div class="progress-bar">
+                            <div class="progress-fill worker-memory-bar" style="width: 0%; background-color: var(--info);"></div>
+                        </div>
+                    </div>
+                    <div class="metric-item">
+                        <div class="metric-label">Disk Usage</div>
+                        <div class="metric-value worker-disk">0%</div>
+                        <div class="progress-bar">
+                            <div class="progress-fill worker-disk-bar" style="width: 0%; background-color: var(--warning);"></div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="service-list">
+                    <h6 class="mt-3 mb-2">Services</h6>
+                    <div class="worker-services">
+                        <!-- Services will be inserted here -->
+                    </div>
+                </div>
+
+                <div class="chart-container">
+                    <canvas id="chart-${workerId}"></canvas>
+                </div>
+            `;
+            return card;
+        }
+
+        // Initialize worker chart
+        function initWorkerChart(workerId) {
+            const ctx = document.getElementById(`chart-${workerId}`).getContext('2d');
+            charts[workerId] = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: [],
+                    datasets: [{
+                        label: 'CPU %',
+                        data: [],
+                        borderColor: 'rgb(40, 167, 69)',
+                        backgroundColor: 'rgba(40, 167, 69, 0.1)',
+                        tension: 0.4
+                    }, {
+                        label: 'Memory %',
+                        data: [],
+                        borderColor: 'rgb(23, 162, 184)',
+                        backgroundColor: 'rgba(23, 162, 184, 0.1)',
+                        tension: 0.4
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: {
+                            labels: {
+                                color: '#e4e6eb'
+                            }
+                        }
+                    },
+                    scales: {
+                        y: {
+                            beginAtZero: true,
+                            max: 100,
+                            grid: {
+                                color: 'rgba(255, 255, 255, 0.1)'
+                            },
+                            ticks: {
+                                color: '#8b92a8'
+                            }
+                        },
+                        x: {
+                            grid: {
+                                color: 'rgba(255, 255, 255, 0.1)'
+                            },
+                            ticks: {
+                                color: '#8b92a8',
+                                maxTicksLimit: 10
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
+        // Update worker card
+        function updateWorkerCard(workerId, workerData) {
+            const card = document.getElementById(`worker-${workerId}`);
+            if (!card) return;
+
+            const metrics = workerData.metrics;
+            if (!metrics) return;
+
+            // Update metrics
+            const cpuPercent = metrics.cpu_percent || 0;
+            const memoryPercent = metrics.memory?.percent || 0;
+            const diskPercent = metrics.disk?.percent || 0;
+
+            card.querySelector('.worker-cpu').textContent = `${cpuPercent.toFixed(1)}%`;
+            card.querySelector('.worker-memory').textContent = `${memoryPercent.toFixed(1)}%`;
+            card.querySelector('.worker-disk').textContent = `${diskPercent.toFixed(1)}%`;
+
+            // Update progress bars
+            updateWorkerProgressBar(card, '.worker-cpu-bar', cpuPercent);
+            updateWorkerProgressBar(card, '.worker-memory-bar', memoryPercent);
+            updateWorkerProgressBar(card, '.worker-disk-bar', diskPercent);
+
+            // Update timestamp
+            if (workerData.timestamp) {
+                const date = new Date(workerData.timestamp);
+                card.querySelector('.worker-last-update').textContent =
+                    `Last update: ${date.toLocaleTimeString()}`;
+            }
+
+            // Update services
+            updateWorkerServices(card, workerId, workerData.services);
+        }
+
+        // Update worker progress bar
+        function updateWorkerProgressBar(card, selector, value) {
+            const bar = card.querySelector(selector);
+            if (bar) {
+                bar.style.width = `${value}%`;
+
+                if (value > 80) {
+                    bar.style.backgroundColor = 'var(--danger)';
+                } else if (value > 60) {
+                    bar.style.backgroundColor = 'var(--warning)';
+                } else {
+                    bar.style.backgroundColor = selector.includes('cpu') ? 'var(--success)' : 'var(--info)';
+                }
+            }
+        }
+
+        // Update worker services
+        function updateWorkerServices(card, workerId, services) {
+            const container = card.querySelector('.worker-services');
+            if (!services || Object.keys(services).length === 0) {
+                container.innerHTML = '<div class="text-muted">No services</div>';
+                return;
+            }
+
+            container.innerHTML = '';
+            Object.entries(services).forEach(([serviceName, serviceData]) => {
+                const serviceItem = document.createElement('div');
+                serviceItem.className = 'service-item';
+
+                const status = serviceData.status || 'unknown';
+                const statusClass = status === 'running' ? 'success' : 'danger';
+
+                serviceItem.innerHTML = `
+                    <div>
+                        <span class="service-name">${serviceName}</span>
+                        <span class="badge bg-${statusClass} ms-2">${status}</span>
+                    </div>
+                    <div class="service-controls">
+                        <button class="btn btn-sm btn-success" onclick="controlService('${workerId}', '${serviceName}', 'start')">Start</button>
+                        <button class="btn btn-sm btn-warning" onclick="controlService('${workerId}', '${serviceName}', 'restart')">Restart</button>
+                        <button class="btn btn-sm btn-danger" onclick="controlService('${workerId}', '${serviceName}', 'stop')">Stop</button>
+                    </div>
+                `;
+                container.appendChild(serviceItem);
+            });
+        }
+
+        // Control service
+        async function controlService(workerId, serviceName, action) {
+            try {
+                const response = await fetch('/api/dashboard/control-service', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        worker_id: workerId,
+                        service_name: serviceName,
+                        action: action
+                    })
+                });
+
+                const result = await response.json();
+
+                if (result.success) {
+                    alert(`Service ${serviceName} ${action} command sent successfully`);
+                    // Refresh metrics to show updated status
+                    setTimeout(updateMetrics, 1000);
+                } else {
+                    alert(`Failed to ${action} service: ${result.error}`);
+                }
+            } catch (error) {
+                console.error('Failed to control service:', error);
+                alert(`Error: ${error.message}`);
+            }
+        }
+
+        // Initialize
+        document.addEventListener('DOMContentLoaded', () => {
+            initCoordinatorChart();
+            updateMetrics();
+
+            // Auto-refresh every 5 seconds
+            setInterval(updateMetrics, 5000);
+        });
+    </script>
+</body>
+</html>
