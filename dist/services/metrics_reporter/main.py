@@ -249,62 +249,23 @@ class Run(BaseService):
         return services
 
     async def _send_to_coordinator(self, metrics: Dict[str, Any], services: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        """Send metrics to coordinator dashboard service"""
+        """Send metrics to coordinator using proper P2P RPC proxy"""
+        if not self.proxy:
+            raise Exception("Proxy not available")
+
         if not self.worker_id:
             raise Exception("Worker ID not set")
 
-        # Get coordinator address from config
-        coordinator_addresses = []
-        if hasattr(self, 'context') and self.context:
-            if hasattr(self.context.config, 'coordinator_addresses'):
-                coordinator_addresses = self.context.config.coordinator_addresses
-
-        if not coordinator_addresses:
-            raise Exception("No coordinator addresses configured")
-
         try:
-            # Use HTTP transport to make direct RPC call to coordinator
-            import httpx
+            # Call coordinator's metrics_dashboard.report_metrics method
+            # Using proper P2P proxy with role-based targeting
+            result = await self.proxy.metrics_dashboard.coordinator.report_metrics(
+                worker_id=self.worker_id,
+                metrics=metrics,
+                services=services
+            )
 
-            coordinator_url = coordinator_addresses[0]
-            if not coordinator_url.startswith('http'):
-                coordinator_url = f"https://{coordinator_url}"
-
-            # Prepare RPC request
-            rpc_request = {
-                "jsonrpc": "2.0",
-                "method": "metrics_dashboard/report_metrics",
-                "params": {
-                    "worker_id": self.worker_id,
-                    "metrics": metrics,
-                    "services": services
-                },
-                "id": 1
-            }
-
-            # Get SSL context if HTTPS is enabled
-            ssl_verify = True
-            if hasattr(self, 'context') and self.context:
-                if hasattr(self.context.config, 'ssl_verify'):
-                    ssl_verify = self.context.config.ssl_verify
-
-            # Make HTTP request
-            async with httpx.AsyncClient(verify=ssl_verify, timeout=30.0) as client:
-                response = await client.post(
-                    f"{coordinator_url}/rpc",
-                    json=rpc_request,
-                    headers={"Content-Type": "application/json"}
-                )
-
-                if response.status_code != 200:
-                    raise Exception(f"HTTP error: {response.status_code}")
-
-                result = response.json()
-
-                if "error" in result:
-                    raise Exception(f"RPC error: {result['error']}")
-
-                return result.get("result", {})
+            return result
 
         except Exception as e:
             self.logger.error(f"Failed to send metrics to coordinator: {e}")
