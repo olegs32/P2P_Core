@@ -57,6 +57,14 @@ class Run(BaseService):
         """Initialize dashboard service"""
         self.logger.info("Metrics Dashboard service initializing...")
 
+        # Check if this is coordinator - dashboard should only run on coordinator
+        if hasattr(self, 'context') and self.context:
+            if hasattr(self.context.config, 'coordinator_mode'):
+                is_coordinator = self.context.config.coordinator_mode
+                if not is_coordinator:
+                    self.logger.info("Dashboard service disabled on worker nodes - skipping initialization")
+                    return
+
         # Wait for proxy initialization
         await self._wait_for_proxy()
 
@@ -377,13 +385,40 @@ class Run(BaseService):
         # Refresh coordinator metrics
         await self._collect_coordinator_metrics()
 
+        # Calculate uptime
+        uptime_seconds = 0
+        if self.stats["uptime_start"]:
+            start_time = datetime.fromisoformat(self.stats["uptime_start"])
+            uptime_seconds = (datetime.now() - start_time).total_seconds()
+
+        # Count services across all nodes
+        total_services = 0
+        active_services = 0
+
+        # Count coordinator services
+        if self.coordinator_metrics and "services" in self.coordinator_metrics:
+            services = self.coordinator_metrics.get("services", {})
+            total_services += len(services)
+            active_services += sum(1 for s in services.values()
+                                  if isinstance(s, dict) and s.get("status") == "running")
+
+        # Count worker services
+        for worker_data in self.worker_metrics.values():
+            services = worker_data.get("services", {})
+            total_services += len(services)
+            active_services += sum(1 for s in services.values()
+                                  if isinstance(s, dict) and s.get("status") == "running")
+
         return {
             "timestamp": datetime.now().isoformat(),
             "coordinator": self.coordinator_metrics,
             "workers": self.worker_metrics,
             "stats": {
                 **self.stats,
-                "active_workers": len(self.worker_metrics)
+                "active_workers": len(self.worker_metrics),
+                "uptime_seconds": uptime_seconds,
+                "total_services": total_services,
+                "active_services": active_services
             }
         }
 
