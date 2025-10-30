@@ -198,15 +198,21 @@ class MethodCaller:
 
             result = response.json()
 
+            # Debug: log response
+            self.logger.debug(f"RPC response from {self.target_node}: {result}")
+
             # Обработка RPC ответа
-            if "error" in result:
+            # Проверяем на реальную ошибку (не None)
+            if "error" in result and result["error"] is not None:
                 raise RuntimeError(f"RPC error from {self.target_node}: {result['error']}")
 
-            if "result" not in result:
-                raise RuntimeError(f"Invalid RPC response from {self.target_node}: no result field")
+            # Если есть result - возвращаем его (даже если None)
+            if "result" in result:
+                self.logger.debug(f"Remote call successful: {method_path} -> {self.target_node}")
+                return result["result"]
 
-            self.logger.debug(f"Remote call successful: {method_path} -> {self.target_node}")
-            return result["result"]
+            # Если нет ни error ни result - это невалидный ответ
+            raise RuntimeError(f"Invalid RPC response from {self.target_node}: {result}")
 
         except Exception as e:
             self.logger.error(f"Remote call failed to {self.target_node}: {e}")

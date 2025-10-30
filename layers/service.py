@@ -192,8 +192,12 @@ class RPCRequest(BaseModel):
 
 class RPCResponse(BaseModel):
     result: Any = None
-    error: str = None
+    error: Optional[str] = None
     id: str
+
+    class Config:
+        # Exclude None values from JSON serialization
+        exclude_none = True
 
 
 class GossipJoinRequest(BaseModel):
