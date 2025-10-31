@@ -893,6 +893,7 @@ class BaseService(ABC):
             return time.time() - self._start_time
         return 0
 
+    @service_method(description="Get detailed service information", public=True)
     async def get_service_info(self) -> Dict[str, Any]:
         """Получение информации о сервисе с расширенными данными"""
         return {

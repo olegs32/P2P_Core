@@ -364,6 +364,28 @@
                         </div>
                     </div>
 
+                    <!-- System Info -->
+                    <div class="mt-3 p-2" style="background-color: rgba(255,255,255,0.03); border-radius: 6px;">
+                        <div class="row small">
+                            <div class="col-4 text-muted">CPU Cores: <span id="coordCPUCount" class="text-light">-</span></div>
+                            <div class="col-4 text-muted">Total Memory: <span id="coordMemoryTotal" class="text-light">-</span></div>
+                            <div class="col-4 text-muted">Process Memory: <span id="coordMemoryUsage" class="text-light">-</span></div>
+                        </div>
+                    </div>
+
+                    <!-- Cluster State -->
+                    <div id="coordClusterState" class="mt-3">
+                        <!-- Cluster state will be inserted here -->
+                    </div>
+
+                    <!-- Services -->
+                    <div class="service-list">
+                        <h6 class="mt-3 mb-2">Services</h6>
+                        <div id="coordServices">
+                            <!-- Services will be inserted here -->
+                        </div>
+                    </div>
+
                     <div class="chart-container">
                         <canvas id="coordChart"></canvas>
                     </div>
@@ -488,6 +510,11 @@
                     const metrics = data.coordinator.metrics;
                     updateNodeMetrics('coord', metrics);
 
+                    // Update coordinator services
+                    if (data.coordinator.services) {
+                        updateCoordinatorServices(data.coordinator.services);
+                    }
+
                     // Fetch and update coordinator history
                     const historyResponse = await fetch('/api/dashboard/history/coordinator');
                     const historyData = await historyResponse.json();
@@ -495,6 +522,9 @@
                         updateChart('coordinator', historyData.history);
                     }
                 }
+
+                // Update cluster state
+                updateClusterState(data.workers);
 
                 // Update workers
                 updateWorkers(data.workers);
@@ -520,6 +550,31 @@
             updateProgressBar(`${prefix}CPUBar`, cpuPercent);
             updateProgressBar(`${prefix}MemoryBar`, memoryPercent);
             updateProgressBar(`${prefix}DiskBar`, diskPercent);
+
+            // Update system info
+            const cpuCountEl = document.getElementById(`${prefix}CPUCount`);
+            if (cpuCountEl && metrics.cpu_count !== undefined) {
+                cpuCountEl.textContent = metrics.cpu_count;
+            }
+
+            const memoryTotalEl = document.getElementById(`${prefix}MemoryTotal`);
+            if (memoryTotalEl && metrics.memory?.total) {
+                memoryTotalEl.textContent = formatBytes(metrics.memory.total);
+            }
+
+            const memoryUsageEl = document.getElementById(`${prefix}MemoryUsage`);
+            if (memoryUsageEl && metrics.memory_usage_mb !== undefined) {
+                memoryUsageEl.textContent = `${metrics.memory_usage_mb.toFixed(1)} MB`;
+            }
+        }
+
+        // Helper: Format bytes to human readable
+        function formatBytes(bytes) {
+            if (bytes === 0) return '0 B';
+            const k = 1024;
+            const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
         }
 
         // Update progress bar
@@ -631,6 +686,15 @@
                     </div>
                 </div>
 
+                <!-- System Info -->
+                <div class="mt-3 p-2" style="background-color: rgba(255,255,255,0.03); border-radius: 6px;">
+                    <div class="row small">
+                        <div class="col-4 text-muted">CPU Cores: <span class="worker-cpu-count text-light">-</span></div>
+                        <div class="col-4 text-muted">Total Memory: <span class="worker-memory-total text-light">-</span></div>
+                        <div class="col-4 text-muted">Process Memory: <span class="worker-memory-usage text-light">-</span></div>
+                    </div>
+                </div>
+
                 <div class="service-list">
                     <h6 class="mt-3 mb-2">Services</h6>
                     <div class="worker-services">
@@ -723,6 +787,22 @@
             updateWorkerProgressBar(card, '.worker-memory-bar', memoryPercent);
             updateWorkerProgressBar(card, '.worker-disk-bar', diskPercent);
 
+            // Update system info
+            if (metrics.cpu_count !== undefined) {
+                const cpuCountEl = card.querySelector('.worker-cpu-count');
+                if (cpuCountEl) cpuCountEl.textContent = metrics.cpu_count;
+            }
+
+            if (metrics.memory?.total) {
+                const memoryTotalEl = card.querySelector('.worker-memory-total');
+                if (memoryTotalEl) memoryTotalEl.textContent = formatBytes(metrics.memory.total);
+            }
+
+            if (metrics.memory_usage_mb !== undefined) {
+                const memoryUsageEl = card.querySelector('.worker-memory-usage');
+                if (memoryUsageEl) memoryUsageEl.textContent = `${metrics.memory_usage_mb.toFixed(1)} MB`;
+            }
+
             // Update timestamp
             if (workerData.timestamp) {
                 const date = new Date(workerData.timestamp);
@@ -781,6 +861,82 @@
             });
         }
 
+        // Update coordinator services
+        function updateCoordinatorServices(services) {
+            const container = document.getElementById('coordServices');
+            if (!services || Object.keys(services).length === 0) {
+                container.innerHTML = '<div class="text-muted">No services</div>';
+                return;
+            }
+
+            container.innerHTML = '';
+            Object.entries(services).forEach(([serviceName, serviceData]) => {
+                const serviceItem = document.createElement('div');
+                serviceItem.className = 'service-item';
+
+                const status = serviceData.status || 'unknown';
+                const statusClass = status === 'running' ? 'success' : 'danger';
+
+                serviceItem.innerHTML = `
+                    <div>
+                        <span class="service-name" onclick="showServiceMetrics('coordinator', '${serviceName}')">${serviceName}</span>
+                        <span class="badge bg-${statusClass} ms-2">${status}</span>
+                    </div>
+                `;
+                container.appendChild(serviceItem);
+            });
+        }
+
+        // Update cluster state
+        function updateClusterState(workers) {
+            const container = document.getElementById('coordClusterState');
+            if (!workers || Object.keys(workers).length === 0) {
+                container.innerHTML = `
+                    <div class="mt-3 p-3" style="background-color: rgba(255,255,255,0.05); border-radius: 8px;">
+                        <h6 class="mb-2">Cluster State</h6>
+                        <p class="text-muted mb-0">No workers connected</p>
+                    </div>
+                `;
+                return;
+            }
+
+            const workerCount = Object.keys(workers).length;
+            const totalServices = Object.values(workers).reduce((acc, w) => {
+                return acc + (w.services ? Object.keys(w.services).length : 0);
+            }, 0);
+
+            let html = `
+                <div class="mt-3 p-3" style="background-color: rgba(255,255,255,0.05); border-radius: 8px;">
+                    <h6 class="mb-3">Cluster State</h6>
+                    <div class="row small">
+                        <div class="col-6 mb-2">
+                            <span class="text-muted">Connected Workers:</span>
+                            <span class="text-success fw-bold ms-2">${workerCount}</span>
+                        </div>
+                        <div class="col-6 mb-2">
+                            <span class="text-muted">Total Services:</span>
+                            <span class="text-info fw-bold ms-2">${totalServices}</span>
+                        </div>
+                    </div>
+                    <div class="mt-2">
+                        <strong class="d-block mb-2 small">Nodes:</strong>
+                        <div class="d-flex flex-wrap gap-2">
+            `;
+
+            Object.entries(workers).forEach(([workerId, workerData]) => {
+                const status = workerData.metrics ? 'success' : 'secondary';
+                html += `<span class="badge bg-${status}">${workerId}</span>`;
+            });
+
+            html += `
+                        </div>
+                    </div>
+                </div>
+            `;
+
+            container.innerHTML = html;
+        }
+
         // Service metrics modal
         async function showServiceMetrics(nodeId, serviceName) {
             const modal = document.getElementById('serviceModal');
@@ -834,38 +990,176 @@
                 return;
             }
 
-            let html = '<div class="metrics-grid">';
+            let html = '';
 
-            // Iterate through metrics and display them
-            Object.entries(metrics).forEach(([key, value]) => {
-                let displayValue = value;
+            // Service Info Section
+            if (metrics.name) {
+                html += '<div class="mb-4">';
+                html += '<h5 class="border-bottom pb-2">Service Information</h5>';
+                html += '<div class="row">';
 
-                // Format value based on type
-                if (typeof value === 'number') {
-                    displayValue = value.toFixed(2);
-                } else if (typeof value === 'object' && value !== null) {
-                    displayValue = JSON.stringify(value, null, 2);
+                // Basic info
+                if (metrics.name) html += `<div class="col-md-6 mb-2"><strong>Name:</strong> ${metrics.name}</div>`;
+                if (metrics.status) html += `<div class="col-md-6 mb-2"><strong>Status:</strong> <span class="badge bg-${metrics.status === 'running' ? 'success' : 'secondary'}">${metrics.status}</span></div>`;
+                if (metrics.version) html += `<div class="col-md-6 mb-2"><strong>Version:</strong> ${metrics.version}</div>`;
+                if (metrics.uptime !== undefined) html += `<div class="col-md-6 mb-2"><strong>Uptime:</strong> ${formatUptime(metrics.uptime)}</div>`;
+                if (metrics.description) html += `<div class="col-12 mb-2"><strong>Description:</strong> ${metrics.description}</div>`;
+
+                // Exposed methods (formatted nicely)
+                if (metrics.exposed_methods && metrics.exposed_methods.length > 0) {
+                    html += `<div class="col-12 mb-2">
+                        <strong>Exposed Methods:</strong><br>
+                        <span class="text-info">${metrics.exposed_methods.join(', ')}</span>
+                    </div>`;
                 }
 
-                html += `
-                    <div class="metric-card">
-                        <div class="metric-card-title">${key}</div>
-                        <div class="metric-card-value">${displayValue}</div>
-                    </div>
-                `;
-            });
+                html += '</div></div>';
+            }
 
-            html += '</div>';
+            // Metrics Summary
+            if (metrics.metrics_summary) {
+                html += '<div class="mb-4">';
+                html += '<h5 class="border-bottom pb-2">Metrics Summary</h5>';
+                html += '<div class="row">';
 
-            // Add raw JSON view
-            html += `
-                <div class="mt-4">
-                    <h5>Raw Data</h5>
-                    <pre style="background-color: rgba(0,0,0,0.3); padding: 1rem; border-radius: 6px; overflow-x: auto;">${JSON.stringify(metrics, null, 2)}</pre>
-                </div>
-            `;
+                Object.entries(metrics.metrics_summary).forEach(([key, value]) => {
+                    html += `<div class="col-md-4 mb-2">
+                        <div class="metric-card" style="padding: 1rem;">
+                            <div class="metric-card-title text-muted">${formatKey(key)}</div>
+                            <div class="metric-card-value" style="font-size: 1.5rem;">${value}</div>
+                        </div>
+                    </div>`;
+                });
+
+                html += '</div></div>';
+            }
+
+            // Health Report
+            if (metrics.health_report) {
+                html += '<div class="mb-4">';
+                html += '<h5 class="border-bottom pb-2">Health Report</h5>';
+                html += formatNestedObject(metrics.health_report);
+                html += '</div>';
+            }
+
+            // Heartbeat metrics (if exists)
+            const heartbeatKeys = Object.keys(metrics).filter(k => k.includes('heartbeat'));
+            if (heartbeatKeys.length > 0) {
+                html += '<div class="mb-4">';
+                html += '<h5 class="border-bottom pb-2">Heartbeat Metrics</h5>';
+                html += '<div class="row">';
+
+                heartbeatKeys.forEach(key => {
+                    html += `<div class="col-md-6 mb-2">
+                        <strong>${formatKey(key)}:</strong> ${formatValue(metrics[key])}
+                    </div>`;
+                });
+
+                html += '</div></div>';
+            }
+
+            // Call metrics (methods with "calls" in name)
+            const callKeys = Object.keys(metrics).filter(k => k.includes('calls') || k.includes('_count'));
+            if (callKeys.length > 0) {
+                html += '<div class="mb-4">';
+                html += '<h5 class="border-bottom pb-2">Call Statistics</h5>';
+                html += '<div class="row">';
+
+                callKeys.forEach(key => {
+                    if (!heartbeatKeys.includes(key)) { // Don't duplicate heartbeat
+                        html += `<div class="col-md-6 mb-2">
+                            <strong>${formatKey(key)}:</strong> <span class="badge bg-primary">${formatValue(metrics[key])}</span>
+                        </div>`;
+                    }
+                });
+
+                html += '</div></div>';
+            }
+
+            // Metadata (if exists)
+            if (metrics.metadata && Object.keys(metrics.metadata).length > 0) {
+                html += '<div class="mb-4">';
+                html += '<h5 class="border-bottom pb-2">Metadata</h5>';
+                html += formatNestedObject(metrics.metadata);
+                html += '</div>';
+            }
+
+            // Other metrics (everything else not shown above)
+            const shownKeys = new Set(['name', 'status', 'version', 'description', 'exposed_methods', 'uptime',
+                                       'health_report', 'metrics_summary', 'metadata', ...heartbeatKeys, ...callKeys]);
+            const otherKeys = Object.keys(metrics).filter(k => !shownKeys.has(k));
+
+            if (otherKeys.length > 0) {
+                html += '<div class="mb-4">';
+                html += '<h5 class="border-bottom pb-2">Additional Metrics</h5>';
+                html += '<div class="row">';
+
+                otherKeys.forEach(key => {
+                    html += `<div class="col-md-6 mb-2">
+                        <strong>${formatKey(key)}:</strong> ${formatValue(metrics[key])}
+                    </div>`;
+                });
+
+                html += '</div></div>';
+            }
 
             modalBody.innerHTML = html;
+        }
+
+        // Helper: Format key for display
+        function formatKey(key) {
+            return key
+                .replace(/_/g, ' ')
+                .replace(/\b\w/g, l => l.toUpperCase());
+        }
+
+        // Helper: Format value for display
+        function formatValue(value) {
+            if (typeof value === 'number') {
+                return value.toLocaleString();
+            } else if (typeof value === 'boolean') {
+                return `<span class="badge bg-${value ? 'success' : 'secondary'}">${value}</span>`;
+            } else if (typeof value === 'object' && value !== null) {
+                return `<pre style="background-color: rgba(0,0,0,0.3); padding: 0.5rem; border-radius: 4px; margin: 0; max-height: 200px; overflow: auto;">${JSON.stringify(value, null, 2)}</pre>`;
+            } else {
+                return value;
+            }
+        }
+
+        // Helper: Format nested object nicely
+        function formatNestedObject(obj, level = 0) {
+            let html = '';
+            const indent = level * 1.5;
+
+            Object.entries(obj).forEach(([key, value]) => {
+                if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
+                    html += `<div style="margin-left: ${indent}rem; margin-bottom: 0.5rem;">
+                        <strong>${formatKey(key)}:</strong>
+                        ${formatNestedObject(value, level + 1)}
+                    </div>`;
+                } else {
+                    html += `<div style="margin-left: ${indent}rem; margin-bottom: 0.3rem;">
+                        <strong>${formatKey(key)}:</strong> ${formatValue(value)}
+                    </div>`;
+                }
+            });
+
+            return html;
+        }
+
+        // Helper: Format uptime
+        function formatUptime(seconds) {
+            const days = Math.floor(seconds / 86400);
+            const hours = Math.floor((seconds % 86400) / 3600);
+            const minutes = Math.floor((seconds % 3600) / 60);
+
+            if (days > 0) {
+                return `${days}d ${hours}h ${minutes}m`;
+            } else if (hours > 0) {
+                return `${hours}h ${minutes}m`;
+            } else {
+                return `${minutes}m`;
+            }
         }
 
         function closeServiceModal() {
