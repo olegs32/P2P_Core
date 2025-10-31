@@ -352,6 +352,7 @@ class P2PApplicationContext:
         self._shutdown_handlers: List[callable] = []
 
         self._setup_signal_handlers()
+        self._setup_asyncio_exception_handler()  # Подавление Windows ошибок сокетов
         P2PApplicationContext.set_current_context(self)
 
     @classmethod
@@ -408,6 +409,63 @@ class P2PApplicationContext:
 
             signal.signal(signal.SIGINT, signal_handler)
             signal.signal(signal.SIGTERM, signal_handler)
+
+    def _setup_asyncio_exception_handler(self):
+        """
+        Настройка обработчика исключений для asyncio event loop
+
+        Подавляет ConnectionResetError и другие ошибки закрытия сокетов
+        на Windows (ProactorEventLoop), которые возникают в колбэках asyncio
+        при закрытии соединений.
+        """
+        import asyncio
+        import sys
+
+        def asyncio_exception_handler(loop, context):
+            """Обработчик исключений asyncio для подавления Windows ошибок"""
+            exception = context.get('exception')
+
+            # Список исключений которые нужно подавить (Windows ProactorEventLoop)
+            ignored_exceptions = (
+                ConnectionResetError,  # [WinError 10054]
+                ConnectionAbortedError,  # [WinError 10053]
+                BrokenPipeError,  # [Errno 32]
+                OSError,  # Общие ошибки сокетов
+            )
+
+            # Проверяем тип исключения
+            if exception and isinstance(exception, ignored_exceptions):
+                # Логируем на уровне debug вместо error
+                message = context.get('message', 'Unhandled exception')
+                self.logger.debug(
+                    f"Suppressed asyncio exception ({type(exception).__name__}): {message}"
+                )
+                return  # Подавляем исключение
+
+            # Проверяем по строке (для вложенных исключений)
+            exception_str = str(exception) if exception else ""
+            if any(err in exception_str for err in ["WinError 10054", "WinError 10053", "ConnectionReset", "ConnectionAborted"]):
+                self.logger.debug(f"Suppressed Windows socket exception: {exception_str}")
+                return
+
+            # Для всех остальных исключений - стандартная обработка
+            message = context.get('message', 'Unhandled exception')
+            self.logger.error(f"Asyncio exception: {message}")
+
+            if exception:
+                self.logger.error(
+                    f"Exception type: {type(exception).__name__}",
+                    exc_info=exception
+                )
+
+        # Устанавливаем обработчик для текущего event loop
+        try:
+            loop = asyncio.get_event_loop()
+            loop.set_exception_handler(asyncio_exception_handler)
+            self.logger.debug("Asyncio exception handler installed (suppresses Windows socket errors)")
+        except RuntimeError:
+            # Нет event loop - установим позже при первом использовании
+            self.logger.debug("No event loop yet, exception handler will be set on first use")
 
     # === Управление компонентами ===
 
@@ -482,6 +540,16 @@ class P2PApplicationContext:
         """Инициализация всех компонентов в правильном порядке"""
         async with self._initialization_lock:
             self.logger.info("Starting system initialization...")
+
+            # Переустанавливаем exception handler для текущего event loop
+            # (на случай если в __init__ loop еще не существовал)
+            try:
+                import asyncio
+                loop = asyncio.get_running_loop()
+                if not hasattr(loop, '_exception_handler') or loop._exception_handler is None:
+                    self._setup_asyncio_exception_handler()
+            except Exception as e:
+                self.logger.debug(f"Could not reinstall exception handler: {e}")
 
             # Если порядок не задан, используем порядок регистрации
             if not self._startup_order:
