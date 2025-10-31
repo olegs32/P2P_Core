@@ -451,6 +451,12 @@ async def run_coordinator_from_context(app_context: P2PApplicationContext):
         # Инициализируем все компоненты
         await app_context.initialize_all()
 
+        # Запускаем автосохранение защищенного хранилища
+        storage_manager = app_context.get_shared("storage_manager")
+        if storage_manager:
+            logger.info("Starting storage autosave (60s interval)...")
+            storage_manager.start_autosave(interval=60)
+
         # Проверяем здоровье системы
         health = app_context.health_check()
         if not health["healthy"]:
@@ -517,6 +523,12 @@ async def run_worker_from_context(app_context: P2PApplicationContext):
     try:
         # Инициализируем все компоненты
         await app_context.initialize_all()
+
+        # Запускаем автосохранение защищенного хранилища
+        storage_manager = app_context.get_shared("storage_manager")
+        if storage_manager:
+            logger.info("Starting storage autosave (60s interval)...")
+            storage_manager.start_autosave(interval=60)
 
         # Проверяем здоровье системы
         health = app_context.health_check()

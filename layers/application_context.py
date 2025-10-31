@@ -544,7 +544,9 @@ class P2PApplicationContext:
                 else:
                     handler()
             except Exception as e:
-                self.logger.error(f"Error in shutdown handler: {e}")
+                # На Windows игнорируем ConnectionResetError
+                if "ConnectionResetError" not in str(type(e).__name__):
+                    self.logger.error(f"Error in shutdown handler: {e}")
 
         # Останавливаем компоненты в обратном порядке
         for component_name in self._shutdown_order:
@@ -557,8 +559,20 @@ class P2PApplicationContext:
             try:
                 await component.shutdown()
             except Exception as e:
-                self.logger.error(f"Error shutting down {component_name}: {e}")
+                # На Windows могут возникать ConnectionResetError - игнорируем их
+                if "ConnectionResetError" not in str(type(e).__name__):
+                    self.logger.error(f"Error shutting down {component_name}: {e}")
                 # Продолжаем shutdown других компонентов
+
+        # Сохраняем защищенное хранилище перед выходом
+        try:
+            storage_manager = self.get_shared("storage_manager")
+            if storage_manager:
+                self.logger.info("Saving secure storage before shutdown...")
+                storage_manager.save()
+                self.logger.info("Secure storage saved successfully")
+        except Exception as e:
+            self.logger.error(f"Error saving storage during shutdown: {e}")
 
         self.logger.info("Graceful shutdown completed")
 
@@ -1281,15 +1295,42 @@ class WebServerComponent(P2PComponent):
         await asyncio.sleep(1)
 
     async def _do_shutdown(self):
-        if hasattr(self, 'server_task'):
-            self.server_task.cancel()
+        """Корректное завершение веб-сервера"""
+        # Останавливаем uvicorn сервер корректно
+        if hasattr(self, 'server') and self.server:
             try:
-                await self.server_task
-            except asyncio.CancelledError:
-                pass
+                self.logger.info("Shutting down uvicorn server...")
+                # Используем uvicorn API для graceful shutdown
+                self.server.should_exit = True
+
+                # Даем серверу время завершить текущие запросы
+                await asyncio.sleep(0.5)
+
+            except Exception as e:
+                self.logger.warning(f"Error during server shutdown signal: {e}")
+
+        # Отменяем задачу сервера
+        if hasattr(self, 'server_task') and self.server_task:
+            try:
+                if not self.server_task.done():
+                    self.server_task.cancel()
+                    # Ждем завершения с таймаутом
+                    try:
+                        await asyncio.wait_for(self.server_task, timeout=2.0)
+                    except asyncio.TimeoutError:
+                        self.logger.warning("Server task shutdown timeout")
+                    except asyncio.CancelledError:
+                        pass
+            except Exception as e:
+                # На Windows могут возникать ConnectionResetError - игнорируем
+                if "ConnectionResetError" not in str(type(e).__name__):
+                    self.logger.warning(f"Error during server task cancellation: {e}")
 
         # Очистка SSL контекста (закрытие memfd дескрипторов)
         if hasattr(self, 'server_ssl_context'):
-            self.server_ssl_context.cleanup()
+            try:
+                self.server_ssl_context.cleanup()
+            except Exception as e:
+                self.logger.warning(f"Error during SSL context cleanup: {e}")
 
-        self.logger.info("Web server shutdown")
+        self.logger.info("Web server shutdown completed")
