@@ -481,17 +481,15 @@ class Run(BaseService):
         """
         Control a service on a specific worker
 
+        Note: This functionality requires orchestrator service to be installed
+        on the worker node. If orchestrator is not available, service control
+        must be done directly on the worker.
+
         Args:
             worker_id: Worker identifier
             service_name: Name of the service
             action: Action to perform (start, stop, restart)
         """
-        if not self.proxy:
-            return {
-                "success": False,
-                "error": "Proxy not available"
-            }
-
         # Validate action
         if action not in ["start", "stop", "restart"]:
             return {
@@ -499,28 +497,16 @@ class Run(BaseService):
                 "error": f"Invalid action: {action}"
             }
 
-        try:
-            # Call the orchestrator service on the specific worker
-            # This assumes orchestrator service exists on workers
-            result = await getattr(
-                self.proxy.orchestrator,
-                worker_id
-            ).control_service(service_name, action)
-
-            return {
-                "success": True,
-                "worker_id": worker_id,
-                "service_name": service_name,
-                "action": action,
-                "result": result
-            }
-
-        except Exception as e:
-            self.logger.error(f"Failed to control service {service_name} on {worker_id}: {e}")
-            return {
-                "success": False,
-                "error": str(e)
-            }
+        # Service control is not yet implemented
+        # This would require orchestrator service on workers or direct access to ServiceManager
+        return {
+            "success": False,
+            "error": "Service control is not yet implemented. Please manage services directly on worker nodes.",
+            "worker_id": worker_id,
+            "service_name": service_name,
+            "action": action,
+            "note": "You can stop/start services by connecting to the worker directly"
+        }
 
     @service_method(description="Get list of all services across cluster", public=True)
     async def get_cluster_services(self) -> Dict[str, Any]:
@@ -580,13 +566,17 @@ class Run(BaseService):
             }
 
         try:
+            # Get service proxy
+            service_proxy = getattr(self.proxy, service_name)
+
             # Determine if this is coordinator or worker
             if node_id == "coordinator":
                 # Local call to get service metrics
-                metrics = await self.proxy[f"{service_name}"].get_metrics()
+                metrics = await service_proxy.get_metrics()
             else:
-                # Remote call to worker
-                metrics = await self.proxy[f"{service_name}"][node_id].get_metrics()
+                # Remote call to worker - get target node proxy
+                remote_service = getattr(service_proxy, node_id)
+                metrics = await remote_service.get_metrics()
 
             return {
                 "success": True,
