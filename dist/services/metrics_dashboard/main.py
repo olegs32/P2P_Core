@@ -142,6 +142,11 @@ class Run(BaseService):
 
             return await self.control_service(worker_id, service_name, action)
 
+        @app.get("/api/dashboard/service/{node_id}/{service_name}/metrics")
+        async def get_service_metrics(node_id: str, service_name: str):
+            """Get detailed metrics for a specific service on a node"""
+            return await self.get_service_metrics(node_id, service_name)
+
         self.logger.info("Dashboard HTTP endpoints registered")
 
     def _get_fastapi_app(self):
@@ -562,4 +567,39 @@ class Run(BaseService):
                 "success": True,
                 "cleared_records": total_cleared,
                 "message": "All metrics history cleared"
+            }
+
+    @service_method(description="Get detailed metrics for a service", public=True)
+    async def get_service_metrics(self, node_id: str, service_name: str) -> Dict[str, Any]:
+        """Get detailed metrics and information for a specific service on a node"""
+
+        if not self.proxy:
+            return {
+                "success": False,
+                "error": "Proxy not available"
+            }
+
+        try:
+            # Determine if this is coordinator or worker
+            if node_id == "coordinator":
+                # Local call to get service metrics
+                metrics = await self.proxy[f"{service_name}"].get_metrics()
+            else:
+                # Remote call to worker
+                metrics = await self.proxy[f"{service_name}"][node_id].get_metrics()
+
+            return {
+                "success": True,
+                "node_id": node_id,
+                "service_name": service_name,
+                "metrics": metrics
+            }
+
+        except Exception as e:
+            self.logger.error(f"Failed to get metrics for {service_name} on {node_id}: {e}")
+            return {
+                "success": False,
+                "error": str(e),
+                "node_id": node_id,
+                "service_name": service_name
             }

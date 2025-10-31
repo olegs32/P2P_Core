@@ -195,6 +195,91 @@
         .refresh-indicator.active {
             opacity: 1;
         }
+
+        .service-name {
+            cursor: pointer;
+            transition: color 0.2s;
+        }
+
+        .service-name:hover {
+            color: #667eea;
+            text-decoration: underline;
+        }
+
+        .modal {
+            display: none;
+            position: fixed;
+            z-index: 2000;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0, 0, 0, 0.7);
+        }
+
+        .modal-content {
+            background-color: var(--bg-card);
+            margin: 5% auto;
+            padding: 2rem;
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            width: 80%;
+            max-width: 800px;
+            max-height: 80vh;
+            overflow-y: auto;
+        }
+
+        .modal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 1.5rem;
+            border-bottom: 1px solid var(--border-color);
+            padding-bottom: 1rem;
+        }
+
+        .modal-header h2 {
+            margin: 0;
+            font-size: 1.5rem;
+        }
+
+        .close-btn {
+            font-size: 2rem;
+            color: #8b92a8;
+            cursor: pointer;
+            transition: color 0.2s;
+        }
+
+        .close-btn:hover {
+            color: var(--text-light);
+        }
+
+        .metrics-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 1rem;
+            margin-top: 1rem;
+        }
+
+        .metric-card {
+            background-color: rgba(255, 255, 255, 0.05);
+            padding: 1rem;
+            border-radius: 8px;
+            border: 1px solid var(--border-color);
+        }
+
+        .metric-card-title {
+            font-size: 0.85rem;
+            color: #8b92a8;
+            margin-bottom: 0.5rem;
+            text-transform: uppercase;
+        }
+
+        .metric-card-value {
+            font-size: 1.5rem;
+            font-weight: bold;
+            color: var(--text-light);
+        }
     </style>
 </head>
 <body>
@@ -292,6 +377,23 @@
                 <h3 class="mb-3">Workers</h3>
                 <div id="workersContainer">
                     <!-- Workers will be dynamically inserted here -->
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Service Metrics Modal -->
+    <div id="serviceModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2 id="modalTitle">Service Metrics</h2>
+                <span class="close-btn" onclick="closeServiceModal()">&times;</span>
+            </div>
+            <div id="modalBody">
+                <div class="text-center">
+                    <div class="spinner-border" role="status">
+                        <span class="visually-hidden">Loading...</span>
+                    </div>
                 </div>
             </div>
         </div>
@@ -666,7 +768,7 @@
 
                 serviceItem.innerHTML = `
                     <div>
-                        <span class="service-name">${serviceName}</span>
+                        <span class="service-name" onclick="showServiceMetrics('${workerId}', '${serviceName}')">${serviceName}</span>
                         <span class="badge bg-${statusClass} ms-2">${status}</span>
                     </div>
                     <div class="service-controls">
@@ -677,6 +779,105 @@
                 `;
                 container.appendChild(serviceItem);
             });
+        }
+
+        // Service metrics modal
+        async function showServiceMetrics(nodeId, serviceName) {
+            const modal = document.getElementById('serviceModal');
+            const modalTitle = document.getElementById('modalTitle');
+            const modalBody = document.getElementById('modalBody');
+
+            // Show modal
+            modal.style.display = 'block';
+            modalTitle.textContent = `${serviceName} @ ${nodeId}`;
+
+            // Show loading
+            modalBody.innerHTML = `
+                <div class="text-center">
+                    <div class="spinner-border" role="status">
+                        <span class="visually-hidden">Loading...</span>
+                    </div>
+                </div>
+            `;
+
+            try {
+                const response = await fetch(`/api/dashboard/service/${nodeId}/${serviceName}/metrics`);
+                const data = await response.json();
+
+                if (!data.success) {
+                    modalBody.innerHTML = `
+                        <div class="alert alert-danger">
+                            Error loading metrics: ${data.error}
+                        </div>
+                    `;
+                    return;
+                }
+
+                // Display metrics
+                displayServiceMetrics(data.metrics);
+
+            } catch (error) {
+                console.error('Failed to load service metrics:', error);
+                modalBody.innerHTML = `
+                    <div class="alert alert-danger">
+                        Failed to load metrics: ${error.message}
+                    </div>
+                `;
+            }
+        }
+
+        function displayServiceMetrics(metrics) {
+            const modalBody = document.getElementById('modalBody');
+
+            if (!metrics || Object.keys(metrics).length === 0) {
+                modalBody.innerHTML = '<div class="text-muted">No metrics available</div>';
+                return;
+            }
+
+            let html = '<div class="metrics-grid">';
+
+            // Iterate through metrics and display them
+            Object.entries(metrics).forEach(([key, value]) => {
+                let displayValue = value;
+
+                // Format value based on type
+                if (typeof value === 'number') {
+                    displayValue = value.toFixed(2);
+                } else if (typeof value === 'object' && value !== null) {
+                    displayValue = JSON.stringify(value, null, 2);
+                }
+
+                html += `
+                    <div class="metric-card">
+                        <div class="metric-card-title">${key}</div>
+                        <div class="metric-card-value">${displayValue}</div>
+                    </div>
+                `;
+            });
+
+            html += '</div>';
+
+            // Add raw JSON view
+            html += `
+                <div class="mt-4">
+                    <h5>Raw Data</h5>
+                    <pre style="background-color: rgba(0,0,0,0.3); padding: 1rem; border-radius: 6px; overflow-x: auto;">${JSON.stringify(metrics, null, 2)}</pre>
+                </div>
+            `;
+
+            modalBody.innerHTML = html;
+        }
+
+        function closeServiceModal() {
+            document.getElementById('serviceModal').style.display = 'none';
+        }
+
+        // Close modal when clicking outside
+        window.onclick = function(event) {
+            const modal = document.getElementById('serviceModal');
+            if (event.target === modal) {
+                closeServiceModal();
+            }
         }
 
         // Control service

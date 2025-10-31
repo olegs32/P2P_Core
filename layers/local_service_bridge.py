@@ -118,18 +118,18 @@ class MethodCaller:
         self.context = context
         self.logger = logging.getLogger(f"Method.{service_name}.{method_name}")
 
-    async def __call__(self, **kwargs):
-        """Выполнение локального или удаленного RPC вызова"""
+    async def __call__(self, *args, **kwargs):
+        """Выполнение локального или удаленного RPC вызова с поддержкой позиционных и именованных аргументов"""
         method_path = f"{self.service_name}/{self.method_name}"
 
         # Если указан целевой узел - делаем удаленный RPC вызов
         if self.target_node:
-            return await self._remote_call(method_path, **kwargs)
+            return await self._remote_call(method_path, *args, **kwargs)
 
         # Иначе делаем локальный вызов
-        return await self._local_call(method_path, **kwargs)
+        return await self._local_call(method_path, *args, **kwargs)
 
-    async def _local_call(self, method_path: str, **kwargs):
+    async def _local_call(self, method_path: str, *args, **kwargs):
         """Локальный вызов метода через registry"""
         if method_path not in self.method_registry:
             raise RuntimeError(
@@ -137,11 +137,13 @@ class MethodCaller:
                 f"Available: {list(self.method_registry.keys())[:5]}"
             )
 
-        self.logger.debug(f"Local call: {method_path}")
+        self.logger.debug(f"Local call: {method_path} with args={args}, kwargs={kwargs}")
         method = self.method_registry[method_path]
-        return await method(**kwargs)
 
-    async def _remote_call(self, method_path: str, **kwargs):
+        # Вызываем с позиционными и именованными аргументами
+        return await method(*args, **kwargs)
+
+    async def _remote_call(self, method_path: str, *args, **kwargs):
         """Удаленный RPC вызов через P2P архитектуру"""
         self.logger.debug(f"Remote call to {self.target_node}: {method_path}")
 
@@ -172,11 +174,19 @@ class MethodCaller:
         node_url = node_info.get_url(https=https_enabled)
 
         # Подготавливаем RPC запрос
+        # Если есть позиционные аргументы - передаем как массив, иначе как объект
         import uuid
+        if args:
+            # Позиционные аргументы - params как массив
+            params = list(args)
+        else:
+            # Только именованные - params как объект
+            params = kwargs
+
         rpc_request = {
             "jsonrpc": "2.0",
             "method": method_path,
-            "params": kwargs,
+            "params": params,
             "id": str(uuid.uuid4())
         }
 
