@@ -149,19 +149,22 @@
         }
 
         .service-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
             padding: 0.75rem;
             background-color: rgba(255,255,255,0.03);
             border-radius: 6px;
             margin-bottom: 0.5rem;
-            transition: background-color 0.2s;
-        }
-
-        .service-item:hover {
-            background-color: rgba(255,255,255,0.06);
         }
 
         .service-name {
             font-weight: 500;
+        }
+
+        .service-controls {
+            display: flex;
+            gap: 0.5rem;
         }
 
         .btn-sm {
@@ -767,7 +770,11 @@
                     <div>
                         <span class="service-name" onclick="showServiceMetrics('${workerId}', '${serviceName}')">${serviceName}</span>
                         <span class="badge bg-${statusClass} ms-2">${status}</span>
-                        <small class="text-muted ms-2">(click to view metrics)</small>
+                    </div>
+                    <div class="service-controls">
+                        <button class="btn btn-sm btn-success" onclick="controlService('${workerId}', '${serviceName}', 'start')">Start</button>
+                        <button class="btn btn-sm btn-warning" onclick="controlService('${workerId}', '${serviceName}', 'restart')">Restart</button>
+                        <button class="btn btn-sm btn-danger" onclick="controlService('${workerId}', '${serviceName}', 'stop')">Stop</button>
                     </div>
                 `;
                 container.appendChild(serviceItem);

@@ -479,11 +479,10 @@ class Run(BaseService):
         action: str
     ) -> Dict[str, Any]:
         """
-        Control a service on a specific worker
+        Control a service on a specific worker using orchestrator
 
-        Note: This functionality requires orchestrator service to be installed
-        on the worker node. If orchestrator is not available, service control
-        must be done directly on the worker.
+        This method calls the orchestrator service on the target worker
+        via P2P RPC to control the service.
 
         Args:
             worker_id: Worker identifier
@@ -497,11 +496,39 @@ class Run(BaseService):
                 "error": f"Invalid action: {action}"
             }
 
-        # Service control is not yet implemented
-        # This would require orchestrator service on workers or direct access to ServiceManager
-        return {
-            "success": False,
-            "error": "Service control is not yet implemented. Please manage services directly on worker nodes.",
+        if not self.proxy:
+            return {
+                "success": False,
+                "error": "Proxy not available"
+            }
+
+        try:
+            self.logger.info(f"Sending {action} command for service {service_name} on worker {worker_id}")
+
+            # Get orchestrator proxy for the target worker
+            orchestrator_proxy = getattr(self.proxy.orchestrator, worker_id)
+
+            # Call the appropriate orchestrator method based on action
+            if action == "start":
+                result = await orchestrator_proxy.start_service(service_name)
+            elif action == "stop":
+                result = await orchestrator_proxy.stop_service(service_name)
+            elif action == "restart":
+                result = await orchestrator_proxy.restart_service(service_name)
+            else:
+                return {
+                    "success": False,
+                    "error": f"Unknown action: {action}"
+                }
+
+            self.logger.info(f"Service control result for {service_name} on {worker_id}: {result}")
+            return result
+
+        except Exception as e:
+            self.logger.error(f"Failed to control service {service_name} on {worker_id}: {e}")
+            return {
+                "success": False,
+                "error": f"Failed to {action} service: {str(e)}",
             "worker_id": worker_id,
             "service_name": service_name,
             "action": action,
@@ -571,18 +598,18 @@ class Run(BaseService):
 
             # Determine if this is coordinator or worker
             if node_id == "coordinator":
-                # Local call to get service metrics
-                metrics = await service_proxy.get_metrics()
+                # Local call to get service info (includes metrics)
+                service_info = await service_proxy.get_service_info()
             else:
                 # Remote call to worker - get target node proxy
                 remote_service = getattr(service_proxy, node_id)
-                metrics = await remote_service.get_metrics()
+                service_info = await remote_service.get_service_info()
 
             return {
                 "success": True,
                 "node_id": node_id,
                 "service_name": service_name,
-                "metrics": metrics
+                "metrics": service_info
             }
 
         except Exception as e:

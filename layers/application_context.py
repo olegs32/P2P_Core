@@ -365,16 +365,49 @@ class P2PApplicationContext:
         cls._current_context = context
 
     def _setup_signal_handlers(self):
-        """Настройка обработчиков сигналов"""
+        """Настройка обработчиков сигналов для asyncio"""
         import signal
+        import asyncio
 
-        def signal_handler(signum, frame):
+        def handle_shutdown_signal(signum):
+            """Обработчик сигналов для graceful shutdown"""
             signal_name = signal.Signals(signum).name
+            self.logger.info(f"\n{'='*60}")
             self.logger.info(f"Received signal {signal_name}, initiating graceful shutdown...")
+            self.logger.info(f"{'='*60}")
+
+            # Устанавливаем событие shutdown
+            # Это разбудит wait_for_shutdown() и позволит выполнить finally блок
             self._shutdown_event.set()
 
-        signal.signal(signal.SIGINT, signal_handler)
-        signal.signal(signal.SIGTERM, signal_handler)
+        # Регистрируем обработчики сигналов
+        try:
+            loop = asyncio.get_event_loop()
+
+            # Используем add_signal_handler для POSIX систем
+            loop.add_signal_handler(
+                signal.SIGINT,
+                lambda: handle_shutdown_signal(signal.SIGINT)
+            )
+            loop.add_signal_handler(
+                signal.SIGTERM,
+                lambda: handle_shutdown_signal(signal.SIGTERM)
+            )
+            self.logger.debug("Signal handlers registered with asyncio event loop")
+
+        except (NotImplementedError, AttributeError):
+            # Fallback для Windows или если add_signal_handler не поддерживается
+            self.logger.warning("asyncio signal handlers not supported, using standard signal module")
+
+            def signal_handler(signum, frame):
+                signal_name = signal.Signals(signum).name
+                self.logger.info(f"\n{'='*60}")
+                self.logger.info(f"Received signal {signal_name}, initiating graceful shutdown...")
+                self.logger.info(f"{'='*60}")
+                self._shutdown_event.set()
+
+            signal.signal(signal.SIGINT, signal_handler)
+            signal.signal(signal.SIGTERM, signal_handler)
 
     # === Управление компонентами ===
 
