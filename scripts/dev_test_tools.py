@@ -25,7 +25,7 @@ def recursive_iter(symbols: str, line: list, step: int, max_steps: int, target: 
         # it += 1
         # print(step, line, sym)
         if line == target:
-            print('Solve', line, target)
+            # print('Solve', line, target)
             return line
     return False
 
