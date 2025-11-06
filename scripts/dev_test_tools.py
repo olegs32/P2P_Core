@@ -35,22 +35,28 @@ class Iterator:
     def recursive_iter(self, line: list, step: int, max_steps: int, target: list, start_pos: dict, end_pos: dict, ):
         # print(self.data, line, step, max_steps, target)
         # print('test', start_pos, end_pos)
-        result_range = [x for x in range(start_pos[step], end_pos[step])]
-        if not result_range:
-            result_range = [x for x in range(start_pos[step], self.data_len + 1)] + [x for x in range(end_pos[step], start_pos[step] + 1)]
+        max_step = end_pos[step] + 1 if end_pos[step] <= self.data_len else end_pos[step]
+        result_range = [x for x in range(start_pos[step], max_step)]
+        if len(result_range) < max_step:
+            old_resrange = result_range
+            result_range = [x for x in range(start_pos[step], self.data_len)] + [x for x in range(0, max_step)]
+            print(old_resrange, 'low, add', result_range)
         # print(result_range)
         for pos in result_range:
-            # print(pos, start_pos, line)
+            # print(pos, start_pos, line, result_range)
             sym = self.data[pos]
             line[step] = sym
             if step < max_steps:
                 recursive_step = step + 1
                 if self.recursive_iter(line, recursive_step, max_steps, target, start_pos, end_pos):
                     self.result.append(line)
+                    print('found1', line)
                 # print('loop closed')
                 start_pos[step] = 0
             if line == target:
                 self.result.append(line)
+                print('found2', line)
+
         return False
 
     def custom_iterator(self, skip: int = 0, end: int = 0, target: str = ''):
@@ -65,6 +71,7 @@ class Iterator:
 
         max_iters = len(self.data) ** self.len_key
         print('max_iters', max_iters)
+        target = list(target)
 
         line = [self.data[0] for _ in range(self.len_key)]
         if skip > 0:
@@ -85,28 +92,39 @@ class Iterator:
                                      args=(line, 0, self.len_key - 1, target, limits[i][0], limits[i][1]))
                 pool.close()
                 pool.join()
+        else:
+            limits = [[0 for x in range(self.len_key)],
+                      [len(self.data) for x in range(self.len_key)]]
 
-                # self.start_pos = self.calc_start(skip)
-                # if end != 0:
-                #     self.end_pos = [x + 1 for x in self.calc_start(end)]  # fix to range()
-                # else:
-                #     self.end_pos = {x: self.data_len for x in range(0, self.len_key)}
+            self.recursive_iter(line, 0, length_key - 1, target, limits[0], limits[1])
+            # self.start_pos = self.calc_start(skip)
+            # if end != 0:
+            #     self.end_pos = [x + 1 for x in self.calc_start(end)]  # fix to range()
+            # else:
+            #     self.end_pos = {x: self.data_len for x in range(0, self.len_key)}
 
-        target = list(target)
         # result = self.recursive_iter(line, 0, self.len_key - 1, target)
 
         return self.result
 
+
 if __name__ == '__main__':
     freeze_support()
     dataset = '1234567890'
-    length_key = 10
+    length_key = 4
     ts_start = time.time()
     # print(result)
     iterator = Iterator(dataset, length_key)
 
     # print(iterator.calc_start(9000))
-    print(iterator.custom_iterator(target='2' * length_key, skip=1, ))
+    print(iterator.custom_iterator(target='0' * length_key, skip=1, ))
+
+    limits = [[1, 4, 3, 6], [0, 3, 2, 5]]
+    line = [dataset[0] for _ in range(length_key)]
+    target = '2' * length_key
+    # result = iterator.recursive_iter(line, 0, length_key - 1, target, limits[0], limits[1])
+    # print(result)
+
 
     # for i in range(1, 1000, 1):
     #     global skip
