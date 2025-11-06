@@ -7,7 +7,7 @@ from typing import Dict, List
 class Iterator:
     def __init__(self, data, len_key):
         self.result: list = []
-        self.proc: int = cpu_count() - 1
+        self.proc: int = cpu_count()
         self.data: str = data
         self.len_key: int = len_key
         self.data_len = len(data)
@@ -43,7 +43,7 @@ class Iterator:
             old_resrange = result_range
             result_range = [x for x in range(start_pos[step], self.data_len)] + [x for x in range(0, max_step)]
             # print(iters_max, 'low, add', result_range)
-            # print(old_resrange, 'low, add', result_range)
+            # print(old_resrange, 'low, add', result_range, start_pos, end_pos)
         # print(result_range)
         for pos in result_range:
             # print(pos, start_pos, line, result_range)
@@ -55,7 +55,7 @@ class Iterator:
                     self.result.append(line)
                     print('found1', line)
                 # print('loop closed')
-                start_pos[step] = 0
+                # start_pos[step] = 0
             if line == target:
                 self.result.append(line)
                 print('found2', line, start_pos, end_pos, step, result_range)
@@ -67,7 +67,7 @@ class Iterator:
         Кастомный итератор со стартовой позицией перебора
 
         data: данные для перебора
-        result: результат (хеш)
+        result: результат например  (хеш)
         len_key: длина ключа
         skip: отступ с начала итераций
         """
@@ -79,14 +79,18 @@ class Iterator:
         line = [self.data[0] for _ in range(self.len_key)]
         if skip > 0:
             if end == 0:
-                end = self.data_len
+                end = max_iters
+                print('end', end)
             summary = max_iters - skip
-            print(end, summary)
+            print('end', end, 'summary', summary)
             if summary > 0:
                 pool = Pool(processes=self.proc)
                 limits: Dict[int, list] = {}
-                part = round(summary / self.proc, 0)
-                for n in range(self.proc):
+                part = int(summary / self.proc)
+                for n in range(self.proc + 1):
+                    if n == self.proc + 1:
+                        limits[n] = [self.calc_start(int(skip + n * part)), self.calc_start(max_iters)]
+                    # print('n', n, part, self.proc)
                     limits[n] = [self.calc_start(int(skip + n * part)), self.calc_start(int(skip + (n + 1) * part))]
                     print(f" begin {skip + n * part}, end {skip + (n + 1) * part}")
                 for i in limits:
@@ -96,8 +100,7 @@ class Iterator:
                 pool.close()
                 pool.join()
         else:
-            limits = [[0 for x in range(self.len_key)],
-                      [len(self.data) for x in range(self.len_key)]]
+            limits = [[0 for x in range(self.len_key)], [len(self.data) for x in range(self.len_key)]]
 
             self.recursive_iter(line, 0, length_key - 1, target, limits[0], limits[1])
             # self.start_pos = self.calc_start(skip)
@@ -114,12 +117,14 @@ class Iterator:
 if __name__ == '__main__':
     freeze_support()
     dataset = '1234567890'
-    length_key = 2
+    length_key = 5
     ts_start = time.time()
     # print(result)
     iterator = Iterator(dataset, length_key)
 
     # print(iterator.calc_start(9000))
+    print(cpu_count())
+
     print(iterator.custom_iterator(target='2' * length_key, skip=1, ))
 
     # limits = [[1, 4, 3, 6], [0, 3, 2, 5]]
