@@ -37,10 +37,13 @@ class Iterator:
         # print('test', start_pos, end_pos)
         max_step = end_pos[step] + 1 if end_pos[step] <= self.data_len else end_pos[step]
         result_range = [x for x in range(start_pos[step], max_step)]
-        if len(result_range) < max_step:
+        iters_max = max_step - start_pos[step]
+        # print('iters started')
+        if len(result_range) < iters_max or iters_max <= 0:
             old_resrange = result_range
             result_range = [x for x in range(start_pos[step], self.data_len)] + [x for x in range(0, max_step)]
-            print(old_resrange, 'low, add', result_range)
+            # print(iters_max, 'low, add', result_range)
+            # print(old_resrange, 'low, add', result_range)
         # print(result_range)
         for pos in result_range:
             # print(pos, start_pos, line, result_range)
@@ -55,7 +58,7 @@ class Iterator:
                 start_pos[step] = 0
             if line == target:
                 self.result.append(line)
-                print('found2', line)
+                print('found2', line, start_pos, end_pos, step, result_range)
 
         return False
 
@@ -111,20 +114,19 @@ class Iterator:
 if __name__ == '__main__':
     freeze_support()
     dataset = '1234567890'
-    length_key = 4
+    length_key = 2
     ts_start = time.time()
     # print(result)
     iterator = Iterator(dataset, length_key)
 
     # print(iterator.calc_start(9000))
-    print(iterator.custom_iterator(target='0' * length_key, skip=1, ))
+    print(iterator.custom_iterator(target='2' * length_key, skip=1, ))
 
-    limits = [[1, 4, 3, 6], [0, 3, 2, 5]]
-    line = [dataset[0] for _ in range(length_key)]
-    target = '2' * length_key
+    # limits = [[1, 4, 3, 6], [0, 3, 2, 5]]
+    # line = [dataset[0] for _ in range(length_key)]
+    # target = '2' * length_key
     # result = iterator.recursive_iter(line, 0, length_key - 1, target, limits[0], limits[1])
     # print(result)
-
 
     # for i in range(1, 1000, 1):
     #     global skip
