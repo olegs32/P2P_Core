@@ -1,0 +1,9 @@
+{
+  "name": "update_server",
+  "version": "1.0.0",
+  "description": "Update Server - manages system updates for P2P cluster",
+  "author": "P2P Core Team",
+  "main_class": "Run",
+  "dependencies": [],
+  "coordinator_only": true
+}
