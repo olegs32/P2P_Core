@@ -896,6 +896,17 @@ class BaseService(ABC):
     @service_method(description="Get detailed service information", public=True)
     async def get_service_info(self) -> Dict[str, Any]:
         """Получение информации о сервисе с расширенными данными"""
+        # Агрегировать данные таймеров
+        timers_aggregated = {}
+        for name, values in self.metrics.timers.items():
+            if values:
+                timers_aggregated[name] = {
+                    "count": len(values),
+                    "avg_ms": sum(values) / len(values),
+                    "min_ms": min(values),
+                    "max_ms": max(values)
+                }
+
         return {
             "name": self.service_name,
             "status": self.status.value,
@@ -909,7 +920,10 @@ class BaseService(ABC):
                 "counters": len(self.metrics.counters),
                 "gauges": len(self.metrics.gauges),
                 "timers": len(self.metrics.timers)
-            }
+            },
+            "counters": dict(self.metrics.counters),
+            "gauges": dict(self.metrics.gauges),
+            "timers": timers_aggregated
         }
 
     @service_method(description="Health check ping", public=True, requires_auth=False)

@@ -270,14 +270,20 @@ class SystemService(BaseService):
             # Получаем информацию о диске
             disk_usage = psutil.disk_usage('/')
 
+            # Получаем информацию о процессе
+            process = psutil.Process()
+            process_memory = process.memory_info()
+
             metrics = {
                 "cpu_percent": cpu_percent,
+                "cpu_count": psutil.cpu_count(),
                 "memory": {
                     "percent": psutil.virtual_memory().percent,
                     "available": psutil.virtual_memory().available,
                     "used": psutil.virtual_memory().used,
                     "total": psutil.virtual_memory().total
                 },
+                "memory_usage_mb": process_memory.rss / 1024 / 1024,  # RSS in MB
                 "disk": {
                     "percent": disk_usage.percent,
                     "free": disk_usage.free,

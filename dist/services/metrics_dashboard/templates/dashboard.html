@@ -308,7 +308,7 @@
                 </div>
             </div>
             <div class="col-md-3">
-                <div class="stats-card">
+                <div class="stats-card" onclick="showAllServicesModal()" style="cursor: pointer;">
                     <div class="stat-value text-info" id="totalServices">0</div>
                     <div class="stat-label">Total Services</div>
                 </div>
@@ -417,6 +417,19 @@
                         <span class="visually-hidden">Loading...</span>
                     </div>
                 </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- All Services Modal -->
+    <div id="allServicesModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>All Cluster Services</h2>
+                <span class="close-btn" onclick="closeAllServicesModal()">&times;</span>
+            </div>
+            <div id="allServicesModalBody">
+                <!-- Services will be inserted here -->
             </div>
         </div>
     </div>
@@ -1016,17 +1029,53 @@
                 html += '</div></div>';
             }
 
-            // Metrics Summary
-            if (metrics.metrics_summary) {
+            // Counters
+            if (metrics.counters && Object.keys(metrics.counters).length > 0) {
                 html += '<div class="mb-4">';
-                html += '<h5 class="border-bottom pb-2">Metrics Summary</h5>';
+                html += '<h5 class="border-bottom pb-2">Counters</h5>';
                 html += '<div class="row">';
 
-                Object.entries(metrics.metrics_summary).forEach(([key, value]) => {
-                    html += `<div class="col-md-4 mb-2">
-                        <div class="metric-card" style="padding: 1rem;">
-                            <div class="metric-card-title text-muted">${formatKey(key)}</div>
-                            <div class="metric-card-value" style="font-size: 1.5rem;">${value}</div>
+                Object.entries(metrics.counters).forEach(([key, value]) => {
+                    html += `<div class="col-md-6 mb-2">
+                        <strong class="text-light">${formatKey(key)}:</strong>
+                        <span class="badge bg-primary">${value.toLocaleString()}</span>
+                    </div>`;
+                });
+
+                html += '</div></div>';
+            }
+
+            // Gauges
+            if (metrics.gauges && Object.keys(metrics.gauges).length > 0) {
+                html += '<div class="mb-4">';
+                html += '<h5 class="border-bottom pb-2">Gauges</h5>';
+                html += '<div class="row">';
+
+                Object.entries(metrics.gauges).forEach(([key, value]) => {
+                    const displayValue = typeof value === 'number' ? value.toFixed(2) : value;
+                    html += `<div class="col-md-6 mb-2">
+                        <strong class="text-light">${formatKey(key)}:</strong>
+                        <span class="text-info">${displayValue}</span>
+                    </div>`;
+                });
+
+                html += '</div></div>';
+            }
+
+            // Timers
+            if (metrics.timers && Object.keys(metrics.timers).length > 0) {
+                html += '<div class="mb-4">';
+                html += '<h5 class="border-bottom pb-2">Timers</h5>';
+                html += '<div class="row">';
+
+                Object.entries(metrics.timers).forEach(([key, timerData]) => {
+                    html += `<div class="col-md-6 mb-3">
+                        <strong class="text-light d-block mb-1">${formatKey(key)}</strong>
+                        <div class="small" style="margin-left: 1rem;">
+                            <div class="text-light">Count: <span class="text-info">${timerData.count}</span></div>
+                            <div class="text-light">Avg: <span class="text-success">${timerData.avg_ms.toFixed(2)} ms</span></div>
+                            <div class="text-light">Min: <span class="text-secondary">${timerData.min_ms.toFixed(2)} ms</span></div>
+                            <div class="text-light">Max: <span class="text-warning">${timerData.max_ms.toFixed(2)} ms</span></div>
                         </div>
                     </div>`;
                 });
@@ -1086,7 +1135,8 @@
 
             // Other metrics (everything else not shown above)
             const shownKeys = new Set(['name', 'status', 'version', 'description', 'exposed_methods', 'uptime',
-                                       'health_report', 'metrics_summary', 'metadata', ...heartbeatKeys, ...callKeys]);
+                                       'health_report', 'metrics_summary', 'metadata', 'counters', 'gauges', 'timers',
+                                       ...heartbeatKeys, ...callKeys]);
             const otherKeys = Object.keys(metrics).filter(k => !shownKeys.has(k));
 
             if (otherKeys.length > 0) {
@@ -1166,11 +1216,105 @@
             document.getElementById('serviceModal').style.display = 'none';
         }
 
+        // Show all services modal
+        function showAllServicesModal() {
+            const modal = document.getElementById('allServicesModal');
+            const modalBody = document.getElementById('allServicesModalBody');
+
+            modal.style.display = 'block';
+
+            // Show loading
+            modalBody.innerHTML = `
+                <div class="text-center p-4">
+                    <div class="spinner-border" role="status">
+                        <span class="visually-hidden">Loading...</span>
+                    </div>
+                </div>
+            `;
+
+            // Fetch current metrics to get services
+            fetch('/api/dashboard/metrics')
+                .then(r => r.json())
+                .then(data => {
+                    displayAllServices(data);
+                })
+                .catch(error => {
+                    console.error('Failed to load services:', error);
+                    modalBody.innerHTML = `
+                        <div class="alert alert-danger">
+                            Failed to load services: ${error.message}
+                        </div>
+                    `;
+                });
+        }
+
+        function displayAllServices(data) {
+            const modalBody = document.getElementById('allServicesModalBody');
+            let html = '';
+
+            // Coordinator services
+            if (data.coordinator && data.coordinator.services) {
+                html += '<div class="mb-4">';
+                html += '<h5 class="border-bottom pb-2 text-light">Coordinator</h5>';
+                html += '<div class="row">';
+
+                Object.entries(data.coordinator.services).forEach(([serviceName, serviceData]) => {
+                    const status = serviceData.status || 'unknown';
+                    const statusClass = status === 'running' ? 'success' : 'secondary';
+
+                    html += `<div class="col-md-6 mb-2">
+                        <span class="service-name text-light" onclick="showServiceMetrics('coordinator', '${serviceName}')">${serviceName}</span>
+                        <span class="badge bg-${statusClass} ms-2">${status}</span>
+                    </div>`;
+                });
+
+                html += '</div></div>';
+            }
+
+            // Worker services
+            if (data.workers && Object.keys(data.workers).length > 0) {
+                Object.entries(data.workers).forEach(([workerId, workerData]) => {
+                    if (workerData.services && Object.keys(workerData.services).length > 0) {
+                        html += '<div class="mb-4">';
+                        html += `<h5 class="border-bottom pb-2 text-light">${workerId}</h5>`;
+                        html += '<div class="row">';
+
+                        Object.entries(workerData.services).forEach(([serviceName, serviceData]) => {
+                            const status = serviceData.status || 'unknown';
+                            const statusClass = status === 'running' ? 'success' : 'secondary';
+
+                            html += `<div class="col-md-6 mb-2">
+                                <span class="service-name text-light" onclick="showServiceMetrics('${workerId}', '${serviceName}')">${serviceName}</span>
+                                <span class="badge bg-${statusClass} ms-2">${status}</span>
+                            </div>`;
+                        });
+
+                        html += '</div></div>';
+                    }
+                });
+            }
+
+            if (!html) {
+                html = '<div class="text-muted text-center p-4">No services found</div>';
+            }
+
+            modalBody.innerHTML = html;
+        }
+
+        function closeAllServicesModal() {
+            document.getElementById('allServicesModal').style.display = 'none';
+        }
+
         // Close modal when clicking outside
         window.onclick = function(event) {
-            const modal = document.getElementById('serviceModal');
-            if (event.target === modal) {
+            const serviceModal = document.getElementById('serviceModal');
+            const allServicesModal = document.getElementById('allServicesModal');
+
+            if (event.target === serviceModal) {
                 closeServiceModal();
+            }
+            if (event.target === allServicesModal) {
+                closeAllServicesModal();
             }
         }
 
