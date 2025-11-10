@@ -1347,11 +1347,12 @@ class WebServerComponent(P2PComponent):
             access_log=False,
             server_header=False,
             date_header=False,
-            handle_signals=False,  # Отключаем встроенную обработку сигналов uvicorn
             **ssl_config
         )
 
         self.server = uvicorn.Server(self.config)
+        # Отключаем обработку сигналов в uvicorn - используем свою
+        self.server.install_signal_handlers = lambda: None
 
         # Запускаем сервер в фоновой задаче
         self.server_task = asyncio.create_task(self.server.serve())
