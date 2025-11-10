@@ -903,9 +903,29 @@ if __name__ == "__main__":
     signal.signal(signal.SIGTERM, signal_handler)
 
     # Запуск главной функции
+    # Используем свой event loop вместо asyncio.run() для контроля над сигналами
     try:
-        exit_code = asyncio.run(main())
-        sys.exit(exit_code if exit_code else 0)
+        # Создаем новый event loop
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+
+        try:
+            # Запускаем main() в нашем event loop
+            exit_code = loop.run_until_complete(main())
+            sys.exit(exit_code if exit_code else 0)
+        finally:
+            # Закрываем event loop
+            try:
+                # Отменяем все оставшиеся задачи
+                pending = asyncio.all_tasks(loop)
+                for task in pending:
+                    task.cancel()
+                # Даем задачам время завершиться
+                loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+            except Exception:
+                pass
+            finally:
+                loop.close()
     except KeyboardInterrupt:
         # Этот блок не должен выполняться, так как сигналы обрабатываются в signal_handler
         print("\nStopped by KeyboardInterrupt")

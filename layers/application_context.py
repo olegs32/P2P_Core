@@ -605,27 +605,35 @@ class P2PApplicationContext:
         self.logger.info("Starting graceful shutdown...")
 
         # Выполняем shutdown handlers
-        for handler in self._shutdown_handlers:
+        self.logger.debug(f"Running {len(self._shutdown_handlers)} shutdown handlers...")
+        for i, handler in enumerate(self._shutdown_handlers):
             try:
+                self.logger.debug(f"Running shutdown handler {i+1}/{len(self._shutdown_handlers)}...")
                 if asyncio.iscoroutinefunction(handler):
                     await handler()
                 else:
                     handler()
+                self.logger.debug(f"Shutdown handler {i+1} completed")
             except Exception as e:
                 # На Windows игнорируем ConnectionResetError
                 if "ConnectionResetError" not in str(type(e).__name__):
-                    self.logger.error(f"Error in shutdown handler: {e}")
+                    self.logger.error(f"Error in shutdown handler {i+1}: {e}")
 
         # Останавливаем компоненты в обратном порядке
+        self.logger.debug(f"Shutting down {len(self._shutdown_order)} components...")
         for component_name in self._shutdown_order:
             component = self._components.get(component_name)
             if not component or component.state != ComponentState.RUNNING:
+                self.logger.debug(f"Skipping component {component_name} (not running)")
                 continue
 
             self.logger.info(f"Shutting down component: {component_name}")
 
             try:
-                await component.shutdown()
+                await asyncio.wait_for(component.shutdown(), timeout=3.0)
+                self.logger.info(f"Component {component_name} shutdown completed")
+            except asyncio.TimeoutError:
+                self.logger.error(f"Component {component_name} shutdown timed out (3s) - continuing anyway")
             except Exception as e:
                 # На Windows могут возникать ConnectionResetError - игнорируем их
                 if "ConnectionResetError" not in str(type(e).__name__):
@@ -1351,8 +1359,14 @@ class WebServerComponent(P2PComponent):
         )
 
         self.server = uvicorn.Server(self.config)
-        # Отключаем обработку сигналов в uvicorn - используем свою
+
+        # Отключаем ВСЮ обработку сигналов в uvicorn - используем свою
+        # Переопределяем все методы, связанные с сигналами
         self.server.install_signal_handlers = lambda: None
+        self.server.handle_exit = lambda sig, frame: None
+
+        # Важно: uvicorn проверяет should_exit в цикле
+        # Наш глобальный обработчик сигналов установит флаги через _shutdown_event
 
         # Запускаем сервер в фоновой задаче
         self.server_task = asyncio.create_task(self.server.serve())
@@ -1366,10 +1380,20 @@ class WebServerComponent(P2PComponent):
 
     async def _do_shutdown(self):
         """Корректное завершение веб-сервера"""
+        # Заглушаем логирование uvicorn перед shutdown, чтобы не показывать
+        # "INFO: Shutting down" и "INFO: Waiting for connections to close"
+        import logging
+        uvicorn_logger = logging.getLogger("uvicorn")
+        uvicorn_error_logger = logging.getLogger("uvicorn.error")
+        original_level = uvicorn_logger.level
+        original_error_level = uvicorn_error_logger.level
+        uvicorn_logger.setLevel(logging.CRITICAL)
+        uvicorn_error_logger.setLevel(logging.CRITICAL)
+
         # Останавливаем uvicorn сервер корректно
         if hasattr(self, 'server') and self.server:
             try:
-                self.logger.info("Shutting down uvicorn server...")
+                self.logger.info("Shutting down web server...")
                 # Устанавливаем флаги для немедленного завершения
                 self.server.should_exit = True
                 self.server.force_exit = True  # Форсируем выход без ожидания соединений
@@ -1384,15 +1408,20 @@ class WebServerComponent(P2PComponent):
         if hasattr(self, 'server_task') and self.server_task:
             try:
                 if not self.server_task.done():
+                    self.logger.debug("Cancelling server task...")
                     self.server_task.cancel()
-                    # Ждем завершения с коротким таймаутом
+                    # Ждем завершения с очень коротким таймаутом
                     try:
-                        await asyncio.wait_for(self.server_task, timeout=1.0)
+                        await asyncio.wait_for(self.server_task, timeout=0.5)
+                        self.logger.debug("Server task cancelled successfully")
                     except asyncio.TimeoutError:
-                        self.logger.warning("Server task shutdown timeout - forcing cancellation")
+                        self.logger.debug("Server task shutdown timeout - continuing anyway")
                         # Просто игнорируем таймаут и продолжаем
                     except asyncio.CancelledError:
+                        self.logger.debug("Server task received CancelledError")
                         pass
+                else:
+                    self.logger.debug("Server task already done")
             except Exception as e:
                 # На Windows могут возникать ConnectionResetError - игнорируем
                 if "ConnectionResetError" not in str(type(e).__name__):
@@ -1404,5 +1433,9 @@ class WebServerComponent(P2PComponent):
                 self.server_ssl_context.cleanup()
             except Exception as e:
                 self.logger.warning(f"Error during SSL context cleanup: {e}")
+
+        # Восстанавливаем уровень логирования uvicorn
+        uvicorn_logger.setLevel(original_level)
+        uvicorn_error_logger.setLevel(original_error_level)
 
         self.logger.info("Web server shutdown completed")
