@@ -228,20 +228,35 @@ class Run(BaseService):
             return {}
 
     async def _collect_service_states(self) -> Dict[str, Any]:
-        """Collect states of all running services"""
+        """Collect states of ALL services (installed and running)"""
         services = {}
 
         try:
-            # Get service manager from context or other means
-            if hasattr(self, '_service_manager') and self._service_manager:
-                service_manager = self._service_manager
+            # Try to get all services from orchestrator
+            if self.proxy:
+                try:
+                    orchestrator_info = await self.proxy.orchestrator.list_services()
+                    all_services = orchestrator_info.get("services", [])
 
-                for service_name, service_instance in service_manager.services.items():
-                    services[service_name] = {
-                        "status": service_instance.status.value if hasattr(service_instance.status, 'value') else str(service_instance.status),
-                        "uptime": getattr(service_instance, '_start_time', 0),
-                        "description": service_instance.info.description if hasattr(service_instance, 'info') else ""
-                    }
+                    for service_info in all_services:
+                        service_name = service_info.get("name")
+                        if service_name:
+                            services[service_name] = {
+                                "status": "running" if service_info.get("running") else "stopped",
+                                "installed": service_info.get("installed", False),
+                                "description": service_info.get("description", "")
+                            }
+                except Exception as e:
+                    self.logger.debug(f"Could not get services from orchestrator: {e}")
+                    # Fallback to service_manager for running services only
+                    if hasattr(self, '_service_manager') and self._service_manager:
+                        service_manager = self._service_manager
+                        for service_name, service_instance in service_manager.services.items():
+                            services[service_name] = {
+                                "status": service_instance.status.value if hasattr(service_instance.status, 'value') else str(service_instance.status),
+                                "uptime": getattr(service_instance, '_start_time', 0),
+                                "description": service_instance.info.description if hasattr(service_instance, 'info') else ""
+                            }
 
         except Exception as e:
             self.logger.error(f"Failed to collect service states: {e}")

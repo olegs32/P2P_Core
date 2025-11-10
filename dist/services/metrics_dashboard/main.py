@@ -253,23 +253,47 @@ class Run(BaseService):
             # Get system metrics
             metrics = await self.proxy.system.get_system_metrics()
 
-            # Get service states from service manager
+            # Get ALL services (installed and running) from orchestrator
             services = {}
-            if hasattr(self, '_service_manager') and self._service_manager:
-                for service_name, service_instance in self._service_manager.services.items():
-                    services[service_name] = {
-                        "status": service_instance.status.value if hasattr(service_instance.status, 'value') else str(service_instance.status),
-                        "uptime": getattr(service_instance, '_start_time', 0),
-                        "description": service_instance.info.description if hasattr(service_instance, 'info') else ""
-                    }
+            try:
+                orchestrator_info = await self.proxy.orchestrator.list_services()
+                all_services = orchestrator_info.get("services", [])
+
+                for service_info in all_services:
+                    service_name = service_info.get("name")
+                    if service_name:
+                        services[service_name] = {
+                            "status": "running" if service_info.get("running") else "stopped",
+                            "installed": service_info.get("installed", False),
+                            "description": service_info.get("description", "")
+                        }
+            except Exception as e:
+                self.logger.debug(f"Could not get services from orchestrator: {e}")
+                # Fallback to service_manager for running services only
+                if hasattr(self, '_service_manager') and self._service_manager:
+                    for service_name, service_instance in self._service_manager.services.items():
+                        services[service_name] = {
+                            "status": service_instance.status.value if hasattr(service_instance.status, 'value') else str(service_instance.status),
+                            "uptime": getattr(service_instance, '_start_time', 0),
+                            "description": service_instance.info.description if hasattr(service_instance, 'info') else ""
+                        }
 
             timestamp = datetime.now()
+
+            # Build cluster state
+            cluster_state = {
+                "total_workers": len(self.worker_metrics),
+                "connected_workers": len([w for w in self.worker_metrics.values() if w.get("metrics")]),
+                "total_nodes": len(self.worker_metrics) + 1,  # +1 for coordinator
+                "nodes": ["coordinator"] + list(self.worker_metrics.keys())
+            }
 
             self.coordinator_metrics = {
                 "node_id": "coordinator",
                 "timestamp": timestamp.isoformat(),
                 "metrics": metrics,
-                "services": services
+                "services": services,
+                "cluster_state": cluster_state
             }
             self.coordinator_last_update = timestamp
 
