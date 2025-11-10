@@ -1347,6 +1347,7 @@ class WebServerComponent(P2PComponent):
             access_log=False,
             server_header=False,
             date_header=False,
+            handle_signals=False,  # Отключаем встроенную обработку сигналов uvicorn
             **ssl_config
         )
 
@@ -1368,11 +1369,12 @@ class WebServerComponent(P2PComponent):
         if hasattr(self, 'server') and self.server:
             try:
                 self.logger.info("Shutting down uvicorn server...")
-                # Используем uvicorn API для graceful shutdown
+                # Устанавливаем флаги для немедленного завершения
                 self.server.should_exit = True
+                self.server.force_exit = True  # Форсируем выход без ожидания соединений
 
-                # Даем серверу время завершить текущие запросы
-                await asyncio.sleep(0.5)
+                # Даем серверу короткое время для начала завершения
+                await asyncio.sleep(0.1)
 
             except Exception as e:
                 self.logger.warning(f"Error during server shutdown signal: {e}")
@@ -1382,11 +1384,12 @@ class WebServerComponent(P2PComponent):
             try:
                 if not self.server_task.done():
                     self.server_task.cancel()
-                    # Ждем завершения с таймаутом
+                    # Ждем завершения с коротким таймаутом
                     try:
-                        await asyncio.wait_for(self.server_task, timeout=2.0)
+                        await asyncio.wait_for(self.server_task, timeout=1.0)
                     except asyncio.TimeoutError:
-                        self.logger.warning("Server task shutdown timeout")
+                        self.logger.warning("Server task shutdown timeout - forcing cancellation")
+                        # Просто игнорируем таймаут и продолжаем
                     except asyncio.CancelledError:
                         pass
             except Exception as e:

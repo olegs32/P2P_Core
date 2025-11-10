@@ -2,6 +2,7 @@ import argparse
 import asyncio
 import logging
 import os
+import signal
 import socket
 import sys
 import time
@@ -447,6 +448,16 @@ async def run_coordinator_from_context(app_context: P2PApplicationContext):
     logger = logging.getLogger("Coordinator")
     config = app_context.config
 
+    # Устанавливаем обработчик сигналов для немедленного завершения
+    def signal_handler(signum, frame):
+        logger.info(f"Received signal {signum}, initiating shutdown...")
+        # Устанавливаем событие shutdown
+        app_context._shutdown_event.set()
+
+    # Регистрируем обработчик для SIGINT (Ctrl+C) и SIGTERM
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+
     try:
         # Инициализируем все компоненты
         await app_context.initialize_all()
@@ -511,10 +522,10 @@ async def run_coordinator_from_context(app_context: P2PApplicationContext):
         # Graceful shutdown with timeout and forced exit
         try:
             logger.info("Initiating graceful shutdown...")
-            await asyncio.wait_for(app_context.shutdown_all(), timeout=30.0)
+            await asyncio.wait_for(app_context.shutdown_all(), timeout=10.0)
             logger.info("Graceful shutdown completed successfully")
         except asyncio.TimeoutError:
-            logger.error("Shutdown timeout exceeded (30s), forcing exit...")
+            logger.error("Shutdown timeout exceeded (10s), forcing exit...")
             import sys
             sys.exit(1)
         except Exception as e:
@@ -531,6 +542,16 @@ async def run_worker_from_context(app_context: P2PApplicationContext):
 
     # Для worker нужен coordinator_addresses - берем из конфига
     coordinator_addresses = config.coordinator_addresses or []
+
+    # Устанавливаем обработчик сигналов для немедленного завершения
+    def signal_handler(signum, frame):
+        logger.info(f"Received signal {signum}, initiating shutdown...")
+        # Устанавливаем событие shutdown
+        app_context._shutdown_event.set()
+
+    # Регистрируем обработчик для SIGINT (Ctrl+C) и SIGTERM
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
 
     try:
         # Инициализируем все компоненты
@@ -593,10 +614,10 @@ async def run_worker_from_context(app_context: P2PApplicationContext):
         # Graceful shutdown with timeout and forced exit
         try:
             logger.info("Initiating graceful shutdown...")
-            await asyncio.wait_for(app_context.shutdown_all(), timeout=30.0)
+            await asyncio.wait_for(app_context.shutdown_all(), timeout=10.0)
             logger.info("Graceful shutdown completed successfully")
         except asyncio.TimeoutError:
-            logger.error("Shutdown timeout exceeded (30s), forcing exit...")
+            logger.error("Shutdown timeout exceeded (10s), forcing exit...")
             import sys
             sys.exit(1)
         except Exception as e:
