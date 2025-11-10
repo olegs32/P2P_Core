@@ -508,8 +508,20 @@ async def run_coordinator_from_context(app_context: P2PApplicationContext):
         logger.error(f"Coordinator error: {e}")
         raise
     finally:
-        # Graceful shutdown
-        await app_context.shutdown_all()
+        # Graceful shutdown with timeout and forced exit
+        try:
+            logger.info("Initiating graceful shutdown...")
+            await asyncio.wait_for(app_context.shutdown_all(), timeout=30.0)
+            logger.info("Graceful shutdown completed successfully")
+        except asyncio.TimeoutError:
+            logger.error("Shutdown timeout exceeded (30s), forcing exit...")
+            import sys
+            sys.exit(1)
+        except Exception as e:
+            logger.error(f"Error during shutdown: {e}")
+            logger.error("Forcing exit due to shutdown error...")
+            import sys
+            sys.exit(1)
 
 
 async def run_worker_from_context(app_context: P2PApplicationContext):
@@ -578,8 +590,20 @@ async def run_worker_from_context(app_context: P2PApplicationContext):
         logger.error(f"Worker error: {e}")
         raise
     finally:
-        # Graceful shutdown
-        await app_context.shutdown_all()
+        # Graceful shutdown with timeout and forced exit
+        try:
+            logger.info("Initiating graceful shutdown...")
+            await asyncio.wait_for(app_context.shutdown_all(), timeout=30.0)
+            logger.info("Graceful shutdown completed successfully")
+        except asyncio.TimeoutError:
+            logger.error("Shutdown timeout exceeded (30s), forcing exit...")
+            import sys
+            sys.exit(1)
+        except Exception as e:
+            logger.error(f"Error during shutdown: {e}")
+            logger.error("Forcing exit due to shutdown error...")
+            import sys
+            sys.exit(1)
 
 
 def create_argument_parser():
