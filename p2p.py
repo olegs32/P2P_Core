@@ -48,21 +48,30 @@ def signal_handler(signum, frame):
     """
     global _shutdown_requested, _force_shutdown, _shutdown_in_progress
 
+    # Используем print вместо logger для гарантированного вывода
+    # так как logger может быть не инициализирован или заглушен
+    import sys
+    print(f"\n[SIGNAL] Received signal {signum}", file=sys.stderr, flush=True)
+    print(f"[SIGNAL] _shutdown_requested={_shutdown_requested}, _force_shutdown={_force_shutdown}, _shutdown_in_progress={_shutdown_in_progress}", file=sys.stderr, flush=True)
+
     logger = logging.getLogger("SignalHandler")
 
     if _force_shutdown or (_shutdown_requested and _shutdown_in_progress):
         # Второй Ctrl+C или shutdown уже идет - немедленный выход
+        print("[SIGNAL] Force shutdown! Exiting immediately...", file=sys.stderr, flush=True)
         logger.warning("Force shutdown requested! Exiting immediately...")
         sys.exit(1)
 
     if _shutdown_requested:
         # Shutdown уже запрошен, но еще не начался - форсируем
+        print("[SIGNAL] Second Ctrl+C detected, preparing for force exit", file=sys.stderr, flush=True)
         logger.warning("Shutdown already requested. Press Ctrl+C again to force exit.")
         _force_shutdown = True
         return
 
     # Первый Ctrl+C - устанавливаем флаг graceful shutdown
     _shutdown_requested = True
+    print(f"[SIGNAL] First Ctrl+C detected, starting graceful shutdown...", file=sys.stderr, flush=True)
     logger.info(f"Shutdown signal received (signal {signum}). Starting graceful shutdown...")
     logger.info("Press Ctrl+C again to force immediate exit.")
 
@@ -498,6 +507,13 @@ async def run_coordinator_from_context(app_context: P2PApplicationContext):
         # Инициализируем все компоненты
         await app_context.initialize_all()
 
+        # КРИТИЧЕСКИ ВАЖНО: Переустанавливаем обработчики сигналов ПОСЛЕ инициализации
+        # потому что uvicorn мог переопределить их во время initialize_all()
+        logger.info("Re-installing signal handlers after component initialization...")
+        signal.signal(signal.SIGINT, signal_handler)
+        signal.signal(signal.SIGTERM, signal_handler)
+        logger.info("Signal handlers re-installed successfully")
+
         # Запускаем автосохранение защищенного хранилища
         storage_manager = app_context.get_shared("storage_manager")
         if storage_manager:
@@ -603,6 +619,13 @@ async def run_worker_from_context(app_context: P2PApplicationContext):
     try:
         # Инициализируем все компоненты
         await app_context.initialize_all()
+
+        # КРИТИЧЕСКИ ВАЖНО: Переустанавливаем обработчики сигналов ПОСЛЕ инициализации
+        # потому что uvicorn мог переопределить их во время initialize_all()
+        logger.info("Re-installing signal handlers after component initialization...")
+        signal.signal(signal.SIGINT, signal_handler)
+        signal.signal(signal.SIGTERM, signal_handler)
+        logger.info("Signal handlers re-installed successfully")
 
         # Запускаем автосохранение защищенного хранилища
         storage_manager = app_context.get_shared("storage_manager")
@@ -899,8 +922,10 @@ if __name__ == "__main__":
 
     # Устанавливаем глобальный обработчик сигналов ДО запуска asyncio
     # Это позволяет перехватывать Ctrl+C раньше uvicorn
+    print("[MAIN] Installing global signal handlers...", file=sys.stderr, flush=True)
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
+    print("[MAIN] Signal handlers installed successfully", file=sys.stderr, flush=True)
 
     # Запуск главной функции
     # Используем свой event loop вместо asyncio.run() для контроля над сигналами
