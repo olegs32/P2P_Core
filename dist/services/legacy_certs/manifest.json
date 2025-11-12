@@ -1,0 +1,239 @@
+{
+  "name": "legacy_certs",
+  "version": "1.0.0",
+  "description": "Legacy Certificate Manager Service - manages CSP certificates deployment and export",
+  "author": "P2P Core Team",
+  "dependencies": [
+    "service_framework"
+  ],
+  "capabilities": [
+    "certificate_management",
+    "certificate_deployment",
+    "certificate_export",
+    "certificate_listing"
+  ],
+  "exposed_methods": [
+    "deploy_certificate",
+    "list_certificates",
+    "find_certificate_by_subject",
+    "find_certificates_by_subject",
+    "export_certificate_pfx",
+    "export_certificate_cer",
+    "export_certificate_by_subject",
+    "export_certificates_by_subject",
+    "get_certificate_info"
+  ],
+  "required_permissions": [
+    "filesystem_read",
+    "filesystem_write",
+    "subprocess_execution"
+  ],
+  "configuration": {
+    "csp_path": "./",
+    "default_pin": "00000000",
+    "encoding": "cp1251"
+  },
+  "api": {
+    "deploy_certificate": {
+      "description": "Deploy certificate and key from PFX and CER files",
+      "parameters": {
+        "pfx_path": {
+          "type": "string",
+          "required": true,
+          "description": "Path to PFX file"
+        },
+        "cer_path": {
+          "type": "string",
+          "required": true,
+          "description": "Path to CER file"
+        },
+        "pin": {
+          "type": "string",
+          "required": false,
+          "default": "00000000",
+          "description": "PIN code for PFX file"
+        }
+      },
+      "returns": {
+        "success": "boolean",
+        "pfx_error": "string",
+        "cer_error": "string",
+        "password_error": "string",
+        "container": "string"
+      }
+    },
+    "list_certificates": {
+      "description": "Get list of installed certificates",
+      "parameters": {},
+      "returns": {
+        "certificates": "object",
+        "description": "Dictionary with certificate information"
+      }
+    },
+    "find_certificate_by_subject": {
+      "description": "Find certificate by pattern in Subject field",
+      "parameters": {
+        "subject_pattern": {
+          "type": "string",
+          "required": true,
+          "description": "Pattern to search in Subject"
+        }
+      },
+      "returns": {
+        "certificate": "object or null",
+        "description": "Certificate information or null if not found"
+      }
+    },
+    "find_certificates_by_subject": {
+      "description": "Find all certificates by pattern in Subject field",
+      "parameters": {
+        "subject_pattern": {
+          "type": "string",
+          "required": true,
+          "description": "Pattern to search in Subject"
+        }
+      },
+      "returns": {
+        "certificates": "array",
+        "description": "List of certificate information"
+      }
+    },
+    "export_certificate_pfx": {
+      "description": "Export certificate with private key to PFX file",
+      "parameters": {
+        "container_name": {
+          "type": "string",
+          "required": true,
+          "description": "Container name"
+        },
+        "output_path": {
+          "type": "string",
+          "required": true,
+          "description": "Output path for PFX file"
+        },
+        "password": {
+          "type": "string",
+          "required": false,
+          "default": "00000000",
+          "description": "Password for PFX file"
+        }
+      },
+      "returns": {
+        "success": "boolean or bytes",
+        "description": "True if export successful or bytes data of PFX file"
+      }
+    },
+    "export_certificate_cer": {
+      "description": "Export public certificate to CER file",
+      "parameters": {
+        "container_name": {
+          "type": "string",
+          "required": false,
+          "description": "Container name"
+        },
+        "thumbprint": {
+          "type": "string",
+          "required": false,
+          "description": "Certificate thumbprint (alternative to container_name)"
+        },
+        "output_path": {
+          "type": "string",
+          "required": true,
+          "description": "Output path for CER file"
+        }
+      },
+      "returns": {
+        "success": "boolean or bytes",
+        "description": "True if export successful or bytes data of CER file"
+      }
+    },
+    "export_certificate_by_subject": {
+      "description": "Find and export certificate by Subject pattern",
+      "parameters": {
+        "subject_pattern": {
+          "type": "string",
+          "required": true,
+          "description": "Pattern to search in Subject"
+        },
+        "output_pfx": {
+          "type": "string",
+          "required": false,
+          "description": "Output path for PFX file"
+        },
+        "output_cer": {
+          "type": "string",
+          "required": false,
+          "description": "Output path for CER file"
+        },
+        "password": {
+          "type": "string",
+          "required": false,
+          "default": "00000000",
+          "description": "Password for PFX file"
+        }
+      },
+      "returns": {
+        "pfx": "boolean",
+        "cer": "boolean"
+      }
+    },
+    "export_certificates_by_subject": {
+      "description": "Find and export all certificates by Subject pattern",
+      "parameters": {
+        "subject_pattern": {
+          "type": "string",
+          "required": true,
+          "description": "Pattern to search in Subject"
+        },
+        "password": {
+          "type": "string",
+          "required": false,
+          "default": "00000000",
+          "description": "Password for PFX files"
+        }
+      },
+      "returns": {
+        "results": "array",
+        "description": "List of export results for each certificate"
+      }
+    },
+    "get_certificate_info": {
+      "description": "Get detailed certificate information by container name",
+      "parameters": {
+        "container_name": {
+          "type": "string",
+          "required": true,
+          "description": "Container name"
+        }
+      },
+      "returns": {
+        "certificate": "object or null",
+        "description": "Certificate information or null if not found"
+      }
+    }
+  },
+  "events": [
+    "certificate_deployed",
+    "certificate_exported",
+    "certificate_listed"
+  ],
+  "health_check": {
+    "endpoint": "health_check",
+    "interval": 60,
+    "timeout": 10
+  },
+  "resource_requirements": {
+    "memory": "64MB",
+    "disk_space": "100MB",
+    "network": "optional"
+  },
+  "security": {
+    "sandbox": false,
+    "trusted": true,
+    "signature_required": false
+  },
+  "platform": {
+    "supported_os": ["windows"],
+    "required_tools": ["certmgr.exe", "csptest.exe"]
+  }
+}
