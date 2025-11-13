@@ -602,6 +602,41 @@
             </div>
 
             <div class="container">
+                <!-- Upload Certificate Section -->
+                <div class="section-card mb-4">
+                    <h3 class="section-title">Install Certificate</h3>
+                    <form id="uploadCertForm" class="p-3">
+                        <div class="row">
+                            <div class="col-md-4">
+                                <label for="workerSelect" class="form-label">Target Node:</label>
+                                <select id="workerSelect" class="form-control" required>
+                                    <option value="">Select node...</option>
+                                    <option value="coordinator">Coordinator</option>
+                                </select>
+                            </div>
+                            <div class="col-md-4">
+                                <label for="pfxFile" class="form-label">PFX File:</label>
+                                <input type="file" id="pfxFile" class="form-control" accept=".pfx,.p12" required>
+                            </div>
+                            <div class="col-md-4">
+                                <label for="pfxPassword" class="form-label">PFX Password:</label>
+                                <input type="password" id="pfxPassword" class="form-control" placeholder="Enter password" required>
+                            </div>
+                        </div>
+                        <div class="row mt-3">
+                            <div class="col-12">
+                                <button type="submit" class="btn btn-primary">
+                                    <i class="bi bi-upload"></i> Install Certificate
+                                </button>
+                                <button type="button" id="refreshCerts" class="btn btn-secondary ms-2">
+                                    <i class="bi bi-arrow-clockwise"></i> Refresh
+                                </button>
+                            </div>
+                        </div>
+                        <div id="uploadStatus" class="mt-3" style="display: none;"></div>
+                    </form>
+                </div>
+
                 <!-- Certificates Section -->
                 <div class="section-card">
                     <h3 class="section-title">Cluster Certificates</h3>
@@ -618,7 +653,7 @@
                             <table>
                                 <thead>
                                     <tr>
-                                        <th>Worker</th>
+                                        <th>Node</th>
                                         <th>Subject</th>
                                         <th>Issuer</th>
                                         <th>Valid From</th>
@@ -717,6 +752,23 @@
                     updateMetrics();
                 }
             }, 5000);
+
+            // Certificate upload form handler
+            const uploadForm = document.getElementById('uploadCertForm');
+            if (uploadForm) {
+                uploadForm.addEventListener('submit', async (e) => {
+                    e.preventDefault();
+                    await uploadCertificate();
+                });
+            }
+
+            // Refresh certificates button
+            const refreshBtn = document.getElementById('refreshCerts');
+            if (refreshBtn) {
+                refreshBtn.addEventListener('click', () => {
+                    loadCertificates();
+                });
+            }
         });
 
         // Certificates functionality
@@ -777,45 +829,62 @@
 
             // Determine certificate status
             const now = new Date();
-            const validFrom = new Date(cert.valid_from);
-            const validTo = new Date(cert.valid_to);
+            const validFrom = parseCertDate(cert.valid_from);
+            const validTo = parseCertDate(cert.valid_to);
 
-            let status = 'valid';
-            let statusClass = 'cert-status-valid';
-            let statusText = 'Valid';
+            let status = 'unknown';
+            let statusClass = 'cert-status-expiring';
+            let statusText = 'Unknown';
 
-            if (now > validTo) {
-                status = 'expired';
-                statusClass = 'cert-status-expired';
-                statusText = 'Expired';
-            } else if (now < validFrom) {
-                status = 'not-yet-valid';
-                statusClass = 'cert-status-expiring';
-                statusText = 'Not Yet Valid';
-            } else {
-                // Check if expiring soon (within 30 days)
-                const daysUntilExpiry = Math.floor((validTo - now) / (1000 * 60 * 60 * 24));
-                if (daysUntilExpiry <= 30) {
-                    status = 'expiring-soon';
+            if (validFrom && validTo && !isNaN(validFrom) && !isNaN(validTo)) {
+                status = 'valid';
+                statusClass = 'cert-status-valid';
+                statusText = 'Valid';
+
+                if (now > validTo) {
+                    status = 'expired';
+                    statusClass = 'cert-status-expired';
+                    statusText = 'Expired';
+                } else if (now < validFrom) {
+                    status = 'not-yet-valid';
                     statusClass = 'cert-status-expiring';
-                    statusText = `Expiring in ${daysUntilExpiry} days`;
+                    statusText = 'Not Yet Valid';
+                } else {
+                    // Check if expiring soon (within 30 days)
+                    const daysUntilExpiry = Math.floor((validTo - now) / (1000 * 60 * 60 * 24));
+                    if (daysUntilExpiry <= 30) {
+                        status = 'expiring-soon';
+                        statusClass = 'cert-status-expiring';
+                        statusText = `Expiring in ${daysUntilExpiry} days`;
+                    }
                 }
             }
 
+            // Escape special characters for onclick handlers
+            const escapedWorker = (cert.worker || 'Unknown').replace(/'/g, "\\'");
+            const escapedId = (cert.id || '').replace(/'/g, "\\'");
+            const escapedSubject = (cert.subject_cn || cert.subject || 'cert').replace(/'/g, "\\'");
+
             row.innerHTML = `
                 <td>${cert.worker || 'Unknown'}</td>
-                <td><code>${cert.subject || 'N/A'}</code></td>
-                <td><code>${cert.issuer || 'N/A'}</code></td>
+                <td><code style="font-size: 0.85em;">${cert.subject_cn || cert.subject || 'N/A'}</code></td>
+                <td><code style="font-size: 0.85em;">${cert.issuer || 'N/A'}</code></td>
                 <td>${formatDate(cert.valid_from)}</td>
                 <td>${formatDate(cert.valid_to)}</td>
                 <td><span class="${statusClass}">${statusText}</span></td>
                 <td>
                     <div class="cert-actions">
-                        <button class="btn btn-sm btn-info" onclick="viewCertificateDetails('${cert.worker}', '${cert.id || cert.subject}')">
+                        <button class="btn btn-sm btn-info" onclick="viewCertificateDetails('${escapedWorker}', '${escapedId}')" title="View details">
                             View
                         </button>
-                        <button class="btn btn-sm btn-warning" onclick="renewCertificate('${cert.worker}', '${cert.id || cert.subject}')">
-                            Renew
+                        <button class="btn btn-sm btn-success" onclick="downloadCer('${escapedWorker}', '${escapedId}', '${escapedSubject}')" title="Download CER">
+                            CER
+                        </button>
+                        <button class="btn btn-sm btn-primary" onclick="downloadPfx('${escapedWorker}', '${escapedId}', '${escapedSubject}')" title="Download PFX">
+                            PFX
+                        </button>
+                        <button class="btn btn-sm btn-danger" onclick="deleteCertificate('${escapedWorker}', '${escapedId}', '${escapedSubject}')" title="Delete certificate">
+                            Del
                         </button>
                     </div>
                 </td>
@@ -824,9 +893,29 @@
             return row;
         }
 
+        function parseCertDate(dateString) {
+            if (!dateString || dateString === 'N/A') return null;
+
+            // Try standard date parsing
+            let date = new Date(dateString);
+            if (!isNaN(date)) return date;
+
+            // Try parsing Russian date format: "дд.мм.гггг чч:мм:сс"
+            const ruMatch = dateString.match(/(\d{2})\.(\d{2})\.(\d{4})\s+(\d{2}):(\d{2}):(\d{2})/);
+            if (ruMatch) {
+                const [, day, month, year, hour, minute, second] = ruMatch;
+                return new Date(year, month - 1, day, hour, minute, second);
+            }
+
+            return null;
+        }
+
         function formatDate(dateString) {
-            if (!dateString) return 'N/A';
-            const date = new Date(dateString);
+            if (!dateString || dateString === '' || dateString === 'N/A') return 'N/A';
+
+            const date = parseCertDate(dateString);
+            if (!date || isNaN(date)) return dateString; // Return original if can't parse
+
             return date.toLocaleDateString('en-US', {
                 year: 'numeric',
                 month: 'short',
@@ -837,13 +926,149 @@
         }
 
         function viewCertificateDetails(worker, certId) {
-            alert(`View certificate details for ${certId} on ${worker}\n\nThis feature will be implemented to show full certificate details.`);
+            alert(`View certificate details for ${certId} on ${worker}\n\nThis feature will show full certificate details.`);
         }
 
-        function renewCertificate(worker, certId) {
-            if (confirm(`Are you sure you want to renew the certificate ${certId} on ${worker}?`)) {
-                alert(`Certificate renewal initiated for ${certId} on ${worker}\n\nThis feature will be implemented to trigger certificate renewal.`);
+        async function downloadCer(worker, certId, certName) {
+            try {
+                const response = await fetch(`/api/certificates/export-cer?worker=${encodeURIComponent(worker)}&cert_id=${encodeURIComponent(certId)}`);
+
+                if (!response.ok) {
+                    throw new Error('Failed to export CER');
+                }
+
+                const blob = await response.blob();
+                const url = window.URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `${certName}.cer`;
+                document.body.appendChild(a);
+                a.click();
+                window.URL.revokeObjectURL(url);
+                document.body.removeChild(a);
+            } catch (error) {
+                alert(`Failed to download CER: ${error.message}`);
             }
+        }
+
+        async function downloadPfx(worker, certId, certName) {
+            const password = prompt('Enter password for PFX file:');
+            if (!password) return;
+
+            try {
+                const response = await fetch(`/api/certificates/export-pfx?worker=${encodeURIComponent(worker)}&cert_id=${encodeURIComponent(certId)}&password=${encodeURIComponent(password)}`);
+
+                if (!response.ok) {
+                    throw new Error('Failed to export PFX');
+                }
+
+                const blob = await response.blob();
+                const url = window.URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `${certName}.pfx`;
+                document.body.appendChild(a);
+                a.click();
+                window.URL.revokeObjectURL(url);
+                document.body.removeChild(a);
+            } catch (error) {
+                alert(`Failed to download PFX: ${error.message}`);
+            }
+        }
+
+        async function deleteCertificate(worker, certId, certName) {
+            if (!confirm(`Are you sure you want to delete certificate:\n${certName}\n\nfrom ${worker}?\n\nThis action cannot be undone!`)) {
+                return;
+            }
+
+            try {
+                const response = await fetch(`/api/certificates/delete`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        worker: worker,
+                        cert_id: certId
+                    })
+                });
+
+                const result = await response.json();
+
+                if (result.success) {
+                    alert('Certificate deleted successfully');
+                    loadCertificates(); // Reload certificates
+                } else {
+                    alert(`Failed to delete certificate: ${result.error || 'Unknown error'}`);
+                }
+            } catch (error) {
+                alert(`Failed to delete certificate: ${error.message}`);
+            }
+        }
+
+        async function uploadCertificate() {
+            const worker = document.getElementById('workerSelect').value;
+            const pfxFile = document.getElementById('pfxFile').files[0];
+            const password = document.getElementById('pfxPassword').value;
+            const statusDiv = document.getElementById('uploadStatus');
+
+            if (!worker || !pfxFile || !password) {
+                statusDiv.innerHTML = '<div class="alert alert-warning">Please fill all fields</div>';
+                statusDiv.style.display = 'block';
+                return;
+            }
+
+            // Show loading status
+            statusDiv.innerHTML = '<div class="alert alert-info">Uploading and installing certificate...</div>';
+            statusDiv.style.display = 'block';
+
+            try {
+                // Read file as base64
+                const fileContent = await readFileAsBase64(pfxFile);
+
+                const response = await fetch('/api/certificates/install', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        worker: worker,
+                        pfx_data: fileContent,
+                        password: password,
+                        filename: pfxFile.name
+                    })
+                });
+
+                const result = await response.json();
+
+                if (result.success) {
+                    statusDiv.innerHTML = '<div class="alert alert-success">Certificate installed successfully!</div>';
+                    // Reset form
+                    document.getElementById('uploadCertForm').reset();
+                    // Reload certificates
+                    setTimeout(() => {
+                        loadCertificates();
+                        statusDiv.style.display = 'none';
+                    }, 2000);
+                } else {
+                    statusDiv.innerHTML = `<div class="alert alert-danger">Failed to install certificate: ${result.error || 'Unknown error'}</div>`;
+                }
+            } catch (error) {
+                statusDiv.innerHTML = `<div class="alert alert-danger">Error: ${error.message}</div>`;
+            }
+        }
+
+        function readFileAsBase64(file) {
+            return new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onload = () => {
+                    // Remove data:application/x-pkcs12;base64, prefix
+                    const base64 = reader.result.split(',')[1];
+                    resolve(base64);
+                };
+                reader.onerror = reject;
+                reader.readAsDataURL(file);
+            });
         }
 
         // Charts storage

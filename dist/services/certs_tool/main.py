@@ -552,6 +552,116 @@ class LegacyCertsService(BaseService):
 
         return None
 
+    @service_method(description="Delete certificate by thumbprint", public=True)
+    async def delete_certificate(self, thumbprint: str) -> Dict[str, Any]:
+        """
+        Удаляет сертификат по отпечатку (thumbprint)
+
+        Args:
+            thumbprint: Отпечаток сертификата для удаления
+
+        Returns:
+            Dict: Результат операции удаления
+        """
+        try:
+            self.logger.info(f"Deleting certificate: {thumbprint}")
+
+            delete_cmd = (f'"{self.csp_path / "certmgr.exe"}" -delete '
+                          f'-thumbprint "{thumbprint}"')
+
+            output = await self._run_command_async(delete_cmd)
+            error_code = self._extract_error_code(output)
+
+            success = error_code == '0x00000000'
+
+            if success:
+                self.logger.info(f"Certificate deleted successfully: {thumbprint}")
+                return {
+                    "success": True,
+                    "message": "Certificate deleted successfully"
+                }
+            else:
+                self.logger.error(f"Failed to delete certificate: {error_code}")
+                return {
+                    "success": False,
+                    "error": f"Failed to delete certificate: {error_code}",
+                    "error_code": error_code
+                }
+
+        except Exception as e:
+            self.logger.error(f"Error deleting certificate: {e}")
+            return {
+                "success": False,
+                "error": str(e)
+            }
+
+    @service_method(description="Install certificate from base64 PFX data", public=True)
+    async def install_pfx_from_base64(self, pfx_base64: str, password: str, filename: str = "cert.pfx") -> Dict[str, Any]:
+        """
+        Устанавливает сертификат из base64-кодированных PFX данных
+
+        Args:
+            pfx_base64: Base64-кодированные данные PFX файла
+            password: Пароль для PFX файла
+            filename: Имя файла (для логирования)
+
+        Returns:
+            Dict: Результат операции установки
+        """
+        import base64
+        import tempfile
+
+        try:
+            self.logger.info(f"Installing certificate from base64 data: {filename}")
+
+            # Decode base64 to bytes
+            pfx_data = base64.b64decode(pfx_base64)
+
+            # Create temporary file
+            with tempfile.NamedTemporaryFile(mode='wb', suffix='.pfx', delete=False) as tmp_file:
+                tmp_file.write(pfx_data)
+                tmp_pfx_path = tmp_file.name
+
+            try:
+                # Install PFX using existing method
+                install_cmd = (f'"{self.csp_path / "certmgr.exe"}" -install -store uMy '
+                               f'-file "{tmp_pfx_path}" -pfx -silent -keep_exportable -pin {password}')
+
+                output = await self._run_command_async(install_cmd)
+                error_code = self._extract_error_code(output)
+                container = self._extract_container(output)
+
+                success = error_code == '0x00000000' and container
+
+                if success:
+                    self.logger.info(f"Certificate installed successfully: container={container}")
+                    return {
+                        "success": True,
+                        "message": "Certificate installed successfully",
+                        "container": container
+                    }
+                else:
+                    self.logger.error(f"Failed to install certificate: {error_code}")
+                    return {
+                        "success": False,
+                        "error": f"Failed to install certificate: {error_code}",
+                        "error_code": error_code
+                    }
+
+            finally:
+                # Clean up temporary file
+                try:
+                    Path(tmp_pfx_path).unlink()
+                except Exception as e:
+                    self.logger.warning(f"Failed to delete temporary file {tmp_pfx_path}: {e}")
+
+        except Exception as e:
+            self.logger.error(f"Error installing certificate: {e}")
+            return {
+                "success": False,
+                "error": str(e)
+            }
+
     @service_method(description="Get dashboard data for certificates", public=True)
     async def get_dashboard_data(self) -> Dict[str, Any]:
         """

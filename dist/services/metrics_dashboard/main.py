@@ -176,6 +176,235 @@ class Run(BaseService):
 
             return data
 
+        @app.post("/api/certificates/install")
+        async def install_certificate(request: Request):
+            """Install certificate from uploaded PFX"""
+            try:
+                data = await request.json()
+                worker = data.get('worker')
+                pfx_data = data.get('pfx_data')
+                password = data.get('password')
+                filename = data.get('filename', 'cert.pfx')
+
+                if not worker or not pfx_data or not password:
+                    return JSONResponse(
+                        status_code=400,
+                        content={"success": False, "error": "Missing required fields"}
+                    )
+
+                # Call the appropriate service based on worker
+                if worker == "coordinator":
+                    # Call local certs_tool
+                    if hasattr(self.proxy, 'certs_tool'):
+                        result = await self.proxy.certs_tool.install_pfx_from_base64(
+                            pfx_base64=pfx_data,
+                            password=password,
+                            filename=filename
+                        )
+                        return JSONResponse(content=result)
+                    else:
+                        return JSONResponse(
+                            status_code=500,
+                            content={"success": False, "error": "certs_tool service not available"}
+                        )
+                else:
+                    # Call worker's certs_tool via proxy
+                    if hasattr(self.proxy, 'certs_tool'):
+                        result = await self.proxy.certs_tool[worker].install_pfx_from_base64(
+                            pfx_base64=pfx_data,
+                            password=password,
+                            filename=filename
+                        )
+                        return JSONResponse(content=result)
+                    else:
+                        return JSONResponse(
+                            status_code=500,
+                            content={"success": False, "error": "certs_tool service not available on worker"}
+                        )
+
+            except Exception as e:
+                self.logger.error(f"Error installing certificate: {e}")
+                return JSONResponse(
+                    status_code=500,
+                    content={"success": False, "error": str(e)}
+                )
+
+        @app.get("/api/certificates/export-cer")
+        async def export_cer(worker: str, cert_id: str):
+            """Export certificate as CER file"""
+            import tempfile
+            from fastapi.responses import FileResponse
+
+            try:
+                # Get certificate info to find container/thumbprint
+                certificates_data = await self.get_service_data(service_type="certificates")
+                cert_info = None
+
+                for worker_id, services in certificates_data.get("service_data", {}).items():
+                    if worker_id == worker:
+                        for service_name, service_info in services.items():
+                            for cert in service_info.get("certificates", []):
+                                if cert.get("id") == cert_id:
+                                    cert_info = cert
+                                    break
+
+                if not cert_info:
+                    return JSONResponse(
+                        status_code=404,
+                        content={"success": False, "error": "Certificate not found"}
+                    )
+
+                # Create temporary file for export
+                with tempfile.NamedTemporaryFile(mode='wb', suffix='.cer', delete=False) as tmp_file:
+                    tmp_path = tmp_file.name
+
+                # Export CER
+                if worker == "coordinator":
+                    if hasattr(self.proxy, 'certs_tool'):
+                        await self.proxy.certs_tool.export_certificate_cer(
+                            container_name=cert_info.get("container"),
+                            thumbprint=cert_info.get("thumbprint"),
+                            output_path=tmp_path
+                        )
+                else:
+                    if hasattr(self.proxy, 'certs_tool'):
+                        await self.proxy.certs_tool[worker].export_certificate_cer(
+                            container_name=cert_info.get("container"),
+                            thumbprint=cert_info.get("thumbprint"),
+                            output_path=tmp_path
+                        )
+
+                # Return file
+                return FileResponse(
+                    tmp_path,
+                    media_type="application/x-x509-ca-cert",
+                    filename=f"{cert_info.get('subject_cn', 'certificate')}.cer"
+                )
+
+            except Exception as e:
+                self.logger.error(f"Error exporting CER: {e}")
+                return JSONResponse(
+                    status_code=500,
+                    content={"success": False, "error": str(e)}
+                )
+
+        @app.get("/api/certificates/export-pfx")
+        async def export_pfx(worker: str, cert_id: str, password: str):
+            """Export certificate as PFX file"""
+            import tempfile
+            from fastapi.responses import FileResponse
+
+            try:
+                # Get certificate info to find container
+                certificates_data = await self.get_service_data(service_type="certificates")
+                cert_info = None
+
+                for worker_id, services in certificates_data.get("service_data", {}).items():
+                    if worker_id == worker:
+                        for service_name, service_info in services.items():
+                            for cert in service_info.get("certificates", []):
+                                if cert.get("id") == cert_id:
+                                    cert_info = cert
+                                    break
+
+                if not cert_info:
+                    return JSONResponse(
+                        status_code=404,
+                        content={"success": False, "error": "Certificate not found"}
+                    )
+
+                # Create temporary file for export
+                with tempfile.NamedTemporaryFile(mode='wb', suffix='.pfx', delete=False) as tmp_file:
+                    tmp_path = tmp_file.name
+
+                # Export PFX
+                if worker == "coordinator":
+                    if hasattr(self.proxy, 'certs_tool'):
+                        await self.proxy.certs_tool.export_certificate_pfx(
+                            container_name=cert_info.get("container"),
+                            output_path=tmp_path,
+                            password=password
+                        )
+                else:
+                    if hasattr(self.proxy, 'certs_tool'):
+                        await self.proxy.certs_tool[worker].export_certificate_pfx(
+                            container_name=cert_info.get("container"),
+                            output_path=tmp_path,
+                            password=password
+                        )
+
+                # Return file
+                return FileResponse(
+                    tmp_path,
+                    media_type="application/x-pkcs12",
+                    filename=f"{cert_info.get('subject_cn', 'certificate')}.pfx"
+                )
+
+            except Exception as e:
+                self.logger.error(f"Error exporting PFX: {e}")
+                return JSONResponse(
+                    status_code=500,
+                    content={"success": False, "error": str(e)}
+                )
+
+        @app.post("/api/certificates/delete")
+        async def delete_certificate(request: Request):
+            """Delete certificate"""
+            try:
+                data = await request.json()
+                worker = data.get('worker')
+                cert_id = data.get('cert_id')
+
+                if not worker or not cert_id:
+                    return JSONResponse(
+                        status_code=400,
+                        content={"success": False, "error": "Missing required fields"}
+                    )
+
+                # Get certificate info to find thumbprint
+                certificates_data = await self.get_service_data(service_type="certificates")
+                cert_info = None
+
+                for worker_id, services in certificates_data.get("service_data", {}).items():
+                    if worker_id == worker:
+                        for service_name, service_info in services.items():
+                            for cert in service_info.get("certificates", []):
+                                if cert.get("id") == cert_id:
+                                    cert_info = cert
+                                    break
+
+                if not cert_info:
+                    return JSONResponse(
+                        status_code=404,
+                        content={"success": False, "error": "Certificate not found"}
+                    )
+
+                # Delete certificate
+                if worker == "coordinator":
+                    if hasattr(self.proxy, 'certs_tool'):
+                        result = await self.proxy.certs_tool.delete_certificate(
+                            thumbprint=cert_info.get("thumbprint")
+                        )
+                        return JSONResponse(content=result)
+                else:
+                    if hasattr(self.proxy, 'certs_tool'):
+                        result = await self.proxy.certs_tool[worker].delete_certificate(
+                            thumbprint=cert_info.get("thumbprint")
+                        )
+                        return JSONResponse(content=result)
+
+                return JSONResponse(
+                    status_code=500,
+                    content={"success": False, "error": "certs_tool service not available"}
+                )
+
+            except Exception as e:
+                self.logger.error(f"Error deleting certificate: {e}")
+                return JSONResponse(
+                    status_code=500,
+                    content={"success": False, "error": str(e)}
+                )
+
         self.logger.info("Dashboard HTTP endpoints registered")
 
     def _get_fastapi_app(self):
