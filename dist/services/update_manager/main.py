@@ -56,7 +56,7 @@ class Run(BaseService):
         # Load state
         await self._load_state()
 
-        # Get public key from coordinator
+        # Try to get public key from coordinator (non-critical, will retry later if needed)
         await self._fetch_public_key()
 
         self.logger.info("Update Manager initialized successfully")
@@ -83,10 +83,15 @@ class Run(BaseService):
     async def _fetch_public_key(self):
         """Fetch public signing key from coordinator"""
         if not self.proxy:
-            self.logger.warning("Proxy not available, cannot fetch public key")
-            return
+            self.logger.debug("Proxy not available, cannot fetch public key")
+            return False
 
         try:
+            # Check if update_server service is available
+            if not hasattr(self.proxy, 'update_server'):
+                self.logger.debug("update_server service not available yet")
+                return False
+
             # Try to get from coordinator's update_server
             result = await self.proxy.update_server.coordinator.get_public_key()
 
@@ -97,17 +102,23 @@ class Run(BaseService):
                     backend=default_backend()
                 )
                 self.logger.info("Public signing key loaded from coordinator")
+                return True
             else:
-                self.logger.warning(f"Failed to get public key: {result.get('error')}")
+                self.logger.debug(f"Failed to get public key: {result.get('error')}")
+                return False
 
         except Exception as e:
-            self.logger.warning(f"Could not fetch public key from coordinator: {e}")
-
-    def _verify_signature(self, data: bytes, signature: bytes) -> bool:
-        """Verify signature with public key"""
-        if not self.public_key:
-            self.logger.error("Public key not available for verification")
+            self.logger.debug(f"Could not fetch public key from coordinator: {e}")
             return False
+
+    async def _verify_signature(self, data: bytes, signature: bytes) -> bool:
+        """Verify signature with public key"""
+        # Try to fetch public key if not available
+        if not self.public_key:
+            self.logger.info("Public key not available, attempting to fetch from coordinator...")
+            if not await self._fetch_public_key():
+                self.logger.error("Public key not available for verification and could not be fetched")
+                return False
 
         try:
             self.public_key.verify(
@@ -253,7 +264,7 @@ class Run(BaseService):
                 }
 
             # Verify signature
-            if not self._verify_signature(package_data, signature):
+            if not await self._verify_signature(package_data, signature):
                 self.logger.error("Signature verification failed!")
                 return {
                     "success": False,

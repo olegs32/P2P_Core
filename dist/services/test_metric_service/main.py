@@ -4,7 +4,7 @@ import asyncio
 import time
 import random
 from typing import Dict, Any, List
-from layers.service_framework import BaseService, service_method
+from layers.service import BaseService, service_method
 
 
 class Run(BaseService):
