@@ -1567,9 +1567,13 @@ def get_services_path():
         if services_path.exists():
             return services_path
 
-    # Создаем в первой возможной локации
-    services_path = possible_paths[0]
-    services_path.mkdir(exist_ok=True)
+    # Создаем в первой доступной НЕ-None локации
+    valid_paths = list(filter(None, possible_paths))
+    if not valid_paths:
+        raise RuntimeError("No valid path available for services directory")
+
+    services_path = valid_paths[0]
+    services_path.mkdir(parents=True, exist_ok=True)
     return services_path
 
 
