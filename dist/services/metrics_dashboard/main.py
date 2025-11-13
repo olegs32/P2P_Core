@@ -648,6 +648,11 @@ class Run(BaseService):
                 orchestrator_info = await self.proxy.orchestrator.list_services()
                 all_services = orchestrator_info.get("services", [])
 
+                # Handle both list and dict formats (for backward compatibility)
+                if isinstance(all_services, dict):
+                    # Old format: {"service_name": {...}}
+                    all_services = [{"name": k, **v} for k, v in all_services.items()]
+
                 self.logger.debug(f"Orchestrator returned {len(all_services)} services")
 
                 for service_info in all_services:
