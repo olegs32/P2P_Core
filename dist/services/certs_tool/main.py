@@ -53,9 +53,13 @@ class LegacyCertsService(BaseService):
 
     SERVICE_NAME = "legacy_certs"
 
-    def __init__(self, service_name: str = "legacy_certs", proxy_client=None, csp_path: str = '.\\'):
+    def __init__(self, service_name: str = "legacy_certs", proxy_client=None, csp_path: str = None):
         super().__init__(service_name, proxy_client)
-        self.csp_path = Path(csp_path)
+        # Если путь не указан, используем директорию сервиса
+        if csp_path is None:
+            self.csp_path = Path(__file__).parent
+        else:
+            self.csp_path = Path(csp_path)
 
     async def initialize(self):
         """Инициализация сервиса"""
