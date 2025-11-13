@@ -153,7 +153,28 @@ class Run(BaseService):
         @app.get("/api/dashboard/service-data")
         async def get_service_data(service_type: Optional[str] = None):
             """Get custom service data from all workers"""
-            return await self.get_service_data(service_type)
+            data = await self.get_service_data(service_type)
+
+            # Transform data for specific service types
+            if service_type == "certificates":
+                # Flatten certificate data for easier frontend consumption
+                certificates = []
+                for worker_id, services in data.get("service_data", {}).items():
+                    for service_name, service_info in services.items():
+                        if service_info.get("service_type") == "certificates":
+                            certs = service_info.get("certificates", [])
+                            for cert in certs:
+                                cert_copy = cert.copy()
+                                cert_copy["worker"] = worker_id
+                                certificates.append(cert_copy)
+
+                return {
+                    "timestamp": data.get("timestamp"),
+                    "certificates": certificates,
+                    "total": len(certificates)
+                }
+
+            return data
 
         self.logger.info("Dashboard HTTP endpoints registered")
 
@@ -660,16 +681,49 @@ class Run(BaseService):
                 "service_name": service_name
             }
 
+    async def _collect_local_service_data(self) -> Dict[str, Any]:
+        """
+        Collect custom data from local services (coordinator's services)
+        Similar to metrics_reporter._collect_service_data()
+        """
+        service_data = {}
+
+        try:
+            if self.proxy:
+                # List of services that may provide dashboard data
+                services_to_check = ['legacy_certs', 'certs_tool']
+
+                for service_name in services_to_check:
+                    try:
+                        # Check if service exists and has get_dashboard_data method
+                        if hasattr(self.proxy, service_name):
+                            service_proxy = getattr(self.proxy, service_name)
+                            if hasattr(service_proxy, 'get_dashboard_data'):
+                                data = await service_proxy.get_dashboard_data()
+                                if data:
+                                    service_data[service_name] = data
+                                    self.logger.debug(f"Collected dashboard data from local {service_name}")
+                    except AttributeError:
+                        # Service doesn't have get_dashboard_data method - skip
+                        pass
+                    except Exception as e:
+                        self.logger.debug(f"Could not get dashboard data from local {service_name}: {e}")
+
+        except Exception as e:
+            self.logger.error(f"Failed to collect local service data: {e}")
+
+        return service_data
+
     @service_method(description="Get service data from all workers", public=True)
     async def get_service_data(self, service_type: Optional[str] = None) -> Dict[str, Any]:
         """
-        Get custom service data from all workers
+        Get custom service data from all workers and coordinator
 
         Args:
             service_type: Optional filter by service type (e.g., 'certificates')
 
         Returns:
-            Dict with service data from all workers
+            Dict with service data from all workers and coordinator
         """
         result = {}
 
@@ -684,6 +738,18 @@ class Run(BaseService):
                         result[worker_id][service_name] = data
                 else:
                     result[worker_id][service_name] = data
+
+        # Collect service data from coordinator's local services
+        coordinator_data = await self._collect_local_service_data()
+        if coordinator_data:
+            result["coordinator"] = {}
+            for service_name, data in coordinator_data.items():
+                # Filter by service type if specified
+                if service_type:
+                    if data.get("service_type") == service_type:
+                        result["coordinator"][service_name] = data
+                else:
+                    result["coordinator"][service_name] = data
 
         return {
             "timestamp": datetime.now().isoformat(),
