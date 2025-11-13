@@ -275,30 +275,54 @@ class ServiceOrchestrator(BaseService):
 
     async def _stop_service_if_running(self, service_name: str):
         """Остановить сервис если он запущен"""
-        # В новой архитектуре получаем ServiceManager через proxy
-        if not self.proxy:
-            self.logger.warning("No proxy available to stop service")
+        # Получаем ServiceManager напрямую (это не сервис, а внутренний компонент)
+        from layers.service import get_global_service_manager
+        service_manager = get_global_service_manager()
+
+        if not service_manager:
+            self.logger.warning("ServiceManager not available")
             return
 
         try:
-            # Вызываем метод остановки через ServiceManager API
-            # ServiceManager должен предоставить метод для управления сервисами
-            result = await self.proxy.service_manager.stop_service(service_name)
+            # Проверяем, запущен ли сервис
+            service_instance = service_manager.registry.get_service(service_name)
+            if not service_instance:
+                self.logger.debug(f"Service {service_name} is not running")
+                return
+
+            # Останавливаем сервис через registry
+            await service_manager.registry.stop_service(service_name)
             self.logger.info(f"Stopped running service: {service_name}")
+
         except Exception as e:
             self.logger.warning(f"Could not stop service {service_name}: {e}")
 
     async def _load_and_start_service(self, service_name: str) -> bool:
         """Загрузить и запустить сервис через ServiceManager"""
         try:
-            if not self.proxy:
-                self.logger.warning("No proxy available to start service")
+            # Получаем ServiceManager напрямую
+            from layers.service import get_global_service_manager
+            service_manager = get_global_service_manager()
+
+            if not service_manager:
+                self.logger.warning("ServiceManager not available")
                 return False
 
-            # Вызываем метод загрузки через ServiceManager API
-            result = await self.proxy.service_manager.load_and_start_service(service_name)
+            # Проверяем, не запущен ли уже сервис
+            if service_manager.registry.get_service(service_name):
+                self.logger.info(f"Service {service_name} is already running")
+                return True
 
-            if result.get('success'):
+            # Загружаем и запускаем сервис
+            service_path = self.services_dir / service_name
+            if not service_path.exists():
+                self.logger.error(f"Service directory not found: {service_path}")
+                return False
+
+            # Используем load_service_from_directory из ServiceManager
+            success = await service_manager.load_service_from_directory(str(service_path))
+
+            if success:
                 self.logger.info(f"Service {service_name} loaded and started")
                 return True
             else:
@@ -449,11 +473,15 @@ class ServiceOrchestrator(BaseService):
             Список сервисов с их статусами
         """
         running_services = set()
-        if self.proxy:
+
+        # Получаем ServiceManager напрямую
+        from layers.service import get_global_service_manager
+        service_manager = get_global_service_manager()
+
+        if service_manager:
             try:
-                # Получаем список запущенных сервисов через API
-                services_info = await self.proxy.service_manager.list_running_services()
-                running_services = set(services_info.get('services', []))
+                # Получаем список запущенных сервисов напрямую
+                running_services = set(service_manager.registry.list_services())
             except Exception as e:
                 self.logger.warning(f"Could not get running services list: {e}")
 
@@ -496,8 +524,8 @@ class ServiceOrchestrator(BaseService):
 
         if service_manager:
             try:
-                # Прямой доступ к методам ServiceManager
-                running_services = service_manager.get_running_services()  # Нужно добавить этот метод
+                # Прямой доступ к registry для получения списка сервисов
+                running_services = service_manager.registry.list_services()
                 total_running = len(running_services)
                 manager_available = True
             except Exception as e:
@@ -533,11 +561,16 @@ class ServiceOrchestrator(BaseService):
         metadata = self.installed_services[service_name]
         service_path = self.services_dir / service_name
 
+        # Получаем ServiceManager напрямую
+        from layers.service import get_global_service_manager
+        service_manager = get_global_service_manager()
+
         is_running = False
-        if self.proxy:
+        if service_manager:
             try:
-                services_info = await self.proxy.service_manager.list_running_services()
-                is_running = service_name in services_info.get('services', [])
+                # Проверяем, запущен ли сервис
+                service_instance = service_manager.registry.get_service(service_name)
+                is_running = service_instance is not None
             except Exception as e:
                 self.logger.warning(f"Could not check if service is running: {e}")
 
@@ -551,11 +584,13 @@ class ServiceOrchestrator(BaseService):
         }
 
         # Добавляем информацию о запущенном сервисе
-        if is_running and self.proxy:
+        if is_running and service_manager:
             try:
-                # Получаем информацию о сервисе через API
-                running_info = await self.proxy.service_manager.get_service_info(service_name)
-                service_info["runtime_info"] = running_info
+                # Получаем информацию о сервисе напрямую
+                service_instance = service_manager.registry.get_service(service_name)
+                if service_instance:
+                    running_info = await service_instance.get_service_info()
+                    service_info["runtime_info"] = running_info
             except Exception as e:
                 self.logger.warning(f"Failed to get runtime info for {service_name}: {e}")
 
@@ -687,11 +722,14 @@ class ServiceOrchestrator(BaseService):
         manager_available = False
         running_names = set()
 
-        # Получаем список запущенных сервисов через API
-        if self.proxy:
+        # Получаем ServiceManager напрямую
+        from layers.service import get_global_service_manager
+        service_manager = get_global_service_manager()
+
+        if service_manager:
             try:
-                services_info = await self.proxy.service_manager.list_running_services()
-                running_names = set(services_info.get('services', []))
+                # Получаем список запущенных сервисов напрямую
+                running_names = set(service_manager.registry.list_services())
                 total_running = len(running_names)
                 manager_available = True
             except Exception as e:

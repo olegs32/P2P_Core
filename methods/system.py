@@ -263,12 +263,32 @@ class SystemService(BaseService):
             start_time = time.time()
             self.metrics.increment("get_system_metrics_calls")
 
+            # Используем interval=1.0 для точного измерения CPU за последнюю секунду
+            # Это блокирующий вызов, но дает точные результаты
+            cpu_percent = psutil.cpu_percent(interval=1.0)
+
+            # Получаем информацию о диске
+            disk_usage = psutil.disk_usage('/')
+
+            # Получаем информацию о процессе
+            process = psutil.Process()
+            process_memory = process.memory_info()
+
             metrics = {
-                "cpu_percent": psutil.cpu_percent(interval=0.001),
+                "cpu_percent": cpu_percent,
+                "cpu_count": psutil.cpu_count(),
                 "memory": {
                     "percent": psutil.virtual_memory().percent,
                     "available": psutil.virtual_memory().available,
-                    "used": psutil.virtual_memory().used
+                    "used": psutil.virtual_memory().used,
+                    "total": psutil.virtual_memory().total
+                },
+                "memory_usage_mb": process_memory.rss / 1024 / 1024,  # RSS in MB
+                "disk": {
+                    "percent": disk_usage.percent,
+                    "free": disk_usage.free,
+                    "used": disk_usage.used,
+                    "total": disk_usage.total
                 },
                 "disk_io": psutil.disk_io_counters()._asdict() if psutil.disk_io_counters() else {},
                 "network_io": psutil.net_io_counters()._asdict() if psutil.net_io_counters() else {},

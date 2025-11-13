@@ -192,8 +192,12 @@ class RPCRequest(BaseModel):
 
 class RPCResponse(BaseModel):
     result: Any = None
-    error: str = None
+    error: Optional[str] = None
     id: str
+
+    class Config:
+        # Exclude None values from JSON serialization
+        exclude_none = True
 
 
 class GossipJoinRequest(BaseModel):
@@ -889,8 +893,20 @@ class BaseService(ABC):
             return time.time() - self._start_time
         return 0
 
+    @service_method(description="Get detailed service information", public=True)
     async def get_service_info(self) -> Dict[str, Any]:
         """Получение информации о сервисе с расширенными данными"""
+        # Агрегировать данные таймеров
+        timers_aggregated = {}
+        for name, values in self.metrics.timers.items():
+            if values:
+                timers_aggregated[name] = {
+                    "count": len(values),
+                    "avg_ms": sum(values) / len(values),
+                    "min_ms": min(values),
+                    "max_ms": max(values)
+                }
+
         return {
             "name": self.service_name,
             "status": self.status.value,
@@ -904,7 +920,10 @@ class BaseService(ABC):
                 "counters": len(self.metrics.counters),
                 "gauges": len(self.metrics.gauges),
                 "timers": len(self.metrics.timers)
-            }
+            },
+            "counters": dict(self.metrics.counters),
+            "gauges": dict(self.metrics.gauges),
+            "timers": timers_aggregated
         }
 
     @service_method(description="Health check ping", public=True, requires_auth=False)
@@ -1128,6 +1147,11 @@ class ServiceManager:
                     self.logger.info(f"Proxy successfully set for service: {service_instance.service_name}")
                 else:
                     service_instance.proxy = self.proxy_client
+
+            # Передаем service_manager и context в сервис
+            service_instance._service_manager = self
+            if hasattr(self.rpc, 'context'):
+                service_instance.context = self.rpc.context
 
             # КРИТИЧЕСКИ ВАЖНО: ЗАПУСКАЕМ СЕРВИС
             await service_instance.start()  # <-- ЭТО ОТСУТСТВОВАЛО!
@@ -1942,14 +1966,9 @@ class P2PServiceHandler:
                 # Читаем сгенерированные файлы
                 with open(cert_tmp_path.name, 'r') as f:
                     certificate_pem = f.read()
-                    print(certificate_pem)
 
                 with open(key_tmp_path.name, 'r') as f:
                     private_key_pem = f.read()
-                    print(private_key_pem)
-
-                print(certificate_pem)
-                print(private_key_pem)
 
                 # Удаляем временные файлы
                 # os.unlink(cert_tmp_path)

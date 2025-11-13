@@ -352,6 +352,7 @@ class P2PApplicationContext:
         self._shutdown_handlers: List[callable] = []
 
         self._setup_signal_handlers()
+        self._setup_asyncio_exception_handler()  # Подавление Windows ошибок сокетов
         P2PApplicationContext.set_current_context(self)
 
     @classmethod
@@ -365,16 +366,106 @@ class P2PApplicationContext:
         cls._current_context = context
 
     def _setup_signal_handlers(self):
-        """Настройка обработчиков сигналов"""
+        """Настройка обработчиков сигналов для asyncio"""
         import signal
+        import asyncio
 
-        def signal_handler(signum, frame):
+        def handle_shutdown_signal(signum):
+            """Обработчик сигналов для graceful shutdown"""
             signal_name = signal.Signals(signum).name
+            self.logger.info(f"\n{'='*60}")
             self.logger.info(f"Received signal {signal_name}, initiating graceful shutdown...")
+            self.logger.info(f"{'='*60}")
+
+            # Устанавливаем событие shutdown
+            # Это разбудит wait_for_shutdown() и позволит выполнить finally блок
             self._shutdown_event.set()
 
-        signal.signal(signal.SIGINT, signal_handler)
-        signal.signal(signal.SIGTERM, signal_handler)
+        # Регистрируем обработчики сигналов
+        try:
+            loop = asyncio.get_event_loop()
+
+            # Используем add_signal_handler для POSIX систем
+            loop.add_signal_handler(
+                signal.SIGINT,
+                lambda: handle_shutdown_signal(signal.SIGINT)
+            )
+            loop.add_signal_handler(
+                signal.SIGTERM,
+                lambda: handle_shutdown_signal(signal.SIGTERM)
+            )
+            self.logger.debug("Signal handlers registered with asyncio event loop")
+
+        except (NotImplementedError, AttributeError):
+            # Fallback для Windows или если add_signal_handler не поддерживается
+            self.logger.warning("asyncio signal handlers not supported, using standard signal module")
+
+            def signal_handler(signum, frame):
+                signal_name = signal.Signals(signum).name
+                self.logger.info(f"\n{'='*60}")
+                self.logger.info(f"Received signal {signal_name}, initiating graceful shutdown...")
+                self.logger.info(f"{'='*60}")
+                self._shutdown_event.set()
+
+            signal.signal(signal.SIGINT, signal_handler)
+            signal.signal(signal.SIGTERM, signal_handler)
+
+    def _setup_asyncio_exception_handler(self):
+        """
+        Настройка обработчика исключений для asyncio event loop
+
+        Подавляет ConnectionResetError и другие ошибки закрытия сокетов
+        на Windows (ProactorEventLoop), которые возникают в колбэках asyncio
+        при закрытии соединений.
+        """
+        import asyncio
+        import sys
+
+        def asyncio_exception_handler(loop, context):
+            """Обработчик исключений asyncio для подавления Windows ошибок"""
+            exception = context.get('exception')
+
+            # Список исключений которые нужно подавить (Windows ProactorEventLoop)
+            ignored_exceptions = (
+                ConnectionResetError,  # [WinError 10054]
+                ConnectionAbortedError,  # [WinError 10053]
+                BrokenPipeError,  # [Errno 32]
+                OSError,  # Общие ошибки сокетов
+            )
+
+            # Проверяем тип исключения
+            if exception and isinstance(exception, ignored_exceptions):
+                # Логируем на уровне debug вместо error
+                message = context.get('message', 'Unhandled exception')
+                self.logger.debug(
+                    f"Suppressed asyncio exception ({type(exception).__name__}): {message}"
+                )
+                return  # Подавляем исключение
+
+            # Проверяем по строке (для вложенных исключений)
+            exception_str = str(exception) if exception else ""
+            if any(err in exception_str for err in ["WinError 10054", "WinError 10053", "ConnectionReset", "ConnectionAborted"]):
+                self.logger.debug(f"Suppressed Windows socket exception: {exception_str}")
+                return
+
+            # Для всех остальных исключений - стандартная обработка
+            message = context.get('message', 'Unhandled exception')
+            self.logger.error(f"Asyncio exception: {message}")
+
+            if exception:
+                self.logger.error(
+                    f"Exception type: {type(exception).__name__}",
+                    exc_info=exception
+                )
+
+        # Устанавливаем обработчик для текущего event loop
+        try:
+            loop = asyncio.get_event_loop()
+            loop.set_exception_handler(asyncio_exception_handler)
+            self.logger.debug("Asyncio exception handler installed (suppresses Windows socket errors)")
+        except RuntimeError:
+            # Нет event loop - установим позже при первом использовании
+            self.logger.debug("No event loop yet, exception handler will be set on first use")
 
     # === Управление компонентами ===
 
@@ -450,6 +541,16 @@ class P2PApplicationContext:
         async with self._initialization_lock:
             self.logger.info("Starting system initialization...")
 
+            # Переустанавливаем exception handler для текущего event loop
+            # (на случай если в __init__ loop еще не существовал)
+            try:
+                import asyncio
+                loop = asyncio.get_running_loop()
+                if not hasattr(loop, '_exception_handler') or loop._exception_handler is None:
+                    self._setup_asyncio_exception_handler()
+            except Exception as e:
+                self.logger.debug(f"Could not reinstall exception handler: {e}")
+
             # Если порядок не задан, используем порядок регистрации
             if not self._startup_order:
                 self._startup_order = list(self._components.keys())
@@ -504,28 +605,50 @@ class P2PApplicationContext:
         self.logger.info("Starting graceful shutdown...")
 
         # Выполняем shutdown handlers
-        for handler in self._shutdown_handlers:
+        self.logger.debug(f"Running {len(self._shutdown_handlers)} shutdown handlers...")
+        for i, handler in enumerate(self._shutdown_handlers):
             try:
+                self.logger.debug(f"Running shutdown handler {i+1}/{len(self._shutdown_handlers)}...")
                 if asyncio.iscoroutinefunction(handler):
                     await handler()
                 else:
                     handler()
+                self.logger.debug(f"Shutdown handler {i+1} completed")
             except Exception as e:
-                self.logger.error(f"Error in shutdown handler: {e}")
+                # На Windows игнорируем ConnectionResetError
+                if "ConnectionResetError" not in str(type(e).__name__):
+                    self.logger.error(f"Error in shutdown handler {i+1}: {e}")
 
         # Останавливаем компоненты в обратном порядке
+        self.logger.debug(f"Shutting down {len(self._shutdown_order)} components...")
         for component_name in self._shutdown_order:
             component = self._components.get(component_name)
             if not component or component.state != ComponentState.RUNNING:
+                self.logger.debug(f"Skipping component {component_name} (not running)")
                 continue
 
             self.logger.info(f"Shutting down component: {component_name}")
 
             try:
-                await component.shutdown()
+                await asyncio.wait_for(component.shutdown(), timeout=3.0)
+                self.logger.info(f"Component {component_name} shutdown completed")
+            except asyncio.TimeoutError:
+                self.logger.error(f"Component {component_name} shutdown timed out (3s) - continuing anyway")
             except Exception as e:
-                self.logger.error(f"Error shutting down {component_name}: {e}")
+                # На Windows могут возникать ConnectionResetError - игнорируем их
+                if "ConnectionResetError" not in str(type(e).__name__):
+                    self.logger.error(f"Error shutting down {component_name}: {e}")
                 # Продолжаем shutdown других компонентов
+
+        # Сохраняем защищенное хранилище перед выходом
+        try:
+            storage_manager = self.get_shared("storage_manager")
+            if storage_manager:
+                self.logger.info("Saving secure storage before shutdown...")
+                storage_manager.save()
+                self.logger.info("Secure storage saved successfully")
+        except Exception as e:
+            self.logger.error(f"Error saving storage during shutdown: {e}")
 
         self.logger.info("Graceful shutdown completed")
 
@@ -1237,6 +1360,14 @@ class WebServerComponent(P2PComponent):
 
         self.server = uvicorn.Server(self.config)
 
+        # Отключаем ВСЮ обработку сигналов в uvicorn - используем свою
+        # Переопределяем все методы, связанные с сигналами
+        self.server.install_signal_handlers = lambda: None
+        self.server.handle_exit = lambda sig, frame: None
+
+        # Важно: uvicorn проверяет should_exit в цикле
+        # Наш глобальный обработчик сигналов установит флаги через _shutdown_event
+
         # Запускаем сервер в фоновой задаче
         self.server_task = asyncio.create_task(self.server.serve())
 
@@ -1248,15 +1379,63 @@ class WebServerComponent(P2PComponent):
         await asyncio.sleep(1)
 
     async def _do_shutdown(self):
-        if hasattr(self, 'server_task'):
-            self.server_task.cancel()
+        """Корректное завершение веб-сервера"""
+        # Заглушаем логирование uvicorn перед shutdown, чтобы не показывать
+        # "INFO: Shutting down" и "INFO: Waiting for connections to close"
+        import logging
+        uvicorn_logger = logging.getLogger("uvicorn")
+        uvicorn_error_logger = logging.getLogger("uvicorn.error")
+        original_level = uvicorn_logger.level
+        original_error_level = uvicorn_error_logger.level
+        uvicorn_logger.setLevel(logging.CRITICAL)
+        uvicorn_error_logger.setLevel(logging.CRITICAL)
+
+        # Останавливаем uvicorn сервер корректно
+        if hasattr(self, 'server') and self.server:
             try:
-                await self.server_task
-            except asyncio.CancelledError:
-                pass
+                self.logger.info("Shutting down web server...")
+                # Устанавливаем флаги для немедленного завершения
+                self.server.should_exit = True
+                self.server.force_exit = True  # Форсируем выход без ожидания соединений
+
+                # Даем серверу короткое время для начала завершения
+                await asyncio.sleep(0.1)
+
+            except Exception as e:
+                self.logger.warning(f"Error during server shutdown signal: {e}")
+
+        # Отменяем задачу сервера
+        if hasattr(self, 'server_task') and self.server_task:
+            try:
+                if not self.server_task.done():
+                    self.logger.debug("Cancelling server task...")
+                    self.server_task.cancel()
+                    # Ждем завершения с очень коротким таймаутом
+                    try:
+                        await asyncio.wait_for(self.server_task, timeout=0.5)
+                        self.logger.debug("Server task cancelled successfully")
+                    except asyncio.TimeoutError:
+                        self.logger.debug("Server task shutdown timeout - continuing anyway")
+                        # Просто игнорируем таймаут и продолжаем
+                    except asyncio.CancelledError:
+                        self.logger.debug("Server task received CancelledError")
+                        pass
+                else:
+                    self.logger.debug("Server task already done")
+            except Exception as e:
+                # На Windows могут возникать ConnectionResetError - игнорируем
+                if "ConnectionResetError" not in str(type(e).__name__):
+                    self.logger.warning(f"Error during server task cancellation: {e}")
 
         # Очистка SSL контекста (закрытие memfd дескрипторов)
         if hasattr(self, 'server_ssl_context'):
-            self.server_ssl_context.cleanup()
+            try:
+                self.server_ssl_context.cleanup()
+            except Exception as e:
+                self.logger.warning(f"Error during SSL context cleanup: {e}")
 
-        self.logger.info("Web server shutdown")
+        # Восстанавливаем уровень логирования uvicorn
+        uvicorn_logger.setLevel(original_level)
+        uvicorn_error_logger.setLevel(original_error_level)
+
+        self.logger.info("Web server shutdown completed")

@@ -2,6 +2,7 @@ import argparse
 import asyncio
 import logging
 import os
+import signal
 import socket
 import sys
 import time
@@ -31,6 +32,48 @@ from layers.service import (
 
 # Импортируем модули безопасного хранилища
 from layers.storage_manager import init_storage
+
+
+# Глобальные флаги для обработки сигналов
+_shutdown_requested = False
+_force_shutdown = False
+_shutdown_in_progress = False
+
+
+def signal_handler(signum, frame):
+    """
+    Глобальный обработчик сигналов для немедленного завершения.
+    Первый Ctrl+C: graceful shutdown
+    Второй Ctrl+C: принудительный выход
+    """
+    global _shutdown_requested, _force_shutdown, _shutdown_in_progress
+
+    # Используем print вместо logger для гарантированного вывода
+    # так как logger может быть не инициализирован или заглушен
+    import sys
+    print(f"\n[SIGNAL] Received signal {signum}", file=sys.stderr, flush=True)
+    print(f"[SIGNAL] _shutdown_requested={_shutdown_requested}, _force_shutdown={_force_shutdown}, _shutdown_in_progress={_shutdown_in_progress}", file=sys.stderr, flush=True)
+
+    logger = logging.getLogger("SignalHandler")
+
+    if _force_shutdown or (_shutdown_requested and _shutdown_in_progress):
+        # Второй Ctrl+C или shutdown уже идет - немедленный выход
+        print("[SIGNAL] Force shutdown! Exiting immediately...", file=sys.stderr, flush=True)
+        logger.warning("Force shutdown requested! Exiting immediately...")
+        sys.exit(1)
+
+    if _shutdown_requested:
+        # Shutdown уже запрошен, но еще не начался - форсируем
+        print("[SIGNAL] Second Ctrl+C detected, preparing for force exit", file=sys.stderr, flush=True)
+        logger.warning("Shutdown already requested. Press Ctrl+C again to force exit.")
+        _force_shutdown = True
+        return
+
+    # Первый Ctrl+C - устанавливаем флаг graceful shutdown
+    _shutdown_requested = True
+    print(f"[SIGNAL] First Ctrl+C detected, starting graceful shutdown...", file=sys.stderr, flush=True)
+    logger.info(f"Shutdown signal received (signal {signum}). Starting graceful shutdown...")
+    logger.info("Press Ctrl+C again to force immediate exit.")
 
 
 async def prepare_certificates_after_storage(config: 'P2PConfig', context):
@@ -444,12 +487,38 @@ async def create_worker_application(config: P2PConfig, coordinator_addresses: Li
 
 async def run_coordinator_from_context(app_context: P2PApplicationContext):
     """Запуск координатора из готового контекста приложения"""
+    global _shutdown_requested, _shutdown_in_progress
+
     logger = logging.getLogger("Coordinator")
     config = app_context.config
+
+    # Фоновая задача для мониторинга флага shutdown
+    async def monitor_shutdown_flag():
+        """Проверяет глобальный флаг shutdown и инициирует завершение"""
+        while not _shutdown_requested:
+            await asyncio.sleep(0.1)
+        logger.info("Shutdown flag detected, initiating graceful shutdown...")
+        app_context._shutdown_event.set()
+
+    # Запускаем монитор флага shutdown
+    shutdown_monitor_task = asyncio.create_task(monitor_shutdown_flag())
 
     try:
         # Инициализируем все компоненты
         await app_context.initialize_all()
+
+        # КРИТИЧЕСКИ ВАЖНО: Переустанавливаем обработчики сигналов ПОСЛЕ инициализации
+        # потому что uvicorn мог переопределить их во время initialize_all()
+        logger.info("Re-installing signal handlers after component initialization...")
+        signal.signal(signal.SIGINT, signal_handler)
+        signal.signal(signal.SIGTERM, signal_handler)
+        logger.info("Signal handlers re-installed successfully")
+
+        # Запускаем автосохранение защищенного хранилища
+        storage_manager = app_context.get_shared("storage_manager")
+        if storage_manager:
+            logger.info("Starting storage autosave (60s interval)...")
+            storage_manager.start_autosave(interval=60)
 
         # Проверяем здоровье системы
         health = app_context.health_check()
@@ -502,21 +571,67 @@ async def run_coordinator_from_context(app_context: P2PApplicationContext):
         logger.error(f"Coordinator error: {e}")
         raise
     finally:
-        # Graceful shutdown
-        await app_context.shutdown_all()
+        # Отменяем задачу мониторинга
+        shutdown_monitor_task.cancel()
+        try:
+            await shutdown_monitor_task
+        except asyncio.CancelledError:
+            pass
+
+        # Устанавливаем флаг что shutdown начался
+        _shutdown_in_progress = True
+
+        # Graceful shutdown with timeout and forced exit
+        try:
+            logger.info("Initiating graceful shutdown...")
+            await asyncio.wait_for(app_context.shutdown_all(), timeout=5.0)
+            logger.info("Graceful shutdown completed successfully")
+        except asyncio.TimeoutError:
+            logger.error("Shutdown timeout exceeded (5s), forcing exit...")
+            sys.exit(1)
+        except Exception as e:
+            logger.error(f"Error during shutdown: {e}")
+            logger.error("Forcing exit due to shutdown error...")
+            sys.exit(1)
 
 
 async def run_worker_from_context(app_context: P2PApplicationContext):
     """Запуск worker узла из готового контекста приложения"""
+    global _shutdown_requested, _shutdown_in_progress
+
     logger = logging.getLogger("Worker")
     config = app_context.config
 
     # Для worker нужен coordinator_addresses - берем из конфига
     coordinator_addresses = config.coordinator_addresses or []
 
+    # Фоновая задача для мониторинга флага shutdown
+    async def monitor_shutdown_flag():
+        """Проверяет глобальный флаг shutdown и инициирует завершение"""
+        while not _shutdown_requested:
+            await asyncio.sleep(0.1)
+        logger.info("Shutdown flag detected, initiating graceful shutdown...")
+        app_context._shutdown_event.set()
+
+    # Запускаем монитор флага shutdown
+    shutdown_monitor_task = asyncio.create_task(monitor_shutdown_flag())
+
     try:
         # Инициализируем все компоненты
         await app_context.initialize_all()
+
+        # КРИТИЧЕСКИ ВАЖНО: Переустанавливаем обработчики сигналов ПОСЛЕ инициализации
+        # потому что uvicorn мог переопределить их во время initialize_all()
+        logger.info("Re-installing signal handlers after component initialization...")
+        signal.signal(signal.SIGINT, signal_handler)
+        signal.signal(signal.SIGTERM, signal_handler)
+        logger.info("Signal handlers re-installed successfully")
+
+        # Запускаем автосохранение защищенного хранилища
+        storage_manager = app_context.get_shared("storage_manager")
+        if storage_manager:
+            logger.info("Starting storage autosave (60s interval)...")
+            storage_manager.start_autosave(interval=60)
 
         # Проверяем здоровье системы
         health = app_context.health_check()
@@ -566,8 +681,28 @@ async def run_worker_from_context(app_context: P2PApplicationContext):
         logger.error(f"Worker error: {e}")
         raise
     finally:
-        # Graceful shutdown
-        await app_context.shutdown_all()
+        # Отменяем задачу мониторинга
+        shutdown_monitor_task.cancel()
+        try:
+            await shutdown_monitor_task
+        except asyncio.CancelledError:
+            pass
+
+        # Устанавливаем флаг что shutdown начался
+        _shutdown_in_progress = True
+
+        # Graceful shutdown with timeout and forced exit
+        try:
+            logger.info("Initiating graceful shutdown...")
+            await asyncio.wait_for(app_context.shutdown_all(), timeout=5.0)
+            logger.info("Graceful shutdown completed successfully")
+        except asyncio.TimeoutError:
+            logger.error("Shutdown timeout exceeded (5s), forcing exit...")
+            sys.exit(1)
+        except Exception as e:
+            logger.error(f"Error during shutdown: {e}")
+            logger.error("Forcing exit due to shutdown error...")
+            sys.exit(1)
 
 
 def create_argument_parser():
@@ -683,11 +818,9 @@ async def main():
                             return self._shared_state.get(key, default)
 
                     temp_context = MinimalContext()
-                    print(temp_context)
 
                     # Инициализируем storage
                     run_type = True if 'coordinator' in args.config else False
-                    print(run_type, storage_path)
                     logger.info(f"Initializing secure storage: {storage_path}")
                     with init_storage(password, storage_path, temp_context, run_type):
                         logger.info("Secure storage initialized successfully")
@@ -787,15 +920,43 @@ if __name__ == "__main__":
     if not check_dependencies():
         sys.exit(1)
 
+    # Устанавливаем глобальный обработчик сигналов ДО запуска asyncio
+    # Это позволяет перехватывать Ctrl+C раньше uvicorn
+    print("[MAIN] Installing global signal handlers...", file=sys.stderr, flush=True)
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+    print("[MAIN] Signal handlers installed successfully", file=sys.stderr, flush=True)
+
     # Запуск главной функции
+    # Используем свой event loop вместо asyncio.run() для контроля над сигналами
     try:
-        exit_code = asyncio.run(main())
-        import traceback
-        traceback.print_exc()
-        sys.exit(exit_code)
+        # Создаем новый event loop
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+
+        try:
+            # Запускаем main() в нашем event loop
+            exit_code = loop.run_until_complete(main())
+            sys.exit(exit_code if exit_code else 0)
+        finally:
+            # Закрываем event loop
+            try:
+                # Отменяем все оставшиеся задачи
+                pending = asyncio.all_tasks(loop)
+                for task in pending:
+                    task.cancel()
+                # Даем задачам время завершиться
+                loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+            except Exception:
+                pass
+            finally:
+                loop.close()
     except KeyboardInterrupt:
-        print("\nStopped")
+        # Этот блок не должен выполняться, так как сигналы обрабатываются в signal_handler
+        print("\nStopped by KeyboardInterrupt")
         sys.exit(0)
     except Exception as e:
         print(f"Fatal error: {e}")
+        import traceback
+        traceback.print_exc()
         sys.exit(1)
