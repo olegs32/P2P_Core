@@ -119,20 +119,31 @@ class MethodCaller:
         """Выполнение локального или таргетированного вызова"""
         method_path = f"{self.service_name}/{self.method_name}"
 
-        # Если метод не найден локально и указан целевой узел - делаем удаленный вызов
-        if method_path not in self.method_registry and self.target_node:
-            return await self._call_remote(**kwargs)
-
-        # Если метод не найден вообще
-        if method_path not in self.method_registry:
-            raise RuntimeError(f"Method {method_path} not found in local registry")
-
-        # Логируем тип вызова
+        # Если указан target_node - проверяем, это локальный узел или удаленный
         if self.target_node:
-            self.logger.debug(f"Targeted call to {self.target_node}: {method_path}")
-        else:
-            self.logger.debug(f"Local call: {method_path}")
+            # Получаем ID текущего узла
+            current_node_id = None
+            if self.context and hasattr(self.context, 'config'):
+                current_node_id = self.context.config.node_id
 
+            # Если target_node НЕ совпадает с текущим узлом - это удаленный вызов
+            if current_node_id and self.target_node != current_node_id:
+                self.logger.debug(f"Remote call to {self.target_node}: {method_path}")
+                return await self._call_remote(**kwargs)
+            else:
+                # Target node совпадает с текущим - локальный вызов
+                self.logger.debug(f"Local targeted call: {method_path}")
+
+        # Если метод не найден в локальном registry
+        if method_path not in self.method_registry:
+            # Если был указан target_node, но метода все равно нет - пробуем удаленный вызов
+            if self.target_node:
+                return await self._call_remote(**kwargs)
+            else:
+                raise RuntimeError(f"Method {method_path} not found in local registry")
+
+        # Локальный вызов
+        self.logger.debug(f"Local call: {method_path}")
         method = self.method_registry[method_path]
         return await method(**kwargs)
 
