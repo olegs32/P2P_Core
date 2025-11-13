@@ -1047,6 +1047,22 @@ class Run(BaseService):
                 remote_service = getattr(service_proxy, node_id)
                 service_info = await remote_service.get_service_info()
 
+            # Ensure service_info is a dict (convert if needed)
+            if not isinstance(service_info, dict):
+                # Convert to dict if it's an object with __dict__
+                if hasattr(service_info, '__dict__'):
+                    service_info = service_info.__dict__
+                elif hasattr(service_info, 'to_dict'):
+                    service_info = service_info.to_dict()
+                else:
+                    # Try to convert using vars()
+                    try:
+                        service_info = vars(service_info)
+                    except TypeError:
+                        # Last resort: convert to string representation
+                        self.logger.warning(f"Could not convert service_info to dict for {service_name} on {node_id}, type: {type(service_info)}")
+                        service_info = {"raw_data": str(service_info)}
+
             return {
                 "success": True,
                 "node_id": node_id,
@@ -1056,6 +1072,8 @@ class Run(BaseService):
 
         except Exception as e:
             self.logger.error(f"Failed to get metrics for {service_name} on {node_id}: {e}")
+            import traceback
+            self.logger.error(f"Traceback: {traceback.format_exc()}")
             return {
                 "success": False,
                 "error": str(e),
