@@ -186,18 +186,19 @@ class MethodCaller:
         self.logger.debug(f"Remote RPC call to {self.target_node}: {method_path}")
 
         # Создаем SSL context для безопасного соединения
-        verify_ssl = False
-        if hasattr(self.context, 'config'):
-            # Проверяем есть ли CA сертификат
-            ca_cert_file = getattr(self.context.config, 'ssl_ca_cert_file', None)
-            if ca_cert_file:
-                try:
-                    from layers.ssl_helper import create_client_ssl_context
-                    verify_ssl = create_client_ssl_context(verify=True, ca_cert_file=ca_cert_file, context=self.context)
-                    self.logger.debug(f"Using SSL verification with CA cert: {ca_cert_file}")
-                except Exception as e:
-                    self.logger.warning(f"Failed to create SSL context, using no verification: {e}")
-                    verify_ssl = False
+        if not hasattr(self.context, 'config'):
+            raise RuntimeError("Config not available for SSL context creation")
+
+        ca_cert_file = getattr(self.context.config, 'ssl_ca_cert_file', None)
+        if not ca_cert_file:
+            raise RuntimeError("CA certificate file not configured - cannot establish secure RPC connection")
+
+        try:
+            from layers.ssl_helper import create_client_ssl_context
+            verify_ssl = create_client_ssl_context(verify=True, ca_cert_file=ca_cert_file, context=self.context)
+            self.logger.debug(f"Using SSL verification with CA cert: {ca_cert_file}")
+        except Exception as e:
+            raise RuntimeError(f"Failed to create SSL context: {e}")
 
         # Формируем RPC request
         rpc_payload = {
