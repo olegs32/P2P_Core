@@ -152,20 +152,32 @@ class MethodCaller:
         if not self.context:
             raise RuntimeError("Context not available for remote calls")
 
-        # Получаем network layer для доступа к node registry
-        network = self.context.get_shared('network')
-        if not network:
-            raise RuntimeError("Network component not available")
+        # Определяем адрес целевого узла
+        node_address = None
 
-        # Получаем информацию об узле
-        node_info = network.gossip.node_registry.get(self.target_node)
-        if not node_info:
-            raise RuntimeError(f"Target node '{self.target_node}' not found in network registry")
+        # Специальная обработка для 'coordinator' - берем адрес из конфигурации
+        if self.target_node == 'coordinator':
+            if hasattr(self.context, 'config') and hasattr(self.context.config, 'coordinator_addresses'):
+                coordinator_addresses = self.context.config.coordinator_addresses
+                if coordinator_addresses and len(coordinator_addresses) > 0:
+                    # Берем первый координатор из списка
+                    node_address = coordinator_addresses[0]
+                    self.logger.debug(f"Using coordinator address from config: {node_address}")
 
-        # Формируем URL для RPC вызова
-        node_address = node_info.get('address')
+        # Если адрес не найден в конфиге, ищем в node_registry
         if not node_address:
-            raise RuntimeError(f"Address not available for node '{self.target_node}'")
+            network = self.context.get_shared('network')
+            if not network:
+                raise RuntimeError("Network component not available")
+
+            # Получаем информацию об узле
+            node_info = network.gossip.node_registry.get(self.target_node)
+            if not node_info:
+                raise RuntimeError(f"Target node '{self.target_node}' not found in network registry or config")
+
+            node_address = node_info.get('address')
+            if not node_address:
+                raise RuntimeError(f"Address not available for node '{self.target_node}'")
 
         # Используем стандартный /rpc endpoint
         url = f"https://{node_address}/rpc"
