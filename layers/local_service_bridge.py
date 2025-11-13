@@ -1,6 +1,7 @@
 # local_service_bridge.py - Локальный мост сервисов с поддержкой таргетинга узлов
 import asyncio
 import logging
+import httpx
 from typing import Dict, Any, Optional
 
 from layers.application_context import P2PApplicationContext
@@ -85,34 +86,33 @@ class ServiceMethodProxy:
             service_name=self.service_name,
             method_name=attr_name,
             method_registry=self.method_registry,
-            target_node=self.target_node
+            target_node=self.target_node,
+            context=self.context
         )
 
 
 class MethodCaller:
     """Вызов метода через реестр с поддержкой таргетинга"""
 
-    def __init__(self, service_name: str, method_name: str, method_registry: Dict[str, Any], target_node: str = None):
+    def __init__(self, service_name: str, method_name: str, method_registry: Dict[str, Any], target_node: str = None, context: P2PApplicationContext = None):
         self.service_name = service_name
         self.method_name = method_name
         self.method_registry = method_registry
         self.target_node = target_node
+        self.context = context
         self.logger = logging.getLogger(f"Method.{service_name}.{method_name}")
 
     async def __call__(self, **kwargs):
         """Выполнение локального или таргетированного вызова"""
         method_path = f"{self.service_name}/{self.method_name}"
 
+        # Если метод не найден локально и указан целевой узел - делаем удаленный вызов
+        if method_path not in self.method_registry and self.target_node:
+            return await self._call_remote(**kwargs)
+
+        # Если метод не найден вообще
         if method_path not in self.method_registry:
-            # Если метод не найден локально и указан целевой узел
-            if self.target_node:
-                raise RuntimeError(
-                    f"Method {method_path} not found in local registry. "
-                    f"Remote calls to '{self.target_node}' not implemented in local bridge. "
-                    f"Available methods: {list(self.method_registry.keys())}"
-                )
-            else:
-                raise RuntimeError(f"Method {method_path} not found in local registry")
+            raise RuntimeError(f"Method {method_path} not found in local registry")
 
         # Логируем тип вызова
         if self.target_node:
@@ -122,6 +122,66 @@ class MethodCaller:
 
         method = self.method_registry[method_path]
         return await method(**kwargs)
+
+    async def _call_remote(self, **kwargs):
+        """Выполнить удаленный RPC вызов через HTTP"""
+        if not self.context:
+            raise RuntimeError("Context not available for remote calls")
+
+        # Получаем network layer для доступа к node registry
+        network = self.context.get_shared('network')
+        if not network:
+            raise RuntimeError("Network component not available")
+
+        # Получаем информацию об узле
+        node_info = network.gossip.node_registry.get(self.target_node)
+        if not node_info:
+            raise RuntimeError(f"Target node '{self.target_node}' not found in network registry")
+
+        # Формируем URL для RPC вызова
+        node_address = node_info.get('address')
+        if not node_address:
+            raise RuntimeError(f"Address not available for node '{self.target_node}'")
+
+        # Используем стандартный /rpc endpoint
+        url = f"https://{node_address}/rpc"
+        method_path = f"{self.service_name}/{self.method_name}"
+
+        self.logger.debug(f"Remote RPC call to {self.target_node}: {method_path}")
+
+        # Получаем SSL context из transport
+        transport = self.context.get_shared('transport')
+        ssl_context = transport.client_ssl_context if transport else None
+
+        # Формируем RPC request
+        rpc_payload = {
+            "method": method_path,
+            "params": kwargs,
+            "id": 1
+        }
+
+        # Делаем HTTP POST запрос
+        async with httpx.AsyncClient(verify=ssl_context, timeout=30.0) as client:
+            try:
+                response = await client.post(url, json=rpc_payload)
+                response.raise_for_status()
+                rpc_response = response.json()
+
+                # Проверяем формат RPC ответа
+                if 'error' in rpc_response and rpc_response['error']:
+                    raise RuntimeError(f"Remote RPC call failed: {rpc_response['error']}")
+
+                return rpc_response.get('result')
+
+            except httpx.HTTPStatusError as e:
+                self.logger.error(f"HTTP error calling {url}: {e.response.status_code} - {e.response.text}")
+                raise RuntimeError(f"Remote call failed with HTTP {e.response.status_code}")
+            except httpx.RequestError as e:
+                self.logger.error(f"Request error calling {url}: {e}")
+                raise RuntimeError(f"Remote call failed: {e}")
+            except Exception as e:
+                self.logger.error(f"Unexpected error calling {url}: {e}")
+                raise
 
 
 def create_local_service_bridge(method_registry: Dict[str, Any], service_manager, context: P2PApplicationContext):
