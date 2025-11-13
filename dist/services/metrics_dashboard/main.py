@@ -381,18 +381,13 @@ class Run(BaseService):
                     )
 
                 thumbprint = cert_info.get("thumbprint", "")
-                serial = cert_info.get("serial", "")
-                self.logger.info(f"Deleting certificate: worker={worker}, cert_id={cert_id}, thumbprint={thumbprint}, serial={serial}")
-                self.logger.info(f"Certificate info keys: {list(cert_info.keys())}")
+                self.logger.info(f"Deleting certificate: worker={worker}, cert_id={cert_id}")
 
                 if not thumbprint:
-                    self.logger.error(f"Certificate thumbprint is empty. Certificate info: {cert_info}")
+                    self.logger.error(f"Certificate thumbprint is empty for cert_id={cert_id}")
                     return JSONResponse(
                         status_code=400,
-                        content={
-                            "success": False,
-                            "error": f"Certificate thumbprint is empty. Available fields: {list(cert_info.keys())}"
-                        }
+                        content={"success": False, "error": "Certificate thumbprint is empty"}
                     )
 
                 # Delete certificate
@@ -401,14 +396,12 @@ class Run(BaseService):
                         result = await self.proxy.certs_tool.delete_certificate(
                             thumbprint=thumbprint
                         )
-                        self.logger.info(f"Delete result: {result}")
                         return JSONResponse(content=result)
                 else:
                     if hasattr(self.proxy, 'certs_tool'):
                         result = await self.proxy.certs_tool[worker].delete_certificate(
                             thumbprint=thumbprint
                         )
-                        self.logger.info(f"Delete result: {result}")
                         return JSONResponse(content=result)
 
                 return JSONResponse(
@@ -480,8 +473,6 @@ class Run(BaseService):
                     tmp_pfx_path = tmp_file.name
 
                 try:
-                    self.logger.info(f"Exporting certificate to PFX: container={container}")
-
                     if hasattr(self.proxy, 'certs_tool'):
                         export_result = await self.proxy.certs_tool.export_certificate_pfx(
                             container_name=container,
@@ -500,19 +491,13 @@ class Run(BaseService):
                             pfx_data = f.read()
                             pfx_base64 = base64.b64encode(pfx_data).decode('utf-8')
 
-                        self.logger.info(f"Exported PFX, size: {len(pfx_data)} bytes")
-
                         # Step 3: Install on target worker
-                        self.logger.info(f"Installing certificate on worker: {target_worker}")
-
                         if hasattr(self.proxy, 'certs_tool'):
                             install_result = await self.proxy.certs_tool[target_worker].install_pfx_from_base64(
                                 pfx_base64=pfx_base64,
                                 password=password,
                                 filename=f"{cert_info.get('subject_cn', 'cert')}.pfx"
                             )
-
-                            self.logger.info(f"Install result: {install_result}")
 
                             return JSONResponse(content=install_result)
                         else:

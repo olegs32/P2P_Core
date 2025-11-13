@@ -280,9 +280,6 @@ class LegacyCertsService(BaseService):
                     else:
                         self.logger.warning(f"Skipping malformed line: {line}")
 
-            # Log all raw fields for debugging
-            self.logger.debug(f"Certificate {index} raw fields: {list(cert_info.keys())}")
-
             # Парсим Subject детально
             if 'Subject' in cert_info:
                 try:
@@ -323,8 +320,6 @@ class LegacyCertsService(BaseService):
             if cert_info:
                 sub_cn = (cert_info['Subject_CN'] if 'Subject_CN' in cert_info else "-")
                 certificates[f"{index}_{sub_cn}"] = cert_info
-                # Log final parsed info
-                self.logger.debug(f"Certificate {index}: CN={sub_cn}, Thumbprint={cert_info.get('Thumbprint', 'N/A')}")
 
         self.logger.info(f"Found {len(certificates)} certificates")
         return certificates
@@ -605,12 +600,7 @@ class LegacyCertsService(BaseService):
             delete_cmd = (f'"{self.csp_path / "certmgr.exe"}" -delete '
                           f'-thumbprint "{thumbprint}"')
 
-            self.logger.debug(f"Running command: {delete_cmd}")
-
             output = await self._run_command_async(delete_cmd)
-
-            self.logger.debug(f"Delete command output: {output}")
-
             error_code = self._extract_error_code(output)
 
             success = error_code == '0x00000000'
@@ -718,9 +708,6 @@ class LegacyCertsService(BaseService):
             # Преобразуем данные для дашборда
             certs_list = []
             for cert_id, cert_info in certificates.items():
-                # Log all available fields for this certificate
-                self.logger.info(f"Certificate {cert_id} available fields: {list(cert_info.keys())}")
-
                 # Try different possible field names for dates (including Russian)
                 valid_from = (cert_info.get("ValidFrom") or
                              cert_info.get("Not valid before") or
@@ -736,24 +723,18 @@ class LegacyCertsService(BaseService):
                            cert_info.get("Действителен до") or
                            cert_info.get("Конец действия") or "")
 
-                thumbprint = cert_info.get("Thumbprint", "")
-                serial = cert_info.get("Serial", "")
-
                 cert_data = {
                     "id": cert_id,
                     "subject": cert_info.get("Subject", "Unknown"),
                     "subject_cn": cert_info.get("Subject_CN", "Unknown"),
                     "issuer": cert_info.get("Issuer", "Unknown"),
                     "issuer_cn": cert_info.get("Issuer_CN", cert_info.get("Issuer", "Unknown")),
-                    "thumbprint": thumbprint,
+                    "thumbprint": cert_info.get("Thumbprint", ""),
                     "container": cert_info.get("Container", ""),
-                    "serial": serial,
+                    "serial": cert_info.get("Serial", ""),
                     "valid_from": valid_from,
                     "valid_to": valid_to,
                 }
-
-                # Log certificate info for debugging
-                self.logger.info(f"Certificate {cert_id}: thumbprint={thumbprint}, serial={serial}, valid_from={valid_from}, valid_to={valid_to}")
 
                 certs_list.append(cert_data)
 
