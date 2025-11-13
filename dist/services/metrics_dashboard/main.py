@@ -611,18 +611,27 @@ class Run(BaseService):
         stale_threshold = datetime.now() - timedelta(minutes=10)
         stale_workers = []
 
+        self.logger.debug(f"Cleanup check: {len(self.worker_last_seen)} workers tracked")
+
         for worker_id, last_seen in self.worker_last_seen.items():
+            age_seconds = (datetime.now() - last_seen).total_seconds()
             if last_seen < stale_threshold:
+                self.logger.warning(f"Worker '{worker_id}' is stale (last seen {age_seconds:.0f}s ago)")
                 stale_workers.append(worker_id)
+            else:
+                self.logger.debug(f"Worker '{worker_id}' is active (last seen {age_seconds:.0f}s ago)")
 
         for worker_id in stale_workers:
-            self.logger.info(f"Removing stale worker: {worker_id}")
+            self.logger.warning(f"🗑️  Removing stale worker: {worker_id}")
             self.worker_metrics.pop(worker_id, None)
             self.worker_last_seen.pop(worker_id, None)
             self.metrics_history.pop(worker_id, None)
 
         # Update active workers count
         self.stats["active_workers"] = len(self.worker_metrics)
+
+        if stale_workers:
+            self.logger.info(f"Cleanup complete: removed {len(stale_workers)} stale workers. Active workers: {self.stats['active_workers']}")
 
     async def _collect_coordinator_metrics(self):
         """Collect current coordinator metrics"""
@@ -744,7 +753,7 @@ class Run(BaseService):
         self.stats["total_updates"] += 1
         self.stats["active_workers"] = len(self.worker_metrics)
 
-        self.logger.debug(f"Received metrics from worker {worker_id}")
+        self.logger.info(f"✅ Metrics received from worker '{worker_id}' | Active workers: {len(self.worker_metrics)} | Total updates: {self.stats['total_updates']}")
 
         return {
             "status": "received",
