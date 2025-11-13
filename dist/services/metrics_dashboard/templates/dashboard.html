@@ -764,6 +764,75 @@
         </div>
     </div>
 
+    <!-- View Certificate Details Modal -->
+    <div id="viewCertModal" class="modal">
+        <div class="modal-content" style="max-width: 800px;">
+            <div class="modal-header">
+                <h2>Certificate Details</h2>
+                <span class="close-btn" onclick="closeViewModal()">&times;</span>
+            </div>
+            <div class="modal-body p-4">
+                <div class="row">
+                    <div class="col-md-6 mb-3">
+                        <strong>Node:</strong>
+                        <div id="viewCertNode" class="text-muted"></div>
+                    </div>
+                    <div class="col-md-6 mb-3">
+                        <strong>Status:</strong>
+                        <div id="viewCertStatus"></div>
+                    </div>
+                </div>
+                <hr>
+                <div class="mb-3">
+                    <strong>Subject (CN):</strong>
+                    <div id="viewCertSubjectCN" class="text-muted"></div>
+                </div>
+                <div class="mb-3">
+                    <strong>Subject (Full):</strong>
+                    <div id="viewCertSubject" style="font-family: monospace; font-size: 0.9em;" class="text-muted"></div>
+                </div>
+                <hr>
+                <div class="mb-3">
+                    <strong>Issuer (CN):</strong>
+                    <div id="viewCertIssuerCN" class="text-muted"></div>
+                </div>
+                <div class="mb-3">
+                    <strong>Issuer (Full):</strong>
+                    <div id="viewCertIssuer" style="font-family: monospace; font-size: 0.9em;" class="text-muted"></div>
+                </div>
+                <hr>
+                <div class="row">
+                    <div class="col-md-6 mb-3">
+                        <strong>Valid From:</strong>
+                        <div id="viewCertValidFrom" class="text-muted"></div>
+                    </div>
+                    <div class="col-md-6 mb-3">
+                        <strong>Valid To:</strong>
+                        <div id="viewCertValidTo" class="text-muted"></div>
+                    </div>
+                </div>
+                <hr>
+                <div class="mb-3">
+                    <strong>Serial Number:</strong>
+                    <div id="viewCertSerial" style="font-family: monospace; font-size: 0.9em;" class="text-muted"></div>
+                </div>
+                <div class="mb-3">
+                    <strong>Thumbprint (SHA1):</strong>
+                    <div id="viewCertThumbprint" style="font-family: monospace; font-size: 0.9em;" class="text-muted"></div>
+                </div>
+                <div class="mb-3">
+                    <strong>Container:</strong>
+                    <div id="viewCertContainer" style="font-family: monospace; font-size: 0.9em;" class="text-muted"></div>
+                </div>
+                <div class="mt-4 text-end">
+                    <button type="button" class="btn btn-secondary" onclick="closeViewModal()">
+                        Close
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- Bootstrap JS -->
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
 
@@ -1001,9 +1070,27 @@
             // Check if this is coordinator certificate
             const isCoordinator = cert.worker === 'coordinator';
 
+            // Check if there are workers without this certificate (by serial number)
+            let hasWorkersWithoutCert = false;
+            if (isCoordinator && cert.serial) {
+                // Get all workers that have certificates
+                const workers = Array.from(availableNodes).filter(n => n !== 'coordinator');
+
+                // Check each worker to see if they have a certificate with this serial
+                for (const worker of workers) {
+                    const workerHasCert = allCertificates.some(c =>
+                        c.worker === worker && c.serial === cert.serial
+                    );
+                    if (!workerHasCert) {
+                        hasWorkersWithoutCert = true;
+                        break;
+                    }
+                }
+            }
+
             // Build actions HTML
             let actionsHTML = `
-                <button class="btn btn-sm btn-info" onclick="viewCertificateDetails('${escapedWorker}', '${escapedId}')" title="View details">
+                <button class="btn btn-sm btn-info" onclick="viewCertificateDetails('${escapedId}')" title="View details">
                     View
                 </button>
                 <button class="btn btn-sm btn-success" onclick="downloadCer('${escapedWorker}', '${escapedId}', '${escapedSubject}')" title="Download CER">
@@ -1013,8 +1100,8 @@
                     PFX
                 </button>`;
 
-            // Add Deploy button only for coordinator certificates
-            if (isCoordinator) {
+            // Add Deploy button only for coordinator certificates that are missing on some workers
+            if (isCoordinator && hasWorkersWithoutCert) {
                 actionsHTML += `
                 <button class="btn btn-sm btn-warning" onclick="openDeployModal('${escapedId}', '${escapedSubject}')" title="Deploy to worker">
                     Deploy
@@ -1082,8 +1169,55 @@
             });
         }
 
-        function viewCertificateDetails(worker, certId) {
-            alert(`View certificate details for ${certId} on ${worker}\n\nThis feature will show full certificate details.`);
+        function viewCertificateDetails(certId) {
+            // Find certificate in global list
+            const cert = allCertificates.find(c => c.id === certId);
+
+            if (!cert) {
+                alert('Certificate not found');
+                return;
+            }
+
+            // Parse dates and calculate status
+            const now = new Date();
+            const validFrom = parseCertDate(cert.valid_from);
+            const validTo = parseCertDate(cert.valid_to);
+
+            let statusHTML = '<span class="cert-status-expiring">Unknown</span>';
+            if (validFrom && validTo && !isNaN(validFrom) && !isNaN(validTo)) {
+                if (now > validTo) {
+                    statusHTML = '<span class="cert-status-expired">Expired</span>';
+                } else if (now < validFrom) {
+                    statusHTML = '<span class="cert-status-expiring">Not Yet Valid</span>';
+                } else {
+                    const daysUntilExpiry = Math.floor((validTo - now) / (1000 * 60 * 60 * 24));
+                    if (daysUntilExpiry <= 30) {
+                        statusHTML = `<span class="cert-status-expiring">Expiring in ${daysUntilExpiry} days</span>`;
+                    } else {
+                        statusHTML = '<span class="cert-status-valid">Valid</span>';
+                    }
+                }
+            }
+
+            // Populate modal
+            document.getElementById('viewCertNode').textContent = cert.worker || 'Unknown';
+            document.getElementById('viewCertStatus').innerHTML = statusHTML;
+            document.getElementById('viewCertSubjectCN').textContent = cert.subject_cn || 'N/A';
+            document.getElementById('viewCertSubject').textContent = cert.subject || 'N/A';
+            document.getElementById('viewCertIssuerCN').textContent = cert.issuer_cn || 'N/A';
+            document.getElementById('viewCertIssuer').textContent = cert.issuer || 'N/A';
+            document.getElementById('viewCertValidFrom').textContent = formatDate(cert.valid_from);
+            document.getElementById('viewCertValidTo').textContent = formatDate(cert.valid_to);
+            document.getElementById('viewCertSerial').textContent = cert.serial || 'N/A';
+            document.getElementById('viewCertThumbprint').textContent = cert.thumbprint || 'N/A';
+            document.getElementById('viewCertContainer').textContent = cert.container || 'N/A';
+
+            // Show modal
+            document.getElementById('viewCertModal').style.display = 'flex';
+        }
+
+        function closeViewModal() {
+            document.getElementById('viewCertModal').style.display = 'none';
         }
 
         async function downloadCer(worker, certId, certName) {
@@ -1241,11 +1375,39 @@
             // Update modal
             document.getElementById('deployCertName').textContent = certName;
             document.getElementById('deployPassword').value = '';
-            document.getElementById('deployTargetWorker').value = '';
 
             const statusDiv = document.getElementById('deployStatus');
             statusDiv.style.display = 'none';
             statusDiv.innerHTML = '';
+
+            // Populate worker selector with only workers that DON'T have this certificate
+            const deployWorkerSelect = document.getElementById('deployTargetWorker');
+            deployWorkerSelect.innerHTML = '<option value="">Select worker...</option>';
+
+            // Get all workers (exclude coordinator)
+            const allWorkers = Array.from(availableNodes).filter(n => n !== 'coordinator');
+
+            // Filter to show only workers without this certificate (by serial number)
+            const workersWithoutCert = allWorkers.filter(worker => {
+                // Check if this worker has a certificate with the same serial
+                const hasCert = allCertificates.some(c =>
+                    c.worker === worker && c.serial === deployingCert.serial
+                );
+                return !hasCert;  // Include worker if they DON'T have this cert
+            });
+
+            if (workersWithoutCert.length === 0) {
+                alert('All workers already have this certificate');
+                return;
+            }
+
+            // Add workers without cert to dropdown
+            workersWithoutCert.sort().forEach(worker => {
+                const option = document.createElement('option');
+                option.value = worker;
+                option.textContent = worker.charAt(0).toUpperCase() + worker.slice(1);
+                deployWorkerSelect.appendChild(option);
+            });
 
             // Show modal
             document.getElementById('deployCertModal').style.display = 'flex';
