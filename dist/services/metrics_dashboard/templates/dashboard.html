@@ -649,6 +649,22 @@
                     </div>
 
                     <div id="certificatesContent" style="display: none;">
+                        <!-- Filter and stats -->
+                        <div class="row mb-3">
+                            <div class="col-md-6">
+                                <label for="nodeFilter" class="form-label">Filter by Node:</label>
+                                <select id="nodeFilter" class="form-control">
+                                    <option value="all">All Nodes</option>
+                                    <option value="coordinator">Coordinator</option>
+                                </select>
+                            </div>
+                            <div class="col-md-6 text-end">
+                                <div class="mt-4">
+                                    <strong>Showing:</strong> <span id="certCount">0</span> certificate(s)
+                                </div>
+                            </div>
+                        </div>
+
                         <div class="certificates-table">
                             <table>
                                 <thead>
@@ -706,6 +722,44 @@
             </div>
             <div id="allServicesModalBody">
                 <!-- Services will be inserted here -->
+            </div>
+        </div>
+    </div>
+
+    <!-- Deploy Certificate Modal -->
+    <div id="deployCertModal" class="modal">
+        <div class="modal-content" style="max-width: 600px;">
+            <div class="modal-header">
+                <h2>Deploy Certificate to Worker</h2>
+                <span class="close-btn" onclick="closeDeployModal()">&times;</span>
+            </div>
+            <div class="modal-body p-4">
+                <div class="mb-3">
+                    <strong>Certificate:</strong> <span id="deployCertName"></span>
+                </div>
+                <form id="deployCertForm">
+                    <div class="mb-3">
+                        <label for="deployTargetWorker" class="form-label">Target Worker:</label>
+                        <select id="deployTargetWorker" class="form-control" required>
+                            <option value="">Select worker...</option>
+                        </select>
+                    </div>
+                    <div class="mb-3">
+                        <label for="deployPassword" class="form-label">PFX Export Password:</label>
+                        <input type="password" id="deployPassword" class="form-control"
+                               placeholder="Enter password to protect PFX during transfer" required>
+                        <small class="text-muted">This password will be used to encrypt the certificate for transfer and installation</small>
+                    </div>
+                    <div class="mt-4">
+                        <button type="submit" class="btn btn-primary">
+                            <i class="bi bi-send"></i> Deploy Certificate
+                        </button>
+                        <button type="button" class="btn btn-secondary ms-2" onclick="closeDeployModal()">
+                            Cancel
+                        </button>
+                    </div>
+                    <div id="deployStatus" class="mt-3" style="display: none;"></div>
+                </form>
             </div>
         </div>
     </div>
@@ -769,7 +823,29 @@
                     loadCertificates();
                 });
             }
+
+            // Node filter handler
+            const nodeFilter = document.getElementById('nodeFilter');
+            if (nodeFilter) {
+                nodeFilter.addEventListener('change', () => {
+                    filterCertificates();
+                });
+            }
+
+            // Deploy form handler
+            const deployForm = document.getElementById('deployCertForm');
+            if (deployForm) {
+                deployForm.addEventListener('submit', async (e) => {
+                    e.preventDefault();
+                    await deployCertificate();
+                });
+            }
         });
+
+        // Global variables for certificates
+        let allCertificates = [];
+        let availableNodes = new Set();
+        let deployingCert = null;
 
         // Certificates functionality
         async function loadCertificates() {
@@ -791,30 +867,51 @@
                     throw new Error(data.error || 'Failed to load certificates');
                 }
 
+                // Store certificates globally
+                allCertificates = data.certificates || [];
+
+                // Collect available nodes
+                availableNodes.clear();
+                allCertificates.forEach(cert => {
+                    if (cert.worker) {
+                        availableNodes.add(cert.worker);
+                    }
+                });
+
+                // Update node filter dropdown
+                const nodeFilter = document.getElementById('nodeFilter');
+                const currentFilter = nodeFilter.value;
+
+                // Clear and rebuild filter options
+                nodeFilter.innerHTML = '<option value="all">All Nodes</option>';
+                Array.from(availableNodes).sort().forEach(node => {
+                    const option = document.createElement('option');
+                    option.value = node;
+                    option.textContent = node.charAt(0).toUpperCase() + node.slice(1);
+                    nodeFilter.appendChild(option);
+                });
+
+                // Restore previous selection if still valid
+                if (currentFilter && (currentFilter === 'all' || availableNodes.has(currentFilter))) {
+                    nodeFilter.value = currentFilter;
+                }
+
+                // Update worker selector in deploy modal
+                const deployWorkerSelect = document.getElementById('deployTargetWorker');
+                deployWorkerSelect.innerHTML = '<option value="">Select worker...</option>';
+                Array.from(availableNodes).filter(n => n !== 'coordinator').sort().forEach(node => {
+                    const option = document.createElement('option');
+                    option.value = node;
+                    option.textContent = node.charAt(0).toUpperCase() + node.slice(1);
+                    deployWorkerSelect.appendChild(option);
+                });
+
                 // Hide loading, show content
                 loadingDiv.style.display = 'none';
                 contentDiv.style.display = 'block';
 
-                // Clear existing rows
-                tableBody.innerHTML = '';
-
-                // Check if we have certificate data
-                if (!data.certificates || data.certificates.length === 0) {
-                    tableBody.innerHTML = `
-                        <tr>
-                            <td colspan="7" class="text-center text-muted p-4">
-                                No certificates found in the cluster
-                            </td>
-                        </tr>
-                    `;
-                    return;
-                }
-
-                // Populate table with certificates
-                data.certificates.forEach(cert => {
-                    const row = createCertificateRow(cert);
-                    tableBody.appendChild(row);
-                });
+                // Apply filter
+                filterCertificates();
 
             } catch (error) {
                 console.error('Failed to load certificates:', error);
@@ -822,6 +919,42 @@
                 errorDiv.style.display = 'block';
                 document.getElementById('certificatesErrorMessage').textContent = error.message;
             }
+        }
+
+        function filterCertificates() {
+            const nodeFilter = document.getElementById('nodeFilter');
+            const filterValue = nodeFilter.value;
+            const tableBody = document.getElementById('certificatesTableBody');
+            const certCount = document.getElementById('certCount');
+
+            // Clear table
+            tableBody.innerHTML = '';
+
+            // Filter certificates
+            const filtered = filterValue === 'all'
+                ? allCertificates
+                : allCertificates.filter(cert => cert.worker === filterValue);
+
+            // Update count
+            certCount.textContent = filtered.length;
+
+            // Check if we have certificates
+            if (filtered.length === 0) {
+                tableBody.innerHTML = `
+                    <tr>
+                        <td colspan="7" class="text-center text-muted p-4">
+                            No certificates found
+                        </td>
+                    </tr>
+                `;
+                return;
+            }
+
+            // Populate table
+            filtered.forEach(cert => {
+                const row = createCertificateRow(cert);
+                tableBody.appendChild(row);
+            });
         }
 
         function createCertificateRow(cert) {
@@ -865,6 +998,34 @@
             const escapedId = (cert.id || '').replace(/'/g, "\\'");
             const escapedSubject = (cert.subject_cn || cert.subject || 'cert').replace(/'/g, "\\'");
 
+            // Check if this is coordinator certificate
+            const isCoordinator = cert.worker === 'coordinator';
+
+            // Build actions HTML
+            let actionsHTML = `
+                <button class="btn btn-sm btn-info" onclick="viewCertificateDetails('${escapedWorker}', '${escapedId}')" title="View details">
+                    View
+                </button>
+                <button class="btn btn-sm btn-success" onclick="downloadCer('${escapedWorker}', '${escapedId}', '${escapedSubject}')" title="Download CER">
+                    CER
+                </button>
+                <button class="btn btn-sm btn-primary" onclick="downloadPfx('${escapedWorker}', '${escapedId}', '${escapedSubject}')" title="Download PFX">
+                    PFX
+                </button>`;
+
+            // Add Deploy button only for coordinator certificates
+            if (isCoordinator) {
+                actionsHTML += `
+                <button class="btn btn-sm btn-warning" onclick="openDeployModal('${escapedId}', '${escapedSubject}')" title="Deploy to worker">
+                    Deploy
+                </button>`;
+            }
+
+            actionsHTML += `
+                <button class="btn btn-sm btn-danger" onclick="deleteCertificate('${escapedWorker}', '${escapedId}', '${escapedSubject}')" title="Delete certificate">
+                    Del
+                </button>`;
+
             row.innerHTML = `
                 <td>${cert.worker || 'Unknown'}</td>
                 <td><code style="font-size: 0.85em;">${cert.subject_cn || cert.subject || 'N/A'}</code></td>
@@ -874,18 +1035,7 @@
                 <td><span class="${statusClass}">${statusText}</span></td>
                 <td>
                     <div class="cert-actions">
-                        <button class="btn btn-sm btn-info" onclick="viewCertificateDetails('${escapedWorker}', '${escapedId}')" title="View details">
-                            View
-                        </button>
-                        <button class="btn btn-sm btn-success" onclick="downloadCer('${escapedWorker}', '${escapedId}', '${escapedSubject}')" title="Download CER">
-                            CER
-                        </button>
-                        <button class="btn btn-sm btn-primary" onclick="downloadPfx('${escapedWorker}', '${escapedId}', '${escapedSubject}')" title="Download PFX">
-                            PFX
-                        </button>
-                        <button class="btn btn-sm btn-danger" onclick="deleteCertificate('${escapedWorker}', '${escapedId}', '${escapedSubject}')" title="Delete certificate">
-                            Del
-                        </button>
+                        ${actionsHTML}
                     </div>
                 </td>
             `;
@@ -1076,6 +1226,86 @@
                 reader.onerror = reject;
                 reader.readAsDataURL(file);
             });
+        }
+
+        // Deploy certificate functions
+        function openDeployModal(certId, certName) {
+            // Find certificate in global list
+            deployingCert = allCertificates.find(c => c.id === certId && c.worker === 'coordinator');
+
+            if (!deployingCert) {
+                alert('Certificate not found');
+                return;
+            }
+
+            // Update modal
+            document.getElementById('deployCertName').textContent = certName;
+            document.getElementById('deployPassword').value = '';
+            document.getElementById('deployTargetWorker').value = '';
+
+            const statusDiv = document.getElementById('deployStatus');
+            statusDiv.style.display = 'none';
+            statusDiv.innerHTML = '';
+
+            // Show modal
+            document.getElementById('deployCertModal').style.display = 'flex';
+        }
+
+        function closeDeployModal() {
+            document.getElementById('deployCertModal').style.display = 'none';
+            deployingCert = null;
+        }
+
+        async function deployCertificate() {
+            const targetWorker = document.getElementById('deployTargetWorker').value;
+            const password = document.getElementById('deployPassword').value;
+            const statusDiv = document.getElementById('deployStatus');
+
+            if (!targetWorker || !password) {
+                statusDiv.innerHTML = '<div class="alert alert-warning">Please fill all fields</div>';
+                statusDiv.style.display = 'block';
+                return;
+            }
+
+            if (!deployingCert) {
+                statusDiv.innerHTML = '<div class="alert alert-danger">Certificate not found</div>';
+                statusDiv.style.display = 'block';
+                return;
+            }
+
+            // Show loading
+            statusDiv.innerHTML = '<div class="alert alert-info">Deploying certificate...</div>';
+            statusDiv.style.display = 'block';
+
+            try {
+                // Call deploy API endpoint
+                const response = await fetch('/api/certificates/deploy', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        cert_id: deployingCert.id,
+                        source_worker: 'coordinator',
+                        target_worker: targetWorker,
+                        password: password
+                    })
+                });
+
+                const result = await response.json();
+
+                if (result.success) {
+                    statusDiv.innerHTML = '<div class="alert alert-success">Certificate deployed successfully!</div>';
+                    setTimeout(() => {
+                        closeDeployModal();
+                        loadCertificates(); // Reload to show new certificate on worker
+                    }, 2000);
+                } else {
+                    statusDiv.innerHTML = `<div class="alert alert-danger">Failed to deploy: ${result.error || 'Unknown error'}</div>`;
+                }
+            } catch (error) {
+                statusDiv.innerHTML = `<div class="alert alert-danger">Error: ${error.message}</div>`;
+            }
         }
 
         // Charts storage

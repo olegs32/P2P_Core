@@ -423,6 +423,125 @@ class Run(BaseService):
                     content={"success": False, "error": str(e)}
                 )
 
+        @app.post("/api/certificates/deploy")
+        async def deploy_certificate(request: Request):
+            """Deploy certificate from coordinator to worker"""
+            import tempfile
+            import base64
+
+            try:
+                data = await request.json()
+                cert_id = data.get('cert_id')
+                source_worker = data.get('source_worker')
+                target_worker = data.get('target_worker')
+                password = data.get('password')
+
+                if not cert_id or not source_worker or not target_worker or not password:
+                    return JSONResponse(
+                        status_code=400,
+                        content={"success": False, "error": "Missing required fields"}
+                    )
+
+                if source_worker != 'coordinator':
+                    return JSONResponse(
+                        status_code=400,
+                        content={"success": False, "error": "Can only deploy from coordinator"}
+                    )
+
+                self.logger.info(f"Deploying certificate {cert_id} from {source_worker} to {target_worker}")
+
+                # Get certificate info from coordinator
+                certificates_data = await self.get_service_data(service_type="certificates")
+                cert_info = None
+
+                for worker_id, services in certificates_data.get("service_data", {}).items():
+                    if worker_id == source_worker:
+                        for service_name, service_info in services.items():
+                            for cert in service_info.get("certificates", []):
+                                if cert.get("id") == cert_id:
+                                    cert_info = cert
+                                    break
+
+                if not cert_info:
+                    return JSONResponse(
+                        status_code=404,
+                        content={"success": False, "error": "Certificate not found on coordinator"}
+                    )
+
+                container = cert_info.get("container")
+                if not container:
+                    return JSONResponse(
+                        status_code=400,
+                        content={"success": False, "error": "Certificate container not found"}
+                    )
+
+                # Step 1: Export PFX from coordinator
+                with tempfile.NamedTemporaryFile(mode='wb', suffix='.pfx', delete=False) as tmp_file:
+                    tmp_pfx_path = tmp_file.name
+
+                try:
+                    self.logger.info(f"Exporting certificate to PFX: container={container}")
+
+                    if hasattr(self.proxy, 'certs_tool'):
+                        export_result = await self.proxy.certs_tool.export_certificate_pfx(
+                            container_name=container,
+                            output_path=tmp_pfx_path,
+                            password=password
+                        )
+
+                        if not export_result:
+                            return JSONResponse(
+                                status_code=500,
+                                content={"success": False, "error": "Failed to export certificate from coordinator"}
+                            )
+
+                        # Step 2: Read PFX file and encode to base64
+                        with open(tmp_pfx_path, 'rb') as f:
+                            pfx_data = f.read()
+                            pfx_base64 = base64.b64encode(pfx_data).decode('utf-8')
+
+                        self.logger.info(f"Exported PFX, size: {len(pfx_data)} bytes")
+
+                        # Step 3: Install on target worker
+                        self.logger.info(f"Installing certificate on worker: {target_worker}")
+
+                        if hasattr(self.proxy, 'certs_tool'):
+                            install_result = await self.proxy.certs_tool[target_worker].install_pfx_from_base64(
+                                pfx_base64=pfx_base64,
+                                password=password,
+                                filename=f"{cert_info.get('subject_cn', 'cert')}.pfx"
+                            )
+
+                            self.logger.info(f"Install result: {install_result}")
+
+                            return JSONResponse(content=install_result)
+                        else:
+                            return JSONResponse(
+                                status_code=500,
+                                content={"success": False, "error": "certs_tool not available on target worker"}
+                            )
+
+                    else:
+                        return JSONResponse(
+                            status_code=500,
+                            content={"success": False, "error": "certs_tool not available on coordinator"}
+                        )
+
+                finally:
+                    # Clean up temporary file
+                    try:
+                        import os
+                        os.unlink(tmp_pfx_path)
+                    except Exception as e:
+                        self.logger.warning(f"Failed to delete temporary file {tmp_pfx_path}: {e}")
+
+            except Exception as e:
+                self.logger.error(f"Error deploying certificate: {e}", exc_info=True)
+                return JSONResponse(
+                    status_code=500,
+                    content={"success": False, "error": str(e)}
+                )
+
         self.logger.info("Dashboard HTTP endpoints registered")
 
     def _get_fastapi_app(self):
