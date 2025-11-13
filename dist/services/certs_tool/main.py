@@ -548,6 +548,50 @@ class LegacyCertsService(BaseService):
 
         return None
 
+    @service_method(description="Get dashboard data for certificates", public=True)
+    async def get_dashboard_data(self) -> Dict[str, Any]:
+        """
+        Возвращает данные о сертификатах для отображения в дашборде
+
+        Returns:
+            Dict: Данные о сертификатах в формате для дашборда
+        """
+        try:
+            certificates = await self.list_certificates()
+
+            # Преобразуем данные для дашборда
+            certs_list = []
+            for cert_id, cert_info in certificates.items():
+                cert_data = {
+                    "id": cert_id,
+                    "subject": cert_info.get("Subject", "Unknown"),
+                    "subject_cn": cert_info.get("Subject_CN", "Unknown"),
+                    "issuer": cert_info.get("Issuer", "Unknown"),
+                    "thumbprint": cert_info.get("Thumbprint", ""),
+                    "container": cert_info.get("Container", ""),
+                    "serial": cert_info.get("Serial", ""),
+                    "valid_from": cert_info.get("ValidFrom", ""),
+                    "valid_to": cert_info.get("ValidTo", ""),
+                }
+                certs_list.append(cert_data)
+
+            return {
+                "service_name": "Управление сертификатами",
+                "service_type": "certificates",
+                "total_certificates": len(certs_list),
+                "certificates": certs_list
+            }
+
+        except Exception as e:
+            self.logger.error(f"Failed to get dashboard data: {e}")
+            return {
+                "service_name": "Управление сертификатами",
+                "service_type": "certificates",
+                "total_certificates": 0,
+                "certificates": [],
+                "error": str(e)
+            }
+
 
 # Точка входа для загрузки сервиса
 class Run(LegacyCertsService):

@@ -184,8 +184,11 @@ class Run(BaseService):
             # Collect service states
             services = await self._collect_service_states()
 
+            # Collect service data (custom data from services)
+            service_data = await self._collect_service_data()
+
             # Send to coordinator
-            result = await self._send_to_coordinator(metrics, services)
+            result = await self._send_to_coordinator(metrics, services, service_data)
 
             # Update stats
             self.stats["successful_reports"] += 1
@@ -263,7 +266,42 @@ class Run(BaseService):
 
         return services
 
-    async def _send_to_coordinator(self, metrics: Dict[str, Any], services: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    async def _collect_service_data(self) -> Dict[str, Any]:
+        """
+        Collect custom data from services that provide dashboard data
+        Services can implement get_dashboard_data() method to expose data
+        """
+        service_data = {}
+
+        try:
+            if self.proxy:
+                # List of services that may provide dashboard data
+                # We'll try to call get_dashboard_data on each service
+                services_to_check = ['legacy_certs', 'certs_tool']
+
+                for service_name in services_to_check:
+                    try:
+                        # Check if service exists and has get_dashboard_data method
+                        if hasattr(self.proxy, service_name):
+                            service_proxy = getattr(self.proxy, service_name)
+                            if hasattr(service_proxy, 'get_dashboard_data'):
+                                data = await service_proxy.get_dashboard_data()
+                                if data:
+                                    service_data[service_name] = data
+                                    self.logger.debug(f"Collected dashboard data from {service_name}")
+                    except AttributeError:
+                        # Service doesn't have get_dashboard_data method - skip
+                        pass
+                    except Exception as e:
+                        self.logger.debug(f"Could not get dashboard data from {service_name}: {e}")
+
+        except Exception as e:
+            self.logger.error(f"Failed to collect service data: {e}")
+
+        return service_data
+
+    async def _send_to_coordinator(self, metrics: Dict[str, Any], services: Dict[str, Any],
+                                   service_data: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
         """Send metrics to coordinator using proper P2P RPC proxy"""
         if not self.proxy:
             raise Exception("Proxy not available")
@@ -277,7 +315,8 @@ class Run(BaseService):
             result = await self.proxy.metrics_dashboard.coordinator.report_metrics(
                 worker_id=self.worker_id,
                 metrics=metrics,
-                services=services
+                services=services,
+                service_data=service_data or {}
             )
 
             return result

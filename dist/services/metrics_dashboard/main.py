@@ -41,6 +41,9 @@ class Run(BaseService):
         # Service states
         self.service_states: Dict[str, Dict[str, Any]] = {}
 
+        # Service data (custom data from services like certificates, configs, etc.)
+        self.service_data: Dict[str, Dict[str, Any]] = {}
+
         # Background tasks
         self.cleanup_task = None
         self.coordinator_metrics_task = None
@@ -146,6 +149,11 @@ class Run(BaseService):
         async def get_service_metrics(node_id: str, service_name: str):
             """Get detailed metrics for a specific service on a node"""
             return await self.get_service_metrics(node_id, service_name)
+
+        @app.get("/api/dashboard/service-data")
+        async def get_service_data(service_type: Optional[str] = None):
+            """Get custom service data from all workers"""
+            return await self.get_service_data(service_type)
 
         self.logger.info("Dashboard HTTP endpoints registered")
 
@@ -319,7 +327,8 @@ class Run(BaseService):
         self,
         worker_id: str,
         metrics: Dict[str, Any],
-        services: Optional[Dict[str, Any]] = None
+        services: Optional[Dict[str, Any]] = None,
+        service_data: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """
         Workers call this method to report their metrics
@@ -328,6 +337,7 @@ class Run(BaseService):
             worker_id: Unique worker identifier
             metrics: System metrics (CPU, memory, etc)
             services: Service states and metrics
+            service_data: Custom data from services (certificates, configs, etc.)
         """
         timestamp = datetime.now()
 
@@ -337,6 +347,11 @@ class Run(BaseService):
             "services": services or {},
             "timestamp": timestamp.isoformat()
         }
+
+        # Store service data separately
+        if service_data:
+            self.service_data[worker_id] = service_data
+            self.logger.debug(f"Received service data from worker {worker_id}: {list(service_data.keys())}")
 
         # Update last seen
         self.worker_last_seen[worker_id] = timestamp
@@ -644,3 +659,33 @@ class Run(BaseService):
                 "node_id": node_id,
                 "service_name": service_name
             }
+
+    @service_method(description="Get service data from all workers", public=True)
+    async def get_service_data(self, service_type: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Get custom service data from all workers
+
+        Args:
+            service_type: Optional filter by service type (e.g., 'certificates')
+
+        Returns:
+            Dict with service data from all workers
+        """
+        result = {}
+
+        # Collect service data from all workers
+        for worker_id, worker_service_data in self.service_data.items():
+            result[worker_id] = {}
+
+            for service_name, data in worker_service_data.items():
+                # Filter by service type if specified
+                if service_type:
+                    if data.get("service_type") == service_type:
+                        result[worker_id][service_name] = data
+                else:
+                    result[worker_id][service_name] = data
+
+        return {
+            "timestamp": datetime.now().isoformat(),
+            "service_data": result
+        }
