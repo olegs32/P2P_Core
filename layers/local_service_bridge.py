@@ -204,7 +204,7 @@ class MethodCaller:
         rpc_payload = {
             "method": method_path,
             "params": kwargs,
-            "id": 1
+            "id": "1"  # RPC endpoint требует string
         }
 
         # Делаем HTTP POST запрос
