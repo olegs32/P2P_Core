@@ -12,9 +12,11 @@ PyInstaller build script for P2P Core application
     python scripts/build_p2p.py [--clean] [--onedir] [--debug]
 
 Опции:
-    --clean     Удалить build/ и dist/ перед сборкой
+    --clean     Удалить build/ и dist/p2p.exe перед сборкой (dist/services сохраняется!)
     --onedir    Создать папку с файлами вместо одного .exe (быстрее)
     --debug     Включить отладочный вывод в консоли
+
+ВАЖНО: dist/ содержит services/ для тестирования собранного exe и НЕ удаляется!
 """
 
 import sys
@@ -31,29 +33,33 @@ SERVICES_DIR = PROJECT_ROOT / "dist" / "services"
 
 
 def clean_build():
-    """Удаляет директории build и dist"""
+    """Удаляет build/ и собранные exe файлы, но НЕ трогает dist/services/"""
     print("🧹 Очистка предыдущих сборок...")
 
+    # Удаляем build/
     if BUILD_DIR.exists():
         shutil.rmtree(BUILD_DIR)
         print(f"   Удалено: {BUILD_DIR}")
 
-    if DIST_DIR.exists():
-        # Сохраняем services директорию
-        services_backup = SERVICES_DIR
-        if services_backup.exists():
-            temp_services = PROJECT_ROOT / "services_backup"
-            shutil.move(str(services_backup), str(temp_services))
-            print(f"   Сохранены сервисы во временной папке")
+    # Удаляем dist/p2p.exe (onefile режим)
+    exe_file = DIST_DIR / "p2p.exe"
+    if exe_file.exists():
+        exe_file.unlink()
+        print(f"   Удалено: {exe_file}")
 
-        shutil.rmtree(DIST_DIR)
-        print(f"   Удалено: {DIST_DIR}")
+    # Удаляем dist/p2p/ (onedir режим)
+    onedir_folder = DIST_DIR / "p2p"
+    if onedir_folder.exists():
+        shutil.rmtree(onedir_folder)
+        print(f"   Удалено: {onedir_folder}")
 
-        # Восстанавливаем services
-        if temp_services.exists():
-            DIST_DIR.mkdir()
-            shutil.move(str(temp_services), str(services_backup))
-            print(f"   Восстановлены сервисы")
+    # dist/services/ и dist/.env сохраняются для тестирования!
+    if SERVICES_DIR.exists():
+        print(f"   ✅ Сохранено: {SERVICES_DIR} (для тестирования)")
+
+    dist_env = DIST_DIR / ".env"
+    if dist_env.exists():
+        print(f"   ✅ Сохранено: {dist_env}")
 
 
 def collect_services():
@@ -275,9 +281,9 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
     parser.add_argument('--clean', action='store_true',
-                       help='Удалить build/ и dist/ перед сборкой')
+                       help='Удалить build/ и dist/p2p.exe (dist/services сохраняется!)')
     parser.add_argument('--onedir', action='store_true',
-                       help='Создать папку с файлами вместо одного .exe')
+                       help='Создать папку с файлами вместо одного .exe (по умолчанию --onefile)')
     parser.add_argument('--debug', action='store_true',
                        help='Включить отладочный вывод')
 
