@@ -310,12 +310,14 @@ class LegacyCertsService(BaseService):
                     self.logger.warning(f"Error parsing Issuer: {e}")
 
             # Normalize field names - try different variants
-            # Thumbprint может называться SHA1, Hash, Thumbprint, Отпечаток
-            if 'SHA1' in cert_info and 'Thumbprint' not in cert_info:
+            # Thumbprint может называться SHA1 Hash, SHA1, Hash, Thumbprint, Отпечаток
+            if 'SHA1 Hash' in cert_info and 'Thumbprint' not in cert_info:
+                cert_info['Thumbprint'] = cert_info['SHA1 Hash']
+            elif 'SHA1' in cert_info and 'Thumbprint' not in cert_info:
                 cert_info['Thumbprint'] = cert_info['SHA1']
-            if 'Hash' in cert_info and 'Thumbprint' not in cert_info:
+            elif 'Hash' in cert_info and 'Thumbprint' not in cert_info:
                 cert_info['Thumbprint'] = cert_info['Hash']
-            if 'Отпечаток' in cert_info and 'Thumbprint' not in cert_info:
+            elif 'Отпечаток' in cert_info and 'Thumbprint' not in cert_info:
                 cert_info['Thumbprint'] = cert_info['Отпечаток']
 
             if cert_info:
