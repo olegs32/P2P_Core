@@ -293,6 +293,19 @@ class LegacyCertsService(BaseService):
                 except Exception as e:
                     self.logger.warning(f"Error parsing Subject: {e}")
 
+            # Парсим Issuer детально
+            if 'Issuer' in cert_info:
+                try:
+                    issuer_parts = cert_info['Issuer'].split(', ')
+                    for part in issuer_parts:
+                        if '=' in part:
+                            key_value = part.split('=', 1)
+                            if len(key_value) == 2:
+                                key, value = key_value
+                                cert_info[f"Issuer_{key.strip()}"] = value.strip()
+                except Exception as e:
+                    self.logger.warning(f"Error parsing Issuer: {e}")
+
             if cert_info:
                 sub_cn = (cert_info['Subject_CN'] if 'Subject_CN' in cert_info else "-")
                 certificates[f"{index}_{sub_cn}"] = cert_info
@@ -564,12 +577,24 @@ class LegacyCertsService(BaseService):
             Dict: Результат операции удаления
         """
         try:
-            self.logger.info(f"Deleting certificate: {thumbprint}")
+            if not thumbprint or thumbprint.strip() == "":
+                self.logger.error("Thumbprint is empty or invalid")
+                return {
+                    "success": False,
+                    "error": "Thumbprint is required"
+                }
+
+            self.logger.info(f"Deleting certificate with thumbprint: {thumbprint}")
 
             delete_cmd = (f'"{self.csp_path / "certmgr.exe"}" -delete '
                           f'-thumbprint "{thumbprint}"')
 
+            self.logger.debug(f"Running command: {delete_cmd}")
+
             output = await self._run_command_async(delete_cmd)
+
+            self.logger.debug(f"Delete command output: {output}")
+
             error_code = self._extract_error_code(output)
 
             success = error_code == '0x00000000'
@@ -581,15 +606,16 @@ class LegacyCertsService(BaseService):
                     "message": "Certificate deleted successfully"
                 }
             else:
-                self.logger.error(f"Failed to delete certificate: {error_code}")
+                self.logger.error(f"Failed to delete certificate: {error_code}, output: {output}")
                 return {
                     "success": False,
                     "error": f"Failed to delete certificate: {error_code}",
-                    "error_code": error_code
+                    "error_code": error_code,
+                    "output": output
                 }
 
         except Exception as e:
-            self.logger.error(f"Error deleting certificate: {e}")
+            self.logger.error(f"Error deleting certificate: {e}", exc_info=True)
             return {
                 "success": False,
                 "error": str(e)
@@ -676,17 +702,33 @@ class LegacyCertsService(BaseService):
             # Преобразуем данные для дашборда
             certs_list = []
             for cert_id, cert_info in certificates.items():
+                # Try different possible field names for dates
+                valid_from = (cert_info.get("ValidFrom") or
+                             cert_info.get("Not valid before") or
+                             cert_info.get("NotValidBefore") or
+                             cert_info.get("Valid from") or "")
+
+                valid_to = (cert_info.get("ValidTo") or
+                           cert_info.get("Not valid after") or
+                           cert_info.get("NotValidAfter") or
+                           cert_info.get("Valid to") or "")
+
                 cert_data = {
                     "id": cert_id,
                     "subject": cert_info.get("Subject", "Unknown"),
                     "subject_cn": cert_info.get("Subject_CN", "Unknown"),
                     "issuer": cert_info.get("Issuer", "Unknown"),
+                    "issuer_cn": cert_info.get("Issuer_CN", cert_info.get("Issuer", "Unknown")),
                     "thumbprint": cert_info.get("Thumbprint", ""),
                     "container": cert_info.get("Container", ""),
                     "serial": cert_info.get("Serial", ""),
-                    "valid_from": cert_info.get("ValidFrom", ""),
-                    "valid_to": cert_info.get("ValidTo", ""),
+                    "valid_from": valid_from,
+                    "valid_to": valid_to,
                 }
+
+                # Log certificate info for debugging
+                self.logger.debug(f"Certificate {cert_id}: valid_from={valid_from}, valid_to={valid_to}")
+
                 certs_list.append(cert_data)
 
             return {

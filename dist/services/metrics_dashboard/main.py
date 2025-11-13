@@ -374,23 +374,36 @@ class Run(BaseService):
                                     break
 
                 if not cert_info:
+                    self.logger.error(f"Certificate not found: worker={worker}, cert_id={cert_id}")
                     return JSONResponse(
                         status_code=404,
                         content={"success": False, "error": "Certificate not found"}
+                    )
+
+                thumbprint = cert_info.get("thumbprint", "")
+                self.logger.info(f"Deleting certificate: worker={worker}, cert_id={cert_id}, thumbprint={thumbprint}")
+
+                if not thumbprint:
+                    self.logger.error(f"Certificate thumbprint is empty: {cert_info}")
+                    return JSONResponse(
+                        status_code=400,
+                        content={"success": False, "error": "Certificate thumbprint is empty"}
                     )
 
                 # Delete certificate
                 if worker == "coordinator":
                     if hasattr(self.proxy, 'certs_tool'):
                         result = await self.proxy.certs_tool.delete_certificate(
-                            thumbprint=cert_info.get("thumbprint")
+                            thumbprint=thumbprint
                         )
+                        self.logger.info(f"Delete result: {result}")
                         return JSONResponse(content=result)
                 else:
                     if hasattr(self.proxy, 'certs_tool'):
                         result = await self.proxy.certs_tool[worker].delete_certificate(
-                            thumbprint=cert_info.get("thumbprint")
+                            thumbprint=thumbprint
                         )
+                        self.logger.info(f"Delete result: {result}")
                         return JSONResponse(content=result)
 
                 return JSONResponse(

@@ -868,7 +868,7 @@
             row.innerHTML = `
                 <td>${cert.worker || 'Unknown'}</td>
                 <td><code style="font-size: 0.85em;">${cert.subject_cn || cert.subject || 'N/A'}</code></td>
-                <td><code style="font-size: 0.85em;">${cert.issuer || 'N/A'}</code></td>
+                <td><code style="font-size: 0.85em;">${cert.issuer_cn || cert.issuer || 'N/A'}</code></td>
                 <td>${formatDate(cert.valid_from)}</td>
                 <td>${formatDate(cert.valid_to)}</td>
                 <td><span class="${statusClass}">${statusText}</span></td>
