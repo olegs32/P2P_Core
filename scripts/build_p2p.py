@@ -129,8 +129,12 @@ def collect_hidden_imports():
 
         # FastAPI dependencies
         'fastapi.responses',
+        'fastapi.staticfiles',
         'starlette.responses',
         'starlette.templating',
+        'starlette.staticfiles',
+        'jinja2',
+        'jinja2.ext',
 
         # Layers модули
         'layers',
