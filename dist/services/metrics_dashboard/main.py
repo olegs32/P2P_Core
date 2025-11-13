@@ -923,10 +923,19 @@ class Run(BaseService):
             }
 
         try:
-            self.logger.info(f"Sending {action} command for service {service_name} on worker {worker_id}")
+            self.logger.info(f"Sending {action} command for service {service_name} on {worker_id}")
 
-            # Get orchestrator proxy for the target worker
-            orchestrator_proxy = getattr(self.proxy.orchestrator, worker_id)
+            # Determine if this is a local (coordinator) or remote (worker) call
+            is_local_coordinator = worker_id.lower() == "coordinator"
+
+            if is_local_coordinator:
+                # Call local orchestrator directly (we are on coordinator)
+                orchestrator_proxy = self.proxy.orchestrator
+                self.logger.debug(f"Using local orchestrator for {worker_id}")
+            else:
+                # Call remote orchestrator via P2P RPC
+                orchestrator_proxy = getattr(self.proxy.orchestrator, worker_id)
+                self.logger.debug(f"Using remote orchestrator for {worker_id}")
 
             # Call the appropriate orchestrator method based on action
             if action == "start":

@@ -1927,6 +1927,11 @@
                         <span class="service-name" onclick="showServiceMetrics('coordinator', '${serviceName}')">${serviceName}</span>
                         <span class="badge bg-${statusClass} ms-2">${status}</span>
                     </div>
+                    <div class="service-controls">
+                        <button class="btn btn-sm btn-success" onclick="controlService('coordinator', '${serviceName}', 'start')">Start</button>
+                        <button class="btn btn-sm btn-warning" onclick="controlService('coordinator', '${serviceName}', 'restart')">Restart</button>
+                        <button class="btn btn-sm btn-danger" onclick="controlService('coordinator', '${serviceName}', 'stop')">Stop</button>
+                    </div>
                 `;
                 container.appendChild(serviceItem);
             });
