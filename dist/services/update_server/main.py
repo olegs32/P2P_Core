@@ -29,9 +29,8 @@ from layers.service import BaseService, service_method
 class Run(BaseService):
     """Update Server - сервер обновлений для кластера"""
 
-    def __init__(self, context=None):
-        super().__init__(context)
-        self.service_name = "update_server"
+    def __init__(self, service_name: str = "update_server", proxy_client=None):
+        super().__init__(service_name, proxy_client)
         self.updates_dir = Path("data/updates")
         self.packages_dir = self.updates_dir / "packages"
         self.metadata_file = self.updates_dir / "updates_metadata.json"

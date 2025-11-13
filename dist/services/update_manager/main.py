@@ -32,9 +32,8 @@ from layers.service import BaseService, service_method
 class Run(BaseService):
     """Update Manager - управление обновлениями узла"""
 
-    def __init__(self, context=None):
-        super().__init__(context)
-        self.service_name = "update_manager"
+    def __init__(self, service_name: str = "update_manager", proxy_client=None):
+        super().__init__(service_name, proxy_client)
         self.updates_dir = Path("data/update_manager")
         self.downloads_dir = self.updates_dir / "downloads"
         self.backups_dir = self.updates_dir / "backups"
