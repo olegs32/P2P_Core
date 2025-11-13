@@ -62,17 +62,30 @@ class ServiceMethodProxy:
     def __getattr__(self, attr_name: str):
         """Получить callable для метода или прокси для узла"""
 
-        # Список известных узлов/ролей для таргетинга
-        # known_targets = [
-        #     'coordinator', 'worker', 'worker1', 'worker2', 'worker3',
-        #     'node1', 'node2', 'host1', 'host2', 'pc1', 'pc2',
-        #     'localhost', 'local', 'remote'
-        #
-        # ]
-        known_targets = self.context.get_shared('network').gossip.node_registry
+        # Проверяем является ли это именем узла/роли для таргетинга
+        # 1. Специальные роли (всегда считаются узлами)
+        special_roles = ['coordinator', 'worker', 'local', 'remote']
 
-        # Если это похоже на имя узла - создаем таргетированный прокси
-        if attr_name in known_targets or attr_name.startswith(('node_', 'host_', 'pc_', 'worker_')):
+        # 2. Паттерны имен узлов
+        node_patterns = ('node_', 'host_', 'pc_', 'worker_', 'worker-', 'coord-', 'node-')
+
+        # 3. Динамический список из node_registry (если доступен)
+        known_nodes = set()
+        try:
+            network = self.context.get_shared('network')
+            if network and hasattr(network, 'gossip') and hasattr(network.gossip, 'node_registry'):
+                known_nodes = set(network.gossip.node_registry.keys())
+        except:
+            pass
+
+        # Проверяем: это узел или метод?
+        is_target_node = (
+            attr_name in special_roles or
+            attr_name in known_nodes or
+            attr_name.startswith(node_patterns)
+        )
+
+        if is_target_node:
             self.logger.debug(f"Creating targeted proxy for {self.service_name}.{attr_name}")
             return ServiceMethodProxy(
                 service_name=self.service_name,
