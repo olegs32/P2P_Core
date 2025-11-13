@@ -467,43 +467,57 @@ class ServiceOrchestrator(BaseService):
     @service_method(description="Get list of installed services", public=True)
     async def list_services(self) -> Dict[str, Any]:
         """
-        Получить список всех установленных сервисов
+        Получить список всех сервисов (встроенных и установленных)
 
         Returns:
             Список сервисов с их статусами
         """
-        running_services = set()
+        services_info = {}
 
         # Получаем ServiceManager напрямую
         from layers.service import get_global_service_manager
         service_manager = get_global_service_manager()
 
-        if service_manager:
-            try:
-                # Получаем список запущенных сервисов напрямую
-                running_services = set(service_manager.registry.list_services())
-            except Exception as e:
-                self.logger.warning(f"Could not get running services list: {e}")
+        # 1. Добавляем все ЗАПУЩЕННЫЕ сервисы из service_manager
+        if service_manager and hasattr(service_manager, 'services'):
+            for service_name, service_instance in service_manager.services.items():
+                services_info[service_name] = {
+                    "name": service_name,
+                    "installed": True,  # Если запущен, значит установлен
+                    "running": True,
+                    "description": service_instance.info.description if hasattr(service_instance, 'info') else "",
+                    "status": service_instance.status.value if hasattr(service_instance.status, 'value') else str(service_instance.status),
+                    "built_in": service_name not in self.installed_services  # Встроенный если не в списке установленных
+                }
 
-        services_info = {}
-
+        # 2. Добавляем УСТАНОВЛЕННЫЕ сервисы (которые могут быть не запущены)
         for service_name, metadata in self.installed_services.items():
-            service_path = self.services_dir / service_name
+            if service_name not in services_info:
+                # Сервис установлен но не запущен
+                services_info[service_name] = {
+                    "name": service_name,
+                    "installed": True,
+                    "running": False,
+                    "installed_at": metadata.get("installed_at"),
+                    "archive_hash": metadata.get("archive_hash"),
+                    "description": metadata.get("manifest", {}).get("description", ""),
+                    "built_in": False
+                }
+            else:
+                # Сервис запущен - добавляем метаданные установки
+                services_info[service_name].update({
+                    "installed_at": metadata.get("installed_at"),
+                    "archive_hash": metadata.get("archive_hash"),
+                    "built_in": False
+                })
 
-            services_info[service_name] = {
-                "installed": True,
-                "running": service_name in running_services,
-                "installed_at": metadata.get("installed_at"),
-                "archive_hash": metadata.get("archive_hash"),
-                "manifest": metadata.get("manifest"),
-                "files_count": metadata.get("files_count", 0),
-                "directory_exists": service_path.exists()
-            }
+        # 3. Считаем статистику
+        total_running = sum(1 for s in services_info.values() if s.get("running", False))
 
         return {
-            "total_installed": len(self.installed_services),
-            "total_running": len(running_services),
-            "services": services_info
+            "total_installed": len(services_info),  # Все доступные сервисы
+            "total_running": total_running,
+            "services": list(services_info.values())  # Возвращаем как list для совместимости
         }
 
     @service_method(description="Get detailed service information", public=True)
