@@ -745,7 +745,8 @@ class ServiceComponent(P2PComponent):
 
         local_bridge = create_local_service_bridge(
             self.context._method_registry,  # <- ИЗМЕНИТЬ: прямая ссылка вместо .list_methods()
-            self.service_manager
+            self.service_manager,
+            self.context
         )
         await local_bridge.initialize()
 

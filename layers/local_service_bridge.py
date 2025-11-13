@@ -124,6 +124,6 @@ class MethodCaller:
         return await method(**kwargs)
 
 
-def create_local_service_bridge(method_registry: Dict[str, Any], service_manager):
+def create_local_service_bridge(method_registry: Dict[str, Any], service_manager, context: P2PApplicationContext):
     """Создание локального моста сервисов"""
-    return LocalServiceBridge(method_registry, service_manager)
+    return LocalServiceBridge(method_registry, service_manager, context)
