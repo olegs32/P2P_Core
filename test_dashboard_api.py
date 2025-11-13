@@ -7,18 +7,23 @@
 import requests
 import json
 import sys
+import urllib3
+
+# Отключаем предупреждения о небезопасном SSL
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 def test_dashboard_api(host="127.0.0.1", port=8001):
     """Проверяет API дашборда"""
-    base_url = f"http://{host}:{port}"
+    base_url = f"https://{host}:{port}"
 
     print(f"🔍 Проверка API дашборда на {base_url}")
+    print(f"🔓 SSL verify: disabled (self-signed certificates)")
     print("=" * 80)
 
     # 1. Check metrics endpoint
     print("\n1️⃣  Проверка /api/dashboard/metrics...")
     try:
-        response = requests.get(f"{base_url}/api/dashboard/metrics", timeout=5)
+        response = requests.get(f"{base_url}/api/dashboard/metrics", timeout=5, verify=False)
         if response.status_code == 200:
             data = response.json()
 
@@ -51,7 +56,7 @@ def test_dashboard_api(host="127.0.0.1", port=8001):
     # 2. Check dashboard page
     print("\n2️⃣  Проверка /dashboard...")
     try:
-        response = requests.get(f"{base_url}/dashboard", timeout=5)
+        response = requests.get(f"{base_url}/dashboard", timeout=5, verify=False)
         if response.status_code == 200:
             html = response.text
 
