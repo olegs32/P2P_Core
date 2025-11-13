@@ -648,6 +648,8 @@ class Run(BaseService):
                 orchestrator_info = await self.proxy.orchestrator.list_services()
                 all_services = orchestrator_info.get("services", [])
 
+                self.logger.debug(f"Orchestrator returned {len(all_services)} services")
+
                 for service_info in all_services:
                     service_name = service_info.get("name")
                     if service_name:
@@ -657,15 +659,21 @@ class Run(BaseService):
                             "description": service_info.get("description", "")
                         }
             except Exception as e:
-                self.logger.debug(f"Could not get services from orchestrator: {e}")
-                # Fallback to service_manager for running services only
-                if hasattr(self, '_service_manager') and self._service_manager:
-                    for service_name, service_instance in self._service_manager.services.items():
-                        services[service_name] = {
-                            "status": service_instance.status.value if hasattr(service_instance.status, 'value') else str(service_instance.status),
-                            "uptime": getattr(service_instance, '_start_time', 0),
-                            "description": service_instance.info.description if hasattr(service_instance, 'info') else ""
-                        }
+                self.logger.warning(f"Could not get services from orchestrator: {e}")
+                # Fallback to service_manager via context
+                try:
+                    if hasattr(self.context, 'get_shared'):
+                        service_manager = self.context.get_shared('service_manager')
+                        if service_manager and hasattr(service_manager, 'services'):
+                            self.logger.info(f"Using fallback: service_manager has {len(service_manager.services)} services")
+                            for service_name, service_instance in service_manager.services.items():
+                                services[service_name] = {
+                                    "status": service_instance.status.value if hasattr(service_instance.status, 'value') else str(service_instance.status),
+                                    "uptime": getattr(service_instance, '_start_time', 0),
+                                    "description": service_instance.info.description if hasattr(service_instance, 'info') else ""
+                                }
+                except Exception as fallback_error:
+                    self.logger.error(f"Fallback also failed: {fallback_error}")
 
             timestamp = datetime.now()
 
