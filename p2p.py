@@ -829,6 +829,27 @@ async def main():
                         logger.info(f"Loading configuration from: {args.config}")
                         config = P2PConfig.from_yaml(args.config, context=temp_context)
 
+                        # Применяем override из аргументов командной строки (приоритет выше чем YAML)
+                        if args.coord:
+                            # Разбиваем на список если через запятую, иначе один адрес
+                            if ',' in args.coord:
+                                config.coordinator_addresses = [addr.strip() for addr in args.coord.split(',')]
+                            else:
+                                config.coordinator_addresses = [args.coord]
+                            logger.info(f"Coordinator addresses overridden from CLI: {config.coordinator_addresses}")
+
+                        if args.port:
+                            config.port = args.port
+                            logger.info(f"Port overridden from CLI: {config.port}")
+
+                        if args.address:
+                            config.bind_address = args.address
+                            logger.info(f"Bind address overridden from CLI: {config.bind_address}")
+
+                        if args.node_id:
+                            config.node_id = args.node_id
+                            logger.info(f"Node ID overridden from CLI: {config.node_id}")
+
                         logger.info(f"Starting {config.node_id} ({'coordinator' if config.coordinator_mode else 'worker'})")
                         logger.info(f"Binding to: {config.bind_address}:{config.port}")
 
