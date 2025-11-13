@@ -381,13 +381,18 @@ class Run(BaseService):
                     )
 
                 thumbprint = cert_info.get("thumbprint", "")
-                self.logger.info(f"Deleting certificate: worker={worker}, cert_id={cert_id}, thumbprint={thumbprint}")
+                serial = cert_info.get("serial", "")
+                self.logger.info(f"Deleting certificate: worker={worker}, cert_id={cert_id}, thumbprint={thumbprint}, serial={serial}")
+                self.logger.info(f"Certificate info keys: {list(cert_info.keys())}")
 
                 if not thumbprint:
-                    self.logger.error(f"Certificate thumbprint is empty: {cert_info}")
+                    self.logger.error(f"Certificate thumbprint is empty. Certificate info: {cert_info}")
                     return JSONResponse(
                         status_code=400,
-                        content={"success": False, "error": "Certificate thumbprint is empty"}
+                        content={
+                            "success": False,
+                            "error": f"Certificate thumbprint is empty. Available fields: {list(cert_info.keys())}"
+                        }
                     )
 
                 # Delete certificate

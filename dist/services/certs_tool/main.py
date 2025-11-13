@@ -280,6 +280,9 @@ class LegacyCertsService(BaseService):
                     else:
                         self.logger.warning(f"Skipping malformed line: {line}")
 
+            # Log all raw fields for debugging
+            self.logger.debug(f"Certificate {index} raw fields: {list(cert_info.keys())}")
+
             # Парсим Subject детально
             if 'Subject' in cert_info:
                 try:
@@ -306,9 +309,20 @@ class LegacyCertsService(BaseService):
                 except Exception as e:
                     self.logger.warning(f"Error parsing Issuer: {e}")
 
+            # Normalize field names - try different variants
+            # Thumbprint может называться SHA1, Hash, Thumbprint, Отпечаток
+            if 'SHA1' in cert_info and 'Thumbprint' not in cert_info:
+                cert_info['Thumbprint'] = cert_info['SHA1']
+            if 'Hash' in cert_info and 'Thumbprint' not in cert_info:
+                cert_info['Thumbprint'] = cert_info['Hash']
+            if 'Отпечаток' in cert_info and 'Thumbprint' not in cert_info:
+                cert_info['Thumbprint'] = cert_info['Отпечаток']
+
             if cert_info:
                 sub_cn = (cert_info['Subject_CN'] if 'Subject_CN' in cert_info else "-")
                 certificates[f"{index}_{sub_cn}"] = cert_info
+                # Log final parsed info
+                self.logger.debug(f"Certificate {index}: CN={sub_cn}, Thumbprint={cert_info.get('Thumbprint', 'N/A')}")
 
         self.logger.info(f"Found {len(certificates)} certificates")
         return certificates
@@ -702,16 +716,26 @@ class LegacyCertsService(BaseService):
             # Преобразуем данные для дашборда
             certs_list = []
             for cert_id, cert_info in certificates.items():
-                # Try different possible field names for dates
+                # Log all available fields for this certificate
+                self.logger.info(f"Certificate {cert_id} available fields: {list(cert_info.keys())}")
+
+                # Try different possible field names for dates (including Russian)
                 valid_from = (cert_info.get("ValidFrom") or
                              cert_info.get("Not valid before") or
                              cert_info.get("NotValidBefore") or
-                             cert_info.get("Valid from") or "")
+                             cert_info.get("Valid from") or
+                             cert_info.get("Действителен с") or
+                             cert_info.get("Начало действия") or "")
 
                 valid_to = (cert_info.get("ValidTo") or
                            cert_info.get("Not valid after") or
                            cert_info.get("NotValidAfter") or
-                           cert_info.get("Valid to") or "")
+                           cert_info.get("Valid to") or
+                           cert_info.get("Действителен до") or
+                           cert_info.get("Конец действия") or "")
+
+                thumbprint = cert_info.get("Thumbprint", "")
+                serial = cert_info.get("Serial", "")
 
                 cert_data = {
                     "id": cert_id,
@@ -719,15 +743,15 @@ class LegacyCertsService(BaseService):
                     "subject_cn": cert_info.get("Subject_CN", "Unknown"),
                     "issuer": cert_info.get("Issuer", "Unknown"),
                     "issuer_cn": cert_info.get("Issuer_CN", cert_info.get("Issuer", "Unknown")),
-                    "thumbprint": cert_info.get("Thumbprint", ""),
+                    "thumbprint": thumbprint,
                     "container": cert_info.get("Container", ""),
-                    "serial": cert_info.get("Serial", ""),
+                    "serial": serial,
                     "valid_from": valid_from,
                     "valid_to": valid_to,
                 }
 
                 # Log certificate info for debugging
-                self.logger.debug(f"Certificate {cert_id}: valid_from={valid_from}, valid_to={valid_to}")
+                self.logger.info(f"Certificate {cert_id}: thumbprint={thumbprint}, serial={serial}, valid_from={valid_from}, valid_to={valid_to}")
 
                 certs_list.append(cert_data)
 
