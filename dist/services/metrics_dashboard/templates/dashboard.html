@@ -1104,19 +1104,112 @@
         function updateMetricsFromWS(metrics) {
             // This replaces the HTTP polling in updateMetrics()
             try {
-                // Will be implemented to update the dashboard
-                console.log('Received metrics update via WebSocket', metrics);
-                // TODO: Update dashboard displays
+                // Update statistics
+                if (metrics.stats) {
+                    document.getElementById('activeWorkers').textContent = metrics.stats.active_workers || 0;
+                    document.getElementById('totalServices').textContent = metrics.stats.total_services || 0;
+                    document.getElementById('totalUpdates').textContent = metrics.stats.total_updates || 0;
+
+                    // Update uptime
+                    const uptimeSeconds = metrics.stats.uptime_seconds || 0;
+                    const hours = Math.floor(uptimeSeconds / 3600);
+                    const minutes = Math.floor((uptimeSeconds % 3600) / 60);
+                    document.getElementById('uptimeDisplay').textContent = `${hours}h ${minutes}m`;
+                }
+
+                // Update coordinator metrics
+                if (metrics.coordinator && metrics.coordinator.metrics) {
+                    const coordMetrics = metrics.coordinator.metrics;
+                    updateNodeMetrics('coord', coordMetrics);
+
+                    // Update coordinator services
+                    if (metrics.coordinator.services) {
+                        updateCoordinatorServices(metrics.coordinator.services);
+                    }
+                }
+
+                // Update cluster state
+                if (metrics.workers && metrics.stats) {
+                    updateClusterState(metrics.workers, metrics.stats);
+                }
+
+                // Update workers
+                if (metrics.workers) {
+                    updateWorkersFromWS(metrics.workers);
+                }
+                
             } catch (error) {
                 console.error('Error updating metrics from WebSocket:', error);
             }
         }
 
+        function updateWorkersFromWS(workers) {
+            try {
+                const container = document.getElementById('workersContainer');
+                if (!container) return;
+
+                Object.keys(workers).forEach(workerId => {
+                    const workerData = workers[workerId];
+                    
+                    // Create card if it doesn't exist
+                    let card = document.querySelector(`.worker-card[data-worker-id="${workerId}"]`);
+                    if (!card) {
+                        card = createWorkerCard(workerId);
+                        container.appendChild(card);
+                    }
+
+                    // Update worker metrics
+                    if (workerData.metrics) {
+                        updateWorkerMetrics(workerId, workerData.metrics);
+                    }
+
+                    // Update worker services
+                    if (workerData.services) {
+                        updateWorkerServices(workerId, workerData.services);
+                    }
+                });
+            } catch (error) {
+                console.error('Error updating workers from WebSocket:', error);
+            }
+        }
+
+        function updateWorkerMetrics(workerId, metrics) {
+            const card = document.querySelector(`.worker-card[data-worker-id="${workerId}"]`);
+            if (!card) return;
+
+            const prefix = `worker-${workerId}`;
+            updateNodeMetrics(prefix, metrics);
+        }
+
+        function updateWorkerServices(workerId, services) {
+            const card = document.querySelector(`.worker-card[data-worker-id="${workerId}"]`);
+            if (!card) return;
+
+            const servicesContainer = card.querySelector('.worker-services');
+            if (!servicesContainer) return;
+
+            servicesContainer.innerHTML = '';
+            services.forEach(service => {
+                const serviceDiv = document.createElement('div');
+                serviceDiv.className = 'service-item';
+                serviceDiv.innerHTML = `
+                    <span>${service.name}</span>
+                    <span class="status-badge status-${service.status === 'running' ? 'online' : 'offline'}">
+                        ${service.status}
+                    </span>
+                `;
+                servicesContainer.appendChild(serviceDiv);
+            });
+        }
+
         function updateLogsFromWS(logsData) {
             try {
-                if (typeof displayLogs === 'function') {
+                // Update logs display with WebSocket data
+                if (logsData && logsData.logs) {
                     displayLogs(logsData.logs || []);
                     document.getElementById('logsTotalCount').textContent = logsData.total || 0;
+                    document.getElementById('logsTotalCountFooter').textContent = logsData.total || 0;
+                    document.getElementById('logsShowingCount').textContent = logsData.logs.length || 0;
                     document.getElementById('logsLastUpdate').textContent = new Date().toLocaleTimeString();
                 }
             } catch (error) {
@@ -1126,6 +1219,7 @@
 
         function updateLogSourcesFromWS(sources) {
             try {
+                // Update node filter
                 const nodeFilter = document.getElementById('logNodeFilter');
                 if (nodeFilter && sources.nodes) {
                     const currentValue = nodeFilter.value;
@@ -1138,6 +1232,38 @@
                     });
                     if (currentValue) {
                         nodeFilter.value = currentValue;
+                    }
+                }
+
+                // Update level filter
+                const levelFilter = document.getElementById('logLevelFilter');
+                if (levelFilter && sources.log_levels) {
+                    const currentValue = levelFilter.value;
+                    levelFilter.innerHTML = '<option value="">Все уровни</option>';
+                    sources.log_levels.forEach(level => {
+                        const option = document.createElement('option');
+                        option.value = level;
+                        option.textContent = level;
+                        levelFilter.appendChild(option);
+                    });
+                    if (currentValue) {
+                        levelFilter.value = currentValue;
+                    }
+                }
+
+                // Update logger filter
+                const loggerFilter = document.getElementById('logLoggerFilter');
+                if (loggerFilter && sources.loggers) {
+                    const currentValue = loggerFilter.value;
+                    loggerFilter.innerHTML = '<option value="">Все источники</option>';
+                    sources.loggers.forEach(logger => {
+                        const option = document.createElement('option');
+                        option.value = logger;
+                        option.textContent = logger;
+                        loggerFilter.appendChild(option);
+                    });
+                    if (currentValue) {
+                        loggerFilter.value = currentValue;
                     }
                 }
             } catch (error) {
@@ -1179,7 +1305,7 @@
 
             // Initialize dashboard
             initCoordinatorChart();
-            updateMetrics();
+            // updateMetrics(); // Now using WebSocket
             initializeLogsTab();
 
             // Connect WebSocket for real-time updates
@@ -1189,7 +1315,7 @@
             //             // Auto-refresh every 5 seconds (only for home tab)
             //             setInterval(() => {
             //                 if (document.getElementById('homeTab').classList.contains('active')) {
-            //                     updateMetrics();
+            //                     // updateMetrics(); // Now using WebSocket
             //                 }
             //             }, 5000);
 
@@ -2701,8 +2827,7 @@
 
                 if (result.success) {
                     alert(`Service ${serviceName} ${action} command sent successfully`);
-                    // Refresh metrics to show updated status
-                    setTimeout(updateMetrics, 1000);
+                    // WebSocket will automatically update the metrics
                 } else {
                     alert(`Failed to ${action} service: ${result.error}`);
                 }
@@ -2904,7 +3029,7 @@
 
                 if (result.success) {
                     alert(`Удалено ${result.cleared} логов`);
-                    loadLogs(0);
+                    // Logs will be updated via WebSocket
                 } else {
                     alert(`Ошибка: ${result.error}`);
                 }
@@ -2922,71 +3047,14 @@
         }
 
         // Setup auto-refresh for logs
-        function setupLogsAutoRefresh() {
-            const checkbox = document.getElementById('logsAutoRefresh');
-
-            checkbox.addEventListener('change', () => {
-                if (checkbox.checked) {
-                    // Start auto-refresh
-                    logsAutoRefreshInterval = setInterval(() => {
-                        if (document.getElementById('logsTab').classList.contains('active')) {
-                            loadLogs(logsCurrentPage);
-                        }
-                    }, 5000);
-                } else {
-                    // Stop auto-refresh
-                    if (logsAutoRefreshInterval) {
-                        clearInterval(logsAutoRefreshInterval);
-                        logsAutoRefreshInterval = null;
-                    }
-                }
-            });
-
-            // Trigger initial state
-            if (checkbox.checked) {
-                logsAutoRefreshInterval = setInterval(() => {
-                    if (document.getElementById('logsTab').classList.contains('active')) {
-                        loadLogs(logsCurrentPage);
-                    }
-                }, 5000);
-            }
-        }
 
         // Initialize logs tab
         function initializeLogsTab() {
-            setupLogsAutoRefresh();
+            // Filters are now applied to WebSocket data client-side
+            // No need to reload logs on filter change
 
-            // Load logs when tab is shown
-            const logsTab = document.querySelector('[data-tab="logs"]');
-            if (logsTab) {
-                logsTab.addEventListener('click', () => {
-                    loadLogSources();
-                    loadLogs(0);
-                });
-            }
-
-            // Add interactive filter listeners
-            const logNodeFilter = document.getElementById('logNodeFilter');
-            const logLevelFilter = document.getElementById('logLevelFilter');
-            const logLoggerFilter = document.getElementById('logLoggerFilter');
-
-            if (logNodeFilter) {
-                logNodeFilter.addEventListener('change', () => {
-                    loadLogs(0); // Reset to page 0 when filter changes
-                });
-            }
-
-            if (logLevelFilter) {
-                logLevelFilter.addEventListener('change', () => {
-                    loadLogs(0);
-                });
-            }
-
-            if (logLoggerFilter) {
-                logLoggerFilter.addEventListener('change', () => {
-                    loadLogs(0);
-                });
-            }
+            // Note: Filter changes will be applied to the next WebSocket update
+            // or implement client-side filtering if needed
         }
     </script>
 </body>
