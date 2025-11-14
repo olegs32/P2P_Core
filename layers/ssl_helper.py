@@ -303,21 +303,37 @@ def generate_signed_certificate(
         # Подготовка SubjectAlternativeName
         san_list = []
 
+        # Filter and deduplicate DNS names
+        dns_names = set()
         if san_dns:
             for dns in san_dns:
-                san_list.append(x509.DNSName(dns))
-                san_list.append(x509.DNSName("localhost"))
-        else:
-            san_list.append(x509.DNSName("localhost"))
-            san_list.append(x509.DNSName("*.local"))
+                dns_names.add(dns)
+        # Always add localhost if not present
+        if "localhost" not in dns_names:
+            dns_names.add("localhost")
+        if not san_dns:  # If no DNS names provided, add *.local
+            dns_names.add("*.local")
 
+        # Add all DNS names to SAN
+        for dns in sorted(dns_names):
+            san_list.append(x509.DNSName(dns))
+
+        # Filter and deduplicate IP addresses
+        ip_addresses = set()
         if san_ips:
             for ip in san_ips:
-                san_list.append(x509.IPAddress(ipaddress.IPv4Address("127.0.0.1")))
-                san_list.append(x509.IPAddress(ipaddress.ip_address(ip)))
+                ip_str = str(ip)
+                # Filter out link-local addresses (169.254.x.x)
+                if not ip_str.startswith("169.254."):
+                    ip_addresses.add(ip_str)
 
-        else:
-            san_list.append(x509.IPAddress(ipaddress.IPv4Address("127.0.0.1")))
+        # Always add 127.0.0.1 if not present
+        if "127.0.0.1" not in ip_addresses:
+            ip_addresses.add("127.0.0.1")
+
+        # Add all IP addresses to SAN
+        for ip_str in sorted(ip_addresses):
+            san_list.append(x509.IPAddress(ipaddress.ip_address(ip_str)))
 
         # Создание сертификата
         cert = x509.CertificateBuilder().subject_name(
