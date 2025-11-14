@@ -1088,18 +1088,12 @@
         }
 
         function handleWebSocketUpdate(data) {
-            console.log('WebSocket data received:', data);
-
             // Update metrics if on home tab
             const homeTab = document.getElementById('homeTab');
-            console.log('Home tab active:', homeTab && homeTab.classList.contains('active'));
 
             if (homeTab && homeTab.classList.contains('active')) {
                 if (data.metrics) {
-                    console.log('Updating metrics from WebSocket');
                     updateMetricsFromWS(data.metrics, data.history);
-                } else {
-                    console.warn('No metrics in WebSocket data');
                 }
             }
 
@@ -1107,11 +1101,9 @@
             const logsTab = document.getElementById('logsTab');
             if (logsTab && logsTab.classList.contains('active')) {
                 if (data.logs) {
-                    console.log('Updating logs from WebSocket');
                     updateLogsFromWS(data.logs);
                 }
                 if (data.log_sources) {
-                    console.log('Updating log sources from WebSocket');
                     updateLogSourcesFromWS(data.log_sources);
                 }
             }
@@ -1119,96 +1111,57 @@
 
         function updateMetricsFromWS(metrics, history) {
             // This replaces the HTTP polling in updateMetrics()
-            console.log('updateMetricsFromWS called with:', metrics);
-            console.log('History data:', history);
             try {
                 // Update statistics
                 if (metrics.stats) {
-                    console.log('Updating stats:', metrics.stats);
-
                     const activeWorkersEl = document.getElementById('activeWorkers');
                     const totalServicesEl = document.getElementById('totalServices');
                     const totalUpdatesEl = document.getElementById('totalUpdates');
                     const uptimeDisplayEl = document.getElementById('uptimeDisplay');
 
-                    console.log('Stats DOM elements:', {
-                        activeWorkers: activeWorkersEl,
-                        totalServices: totalServicesEl,
-                        totalUpdates: totalUpdatesEl,
-                        uptimeDisplay: uptimeDisplayEl
-                    });
-
                     if (activeWorkersEl) {
-                        const oldValue = activeWorkersEl.textContent;
                         activeWorkersEl.textContent = metrics.stats.active_workers || 0;
-                        activeWorkersEl.style.backgroundColor = '#00ff00';
-                        setTimeout(() => activeWorkersEl.style.backgroundColor = '', 500);
-                        console.log('activeWorkers:', oldValue, '→', activeWorkersEl.textContent);
                     }
                     if (totalServicesEl) {
-                        const oldValue = totalServicesEl.textContent;
                         totalServicesEl.textContent = metrics.stats.total_services || 0;
-                        totalServicesEl.style.backgroundColor = '#00ff00';
-                        setTimeout(() => totalServicesEl.style.backgroundColor = '', 500);
-                        console.log('totalServices:', oldValue, '→', totalServicesEl.textContent);
                     }
                     if (totalUpdatesEl) {
-                        const oldValue = totalUpdatesEl.textContent;
                         totalUpdatesEl.textContent = metrics.stats.total_updates || 0;
-                        totalUpdatesEl.style.backgroundColor = '#00ff00';
-                        setTimeout(() => totalUpdatesEl.style.backgroundColor = '', 500);
-                        console.log('totalUpdates:', oldValue, '→', totalUpdatesEl.textContent);
                     }
 
                     // Update uptime
                     if (uptimeDisplayEl) {
-                        const oldValue = uptimeDisplayEl.textContent;
                         const uptimeSeconds = metrics.stats.uptime_seconds || 0;
                         const hours = Math.floor(uptimeSeconds / 3600);
                         const minutes = Math.floor((uptimeSeconds % 3600) / 60);
-                        const newValue = `${hours}h ${minutes}m`;
-                        uptimeDisplayEl.textContent = newValue;
-                        uptimeDisplayEl.style.backgroundColor = '#00ff00';
-                        setTimeout(() => uptimeDisplayEl.style.backgroundColor = '', 500);
-                        console.log('uptime:', oldValue, '→', newValue);
+                        uptimeDisplayEl.textContent = `${hours}h ${minutes}m`;
                     }
-                } else {
-                    console.warn('No stats in metrics');
                 }
 
                 // Update coordinator metrics
                 if (metrics.coordinator && metrics.coordinator.metrics) {
-                    console.log('Updating coordinator metrics');
                     const coordMetrics = metrics.coordinator.metrics;
                     updateNodeMetrics('coord', coordMetrics);
 
                     // Update coordinator services
                     if (metrics.coordinator.services) {
-                        console.log('Updating coordinator services');
                         updateCoordinatorServices(metrics.coordinator.services);
                     }
 
                     // Update coordinator chart
                     if (history && history.coordinator) {
-                        console.log('Updating coordinator chart with history');
                         updateChart('coordinator', history.coordinator);
                     }
-                } else {
-                    console.warn('No coordinator metrics');
                 }
 
                 // Update cluster state
                 if (metrics.workers && metrics.stats) {
-                    console.log('Updating cluster state');
                     updateClusterState(metrics.workers, metrics.stats);
                 }
 
                 // Update workers
                 if (metrics.workers) {
-                    console.log('Updating workers:', Object.keys(metrics.workers));
                     updateWorkersFromWS(metrics.workers);
-                } else {
-                    console.warn('No workers in metrics');
                 }
 
             } catch (error) {
@@ -1293,8 +1246,6 @@
         function handleNewLogs(node_id, newLogs) {
             // Event-driven: add new logs to the beginning of the table
             try {
-                console.log(`Received ${newLogs.length} new logs from ${node_id}`);
-
                 const tbody = document.getElementById('logsTableBody');
                 if (!tbody) return;
 
@@ -1311,10 +1262,6 @@
                         <td><small>${log.logger_name}</small></td>
                         <td><small>${escapeHtml(log.message)}</small></td>
                     `;
-
-                    // Add flash animation
-                    row.style.backgroundColor = '#00ff00';
-                    setTimeout(() => row.style.backgroundColor = '', 1000);
 
                     // Insert at the beginning
                     tbody.insertBefore(row, tbody.firstChild);
@@ -2146,34 +2093,22 @@
 
         // Update node metrics display
         function updateNodeMetrics(prefix, metrics) {
-            console.log(`updateNodeMetrics(${prefix}):`, metrics);
-
             const cpuPercent = metrics.cpu_percent || 0;
             const memoryPercent = metrics.memory?.percent || 0;
             const diskPercent = metrics.disk?.percent || 0;
-
-            console.log(`  CPU: ${cpuPercent}%, Memory: ${memoryPercent}%, Disk: ${diskPercent}%`);
 
             const cpuEl = document.getElementById(`${prefix}CPU`);
             const memEl = document.getElementById(`${prefix}Memory`);
             const diskEl = document.getElementById(`${prefix}Disk`);
 
-            console.log(`  DOM elements: CPU=${cpuEl}, Mem=${memEl}, Disk=${diskEl}`);
-
             if (cpuEl) {
                 cpuEl.textContent = `${cpuPercent.toFixed(1)}%`;
-                cpuEl.style.backgroundColor = '#00ff00';
-                setTimeout(() => cpuEl.style.backgroundColor = '', 500);
             }
             if (memEl) {
                 memEl.textContent = `${memoryPercent.toFixed(1)}%`;
-                memEl.style.backgroundColor = '#00ff00';
-                setTimeout(() => memEl.style.backgroundColor = '', 500);
             }
             if (diskEl) {
                 diskEl.textContent = `${diskPercent.toFixed(1)}%`;
-                diskEl.style.backgroundColor = '#00ff00';
-                setTimeout(() => diskEl.style.backgroundColor = '', 500);
             }
 
             // Update progress bars
