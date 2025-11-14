@@ -81,6 +81,9 @@ class Run(BaseService):
             # Collect initial coordinator metrics
             await self._collect_coordinator_metrics()
 
+            # Register listener for new logs (event-driven)
+            self._register_log_listener()
+
             self.logger.info("Metrics Dashboard initialized successfully")
             return True
         else:
@@ -746,8 +749,26 @@ class Run(BaseService):
             self.logger.info(f"WebSocket client connected. Total clients: {len(self.active_websockets)}")
 
             try:
-                # Send initial data immediately
+                # Send initial data immediately (includes logs and log sources)
                 initial_data = await self._gather_ws_data()
+
+                # Add logs and log sources to initial load only
+                if hasattr(self.proxy, 'log_collector'):
+                    try:
+                        logs_data = await self.proxy.log_collector.get_logs(
+                            node_id=None,
+                            level=None,
+                            logger_name=None,
+                            limit=100,
+                            offset=0
+                        )
+                        initial_data["logs"] = logs_data
+
+                        log_sources = await self.proxy.log_collector.get_log_sources()
+                        initial_data["log_sources"] = log_sources
+                    except Exception as e:
+                        self.logger.debug(f"Failed to get logs for initial load: {e}")
+
                 await websocket.send_json({
                     "type": "initial",
                     "data": initial_data
@@ -852,27 +873,8 @@ class Run(BaseService):
                 if worker_id in self.metrics_history:
                     history_data[worker_id] = self.metrics_history[worker_id][-50:]
 
-            # Collect logs (last 100 entries)
-            logs_data = {"logs": [], "total": 0}
-            if hasattr(self.proxy, 'log_collector'):
-                try:
-                    logs_data = await self.proxy.log_collector.get_logs(
-                        node_id=None,
-                        level=None,
-                        logger_name=None,
-                        limit=100,
-                        offset=0
-                    )
-                except Exception as e:
-                    self.logger.debug(f"Failed to get logs: {e}")
-
-            # Collect log sources
-            log_sources = {"nodes": [], "loggers": [], "log_levels": []}
-            if hasattr(self.proxy, 'log_collector'):
-                try:
-                    log_sources = await self.proxy.log_collector.get_log_sources()
-                except Exception as e:
-                    self.logger.debug(f"Failed to get log sources: {e}")
+            # NOTE: Logs are now event-driven via WebSocket (not sent in periodic updates)
+            # Only initial load includes logs
 
             # Collect service data (certificates, etc.)
             service_data = {}
@@ -884,8 +886,6 @@ class Run(BaseService):
             return {
                 "metrics": metrics_data,
                 "history": history_data,
-                "logs": logs_data,
-                "log_sources": log_sources,
                 "service_data": service_data,
                 "timestamp": datetime.now().isoformat()
             }
@@ -896,6 +896,57 @@ class Run(BaseService):
                 "error": str(e),
                 "timestamp": datetime.now().isoformat()
             }
+
+    def _register_log_listener(self):
+        """Register listener for new logs from log_collector (event-driven)"""
+        try:
+            # Get log_collector service from service manager
+            if hasattr(self, 'context') and self.context:
+                service_manager = self.context.get_shared('service_manager')
+                if service_manager and hasattr(service_manager, 'services'):
+                    log_collector = service_manager.services.get('log_collector')
+                    if log_collector and hasattr(log_collector, 'add_new_log_listener'):
+                        log_collector.add_new_log_listener(self._on_new_logs)
+                        self.logger.info("Registered event-driven log listener")
+                    else:
+                        self.logger.warning("log_collector service not found or doesn't support listeners")
+        except Exception as e:
+            self.logger.error(f"Failed to register log listener: {e}")
+
+    async def _on_new_logs(self, node_id: str, new_logs: list):
+        """
+        Called when new logs arrive at log_collector (event-driven)
+        Broadcasts new logs to all connected WebSocket clients
+        """
+        if not self.active_websockets:
+            return  # No clients connected
+
+        try:
+            # Prepare message
+            message = {
+                "type": "new_logs",
+                "node_id": node_id,
+                "logs": new_logs,
+                "timestamp": datetime.now().isoformat()
+            }
+
+            # Broadcast to all connected clients
+            disconnected = []
+            for websocket in self.active_websockets:
+                try:
+                    await websocket.send_json(message)
+                except Exception as e:
+                    self.logger.debug(f"Failed to send to WebSocket client: {e}")
+                    disconnected.append(websocket)
+
+            # Remove disconnected clients
+            for ws in disconnected:
+                self.active_websockets.discard(ws)
+
+            self.logger.debug(f"Broadcasted {len(new_logs)} new logs from {node_id} to {len(self.active_websockets)} clients")
+
+        except Exception as e:
+            self.logger.error(f"Error broadcasting new logs: {e}")
 
     async def cleanup(self):
         """Cleanup resources"""

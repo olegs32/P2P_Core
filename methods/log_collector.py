@@ -56,6 +56,9 @@ class LogCollector(BaseService):
         # Log levels for filtering
         self.log_levels = ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
 
+        # Event listeners for new logs (callback functions)
+        self.new_log_listeners = []
+
     async def initialize(self):
         """Initialize log collector"""
         # Get config from context if available
@@ -73,6 +76,23 @@ class LogCollector(BaseService):
                 self.logger.debug("Started local log collection for coordinator")
 
         self.logger.info(f"Log collector initialized (max_logs: {self.max_logs})")
+
+    def add_new_log_listener(self, listener):
+        """
+        Register a listener (callback) that will be called when new logs arrive
+
+        Args:
+            listener: Callable(node_id, logs) - called with node_id and list of new log dicts
+        """
+        if listener not in self.new_log_listeners:
+            self.new_log_listeners.append(listener)
+            self.logger.info(f"Registered new log listener: {listener.__name__ if hasattr(listener, '__name__') else listener}")
+
+    def remove_new_log_listener(self, listener):
+        """Remove a registered listener"""
+        if listener in self.new_log_listeners:
+            self.new_log_listeners.remove(listener)
+            self.logger.info(f"Removed log listener")
 
     async def cleanup(self):
         """Cleanup on shutdown"""
@@ -125,6 +145,21 @@ class LogCollector(BaseService):
 
         self.metrics.increment("logs_received")
         self.metrics.gauge(f"logs_stored_{node_id}", len(self.logs_by_node[node_id]))
+
+        # Notify listeners about new logs (event-driven)
+        if self.new_log_listeners:
+            new_log_dicts = [log_dict for log_dict in logs]
+            for listener in self.new_log_listeners:
+                try:
+                    # Call listener (can be sync or async)
+                    if hasattr(listener, '__call__'):
+                        import asyncio
+                        if asyncio.iscoroutinefunction(listener):
+                            await listener(node_id, new_log_dicts)
+                        else:
+                            listener(node_id, new_log_dicts)
+                except Exception as e:
+                    self.logger.error(f"Error in new log listener: {e}")
 
         return {
             "success": True,

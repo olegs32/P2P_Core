@@ -1045,14 +1045,19 @@
             websocket.onmessage = (event) => {
                 try {
                     const message = JSON.parse(event.data);
-                    
+
                     if (message.type === 'pong') {
                         // Heartbeat response
                         return;
                     }
-                    
+
                     if (message.type === 'initial' || message.type === 'update') {
                         handleWebSocketUpdate(message.data);
+                    }
+
+                    if (message.type === 'new_logs') {
+                        // Event-driven new logs from log_collector
+                        handleNewLogs(message.node_id, message.logs);
                     }
                 } catch (error) {
                     console.error('WebSocket message error:', error);
@@ -1272,7 +1277,7 @@
 
         function updateLogsFromWS(logsData) {
             try {
-                // Update logs display with WebSocket data
+                // Update logs display with WebSocket data (initial load only)
                 if (logsData && logsData.logs) {
                     displayLogs(logsData.logs || []);
                     document.getElementById('logsTotalCount').textContent = logsData.total || 0;
@@ -1282,6 +1287,51 @@
                 }
             } catch (error) {
                 console.error('Error updating logs from WebSocket:', error);
+            }
+        }
+
+        function handleNewLogs(node_id, newLogs) {
+            // Event-driven: add new logs to the beginning of the table
+            try {
+                console.log(`Received ${newLogs.length} new logs from ${node_id}`);
+
+                const tbody = document.getElementById('logsTableBody');
+                if (!tbody) return;
+
+                // Prepend new logs to table
+                newLogs.reverse().forEach(log => {
+                    const levelClass = getLogLevelClass(log.level);
+                    const timestamp = new Date(log.timestamp).toLocaleString('ru-RU');
+
+                    const row = document.createElement('tr');
+                    row.innerHTML = `
+                        <td><small>${timestamp}</small></td>
+                        <td><small><span class="badge bg-secondary">${log.node_id}</span></small></td>
+                        <td><small><span class="badge ${levelClass}">${log.level}</span></small></td>
+                        <td><small>${log.logger_name}</small></td>
+                        <td><small>${escapeHtml(log.message)}</small></td>
+                    `;
+
+                    // Add flash animation
+                    row.style.backgroundColor = '#00ff00';
+                    setTimeout(() => row.style.backgroundColor = '', 1000);
+
+                    // Insert at the beginning
+                    tbody.insertBefore(row, tbody.firstChild);
+                });
+
+                // Limit to 100 rows
+                while (tbody.children.length > 100) {
+                    tbody.removeChild(tbody.lastChild);
+                }
+
+                // Update counts
+                const currentCount = tbody.children.length;
+                document.getElementById('logsShowingCount').textContent = currentCount;
+                document.getElementById('logsLastUpdate').textContent = new Date().toLocaleTimeString();
+
+            } catch (error) {
+                console.error('Error handling new logs:', error);
             }
         }
 
