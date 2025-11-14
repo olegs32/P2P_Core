@@ -175,7 +175,12 @@ class MethodCaller:
             if not node_info:
                 raise RuntimeError(f"Target node '{self.target_node}' not found in network registry or config")
 
-            node_address = node_info.get('address')
+            # node_info может быть как словарем, так и объектом NodeInfo
+            if isinstance(node_info, dict):
+                node_address = node_info.get('address')
+            else:
+                node_address = getattr(node_info, 'address', None)
+
             if not node_address:
                 raise RuntimeError(f"Address not available for node '{self.target_node}'")
 
