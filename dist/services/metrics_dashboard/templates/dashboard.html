@@ -1119,15 +1119,39 @@
                 // Update statistics
                 if (metrics.stats) {
                     console.log('Updating stats:', metrics.stats);
-                    document.getElementById('activeWorkers').textContent = metrics.stats.active_workers || 0;
-                    document.getElementById('totalServices').textContent = metrics.stats.total_services || 0;
-                    document.getElementById('totalUpdates').textContent = metrics.stats.total_updates || 0;
+
+                    const activeWorkersEl = document.getElementById('activeWorkers');
+                    const totalServicesEl = document.getElementById('totalServices');
+                    const totalUpdatesEl = document.getElementById('totalUpdates');
+                    const uptimeDisplayEl = document.getElementById('uptimeDisplay');
+
+                    console.log('Stats DOM elements:', {
+                        activeWorkers: activeWorkersEl,
+                        totalServices: totalServicesEl,
+                        totalUpdates: totalUpdatesEl,
+                        uptimeDisplay: uptimeDisplayEl
+                    });
+
+                    if (activeWorkersEl) {
+                        activeWorkersEl.textContent = metrics.stats.active_workers || 0;
+                        console.log('Set activeWorkers to:', metrics.stats.active_workers);
+                    }
+                    if (totalServicesEl) {
+                        totalServicesEl.textContent = metrics.stats.total_services || 0;
+                        console.log('Set totalServices to:', metrics.stats.total_services);
+                    }
+                    if (totalUpdatesEl) {
+                        totalUpdatesEl.textContent = metrics.stats.total_updates || 0;
+                    }
 
                     // Update uptime
-                    const uptimeSeconds = metrics.stats.uptime_seconds || 0;
-                    const hours = Math.floor(uptimeSeconds / 3600);
-                    const minutes = Math.floor((uptimeSeconds % 3600) / 60);
-                    document.getElementById('uptimeDisplay').textContent = `${hours}h ${minutes}m`;
+                    if (uptimeDisplayEl) {
+                        const uptimeSeconds = metrics.stats.uptime_seconds || 0;
+                        const hours = Math.floor(uptimeSeconds / 3600);
+                        const minutes = Math.floor((uptimeSeconds % 3600) / 60);
+                        uptimeDisplayEl.textContent = `${hours}h ${minutes}m`;
+                        console.log('Set uptime to:', `${hours}h ${minutes}m`);
+                    }
                 } else {
                     console.warn('No stats in metrics');
                 }
