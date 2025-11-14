@@ -483,13 +483,16 @@ def ensure_certificates_exist(
         logger.error("Failed to ensure CA exists")
         raise RuntimeError("CA certificate does not exist and could not be created")
 
-    import platform, socket
-    my_name = platform.node()
-    my_ip = socket.gethostbyname(my_name)
+    # Получаем ВСЕ сетевые адреса и hostname машины
+    my_ips, my_hostname = get_current_network_info()
+    logger.info(f"Generating certificate for all network addresses: {my_ips}")
+    logger.info(f"Hostname: {my_hostname}")
 
     success = generate_signed_certificate(
         cert_file, key_file, ca_cert_file, ca_key_file, common_name,
-        san_ips=[my_ip], san_dns=[my_name], context=context
+        san_ips=my_ips,  # Все IP адреса
+        san_dns=[my_hostname],  # Hostname
+        context=context
     )
 
     if not success:
