@@ -904,6 +904,7 @@ def get_certificate_san(cert_file: str, context) -> Tuple[list, list]:
 def get_current_network_info() -> Tuple[list, str]:
     """
     Получить текущие IP адреса и hostname машины
+    Возвращает ВСЕ IPv4 и IPv6 адреса со всех интерфейсов
 
     Returns:
         Tuple из (список IP адресов, hostname)
@@ -915,52 +916,109 @@ def get_current_network_info() -> Tuple[list, str]:
         # Получаем hostname
         hostname = platform.node()
 
-        # Получаем все IP адреса (исключая loopback)
+        # Получаем все IP адреса
         ip_addresses = []
+        seen = set()  # Для исключения дубликатов
 
-        # Получаем IP адреса через socket
-        try:
-            # Получаем IP адрес по hostname
-            primary_ip = socket.gethostbyname(hostname)
-            if primary_ip and primary_ip != '127.0.0.1':
-                ip_addresses.append(primary_ip)
-        except:
-            pass
-
-        # Пробуем получить все сетевые интерфейсы
+        # Метод 1: Пробуем netifaces (самый полный)
         try:
             import netifaces
+
             for interface in netifaces.interfaces():
                 addrs = netifaces.ifaddresses(interface)
+
+                # IPv4 адреса
                 if netifaces.AF_INET in addrs:
                     for addr_info in addrs[netifaces.AF_INET]:
                         ip = addr_info.get('addr')
-                        if ip and ip != '127.0.0.1' and not ip.startswith('169.254'):
-                            if ip not in ip_addresses:
+                        if ip and ip not in seen:
+                            ip_addresses.append(ip)
+                            seen.add(ip)
+                            logger.debug(f"Found IPv4 on {interface}: {ip}")
+
+                # IPv6 адреса
+                if netifaces.AF_INET6 in addrs:
+                    for addr_info in addrs[netifaces.AF_INET6]:
+                        ip = addr_info.get('addr')
+                        if ip:
+                            # Убираем zone index из IPv6 (например %eth0)
+                            ip = ip.split('%')[0]
+                            if ip not in seen:
                                 ip_addresses.append(ip)
+                                seen.add(ip)
+                                logger.debug(f"Found IPv6 on {interface}: {ip}")
+
+            logger.info(f"netifaces found {len(ip_addresses)} addresses")
+
         except ImportError:
-            # netifaces не установлен, используем альтернативный метод
+            logger.warning("netifaces not available, trying psutil")
+
+            # Метод 2: Пробуем psutil
             try:
-                # Создаем временный сокет для получения IP
-                s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                s.connect(("8.8.8.8", 80))
-                local_ip = s.getsockname()[0]
-                s.close()
+                import psutil
 
-                if local_ip and local_ip != '127.0.0.1' and local_ip not in ip_addresses:
-                    ip_addresses.append(local_ip)
-            except:
-                pass
+                for interface, addrs in psutil.net_if_addrs().items():
+                    for addr in addrs:
+                        # IPv4
+                        if addr.family == socket.AF_INET:
+                            ip = addr.address
+                            if ip and ip not in seen:
+                                ip_addresses.append(ip)
+                                seen.add(ip)
+                                logger.debug(f"Found IPv4 on {interface}: {ip}")
 
-        # Всегда добавляем localhost в конец
-        if '127.0.0.1' not in ip_addresses:
-            ip_addresses.append('127.0.0.1')
+                        # IPv6
+                        elif addr.family == socket.AF_INET6:
+                            ip = addr.address
+                            if ip:
+                                ip = ip.split('%')[0]
+                                if ip not in seen:
+                                    ip_addresses.append(ip)
+                                    seen.add(ip)
+                                    logger.debug(f"Found IPv6 on {interface}: {ip}")
 
-        logger.debug(f"Current network info - hostname: {hostname}, IPs: {ip_addresses}")
+                logger.info(f"psutil found {len(ip_addresses)} addresses")
+
+            except ImportError:
+                logger.warning("psutil not available, using fallback methods")
+
+                # Метод 3: Fallback - socket methods
+                # 3a: IP по hostname
+                try:
+                    primary_ip = socket.gethostbyname(hostname)
+                    if primary_ip and primary_ip not in seen:
+                        ip_addresses.append(primary_ip)
+                        seen.add(primary_ip)
+                        logger.debug(f"Found IP by hostname: {primary_ip}")
+                except:
+                    pass
+
+                # 3b: IP через временный сокет
+                try:
+                    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                    s.connect(("8.8.8.8", 80))
+                    local_ip = s.getsockname()[0]
+                    s.close()
+
+                    if local_ip and local_ip not in seen:
+                        ip_addresses.append(local_ip)
+                        seen.add(local_ip)
+                        logger.debug(f"Found IP via socket: {local_ip}")
+                except:
+                    pass
+
+                # 3c: Добавляем 127.0.0.1 если ничего не нашли
+                if not ip_addresses:
+                    ip_addresses.append('127.0.0.1')
+                    logger.debug("Using fallback 127.0.0.1")
+
+        logger.info(f"Network info - hostname: {hostname}, total IPs: {len(ip_addresses)}, addresses: {ip_addresses}")
         return ip_addresses, hostname
 
     except Exception as e:
         logger.error(f"Failed to get current network info: {e}")
+        import traceback
+        logger.error(f"Traceback: {traceback.format_exc()}")
         return ['127.0.0.1'], 'localhost'
 
 
