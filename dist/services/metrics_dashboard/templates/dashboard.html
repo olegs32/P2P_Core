@@ -115,6 +115,12 @@
             display: block;
         }
 
+        /* Logs tab needs margin like main-content since it's outside */
+        #logsTab {
+            margin-left: var(--sidebar-width);
+            min-height: 100vh;
+        }
+
         /* Override Bootstrap text-muted for dark theme */
         .text-muted {
             color: var(--text-muted) !important;

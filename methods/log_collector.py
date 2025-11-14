@@ -64,10 +64,26 @@ class LogCollector(BaseService):
             self.max_logs = getattr(config, 'max_log_entries', 1000)
             self.node_id = config.node_id
 
+            # Start background task to collect local logs (for coordinator)
+            if config.coordinator_mode:
+                import asyncio
+                self._local_log_collection_task = asyncio.create_task(
+                    self._collect_local_logs_loop()
+                )
+                self.logger.info("Started local log collection for coordinator")
+
         self.logger.info(f"Log collector initialized (max_logs: {self.max_logs})")
 
     async def cleanup(self):
         """Cleanup on shutdown"""
+        # Stop local log collection task
+        if hasattr(self, '_local_log_collection_task'):
+            self._local_log_collection_task.cancel()
+            try:
+                await self._local_log_collection_task
+            except:
+                pass
+
         # REMOVED: with self.lock - asyncio is single-threaded
         total_logs = sum(len(logs) for logs in self.logs_by_node.values())
         self.logger.info(f"Log collector stopping (collected {total_logs} logs from {len(self.logs_by_node)} nodes)")
@@ -259,6 +275,35 @@ class LogCollector(BaseService):
             }
 
         return stats
+
+    async def _collect_local_logs_loop(self):
+        """Background task to collect logs from local P2PLogHandler"""
+        import asyncio
+
+        self.logger.info("Starting local log collection loop for coordinator")
+
+        while True:
+            try:
+                await asyncio.sleep(5)  # Collect every 5 seconds
+
+                # Get log handler from context
+                if hasattr(self, 'context'):
+                    log_handler = self.context.get_shared("log_handler")
+                    if log_handler:
+                        # Get new logs from handler
+                        new_logs = log_handler.get_new_logs()
+
+                        if new_logs:
+                            # Add to local storage
+                            await self.add_logs(self.node_id, new_logs)
+                            self.logger.debug(f"Collected {len(new_logs)} local logs from coordinator")
+
+            except asyncio.CancelledError:
+                self.logger.info("Local log collection task cancelled")
+                break
+            except Exception as e:
+                self.logger.error(f"Error in local log collection: {e}")
+                await asyncio.sleep(10)  # Wait longer on error
 
 
 class P2PLogHandler(logging.Handler):
