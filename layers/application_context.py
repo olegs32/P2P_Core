@@ -802,12 +802,16 @@ class NetworkComponent(P2PComponent):
         join_addresses = self.context.get_shared("join_addresses", [])
 
         def setup_service_gossip_integration():
+            self.logger.info("🔧 Setting up service gossip integration...")
             service_manager = self.context.get_shared("service_manager")
             if service_manager:
+                self.logger.info(f"   Service manager found: {type(service_manager).__name__}")
                 self.network.gossip.set_service_info_provider(
                     service_manager.get_services_info_for_gossip
                 )
-                self.logger.info("Service info provider connected to gossip")
+                self.logger.info("✓ Service info provider connected to gossip")
+            else:
+                self.logger.warning("⚠️  Service manager NOT found during gossip setup!")
 
         # Вызвать после инициализации сервисов или через callback
         self.context.set_shared("setup_service_gossip", setup_service_gossip_integration)
@@ -897,10 +901,14 @@ class ServiceComponent(P2PComponent):
         await self.service_handler.initialize_all()
 
         # Настройка gossip если необходимо
+        self.logger.info("🔧 Attempting to setup gossip integration...")
         setup_gossip = self.context.get_shared("setup_service_gossip")
         if setup_gossip:
+            self.logger.info("   Found setup_gossip callback, calling it...")
             setup_gossip()
-            self.logger.info("Gossip setup finished")
+            self.logger.info("✓ Gossip setup finished")
+        else:
+            self.logger.warning("⚠️  setup_service_gossip callback NOT found in context!")
 
         # Регистрация в контексте для обратной совместимости
         self.context.set_shared("service_layer", self.service_handler)

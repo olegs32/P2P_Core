@@ -499,6 +499,13 @@ class SimpleGossipProtocol:
                 'message_type': 'gossip'
             }
 
+            # Диагностика: сколько services в нашем self_info
+            my_services_count = len(self.self_info.services) if self.self_info.services else 0
+            if my_services_count > 0:
+                self.log.debug(f"🔍 Отправка gossip на {target_node.node_id}: наши services = {my_services_count}")
+            else:
+                self.log.debug(f"⚠️  Отправка gossip на {target_node.node_id}: services пусто!")
+
             # Используем кешированный адрес если он есть
             target_address = target_node.address
             if target_node.node_id in self.successful_addresses:
@@ -762,6 +769,7 @@ class SimpleGossipProtocol:
     def set_service_info_provider(self, callback):
         """Установить callback для получения информации о сервисах"""
         self.service_info_callback = callback
+        self.log.info(f"✓ Service info provider callback установлен: {callback is not None}")
 
     async def _update_self_services_info(self):
         """Обновить информацию о сервисах на текущем узле"""
@@ -780,6 +788,13 @@ class SimpleGossipProtocol:
                         self.log.debug(f"   Services: {list(services_info.keys())}")
             except Exception as e:
                 self.log.error(f"❌ Error updating services info: {e}")
+                import traceback
+                self.log.error(traceback.format_exc())
+        else:
+            # Callback не установлен - это проблема!
+            if not hasattr(self, '_callback_warning_shown'):
+                self.log.warning(f"⚠️  Service info callback НЕ УСТАНОВЛЕН! Сервисы не будут передаваться через gossip.")
+                self._callback_warning_shown = True
 
 
 class P2PNetworkLayer:
