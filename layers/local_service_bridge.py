@@ -154,6 +154,7 @@ class MethodCaller:
 
         # Определяем адрес целевого узла
         node_address = None
+        node_url = None
 
         # Специальная обработка для 'coordinator' - берем адрес из конфигурации
         if self.target_node == 'coordinator':
@@ -164,8 +165,14 @@ class MethodCaller:
                     node_address = coordinator_addresses[0]
                     self.logger.debug(f"Using coordinator address from config: {node_address}")
 
+                    # coordinator_addresses содержит адрес с портом в формате "host:port"
+                    if ':' in node_address:
+                        node_url = f"https://{node_address}"
+                    else:
+                        node_url = f"https://{node_address}:8001"
+
         # Если адрес не найден в конфиге, ищем в node_registry
-        if not node_address:
+        if not node_url:
             network = self.context.get_shared('network')
             if not network:
                 raise RuntimeError("Network component not available")
