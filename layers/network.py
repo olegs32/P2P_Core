@@ -49,7 +49,9 @@ class NodeInfo:
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'NodeInfo':
-        data['last_seen'] = datetime.fromisoformat(data['last_seen'])
+        # Handle last_seen - it might already be a datetime object
+        if isinstance(data['last_seen'], str):
+            data['last_seen'] = datetime.fromisoformat(data['last_seen'])
         return cls(**data)
 
     def get_url(self, https: bool = True) -> str:
