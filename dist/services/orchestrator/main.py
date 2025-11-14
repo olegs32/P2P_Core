@@ -765,6 +765,321 @@ class ServiceOrchestrator(BaseService):
             "last_check": datetime.now().isoformat()
         }
 
+    @service_method(description="Get services with versions for deployment", public=True)
+    async def get_services_with_versions(self) -> Dict[str, Any]:
+        """
+        Получить список установленных сервисов с версиями
+
+        Returns:
+            Список сервисов с их версиями и статусами
+        """
+        services_info = []
+
+        for service_name, metadata in self.installed_services.items():
+            service_path = self.services_dir / service_name
+
+            # Get version from manifest if available
+            version = "unknown"
+            if metadata.get("manifest") and metadata["manifest"].get("version"):
+                version = metadata["manifest"]["version"]
+
+            service_info = {
+                "name": service_name,
+                "version": version,
+                "installed_at": metadata.get("installed_at"),
+                "archive_hash": metadata.get("archive_hash"),
+                "directory_exists": service_path.exists(),
+                "manifest": metadata.get("manifest")
+            }
+
+            services_info.append(service_info)
+
+        return {
+            "total": len(services_info),
+            "services": services_info
+        }
+
+    @service_method(description="Compare service versions across workers", public=True)
+    async def compare_service_versions(self, service_name: str, worker_nodes: List[str]) -> Dict[str, Any]:
+        """
+        Сравнить версии сервиса на координаторе и воркерах
+
+        Args:
+            service_name: Имя сервиса для проверки
+            worker_nodes: Список воркеров для проверки
+
+        Returns:
+            Информация о версиях на каждом узле
+        """
+        if not self.proxy:
+            raise ServiceDistributionError("No proxy client available")
+
+        if service_name not in self.installed_services:
+            raise ServiceManagementError(f"Service {service_name} is not installed on coordinator")
+
+        # Get coordinator version
+        coordinator_metadata = self.installed_services[service_name]
+        coordinator_version = "unknown"
+        if coordinator_metadata.get("manifest") and coordinator_metadata["manifest"].get("version"):
+            coordinator_version = coordinator_metadata["manifest"]["version"]
+
+        results = {
+            "service_name": service_name,
+            "coordinator_version": coordinator_version,
+            "workers": {}
+        }
+
+        # Check each worker
+        for worker_id in worker_nodes:
+            try:
+                self.logger.info(f"Checking service {service_name} version on worker {worker_id}")
+
+                # Call remote orchestrator to get service details
+                worker_services = await self.proxy.call_remote_method(
+                    node_id=worker_id,
+                    method_path="orchestrator/list_services",
+                    params={}
+                )
+
+                worker_service_info = worker_services.get("services", {}).get(service_name)
+
+                if worker_service_info:
+                    worker_version = "unknown"
+                    if worker_service_info.get("manifest") and worker_service_info["manifest"].get("version"):
+                        worker_version = worker_service_info["manifest"]["version"]
+
+                    results["workers"][worker_id] = {
+                        "installed": True,
+                        "version": worker_version,
+                        "needs_update": self._compare_versions(coordinator_version, worker_version) > 0,
+                        "installed_at": worker_service_info.get("installed_at")
+                    }
+                else:
+                    results["workers"][worker_id] = {
+                        "installed": False,
+                        "version": None,
+                        "needs_update": False
+                    }
+
+            except Exception as e:
+                self.logger.error(f"Failed to check service on worker {worker_id}: {e}")
+                results["workers"][worker_id] = {
+                    "error": str(e),
+                    "installed": False,
+                    "version": None,
+                    "needs_update": False
+                }
+
+        return results
+
+    def _compare_versions(self, version1: str, version2: str) -> int:
+        """
+        Сравнить две версии (семантическое версионирование)
+
+        Args:
+            version1: Первая версия
+            version2: Вторая версия
+
+        Returns:
+            1 если version1 > version2
+            0 если версии равны
+            -1 если version1 < version2
+        """
+        if version1 == version2:
+            return 0
+
+        if version1 == "unknown" or version2 == "unknown":
+            return 0
+
+        try:
+            # Parse semantic versions (e.g., "1.2.3")
+            v1_parts = [int(x) for x in version1.split('.')]
+            v2_parts = [int(x) for x in version2.split('.')]
+
+            # Pad with zeros if needed
+            max_len = max(len(v1_parts), len(v2_parts))
+            v1_parts.extend([0] * (max_len - len(v1_parts)))
+            v2_parts.extend([0] * (max_len - len(v2_parts)))
+
+            # Compare
+            for v1, v2 in zip(v1_parts, v2_parts):
+                if v1 > v2:
+                    return 1
+                elif v1 < v2:
+                    return -1
+
+            return 0
+        except (ValueError, AttributeError):
+            # If parsing fails, use string comparison
+            if version1 > version2:
+                return 1
+            elif version1 < version2:
+                return -1
+            return 0
+
+    @service_method(description="Deploy service to specific workers", public=True)
+    async def deploy_service_to_workers(
+        self,
+        service_name: str,
+        target_workers: List[str],
+        force_reinstall: bool = False
+    ) -> Dict[str, Any]:
+        """
+        Деплой сервиса с координатора на указанные воркеры
+
+        Args:
+            service_name: Имя сервиса для деплоя
+            target_workers: Список целевых воркеров
+            force_reinstall: Принудительная переустановка
+
+        Returns:
+            Результаты деплоя на каждый воркер
+        """
+        if service_name not in self.installed_services:
+            raise ServiceManagementError(f"Service {service_name} is not installed on coordinator")
+
+        if not self.proxy:
+            raise ServiceDistributionError("No proxy client available")
+
+        self.logger.info(f"Deploying service {service_name} to {len(target_workers)} workers")
+
+        # Export service archive
+        archive_data = await self.export_service(service_name)
+
+        deploy_results = {}
+
+        for worker_id in target_workers:
+            try:
+                self.logger.info(f"Deploying service {service_name} to worker {worker_id}")
+
+                # Send service to worker
+                result = await self.proxy.call_remote_method(
+                    node_id=worker_id,
+                    method_path="orchestrator/install_service",
+                    params={
+                        "archive_data": archive_data,
+                        "force_reinstall": force_reinstall
+                    }
+                )
+
+                deploy_results[worker_id] = {
+                    "success": True,
+                    "result": result,
+                    "deployed_at": datetime.now().isoformat()
+                }
+
+                self.logger.info(f"Successfully deployed service {service_name} to worker {worker_id}")
+
+            except Exception as e:
+                self.logger.error(f"Failed to deploy service {service_name} to worker {worker_id}: {e}")
+                deploy_results[worker_id] = {
+                    "success": False,
+                    "error": str(e),
+                    "failed_at": datetime.now().isoformat()
+                }
+
+        successful = sum(1 for r in deploy_results.values() if r.get("success"))
+
+        return {
+            "service_name": service_name,
+            "total_workers": len(target_workers),
+            "successful": successful,
+            "failed": len(target_workers) - successful,
+            "results": deploy_results
+        }
+
+    @service_method(description="Update service on workers if coordinator has newer version", public=True)
+    async def update_service_on_workers(
+        self,
+        service_name: str,
+        target_workers: Optional[List[str]] = None
+    ) -> Dict[str, Any]:
+        """
+        Обновить сервис на воркерах, если версия на координаторе выше
+
+        Args:
+            service_name: Имя сервиса для обновления
+            target_workers: Список воркеров (если None, обновляет на всех где установлен)
+
+        Returns:
+            Результаты обновления
+        """
+        if service_name not in self.installed_services:
+            raise ServiceManagementError(f"Service {service_name} is not installed on coordinator")
+
+        if not self.proxy:
+            raise ServiceDistributionError("No proxy client available")
+
+        # If no target workers specified, we need to discover them
+        if target_workers is None:
+            # Get list of workers from network layer
+            try:
+                network_layer = self.context.get_shared("network_layer")
+                if network_layer:
+                    known_nodes = network_layer.get_known_nodes()
+                    # Filter out coordinator
+                    target_workers = [
+                        node_id for node_id in known_nodes.keys()
+                        if node_id != self.context.config.node_id
+                    ]
+                else:
+                    raise ServiceDistributionError("Network layer not available to discover workers")
+            except Exception as e:
+                self.logger.error(f"Failed to discover workers: {e}")
+                target_workers = []
+
+        if not target_workers:
+            return {
+                "service_name": service_name,
+                "total_workers": 0,
+                "updates_needed": 0,
+                "successful_updates": 0,
+                "failed_updates": 0,
+                "results": {}
+            }
+
+        # Compare versions
+        version_comparison = await self.compare_service_versions(service_name, target_workers)
+
+        # Find workers that need update
+        workers_to_update = [
+            worker_id for worker_id, info in version_comparison["workers"].items()
+            if info.get("needs_update", False) or not info.get("installed", False)
+        ]
+
+        self.logger.info(
+            f"Service {service_name}: {len(workers_to_update)} workers need update out of {len(target_workers)}"
+        )
+
+        if not workers_to_update:
+            return {
+                "service_name": service_name,
+                "coordinator_version": version_comparison["coordinator_version"],
+                "total_workers": len(target_workers),
+                "updates_needed": 0,
+                "successful_updates": 0,
+                "failed_updates": 0,
+                "results": version_comparison["workers"]
+            }
+
+        # Deploy to workers that need update
+        deploy_results = await self.deploy_service_to_workers(
+            service_name=service_name,
+            target_workers=workers_to_update,
+            force_reinstall=True  # Force reinstall to update
+        )
+
+        return {
+            "service_name": service_name,
+            "coordinator_version": version_comparison["coordinator_version"],
+            "total_workers": len(target_workers),
+            "updates_needed": len(workers_to_update),
+            "successful_updates": deploy_results["successful"],
+            "failed_updates": deploy_results["failed"],
+            "version_comparison": version_comparison["workers"],
+            "deployment_results": deploy_results["results"]
+        }
+
 
 # Точка входа для загрузки сервиса
 class Run(ServiceOrchestrator):

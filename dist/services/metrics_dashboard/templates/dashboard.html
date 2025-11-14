@@ -458,6 +458,10 @@
                 <span class="nav-tab-icon">&#127968;</span>
                 <span>Главная</span>
             </a>
+            <a class="nav-tab" data-tab="services">
+                <span class="nav-tab-icon">&#128230;</span>
+                <span>Сервисы</span>
+            </a>
             <a class="nav-tab" data-tab="certificates">
                 <span class="nav-tab-icon">&#128272;</span>
                 <span>Сертификаты</span>
@@ -585,6 +589,68 @@
                         <h3 class="mb-3">Workers</h3>
                         <div id="workersContainer">
                             <!-- Workers will be dynamically inserted here -->
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Services Tab Content -->
+        <div class="tab-content" id="servicesTab">
+            <!-- Header -->
+            <div class="dashboard-header">
+                <div class="container">
+                    <h1 class="mb-2">Service Management</h1>
+                    <p class="mb-0 opacity-75">Deploy and update services across the cluster</p>
+                </div>
+            </div>
+
+            <div class="container">
+                <!-- Services Section -->
+                <div class="section-card">
+                    <h3 class="section-title">Coordinator Services</h3>
+
+                    <div id="servicesLoading" class="text-center p-4">
+                        <div class="spinner-border text-primary" role="status">
+                            <span class="visually-hidden">Loading...</span>
+                        </div>
+                        <p class="mt-2 text-muted">Loading services...</p>
+                    </div>
+
+                    <div id="servicesContent" style="display: none;">
+                        <div class="row mb-3">
+                            <div class="col-md-6">
+                                <button id="refreshServices" class="btn btn-secondary">
+                                    <i class="bi bi-arrow-clockwise"></i> Refresh
+                                </button>
+                            </div>
+                            <div class="col-md-6 text-end">
+                                <strong>Total Services:</strong> <span id="serviceCount">0</span>
+                            </div>
+                        </div>
+
+                        <div class="certificates-table">
+                            <table>
+                                <thead>
+                                    <tr>
+                                        <th>Service Name</th>
+                                        <th>Version</th>
+                                        <th>Installed At</th>
+                                        <th>Status</th>
+                                        <th>Actions</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="servicesTableBody">
+                                    <!-- Service rows will be inserted here -->
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <div id="servicesError" style="display: none;">
+                        <div class="alert alert-danger" role="alert">
+                            <strong>Error loading services:</strong>
+                            <span id="servicesErrorMessage"></span>
                         </div>
                     </div>
                 </div>
@@ -764,6 +830,89 @@
         </div>
     </div>
 
+    <!-- Deploy Service Modal -->
+    <div id="deployServiceModal" class="modal">
+        <div class="modal-content" style="max-width: 600px;">
+            <div class="modal-header">
+                <h2>Deploy Service to Workers</h2>
+                <span class="close-btn" onclick="closeDeployServiceModal()">&times;</span>
+            </div>
+            <div class="modal-body p-4">
+                <div class="mb-3">
+                    <strong>Service:</strong> <span id="deployServiceName"></span><br>
+                    <strong>Version:</strong> <span id="deployServiceVersion"></span>
+                </div>
+                <form id="deployServiceForm">
+                    <div class="mb-3">
+                        <label class="form-label">Target Workers:</label>
+                        <div id="deployWorkersCheckboxes" style="max-height: 200px; overflow-y: auto; border: 1px solid var(--border-color); border-radius: 6px; padding: 0.75rem;">
+                            <!-- Worker checkboxes will be inserted here -->
+                        </div>
+                        <small class="text-muted">Select workers to deploy this service</small>
+                    </div>
+                    <div class="mb-3 form-check">
+                        <input type="checkbox" class="form-check-input" id="forceReinstall">
+                        <label class="form-check-label" for="forceReinstall">
+                            Force reinstall (overwrite existing service)
+                        </label>
+                    </div>
+                    <div class="mt-4">
+                        <button type="submit" class="btn btn-primary">
+                            <i class="bi bi-send"></i> Deploy Service
+                        </button>
+                        <button type="button" class="btn btn-secondary ms-2" onclick="closeDeployServiceModal()">
+                            Cancel
+                        </button>
+                    </div>
+                    <div id="deployServiceStatus" class="mt-3" style="display: none;"></div>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <!-- Update Service Modal -->
+    <div id="updateServiceModal" class="modal">
+        <div class="modal-content" style="max-width: 700px;">
+            <div class="modal-header">
+                <h2>Update Service on Workers</h2>
+                <span class="close-btn" onclick="closeUpdateServiceModal()">&times;</span>
+            </div>
+            <div class="modal-body p-4">
+                <div class="mb-3">
+                    <strong>Service:</strong> <span id="updateServiceName"></span><br>
+                    <strong>Coordinator Version:</strong> <span id="updateServiceVersion"></span>
+                </div>
+                <div id="updateCheckResults" class="mb-3" style="display: none;">
+                    <h6>Version Check Results:</h6>
+                    <div id="updateCheckTable" style="max-height: 300px; overflow-y: auto;">
+                        <!-- Version comparison results will be shown here -->
+                    </div>
+                </div>
+                <form id="updateServiceForm">
+                    <div class="mb-3">
+                        <label class="form-label">Target Workers:</label>
+                        <div id="updateWorkersCheckboxes" style="max-height: 200px; overflow-y: auto; border: 1px solid var(--border-color); border-radius: 6px; padding: 0.75rem;">
+                            <!-- Worker checkboxes will be inserted here -->
+                        </div>
+                        <small class="text-muted">Leave empty to update all workers with older versions</small>
+                    </div>
+                    <div class="mt-4">
+                        <button type="button" class="btn btn-info" onclick="checkVersions()">
+                            <i class="bi bi-check-circle"></i> Check Versions
+                        </button>
+                        <button type="submit" class="btn btn-primary ms-2">
+                            <i class="bi bi-arrow-up-circle"></i> Update Service
+                        </button>
+                        <button type="button" class="btn btn-secondary ms-2" onclick="closeUpdateServiceModal()">
+                            Cancel
+                        </button>
+                    </div>
+                    <div id="updateServiceStatus" class="mt-3" style="display: none;"></div>
+                </form>
+            </div>
+        </div>
+    </div>
+
     <!-- Bootstrap JS -->
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
 
@@ -788,6 +937,10 @@
                     // Show corresponding content
                     if (targetTab === 'home') {
                         document.getElementById('homeTab').classList.add('active');
+                    } else if (targetTab === 'services') {
+                        document.getElementById('servicesTab').classList.add('active');
+                        // Load services when tab is opened
+                        loadServices();
                     } else if (targetTab === 'certificates') {
                         document.getElementById('certificatesTab').classList.add('active');
                         // Load certificates when tab is opened
@@ -838,6 +991,30 @@
                 deployForm.addEventListener('submit', async (e) => {
                     e.preventDefault();
                     await deployCertificate();
+                });
+            }
+
+            // Services tab handlers
+            const refreshServicesBtn = document.getElementById('refreshServices');
+            if (refreshServicesBtn) {
+                refreshServicesBtn.addEventListener('click', () => {
+                    loadServices();
+                });
+            }
+
+            const deployServiceForm = document.getElementById('deployServiceForm');
+            if (deployServiceForm) {
+                deployServiceForm.addEventListener('submit', async (e) => {
+                    e.preventDefault();
+                    await deployService();
+                });
+            }
+
+            const updateServiceForm = document.getElementById('updateServiceForm');
+            if (updateServiceForm) {
+                updateServiceForm.addEventListener('submit', async (e) => {
+                    e.preventDefault();
+                    await updateService();
                 });
             }
         });
@@ -2215,6 +2392,393 @@
             } catch (error) {
                 console.error('Failed to control service:', error);
                 alert(`Error: ${error.message}`);
+            }
+        }
+
+        // Services Management Functions
+        let allServices = [];
+        let currentServiceForDeploy = null;
+        let currentServiceForUpdate = null;
+
+        async function loadServices() {
+            const loadingDiv = document.getElementById('servicesLoading');
+            const contentDiv = document.getElementById('servicesContent');
+            const errorDiv = document.getElementById('servicesError');
+
+            // Show loading
+            loadingDiv.style.display = 'block';
+            contentDiv.style.display = 'none';
+            errorDiv.style.display = 'none';
+
+            try {
+                const response = await fetch('/api/services/list');
+                const data = await response.json();
+
+                if (!response.ok) {
+                    throw new Error(data.error || 'Failed to load services');
+                }
+
+                allServices = data.services || [];
+
+                // Update count
+                document.getElementById('serviceCount').textContent = allServices.length;
+
+                // Populate table
+                const tableBody = document.getElementById('servicesTableBody');
+                tableBody.innerHTML = '';
+
+                if (allServices.length === 0) {
+                    tableBody.innerHTML = `
+                        <tr>
+                            <td colspan="5" class="text-center text-muted p-4">
+                                No services installed
+                            </td>
+                        </tr>
+                    `;
+                } else {
+                    allServices.forEach(service => {
+                        const row = createServiceRow(service);
+                        tableBody.appendChild(row);
+                    });
+                }
+
+                // Show content
+                loadingDiv.style.display = 'none';
+                contentDiv.style.display = 'block';
+
+            } catch (error) {
+                console.error('Failed to load services:', error);
+                loadingDiv.style.display = 'none';
+                errorDiv.style.display = 'block';
+                document.getElementById('servicesErrorMessage').textContent = error.message;
+            }
+        }
+
+        function createServiceRow(service) {
+            const row = document.createElement('tr');
+
+            const escapedName = (service.name || '').replace(/'/g, "\\'");
+            const escapedVersion = (service.version || 'unknown').replace(/'/g, "\\'");
+
+            const statusBadge = service.directory_exists
+                ? '<span class="badge bg-success">Ready</span>'
+                : '<span class="badge bg-warning">Missing</span>';
+
+            row.innerHTML = `
+                <td><strong>${service.name || 'N/A'}</strong></td>
+                <td><code>${service.version || 'unknown'}</code></td>
+                <td>${formatDate(service.installed_at)}</td>
+                <td>${statusBadge}</td>
+                <td>
+                    <button class="btn btn-sm btn-primary" onclick="openDeployServiceModal('${escapedName}', '${escapedVersion}')" title="Deploy to workers">
+                        Deploy
+                    </button>
+                    <button class="btn btn-sm btn-warning ms-1" onclick="openUpdateServiceModal('${escapedName}', '${escapedVersion}')" title="Update on workers">
+                        Update
+                    </button>
+                </td>
+            `;
+
+            return row;
+        }
+
+        async function openDeployServiceModal(serviceName, serviceVersion) {
+            currentServiceForDeploy = { name: serviceName, version: serviceVersion };
+
+            document.getElementById('deployServiceName').textContent = serviceName;
+            document.getElementById('deployServiceVersion').textContent = serviceVersion;
+
+            // Get list of workers from current metrics
+            const workersDiv = document.getElementById('deployWorkersCheckboxes');
+            workersDiv.innerHTML = '';
+
+            try {
+                const metricsResponse = await fetch('/api/dashboard/metrics');
+                const metricsData = await metricsResponse.json();
+
+                const workers = Object.keys(metricsData.workers || {});
+
+                if (workers.length === 0) {
+                    workersDiv.innerHTML = '<p class="text-muted">No workers available</p>';
+                } else {
+                    workers.forEach(workerId => {
+                        const checkboxDiv = document.createElement('div');
+                        checkboxDiv.className = 'form-check mb-2';
+                        checkboxDiv.innerHTML = `
+                            <input class="form-check-input deploy-worker-checkbox" type="checkbox" value="${workerId}" id="deploy-worker-${workerId}">
+                            <label class="form-check-label" for="deploy-worker-${workerId}">
+                                ${workerId}
+                            </label>
+                        `;
+                        workersDiv.appendChild(checkboxDiv);
+                    });
+                }
+            } catch (error) {
+                console.error('Failed to load workers:', error);
+                workersDiv.innerHTML = '<p class="text-danger">Failed to load workers</p>';
+            }
+
+            // Reset status
+            const statusDiv = document.getElementById('deployServiceStatus');
+            statusDiv.style.display = 'none';
+            statusDiv.innerHTML = '';
+
+            // Show modal
+            document.getElementById('deployServiceModal').style.display = 'flex';
+        }
+
+        function closeDeployServiceModal() {
+            document.getElementById('deployServiceModal').style.display = 'none';
+            currentServiceForDeploy = null;
+        }
+
+        async function deployService() {
+            if (!currentServiceForDeploy) return;
+
+            const checkboxes = document.querySelectorAll('.deploy-worker-checkbox:checked');
+            const targetWorkers = Array.from(checkboxes).map(cb => cb.value);
+            const forceReinstall = document.getElementById('forceReinstall').checked;
+            const statusDiv = document.getElementById('deployServiceStatus');
+
+            if (targetWorkers.length === 0) {
+                statusDiv.innerHTML = '<div class="alert alert-warning">Please select at least one worker</div>';
+                statusDiv.style.display = 'block';
+                return;
+            }
+
+            // Show loading
+            statusDiv.innerHTML = '<div class="alert alert-info">Deploying service...</div>';
+            statusDiv.style.display = 'block';
+
+            try {
+                const response = await fetch('/api/services/deploy', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        service_name: currentServiceForDeploy.name,
+                        target_workers: targetWorkers,
+                        force_reinstall: forceReinstall
+                    })
+                });
+
+                const result = await response.json();
+
+                if (response.ok && result.successful > 0) {
+                    const successMsg = `Successfully deployed to ${result.successful} worker(s)`;
+                    const failMsg = result.failed > 0 ? `, ${result.failed} failed` : '';
+                    statusDiv.innerHTML = `<div class="alert alert-success">${successMsg}${failMsg}</div>`;
+
+                    // Show details
+                    if (result.results) {
+                        let details = '<div class="mt-2"><strong>Details:</strong><ul class="mt-1">';
+                        Object.entries(result.results).forEach(([workerId, res]) => {
+                            const status = res.success ? '✓' : '✗';
+                            const className = res.success ? 'text-success' : 'text-danger';
+                            const msg = res.error || 'Success';
+                            details += `<li class="${className}">${status} ${workerId}: ${msg}</li>`;
+                        });
+                        details += '</ul></div>';
+                        statusDiv.querySelector('.alert').innerHTML += details;
+                    }
+
+                    setTimeout(() => {
+                        closeDeployServiceModal();
+                    }, 3000);
+                } else {
+                    statusDiv.innerHTML = `<div class="alert alert-danger">Deployment failed: ${result.error || 'Unknown error'}</div>`;
+                }
+            } catch (error) {
+                console.error('Deploy error:', error);
+                statusDiv.innerHTML = `<div class="alert alert-danger">Error: ${error.message}</div>`;
+            }
+        }
+
+        async function openUpdateServiceModal(serviceName, serviceVersion) {
+            currentServiceForUpdate = { name: serviceName, version: serviceVersion };
+
+            document.getElementById('updateServiceName').textContent = serviceName;
+            document.getElementById('updateServiceVersion').textContent = serviceVersion;
+
+            // Get list of workers
+            const workersDiv = document.getElementById('updateWorkersCheckboxes');
+            workersDiv.innerHTML = '';
+
+            try {
+                const metricsResponse = await fetch('/api/dashboard/metrics');
+                const metricsData = await metricsResponse.json();
+
+                const workers = Object.keys(metricsData.workers || {});
+
+                if (workers.length === 0) {
+                    workersDiv.innerHTML = '<p class="text-muted">No workers available</p>';
+                } else {
+                    workersDiv.innerHTML = '<p class="text-muted mb-2"><small>Leave unchecked to update all workers with older versions</small></p>';
+                    workers.forEach(workerId => {
+                        const checkboxDiv = document.createElement('div');
+                        checkboxDiv.className = 'form-check mb-2';
+                        checkboxDiv.innerHTML = `
+                            <input class="form-check-input update-worker-checkbox" type="checkbox" value="${workerId}" id="update-worker-${workerId}">
+                            <label class="form-check-label" for="update-worker-${workerId}">
+                                ${workerId}
+                            </label>
+                        `;
+                        workersDiv.appendChild(checkboxDiv);
+                    });
+                }
+            } catch (error) {
+                console.error('Failed to load workers:', error);
+                workersDiv.innerHTML = '<p class="text-danger">Failed to load workers</p>';
+            }
+
+            // Reset status
+            document.getElementById('updateCheckResults').style.display = 'none';
+            const statusDiv = document.getElementById('updateServiceStatus');
+            statusDiv.style.display = 'none';
+            statusDiv.innerHTML = '';
+
+            // Show modal
+            document.getElementById('updateServiceModal').style.display = 'flex';
+        }
+
+        function closeUpdateServiceModal() {
+            document.getElementById('updateServiceModal').style.display = 'none';
+            currentServiceForUpdate = null;
+        }
+
+        async function checkVersions() {
+            if (!currentServiceForUpdate) return;
+
+            const checkboxes = document.querySelectorAll('.update-worker-checkbox');
+            let targetWorkers = Array.from(checkboxes)
+                .filter(cb => cb.checked)
+                .map(cb => cb.value);
+
+            // If no workers selected, use all workers
+            if (targetWorkers.length === 0) {
+                targetWorkers = Array.from(checkboxes).map(cb => cb.value);
+            }
+
+            if (targetWorkers.length === 0) {
+                alert('No workers available');
+                return;
+            }
+
+            const resultsDiv = document.getElementById('updateCheckResults');
+            const tableDiv = document.getElementById('updateCheckTable');
+
+            resultsDiv.style.display = 'block';
+            tableDiv.innerHTML = '<p class="text-muted">Checking versions...</p>';
+
+            try {
+                const response = await fetch('/api/services/compare-versions', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        service_name: currentServiceForUpdate.name,
+                        worker_nodes: targetWorkers
+                    })
+                });
+
+                const result = await response.json();
+
+                if (!response.ok) {
+                    throw new Error(result.error || 'Failed to check versions');
+                }
+
+                // Build results table
+                let html = '<table class="table table-sm table-dark">';
+                html += '<thead><tr><th>Worker</th><th>Version</th><th>Status</th></tr></thead><tbody>';
+
+                Object.entries(result.workers || {}).forEach(([workerId, info]) => {
+                    const version = info.version || 'Not installed';
+                    let statusBadge = '';
+
+                    if (!info.installed) {
+                        statusBadge = '<span class="badge bg-warning">Not installed</span>';
+                    } else if (info.needs_update) {
+                        statusBadge = '<span class="badge bg-danger">Needs update</span>';
+                    } else {
+                        statusBadge = '<span class="badge bg-success">Up to date</span>';
+                    }
+
+                    html += `<tr><td>${workerId}</td><td><code>${version}</code></td><td>${statusBadge}</td></tr>`;
+                });
+
+                html += '</tbody></table>';
+                tableDiv.innerHTML = html;
+
+            } catch (error) {
+                console.error('Version check error:', error);
+                tableDiv.innerHTML = `<p class="text-danger">Error: ${error.message}</p>`;
+            }
+        }
+
+        async function updateService() {
+            if (!currentServiceForUpdate) return;
+
+            const checkboxes = document.querySelectorAll('.update-worker-checkbox:checked');
+            let targetWorkers = Array.from(checkboxes).map(cb => cb.value);
+
+            // If no workers selected, pass null to update all
+            if (targetWorkers.length === 0) {
+                targetWorkers = null;
+            }
+
+            const statusDiv = document.getElementById('updateServiceStatus');
+
+            // Show loading
+            statusDiv.innerHTML = '<div class="alert alert-info">Updating service...</div>';
+            statusDiv.style.display = 'block';
+
+            try {
+                const response = await fetch('/api/services/update', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        service_name: currentServiceForUpdate.name,
+                        target_workers: targetWorkers
+                    })
+                });
+
+                const result = await response.json();
+
+                if (response.ok) {
+                    if (result.updates_needed === 0) {
+                        statusDiv.innerHTML = '<div class="alert alert-info">All workers are up to date</div>';
+                    } else {
+                        const successMsg = `Successfully updated ${result.successful_updates} worker(s)`;
+                        const failMsg = result.failed_updates > 0 ? `, ${result.failed_updates} failed` : '';
+                        statusDiv.innerHTML = `<div class="alert alert-success">${successMsg}${failMsg}</div>`;
+
+                        // Show details
+                        if (result.deployment_results) {
+                            let details = '<div class="mt-2"><strong>Details:</strong><ul class="mt-1">';
+                            Object.entries(result.deployment_results).forEach(([workerId, res]) => {
+                                const status = res.success ? '✓' : '✗';
+                                const className = res.success ? 'text-success' : 'text-danger';
+                                const msg = res.error || 'Success';
+                                details += `<li class="${className}">${status} ${workerId}: ${msg}</li>`;
+                            });
+                            details += '</ul></div>';
+                            statusDiv.querySelector('.alert').innerHTML += details;
+                        }
+                    }
+
+                    setTimeout(() => {
+                        closeUpdateServiceModal();
+                    }, 3000);
+                } else {
+                    statusDiv.innerHTML = `<div class="alert alert-danger">Update failed: ${result.error || 'Unknown error'}</div>`;
+                }
+            } catch (error) {
+                console.error('Update error:', error);
+                statusDiv.innerHTML = `<div class="alert alert-danger">Error: ${error.message}</div>`;
             }
         }
     </script>
