@@ -1327,3 +1327,420 @@ class ServiceMethods:
                 "error": str(e),
                 "success": False
             }
+
+    # ========== Service Editor Methods ==========
+
+    @service_method(description="List all available services", public=True)
+    async def list_services(self) -> Dict[str, Any]:
+        """
+        Get list of all services in dist/services/
+        
+        Returns:
+            Dictionary with services list
+        """
+        try:
+            from pathlib import Path
+            
+            services_dir = Path("dist/services")
+            if not services_dir.exists():
+                return {"success": False, "error": "Services directory not found"}
+            
+            services = []
+            for service_path in services_dir.iterdir():
+                if service_path.is_dir() and not service_path.name.startswith('.'):
+                    # Check if has main.py
+                    main_file = service_path / "main.py"
+                    manifest_file = service_path / "manifest.json"
+                    
+                    service_info = {
+                        "name": service_path.name,
+                        "path": str(service_path),
+                        "has_main": main_file.exists(),
+                        "has_manifest": manifest_file.exists()
+                    }
+                    
+                    # Read manifest if exists
+                    if manifest_file.exists():
+                        try:
+                            import json
+                            with open(manifest_file, 'r', encoding='utf-8') as f:
+                                manifest = json.load(f)
+                                service_info["version"] = manifest.get("version", "unknown")
+                                service_info["description"] = manifest.get("description", "")
+                        except Exception:
+                            pass
+                    
+                    services.append(service_info)
+            
+            return {
+                "success": True,
+                "services": sorted(services, key=lambda x: x['name']),
+                "count": len(services)
+            }
+        except Exception as e:
+            self.logger.error(f"Failed to list services: {e}")
+            return {"success": False, "error": str(e)}
+
+    @service_method(description="List files in service directory", public=True)
+    async def list_service_files(self, service_name: str) -> Dict[str, Any]:
+        """
+        Get file tree for a service
+        
+        Args:
+            service_name: Name of the service
+            
+        Returns:
+            File tree structure
+        """
+        try:
+            from pathlib import Path
+            
+            service_dir = Path(f"dist/services/{service_name}")
+            if not service_dir.exists():
+                return {"success": False, "error": f"Service {service_name} not found"}
+            
+            def build_tree(path: Path, base_path: Path) -> Dict[str, Any]:
+                """Recursively build file tree"""
+                relative = path.relative_to(base_path)
+                
+                if path.is_file():
+                    return {
+                        "name": path.name,
+                        "path": str(relative),
+                        "type": "file",
+                        "size": path.stat().st_size,
+                        "modified": path.stat().st_mtime
+                    }
+                else:
+                    children = []
+                    for child in sorted(path.iterdir()):
+                        if not child.name.startswith('.') and child.name != '__pycache__':
+                            children.append(build_tree(child, base_path))
+                    
+                    return {
+                        "name": path.name if path != base_path else service_name,
+                        "path": str(relative) if path != base_path else "",
+                        "type": "directory",
+                        "children": children
+                    }
+            
+            tree = build_tree(service_dir, service_dir)
+            
+            return {
+                "success": True,
+                "service": service_name,
+                "tree": tree
+            }
+        except Exception as e:
+            self.logger.error(f"Failed to list service files: {e}")
+            return {"success": False, "error": str(e)}
+
+    @service_method(description="Get service file content", public=True)
+    async def get_service_file(self, service_name: str, file_path: str) -> Dict[str, Any]:
+        """
+        Get content of a service file
+        
+        Args:
+            service_name: Name of the service
+            file_path: Relative path to file within service directory
+            
+        Returns:
+            File content
+        """
+        try:
+            from pathlib import Path
+            import base64
+            
+            service_dir = Path(f"dist/services/{service_name}")
+            full_path = service_dir / file_path
+            
+            # Security check: prevent directory traversal
+            if not str(full_path.resolve()).startswith(str(service_dir.resolve())):
+                return {"success": False, "error": "Invalid file path"}
+            
+            if not full_path.exists():
+                return {"success": False, "error": "File not found"}
+            
+            if not full_path.is_file():
+                return {"success": False, "error": "Path is not a file"}
+            
+            # Read file
+            try:
+                with open(full_path, 'r', encoding='utf-8') as f:
+                    content = f.read()
+                is_binary = False
+            except UnicodeDecodeError:
+                # Binary file
+                with open(full_path, 'rb') as f:
+                    content = base64.b64encode(f.read()).decode('utf-8')
+                is_binary = True
+            
+            return {
+                "success": True,
+                "service": service_name,
+                "file_path": file_path,
+                "content": content,
+                "is_binary": is_binary,
+                "size": full_path.stat().st_size
+            }
+        except Exception as e:
+            self.logger.error(f"Failed to get service file: {e}")
+            return {"success": False, "error": str(e)}
+
+    @service_method(description="Update service file content", public=True)
+    async def update_service_file(
+        self,
+        service_name: str,
+        file_path: str,
+        content: str,
+        is_binary: bool = False
+    ) -> Dict[str, Any]:
+        """
+        Update content of a service file
+        
+        Args:
+            service_name: Name of the service
+            file_path: Relative path to file within service directory
+            content: New file content (base64 if binary)
+            is_binary: Whether content is base64 encoded binary
+            
+        Returns:
+            Success status
+        """
+        try:
+            from pathlib import Path
+            import base64
+            
+            service_dir = Path(f"dist/services/{service_name}")
+            full_path = service_dir / file_path
+            
+            # Security check: prevent directory traversal
+            if not str(full_path.resolve()).startswith(str(service_dir.resolve())):
+                return {"success": False, "error": "Invalid file path"}
+            
+            # Create parent directories if needed
+            full_path.parent.mkdir(parents=True, exist_ok=True)
+            
+            # Write file
+            if is_binary:
+                content_bytes = base64.b64decode(content)
+                with open(full_path, 'wb') as f:
+                    f.write(content_bytes)
+            else:
+                with open(full_path, 'w', encoding='utf-8') as f:
+                    f.write(content)
+            
+            return {
+                "success": True,
+                "service": service_name,
+                "file_path": file_path,
+                "size": full_path.stat().st_size,
+                "message": f"File {file_path} updated successfully"
+            }
+        except Exception as e:
+            self.logger.error(f"Failed to update service file: {e}")
+            return {"success": False, "error": str(e)}
+
+    @service_method(description="Delete service file", public=True)
+    async def delete_service_file(self, service_name: str, file_path: str) -> Dict[str, Any]:
+        """
+        Delete a service file
+        
+        Args:
+            service_name: Name of the service
+            file_path: Relative path to file within service directory
+            
+        Returns:
+            Success status
+        """
+        try:
+            from pathlib import Path
+            
+            service_dir = Path(f"dist/services/{service_name}")
+            full_path = service_dir / file_path
+            
+            # Security check: prevent directory traversal
+            if not str(full_path.resolve()).startswith(str(service_dir.resolve())):
+                return {"success": False, "error": "Invalid file path"}
+            
+            if not full_path.exists():
+                return {"success": False, "error": "File not found"}
+            
+            # Don't allow deleting main.py
+            if full_path.name == "main.py" and full_path.parent == service_dir:
+                return {"success": False, "error": "Cannot delete main.py"}
+            
+            # Delete file or directory
+            if full_path.is_file():
+                full_path.unlink()
+            elif full_path.is_dir():
+                import shutil
+                shutil.rmtree(full_path)
+            
+            return {
+                "success": True,
+                "service": service_name,
+                "file_path": file_path,
+                "message": f"File {file_path} deleted successfully"
+            }
+        except Exception as e:
+            self.logger.error(f"Failed to delete service file: {e}")
+            return {"success": False, "error": str(e)}
+
+    @service_method(description="Rename service file", public=True)
+    async def rename_service_file(
+        self,
+        service_name: str,
+        old_path: str,
+        new_name: str
+    ) -> Dict[str, Any]:
+        """
+        Rename a service file
+        
+        Args:
+            service_name: Name of the service
+            old_path: Current relative path to file
+            new_name: New file name (not full path, just name)
+            
+        Returns:
+            Success status
+        """
+        try:
+            from pathlib import Path
+            
+            service_dir = Path(f"dist/services/{service_name}")
+            old_full_path = service_dir / old_path
+            
+            # Security check
+            if not str(old_full_path.resolve()).startswith(str(service_dir.resolve())):
+                return {"success": False, "error": "Invalid file path"}
+            
+            if not old_full_path.exists():
+                return {"success": False, "error": "File not found"}
+            
+            # Don't allow renaming main.py
+            if old_full_path.name == "main.py" and old_full_path.parent == service_dir:
+                return {"success": False, "error": "Cannot rename main.py"}
+            
+            # New path is in same directory
+            new_full_path = old_full_path.parent / new_name
+            
+            if new_full_path.exists():
+                return {"success": False, "error": "File with new name already exists"}
+            
+            old_full_path.rename(new_full_path)
+            
+            # Calculate new relative path
+            new_relative = new_full_path.relative_to(service_dir)
+            
+            return {
+                "success": True,
+                "service": service_name,
+                "old_path": old_path,
+                "new_path": str(new_relative),
+                "message": f"File renamed to {new_name}"
+            }
+        except Exception as e:
+            self.logger.error(f"Failed to rename service file: {e}")
+            return {"success": False, "error": str(e)}
+
+    @service_method(description="Get service manifest", public=True)
+    async def get_service_manifest(self, service_name: str) -> Dict[str, Any]:
+        """
+        Get manifest.json for a service
+        
+        Args:
+            service_name: Name of the service
+            
+        Returns:
+            Manifest data
+        """
+        try:
+            from pathlib import Path
+            import json
+            
+            service_dir = Path(f"dist/services/{service_name}")
+            manifest_file = service_dir / "manifest.json"
+            
+            if not manifest_file.exists():
+                # Return default manifest
+                return {
+                    "success": True,
+                    "service": service_name,
+                    "manifest": {
+                        "name": service_name,
+                        "version": "1.0.0",
+                        "description": ""
+                    },
+                    "exists": False
+                }
+            
+            with open(manifest_file, 'r', encoding='utf-8') as f:
+                manifest = json.load(f)
+            
+            return {
+                "success": True,
+                "service": service_name,
+                "manifest": manifest,
+                "exists": True
+            }
+        except Exception as e:
+            self.logger.error(f"Failed to get service manifest: {e}")
+            return {"success": False, "error": str(e)}
+
+    @service_method(description="Increment service version", public=True)
+    async def increment_service_version(self, service_name: str) -> Dict[str, Any]:
+        """
+        Increment patch version in manifest.json (e.g., 1.0.0 -> 1.0.1)
+        
+        Args:
+            service_name: Name of the service
+            
+        Returns:
+            New version info
+        """
+        try:
+            from pathlib import Path
+            import json
+            
+            service_dir = Path(f"dist/services/{service_name}")
+            manifest_file = service_dir / "manifest.json"
+            
+            # Read or create manifest
+            if manifest_file.exists():
+                with open(manifest_file, 'r', encoding='utf-8') as f:
+                    manifest = json.load(f)
+            else:
+                manifest = {
+                    "name": service_name,
+                    "version": "1.0.0",
+                    "description": ""
+                }
+            
+            # Parse version
+            current_version = manifest.get("version", "1.0.0")
+            parts = current_version.split('.')
+            
+            # Increment patch version
+            if len(parts) >= 3:
+                parts[2] = str(int(parts[2]) + 1)
+            else:
+                parts = ["1", "0", "1"]
+            
+            new_version = '.'.join(parts)
+            manifest["version"] = new_version
+            
+            # Save manifest
+            with open(manifest_file, 'w', encoding='utf-8') as f:
+                json.dump(manifest, f, indent=2)
+            
+            return {
+                "success": True,
+                "service": service_name,
+                "old_version": current_version,
+                "new_version": new_version,
+                "message": f"Version incremented from {current_version} to {new_version}"
+            }
+        except Exception as e:
+            self.logger.error(f"Failed to increment service version: {e}")
+            return {"success": False, "error": str(e)}
