@@ -141,7 +141,7 @@ class P2PConfig:
             coordinator_addresses = ["127.0.0.1:8001"]
             state_directory = "data/worker"
 
-        logger.info(f"Creating default config for {'coordinator' if coordinator_mode else 'worker'}: {node_id}")
+        logger.debug(f"Creating default config for {'coordinator' if coordinator_mode else 'worker'}: {node_id}")
 
         config = cls(
             node_id=node_id,
@@ -176,7 +176,7 @@ class P2PConfig:
 
         # Сохраняем в storage
         storage_manager.write_config(config_name, yaml_content)
-        logger.info(f"Config saved to secure storage: {config_name}")
+        logger.debug(f"Config saved to secure storage: {config_name}")
 
     @classmethod
     def from_yaml(cls, yaml_path: str, context = None) -> 'P2PConfig':
@@ -203,7 +203,7 @@ class P2PConfig:
         config_name = Path(yaml_path).name
 
         try:
-            logger.info(f"Loading config from secure storage: {config_name}")
+            logger.debug(f"Loading config from secure storage: {config_name}")
             yaml_content = storage_manager.read_config(config_name)
 
             config_data = yaml.safe_load(yaml_content)
@@ -211,12 +211,12 @@ class P2PConfig:
             if not config_data.get('coordinator_mode'):
                 config_data['ssl_ca_key_file'] = None
 
-            logger.info(f"Config loaded successfully from secure storage: {config_name}")
+            logger.debug(f"Config loaded successfully from secure storage: {config_name}")
             return cls(**config_data)
 
         except FileNotFoundError:
             logger.warning(f"Config not found in storage: {config_name}")
-            logger.info("Creating default configuration...")
+            logger.debug("Creating default configuration...")
 
             # Определяем режим по имени файла
             coordinator_mode = "coordinator" in config_name.lower()
@@ -227,7 +227,7 @@ class P2PConfig:
             # Сохраняем в хранилище
             default_config.save_to_storage(config_name, storage_manager)
 
-            logger.info(f"Default config created and saved: {config_name}")
+            logger.debug(f"Default config created and saved: {config_name}")
             return default_config
 
         except Exception as e:
@@ -280,7 +280,7 @@ class P2PComponent:
         try:
             await self._do_initialize()
             self.state = ComponentState.RUNNING
-            self.logger.info(f"Component {self.name} initialized successfully")
+            self.logger.debug(f"Component {self.name} initialized successfully")
 
         except Exception as e:
             self.state = ComponentState.ERROR
@@ -305,7 +305,7 @@ class P2PComponent:
             self.state = ComponentState.STOPPED
             import time
             self.metrics.stop_time = time.time()
-            self.logger.info(f"Component {self.name} shutdown successfully")
+            self.logger.debug(f"Component {self.name} shutdown successfully")
 
         except Exception as e:
             self.state = ComponentState.ERROR
@@ -480,7 +480,7 @@ class P2PApplicationContext:
             raise ValueError(f"Component {component.name} already registered")
 
         self._components[component.name] = component
-        self.logger.info(f"Registered component: {component.name}")
+        self.logger.debug(f"Registered component: {component.name}")
 
     def get_component(self, name: str) -> Optional[P2PComponent]:
         """Получить компонент по имени"""
@@ -544,7 +544,7 @@ class P2PApplicationContext:
     async def initialize_all(self) -> None:
         """Инициализация всех компонентов в правильном порядке"""
         async with self._initialization_lock:
-            self.logger.info("Starting system initialization...")
+            self.logger.debug("Starting system initialization...")
 
             # Переустанавливаем exception handler для текущего event loop
             # (на случай если в __init__ loop еще не существовал)
@@ -567,7 +567,7 @@ class P2PApplicationContext:
                 if not component:
                     continue
 
-                self.logger.info(f"Initializing component: {component_name}")
+                self.logger.debug(f"Initializing component: {component_name}")
 
                 # Проверяем что все зависимости уже инициализированы
                 for dep_name in component._dependencies:
@@ -583,7 +583,7 @@ class P2PApplicationContext:
                     await self._rollback_initialization(component_name)
                     raise
 
-            self.logger.info("System initialization completed successfully")
+            self.logger.debug("System initialization completed successfully")
 
     async def _rollback_initialization(self, failed_component: str) -> None:
         """Откат инициализации при ошибке"""
@@ -607,7 +607,7 @@ class P2PApplicationContext:
 
     async def shutdown_all(self) -> None:
         """Graceful shutdown всех компонентов"""
-        self.logger.info("Starting graceful shutdown...")
+        self.logger.debug("Starting graceful shutdown...")
 
         # Выполняем shutdown handlers
         self.logger.debug(f"Running {len(self._shutdown_handlers)} shutdown handlers...")
@@ -632,11 +632,11 @@ class P2PApplicationContext:
                 self.logger.debug(f"Skipping component {component_name} (not running)")
                 continue
 
-            self.logger.info(f"Shutting down component: {component_name}")
+            self.logger.debug(f"Shutting down component: {component_name}")
 
             try:
                 await asyncio.wait_for(component.shutdown(), timeout=3.0)
-                self.logger.info(f"Component {component_name} shutdown completed")
+                self.logger.debug(f"Component {component_name} shutdown completed")
             except asyncio.TimeoutError:
                 self.logger.error(f"Component {component_name} shutdown timed out (3s) - continuing anyway")
             except Exception as e:
@@ -649,9 +649,9 @@ class P2PApplicationContext:
         try:
             storage_manager = self.get_shared("storage_manager")
             if storage_manager:
-                self.logger.info("Saving secure storage before shutdown...")
+                self.logger.debug("Saving secure storage before shutdown...")
                 storage_manager.save()
-                self.logger.info("Secure storage saved successfully")
+                self.logger.debug("Secure storage saved successfully")
         except Exception as e:
             self.logger.error(f"Error saving storage during shutdown: {e}")
 
@@ -719,12 +719,12 @@ class TransportComponent(P2PComponent):
 
         self.transport = P2PTransportLayer(config)
         self.context.set_shared("transport", self.transport)
-        self.logger.info("Transport layer initialized")
+        self.logger.debug("Transport layer initialized")
 
     async def _do_shutdown(self):
         if hasattr(self, 'transport'):
             await self.transport.close_all()
-            self.logger.info("Transport layer shutdown")
+            self.logger.debug("Transport layer shutdown")
 
 
 class CacheComponent(P2PComponent):
@@ -747,12 +747,12 @@ class CacheComponent(P2PComponent):
 
         cache_type = 'Redis + Memory' if self.cache.redis_available else 'Memory Only'
         self.context.set_shared("cache", self.cache)
-        self.logger.info(f"Cache system initialized: {cache_type}")
+        self.logger.debug(f"Cache system initialized: {cache_type}")
 
     async def _do_shutdown(self):
         if hasattr(self, 'cache'):
             await self.cache.close()
-            self.logger.info("Cache system shutdown")
+            self.logger.debug("Cache system shutdown")
 
 
 class NetworkComponent(P2PComponent):
@@ -806,17 +806,17 @@ class NetworkComponent(P2PComponent):
         join_addresses = self.context.get_shared("join_addresses", [])
 
         def setup_service_gossip_integration():
-            self.logger.info("🔧 Setting up service gossip integration...")
+            self.logger.debug("🔧 Setting up service gossip integration...")
             service_manager = self.context.get_shared("service_manager")
             if service_manager:
-                self.logger.info(f"   Service manager found: {type(service_manager).__name__}")
+                self.logger.debug(f"   Service manager found: {type(service_manager).__name__}")
                 # Оборачиваем в lambda чтобы избежать проблем с bound methods в exe сборках
                 # В exe может потеряться привязка self при передаче метода между модулями
                 async def service_info_provider_wrapper():
                     return await service_manager.get_services_info_for_gossip()
 
                 self.network.gossip.set_service_info_provider(service_info_provider_wrapper)
-                self.logger.info("✓ Service info provider connected to gossip (with exe-safe wrapper)")
+                self.logger.debug("✓ Service info provider connected to gossip (with exe-safe wrapper)")
             else:
                 self.logger.warning("⚠️  Service manager NOT found during gossip setup!")
 
@@ -825,13 +825,13 @@ class NetworkComponent(P2PComponent):
         await self.network.start(join_addresses)
 
         if join_addresses:
-            self.logger.info(f"Connected to coordinators: {', '.join(join_addresses)}")
+            self.logger.debug(f"Connected to coordinators: {', '.join(join_addresses)}")
 
         # Ждем стабилизации
         await asyncio.sleep(3)
 
         status = self.network.get_cluster_status()
-        self.logger.info(f"Cluster status - Total: {status['total_nodes']}, "
+        self.logger.debug(f"Cluster status - Total: {status['total_nodes']}, "
                          f"Live: {status['live_nodes']}, "
                          f"Coordinators: {status['coordinators']}, "
                          f"Workers: {status['workers']}")
@@ -841,7 +841,7 @@ class NetworkComponent(P2PComponent):
     async def _do_shutdown(self):
         if hasattr(self, 'network'):
             await self.network.stop()
-            self.logger.info("Network layer shutdown")
+            self.logger.debug("Network layer shutdown")
 
 
 class ServiceComponent(P2PComponent):
@@ -908,12 +908,12 @@ class ServiceComponent(P2PComponent):
         await self.service_handler.initialize_all()
 
         # Настройка gossip если необходимо
-        self.logger.info("🔧 Attempting to setup gossip integration...")
+        self.logger.debug("🔧 Attempting to setup gossip integration...")
         setup_gossip = self.context.get_shared("setup_service_gossip")
         if setup_gossip:
-            self.logger.info("   Found setup_gossip callback, calling it...")
+            self.logger.debug("   Found setup_gossip callback, calling it...")
             setup_gossip()
-            self.logger.info("✓ Gossip setup finished")
+            self.logger.debug("✓ Gossip setup finished")
         else:
             self.logger.warning("⚠️  setup_service_gossip callback NOT found in context!")
 
@@ -921,7 +921,7 @@ class ServiceComponent(P2PComponent):
         self.context.set_shared("service_layer", self.service_handler)
         self.context.set_shared("rpc", self.service_handler)
 
-        self.logger.info("Service component initialized with unified architecture")
+        self.logger.debug("Service component initialized with unified architecture")
 
     async def _setup_admin_methods(self, cache):
         """Настройка административных методов"""
@@ -947,7 +947,7 @@ class ServiceComponent(P2PComponent):
             # Регистрируем в ServiceManager через новую архитектуру
             await self.service_manager.initialize_service(system_service)
 
-            self.logger.info("Administrative methods registered: system")
+            self.logger.debug("Administrative methods registered: system")
 
             # Создаем log_collector service
             log_collector_service = LogCollector("log_collector", None)
@@ -968,7 +968,7 @@ class ServiceComponent(P2PComponent):
             # Сохраняем ссылку для использования log handler
             self.context.set_shared("log_collector", log_collector_service)
 
-            self.logger.info("Administrative methods registered: log_collector")
+            self.logger.debug("Administrative methods registered: log_collector")
 
             # Устанавливаем глобальный log handler для сбора логов
             if self.context.config.log_collection_enabled:

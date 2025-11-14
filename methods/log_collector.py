@@ -70,7 +70,7 @@ class LogCollector(BaseService):
                 self._local_log_collection_task = asyncio.create_task(
                     self._collect_local_logs_loop()
                 )
-                self.logger.info("Started local log collection for coordinator")
+                self.logger.debug("Started local log collection for coordinator")
 
         self.logger.info(f"Log collector initialized (max_logs: {self.max_logs})")
 
@@ -280,7 +280,7 @@ class LogCollector(BaseService):
         """Background task to collect logs from local P2PLogHandler"""
         import asyncio
 
-        self.logger.info("Starting local log collection loop for coordinator")
+        self.logger.debug("Starting local log collection loop for coordinator")
 
         while True:
             try:
@@ -299,7 +299,7 @@ class LogCollector(BaseService):
                             self.logger.debug(f"Collected {len(new_logs)} local logs from coordinator")
 
             except asyncio.CancelledError:
-                self.logger.info("Local log collection task cancelled")
+                self.logger.debug("Local log collection task cancelled")
                 break
             except Exception as e:
                 self.logger.error(f"Error in local log collection: {e}")

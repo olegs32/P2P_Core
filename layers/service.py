@@ -700,7 +700,7 @@ class BaseService(ABC):
 
     async def _update_system_metrics(self):
         """Background задача для обновления системных метрик - оптимизированная"""
-        self.logger.info(f"Starting heartbeat monitoring for {self.service_name}")
+        self.logger.debug(f"Starting heartbeat monitoring for {self.service_name}")
 
         # РАЗНОСИМ запуск по времени для разных сервисов
         service_delay = hash(self.service_name) % 20  # 0-20 сек задержка
@@ -1087,17 +1087,17 @@ class ServiceManager:
     def set_proxy_client(self, proxy_client):
         """Установка proxy клиента для всех сервисов"""
         self.proxy_client = proxy_client
-        self.logger.info("Setting proxy client for all services...")
+        self.logger.debug("Setting proxy client for all services...")
 
         # Инжектируем proxy во все уже созданные сервисы
         for service_name, service_instance in self.services.items():
             try:
                 if hasattr(service_instance, 'set_proxy'):
                     service_instance.set_proxy(proxy_client)
-                    self.logger.info(f"Proxy injected into service: {service_name}")
+                    self.logger.debug(f"Proxy injected into service: {service_name}")
                 elif hasattr(service_instance, 'proxy'):
                     service_instance.proxy = proxy_client
-                    self.logger.info(f"Proxy set directly for service: {service_name}")
+                    self.logger.debug(f"Proxy set directly for service: {service_name}")
             except Exception as e:
                 self.logger.error(f"Failed to inject proxy into {service_name}: {e}")
 
@@ -1106,7 +1106,7 @@ class ServiceManager:
         service_name = service_path.name
         main_file = service_path / "main.py"
 
-        self.logger.info(f"Loading service {service_name} from {main_file}")
+        self.logger.debug(f"Loading service {service_name} from {main_file}")
 
         try:
             # Создание уникального имени модуля
@@ -1130,7 +1130,7 @@ class ServiceManager:
             RunClass = module.Run
             service_instance = RunClass(service_name, self.proxy_client)
 
-            self.logger.info(f"Service instance created for {service_name}")
+            self.logger.debug(f"Service instance created for {service_name}")
             return service_instance
 
         except Exception as e:
@@ -1144,7 +1144,7 @@ class ServiceManager:
             if self.proxy_client:
                 if hasattr(service_instance, 'set_proxy'):
                     service_instance.set_proxy(self.proxy_client)
-                    self.logger.info(f"Proxy successfully set for service: {service_instance.service_name}")
+                    self.logger.debug(f"Proxy successfully set for service: {service_instance.service_name}")
                 else:
                     service_instance.proxy = self.proxy_client
 
@@ -1189,15 +1189,15 @@ class ServiceManager:
                 # Регистрируем в method_registry напрямую
                 if hasattr(self.rpc, 'method_registry'):
                     self.rpc.method_registry[rpc_path] = method
-                    self.logger.info(f"Registered method: {rpc_path}")
+                    self.logger.debug(f"Registered method: {rpc_path}")
                 # Или через метод register_method если есть
                 elif hasattr(self.rpc, 'register_method'):
                     await self.rpc.register_method(rpc_path, method)
-                    self.logger.info(f"Registered method: {rpc_path}")
+                    self.logger.debug(f"Registered method: {rpc_path}")
                 # Если есть context, регистрируем там
                 elif hasattr(self.rpc, 'context') and self.rpc.context:
                     self.rpc.context.register_method(rpc_path, method)
-                    self.logger.info(f"Registered method in context: {rpc_path}")
+                    self.logger.debug(f"Registered method in context: {rpc_path}")
                 else:
                     self.logger.warning(f"Cannot register method {rpc_path}: no registry available")
 
@@ -1206,20 +1206,20 @@ class ServiceManager:
         services_dir = get_services_path()
 
         if not services_dir.exists():
-            self.logger.info("Services directory not found, skipping service initialization")
+            self.logger.debug("Services directory not found, skipping service initialization")
             return
 
-        self.logger.info(f"Scanning services directory: {services_dir.absolute()}")
+        self.logger.debug(f"Scanning services directory: {services_dir.absolute()}")
 
         for service_path in services_dir.iterdir():
             if service_path.is_dir():
                 main_file = service_path / "main.py"
                 if main_file.exists():
-                    self.logger.info(f"Attempting to load service: {service_path.name}")
+                    self.logger.debug(f"Attempting to load service: {service_path.name}")
                     service_instance = await self.load_service(service_path)
 
                     if service_instance:
-                        self.logger.info(f"Service {service_path.name} loaded successfully")
+                        self.logger.debug(f"Service {service_path.name} loaded successfully")
                         await self.initialize_service(service_instance)
 
         self.logger.info(f"Initialized {len(self.services)} services")
