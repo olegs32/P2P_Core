@@ -107,6 +107,10 @@ class P2PConfig:
     # Persistence
     state_directory: str = "data"  # директория для хранения состояния
 
+    # Log Collection
+    max_log_entries: int = 1000  # максимальное количество логов на узел
+    log_collection_enabled: bool = True  # включить централизованный сбор логов
+
     @classmethod
     def create_default(cls, node_id: str = None, coordinator_mode: bool = False) -> 'P2PConfig':
         """
@@ -924,6 +928,7 @@ class ServiceComponent(P2PComponent):
         try:
             # Импортируем из нового объединенного файла
             from methods.system import SystemService
+            from methods.log_collector import LogCollector
 
             # Создаем system service
             system_service = SystemService("system", None)
@@ -944,11 +949,63 @@ class ServiceComponent(P2PComponent):
 
             self.logger.info("Administrative methods registered: system")
 
+            # Создаем log_collector service
+            log_collector_service = LogCollector("log_collector", None)
+
+            # Передаём context для доступа к конфигурации
+            if hasattr(log_collector_service, '__dict__'):
+                log_collector_service.context = self.context
+
+            # Инициализируем сервис
+            await log_collector_service.initialize()
+
+            # Регистрируем методы в context и глобальном реестре
+            await self._register_methods_in_context("log_collector", log_collector_service)
+
+            # Регистрируем в ServiceManager
+            await self.service_manager.initialize_service(log_collector_service)
+
+            # Сохраняем ссылку для использования log handler
+            self.context.set_shared("log_collector", log_collector_service)
+
+            self.logger.info("Administrative methods registered: log_collector")
+
+            # Устанавливаем глобальный log handler для сбора логов
+            if self.context.config.log_collection_enabled:
+                self._setup_log_handler()
+
         except Exception as e:
             self.logger.error(f"Error setting up admin methods: {e}")
             import traceback
             self.logger.error(traceback.format_exc())
             raise
+
+    def _setup_log_handler(self):
+        """Установить глобальный handler для сбора логов"""
+        try:
+            from methods.log_collector import P2PLogHandler
+
+            # Создаём handler с буфером
+            log_handler = P2PLogHandler(
+                node_id=self.context.config.node_id,
+                max_logs=self.context.config.max_log_entries
+            )
+
+            # Устанавливаем уровень логирования (захватываем всё от INFO и выше)
+            log_handler.setLevel(logging.DEBUG)
+
+            # Добавляем handler к root logger
+            logging.getLogger().addHandler(log_handler)
+
+            # Сохраняем ссылку на handler в контексте
+            self.context.set_shared("log_handler", log_handler)
+
+            self.logger.info(f"Global log handler installed (buffer size: {self.context.config.max_log_entries})")
+
+        except Exception as e:
+            self.logger.error(f"Failed to setup log handler: {e}")
+            import traceback
+            self.logger.error(traceback.format_exc())
 
     async def _register_methods_in_context(self, path: str, methods_instance):
         """Регистрация методов в контексте приложения"""

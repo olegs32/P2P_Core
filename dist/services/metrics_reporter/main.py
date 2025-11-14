@@ -187,8 +187,11 @@ class Run(BaseService):
             # Collect service data (custom data from services)
             service_data = await self._collect_service_data()
 
+            # Collect logs (new logs since last send)
+            logs = await self._collect_logs()
+
             # Send to coordinator
-            result = await self._send_to_coordinator(metrics, services, service_data)
+            result = await self._send_to_coordinator(metrics, services, service_data, logs)
 
             # Update stats
             self.stats["successful_reports"] += 1
@@ -301,9 +304,30 @@ class Run(BaseService):
 
         return service_data
 
+    async def _collect_logs(self) -> list:
+        """
+        Collect new logs from the log handler buffer
+        Returns only logs that haven't been sent yet
+        """
+        logs = []
+
+        try:
+            # Get log handler from context
+            if hasattr(self, 'context') and self.context:
+                log_handler = self.context.get_shared('log_handler')
+                if log_handler and hasattr(log_handler, 'get_new_logs'):
+                    logs = log_handler.get_new_logs()
+                    if logs:
+                        self.logger.debug(f"Collected {len(logs)} new log entries")
+        except Exception as e:
+            self.logger.error(f"Failed to collect logs: {e}")
+
+        return logs
+
     async def _send_to_coordinator(self, metrics: Dict[str, Any], services: Dict[str, Any],
-                                   service_data: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
-        """Send metrics to coordinator using proper P2P RPC proxy"""
+                                   service_data: Optional[Dict[str, Any]] = None,
+                                   logs: Optional[list] = None) -> Optional[Dict[str, Any]]:
+        """Send metrics and logs to coordinator using proper P2P RPC proxy"""
         if not self.proxy:
             raise Exception("Proxy not available")
 
@@ -311,6 +335,17 @@ class Run(BaseService):
             raise Exception("Worker ID not set")
 
         try:
+            # Send logs to log_collector if we have any
+            if logs:
+                try:
+                    await self.proxy.log_collector.coordinator.add_logs(
+                        node_id=self.worker_id,
+                        logs=logs
+                    )
+                    self.logger.debug(f"Sent {len(logs)} logs to coordinator")
+                except Exception as e:
+                    self.logger.warning(f"Failed to send logs to coordinator: {e}")
+
             # Call coordinator's metrics_dashboard.report_metrics method
             # Using proper P2P proxy with role-based targeting
             result = await self.proxy.metrics_dashboard.coordinator.report_metrics(
