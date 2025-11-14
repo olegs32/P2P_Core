@@ -13,3 +13,6 @@ python-dotenv~=1.1.1
 pyyaml~=6.0.2              # YAML configuration
 lz4~=4.3.3                 # LZ4 compression for gossip
 cryptography~=44.0.0       # SSL/TLS certificate generation
+
+# CAdES Plugin dependencies
+gostcrypto~=1.2.0          # GOST R 34.10-2012, GOST R 34.11-2012 support

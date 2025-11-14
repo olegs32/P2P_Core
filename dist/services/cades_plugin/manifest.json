@@ -5,7 +5,8 @@
   "author": "P2P Core Team",
   "dependencies": [
     "service_framework",
-    "cryptography"
+    "cryptography",
+    "gostcrypto"
   ],
   "capabilities": [
     "digital_signature",

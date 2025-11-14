@@ -1,4 +1,0 @@
-# CAdES Plugin Service Dependencies
-
-# Core cryptography library
-cryptography>=41.0.0

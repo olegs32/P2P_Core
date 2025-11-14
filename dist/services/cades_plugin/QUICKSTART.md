@@ -7,7 +7,7 @@
 ### 1. Установка зависимостей
 
 ```bash
-pip install -r dist/services/cades_plugin/requirements.txt
+pip install -r requirements.txt
 ```
 
 ### 2. Запуск P2P Core
