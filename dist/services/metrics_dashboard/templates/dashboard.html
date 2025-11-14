@@ -1336,7 +1336,10 @@
                                 <div class="col-md-4">
                                     <label class="form-label mb-1">Версия:</label>
                                     <div class="input-group input-group-sm">
-                                        <input type="text" class="form-control" id="editorServiceVersion" readonly>
+                                        <input type="text" class="form-control" id="editorServiceVersion" placeholder="1.0.0">
+                                        <button class="btn btn-outline-success" type="button" id="editorSaveVersion" title="Сохранить версию">
+                                            <i class="bi bi-check-circle"></i>
+                                        </button>
                                         <button class="btn btn-outline-secondary" type="button" id="editorIncrementVersion" title="Увеличить версию +0.0.1">
                                             <i class="bi bi-arrow-up-circle"></i> +0.0.1
                                         </button>
@@ -1565,9 +1568,11 @@
                 if (data.logs) {
                     updateLogsFromWS(data.logs);
                 }
-                if (data.log_sources) {
-                    updateLogSourcesFromWS(data.log_sources);
-                }
+            }
+
+            // ALWAYS update log sources (filters), regardless of active tab
+            if (data.log_sources) {
+                updateLogSourcesFromWS(data.log_sources);
             }
         }
 
@@ -4333,6 +4338,47 @@
             }
         }
 
+        // Save version
+        async function editorSaveVersion() {
+            if (!editorCurrentService) return;
+
+            const version = document.getElementById('editorServiceVersion').value.trim();
+            if (!version) {
+                alert('Введите версию');
+                return;
+            }
+
+            // Validate version format (basic check)
+            if (!/^\d+\.\d+\.\d+$/.test(version)) {
+                if (!confirm(`Версия "${version}" не соответствует формату X.Y.Z. Продолжить?`)) {
+                    return;
+                }
+            }
+
+            try {
+                const response = await fetch('/api/services/version/update', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        node_id: editorCurrentNode,
+                        service_name: editorCurrentService,
+                        version: version
+                    })
+                });
+
+                const result = await response.json();
+
+                if (result.success) {
+                    alert(`Версия сохранена: ${result.new_version}`);
+                } else {
+                    alert(`Ошибка: ${result.error}`);
+                }
+            } catch (error) {
+                console.error('Failed to save version:', error);
+                alert('Ошибка сохранения версии');
+            }
+        }
+
         // Increment version
         async function editorIncrementVersion() {
             if (!editorCurrentService) return;
@@ -4401,6 +4447,7 @@
         document.getElementById('editorDownloadFile')?.addEventListener('click', editorDownloadFile);
         document.getElementById('editorNewFile')?.addEventListener('click', editorNewFile);
         document.getElementById('editorUploadFile')?.addEventListener('click', editorUploadFile);
+        document.getElementById('editorSaveVersion')?.addEventListener('click', editorSaveVersion);
         document.getElementById('editorIncrementVersion')?.addEventListener('click', editorIncrementVersion);
 
         // Initialize editor when tab is shown

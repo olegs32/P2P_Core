@@ -523,6 +523,32 @@ class Run(BaseService):
                 self.logger.error(f"Failed to get service manifest on {node_id}: {e}")
                 return {"success": False, "error": str(e)}
 
+        @app.post("/api/services/version/update")
+        async def update_service_version_endpoint(request: Request):
+            """Update service version in manifest"""
+            data = await request.json()
+            node_id = data.get('node_id', 'coordinator')
+            service_name = data.get('service_name')
+            version = data.get('version')
+
+            if not service_name or not version:
+                return {"success": False, "error": "service_name and version are required"}
+
+            try:
+                if node_id == 'coordinator':
+                    system_proxy = self.proxy.system
+                else:
+                    system_proxy = getattr(self.proxy.system, node_id)
+
+                result = await system_proxy.update_service_version(
+                    service_name=service_name,
+                    version=version
+                )
+                return result
+            except Exception as e:
+                self.logger.error(f"Failed to update service version on {node_id}: {e}")
+                return {"success": False, "error": str(e)}
+
         @app.post("/api/services/version/increment")
         async def increment_service_version_endpoint(request: Request):
             """Increment service version in manifest"""

@@ -1550,6 +1550,57 @@ class SystemService(BaseService):
             self.logger.error(f"Failed to get service manifest: {e}")
             return {"success": False, "error": str(e)}
 
+    @service_method(description="Update service version in manifest", public=True)
+    async def update_service_version(self, service_name: str, version: str) -> Dict[str, Any]:
+        """
+        Update version in manifest.json
+
+        Args:
+            service_name: Name of the service
+            version: New version string (e.g., "1.2.3")
+
+        Returns:
+            Version update info
+        """
+        try:
+            from pathlib import Path
+            import json
+
+            service_dir = Path(f"dist/services/{service_name}")
+            if not service_dir.exists():
+                return {"success": False, "error": f"Service {service_name} not found"}
+
+            manifest_file = service_dir / "manifest.json"
+
+            # Read or create manifest
+            if manifest_file.exists():
+                with open(manifest_file, 'r', encoding='utf-8') as f:
+                    manifest = json.load(f)
+            else:
+                manifest = {
+                    "name": service_name,
+                    "version": "1.0.0",
+                    "description": ""
+                }
+
+            old_version = manifest.get("version", "1.0.0")
+            manifest["version"] = version
+
+            # Save manifest
+            with open(manifest_file, 'w', encoding='utf-8') as f:
+                json.dump(manifest, f, indent=2, ensure_ascii=False)
+
+            return {
+                "success": True,
+                "service": service_name,
+                "old_version": old_version,
+                "new_version": version,
+                "message": f"Version updated from {old_version} to {version}"
+            }
+        except Exception as e:
+            self.logger.error(f"Failed to update service version: {e}")
+            return {"success": False, "error": str(e)}
+
     @service_method(description="Increment service version", public=True)
     async def increment_service_version(self, service_name: str) -> Dict[str, Any]:
         """
@@ -1594,7 +1645,7 @@ class SystemService(BaseService):
             
             # Save manifest
             with open(manifest_file, 'w', encoding='utf-8') as f:
-                json.dump(manifest, f, indent=2)
+                json.dump(manifest, f, indent=2, ensure_ascii=False)
             
             return {
                 "success": True,
