@@ -1133,24 +1133,30 @@
                     });
 
                     if (activeWorkersEl) {
+                        const oldValue = activeWorkersEl.textContent;
                         activeWorkersEl.textContent = metrics.stats.active_workers || 0;
-                        console.log('Set activeWorkers to:', metrics.stats.active_workers);
+                        console.log('activeWorkers:', oldValue, '→', activeWorkersEl.textContent);
                     }
                     if (totalServicesEl) {
+                        const oldValue = totalServicesEl.textContent;
                         totalServicesEl.textContent = metrics.stats.total_services || 0;
-                        console.log('Set totalServices to:', metrics.stats.total_services);
+                        console.log('totalServices:', oldValue, '→', totalServicesEl.textContent);
                     }
                     if (totalUpdatesEl) {
+                        const oldValue = totalUpdatesEl.textContent;
                         totalUpdatesEl.textContent = metrics.stats.total_updates || 0;
+                        console.log('totalUpdates:', oldValue, '→', totalUpdatesEl.textContent);
                     }
 
                     // Update uptime
                     if (uptimeDisplayEl) {
+                        const oldValue = uptimeDisplayEl.textContent;
                         const uptimeSeconds = metrics.stats.uptime_seconds || 0;
                         const hours = Math.floor(uptimeSeconds / 3600);
                         const minutes = Math.floor((uptimeSeconds % 3600) / 60);
-                        uptimeDisplayEl.textContent = `${hours}h ${minutes}m`;
-                        console.log('Set uptime to:', `${hours}h ${minutes}m`);
+                        const newValue = `${hours}h ${minutes}m`;
+                        uptimeDisplayEl.textContent = newValue;
+                        console.log('uptime:', oldValue, '→', newValue);
                     }
                 } else {
                     console.warn('No stats in metrics');
@@ -2075,13 +2081,23 @@
 
         // Update node metrics display
         function updateNodeMetrics(prefix, metrics) {
+            console.log(`updateNodeMetrics(${prefix}):`, metrics);
+
             const cpuPercent = metrics.cpu_percent || 0;
             const memoryPercent = metrics.memory?.percent || 0;
             const diskPercent = metrics.disk?.percent || 0;
 
-            document.getElementById(`${prefix}CPU`).textContent = `${cpuPercent.toFixed(1)}%`;
-            document.getElementById(`${prefix}Memory`).textContent = `${memoryPercent.toFixed(1)}%`;
-            document.getElementById(`${prefix}Disk`).textContent = `${diskPercent.toFixed(1)}%`;
+            console.log(`  CPU: ${cpuPercent}%, Memory: ${memoryPercent}%, Disk: ${diskPercent}%`);
+
+            const cpuEl = document.getElementById(`${prefix}CPU`);
+            const memEl = document.getElementById(`${prefix}Memory`);
+            const diskEl = document.getElementById(`${prefix}Disk`);
+
+            console.log(`  DOM elements: CPU=${cpuEl}, Mem=${memEl}, Disk=${diskEl}`);
+
+            if (cpuEl) cpuEl.textContent = `${cpuPercent.toFixed(1)}%`;
+            if (memEl) memEl.textContent = `${memoryPercent.toFixed(1)}%`;
+            if (diskEl) diskEl.textContent = `${diskPercent.toFixed(1)}%`;
 
             // Update progress bars
             updateProgressBar(`${prefix}CPUBar`, cpuPercent);
