@@ -1716,8 +1716,38 @@
                 const tbody = document.getElementById('logsTableBody');
                 if (!tbody) return;
 
-                // Prepend new logs to table
-                newLogs.reverse().forEach(log => {
+                // Get current filter values
+                const nodeFilter = document.getElementById('logNodeFilter')?.value || '';
+                const levelFilter = document.getElementById('logLevelFilter')?.value || '';
+                const loggerFilter = document.getElementById('logLoggerFilter')?.value || '';
+
+                // Filter logs before displaying
+                const filteredLogs = newLogs.filter(log => {
+                    // Apply node filter
+                    if (nodeFilter && log.node_id !== nodeFilter) {
+                        return false;
+                    }
+
+                    // Apply level filter (level and higher)
+                    if (levelFilter) {
+                        const levels = ['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'];
+                        const filterIndex = levels.indexOf(levelFilter);
+                        const logIndex = levels.indexOf(log.level);
+                        if (filterIndex !== -1 && logIndex !== -1 && logIndex < filterIndex) {
+                            return false;
+                        }
+                    }
+
+                    // Apply logger filter
+                    if (loggerFilter && log.logger_name !== loggerFilter) {
+                        return false;
+                    }
+
+                    return true;
+                });
+
+                // Prepend filtered logs to table
+                filteredLogs.reverse().forEach(log => {
                     const levelClass = getLogLevelClass(log.level);
                     const timestamp = new Date(log.timestamp).toLocaleString('ru-RU');
 
@@ -1892,6 +1922,29 @@
                 deployForm.addEventListener('submit', async (e) => {
                     e.preventDefault();
                     await deployCertificate();
+                });
+            }
+
+            // Log filters event handlers
+            const logNodeFilter = document.getElementById('logNodeFilter');
+            const logLevelFilter = document.getElementById('logLevelFilter');
+            const logLoggerFilter = document.getElementById('logLoggerFilter');
+
+            if (logNodeFilter) {
+                logNodeFilter.addEventListener('change', () => {
+                    loadLogs(0); // Reload logs from page 0
+                });
+            }
+
+            if (logLevelFilter) {
+                logLevelFilter.addEventListener('change', () => {
+                    loadLogs(0); // Reload logs from page 0
+                });
+            }
+
+            if (logLoggerFilter) {
+                logLoggerFilter.addEventListener('change', () => {
+                    loadLogs(0); // Reload logs from page 0
                 });
             }
         });
