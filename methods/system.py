@@ -1013,24 +1013,34 @@ class SystemService(BaseService):
                 filename_only = filename
 
             if file_type == "config":
-                content = storage.read_config(filename_only)
+                # read_config returns str, not bytes
+                content_str = storage.read_config(filename_only)
+                is_binary = False
+                content_size = len(content_str)
             elif file_type == "cert":
+                # read_cert returns bytes
                 content = storage.read_cert(filename_only)
+                content_size = len(content)
+                # Certs are usually binary, encode to base64
+                try:
+                    content_str = content.decode('utf-8')
+                    is_binary = False
+                except (UnicodeDecodeError, AttributeError):
+                    content_str = base64.b64encode(content).decode('utf-8')
+                    is_binary = True
             elif file_type == "data":
+                # read returns bytes
                 content = storage.read(filename_only)
+                content_size = len(content)
+                # Try to decode as text, otherwise base64 encode
+                try:
+                    content_str = content.decode('utf-8')
+                    is_binary = False
+                except (UnicodeDecodeError, AttributeError):
+                    content_str = base64.b64encode(content).decode('utf-8')
+                    is_binary = True
             else:
                 return {"error": f"Invalid file type: {file_type}", "success": False}
-
-            if content is None:
-                return {"error": f"File not found: {filename}", "success": False}
-
-            # Try to decode as text, otherwise base64 encode
-            try:
-                content_str = content.decode('utf-8')
-                is_binary = False
-            except UnicodeDecodeError:
-                content_str = base64.b64encode(content).decode('utf-8')
-                is_binary = True
 
             return {
                 "success": True,
@@ -1038,7 +1048,7 @@ class SystemService(BaseService):
                 "file_type": file_type,
                 "content": content_str,
                 "is_binary": is_binary,
-                "size": len(content)
+                "size": content_size
             }
 
         except Exception as e:
@@ -1150,10 +1160,10 @@ class SystemService(BaseService):
             else:
                 return {"error": f"Invalid file type: {file_type}", "success": False}
 
-            # Try to delete from archive
+            # Try to delete from archive's virtual_fs
             try:
-                if file_path in archive.files:
-                    del archive.files[file_path]
+                if file_path in archive.virtual_fs:
+                    del archive.virtual_fs[file_path]
                     success = True
                 else:
                     success = False
