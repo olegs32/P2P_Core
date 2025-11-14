@@ -527,6 +527,133 @@ class Run(BaseService):
                     content={"success": False, "error": str(e)}
                 )
 
+        # Service deployment endpoints
+        @app.get("/api/services/list")
+        async def list_services():
+            """Get list of services with versions from coordinator"""
+            try:
+                if hasattr(self.proxy, 'orchestrator'):
+                    result = await self.proxy.orchestrator.get_services_with_versions()
+                    return JSONResponse(content=result)
+                else:
+                    return JSONResponse(
+                        status_code=500,
+                        content={"success": False, "error": "orchestrator service not available"}
+                    )
+            except Exception as e:
+                self.logger.error(f"Error getting services list: {e}")
+                return JSONResponse(
+                    status_code=500,
+                    content={"success": False, "error": str(e)}
+                )
+
+        @app.post("/api/services/deploy")
+        async def deploy_service(request: Request):
+            """Deploy service from coordinator to workers"""
+            try:
+                data = await request.json()
+                service_name = data.get('service_name')
+                target_workers = data.get('target_workers', [])
+                force_reinstall = data.get('force_reinstall', False)
+
+                if not service_name or not target_workers:
+                    return JSONResponse(
+                        status_code=400,
+                        content={"success": False, "error": "Missing service_name or target_workers"}
+                    )
+
+                self.logger.info(f"Deploying service {service_name} to workers: {target_workers}")
+
+                if hasattr(self.proxy, 'orchestrator'):
+                    result = await self.proxy.orchestrator.deploy_service_to_workers(
+                        service_name=service_name,
+                        target_workers=target_workers,
+                        force_reinstall=force_reinstall
+                    )
+                    return JSONResponse(content=result)
+                else:
+                    return JSONResponse(
+                        status_code=500,
+                        content={"success": False, "error": "orchestrator service not available"}
+                    )
+
+            except Exception as e:
+                self.logger.error(f"Error deploying service: {e}")
+                return JSONResponse(
+                    status_code=500,
+                    content={"success": False, "error": str(e)}
+                )
+
+        @app.post("/api/services/update")
+        async def update_service(request: Request):
+            """Update service on workers if coordinator has newer version"""
+            try:
+                data = await request.json()
+                service_name = data.get('service_name')
+                target_workers = data.get('target_workers')  # Can be None to update all
+
+                if not service_name:
+                    return JSONResponse(
+                        status_code=400,
+                        content={"success": False, "error": "Missing service_name"}
+                    )
+
+                self.logger.info(f"Updating service {service_name} on workers")
+
+                if hasattr(self.proxy, 'orchestrator'):
+                    result = await self.proxy.orchestrator.update_service_on_workers(
+                        service_name=service_name,
+                        target_workers=target_workers
+                    )
+                    return JSONResponse(content=result)
+                else:
+                    return JSONResponse(
+                        status_code=500,
+                        content={"success": False, "error": "orchestrator service not available"}
+                    )
+
+            except Exception as e:
+                self.logger.error(f"Error updating service: {e}")
+                return JSONResponse(
+                    status_code=500,
+                    content={"success": False, "error": str(e)}
+                )
+
+        @app.post("/api/services/compare-versions")
+        async def compare_versions(request: Request):
+            """Compare service versions across workers"""
+            try:
+                data = await request.json()
+                service_name = data.get('service_name')
+                worker_nodes = data.get('worker_nodes', [])
+
+                if not service_name or not worker_nodes:
+                    return JSONResponse(
+                        status_code=400,
+                        content={"success": False, "error": "Missing service_name or worker_nodes"}
+                    )
+
+                self.logger.info(f"Comparing versions for service {service_name}")
+
+                if hasattr(self.proxy, 'orchestrator'):
+                    result = await self.proxy.orchestrator.compare_service_versions(
+                        service_name=service_name,
+                        worker_nodes=worker_nodes
+                    )
+                    return JSONResponse(content=result)
+                else:
+                    return JSONResponse(
+                        status_code=500,
+                        content={"success": False, "error": "orchestrator service not available"}
+                    )
+
+            except Exception as e:
+                self.logger.error(f"Error comparing versions: {e}")
+                return JSONResponse(
+                    status_code=500,
+                    content={"success": False, "error": str(e)}
+                )
+
         self.logger.info("Dashboard HTTP endpoints registered")
 
     def _get_fastapi_app(self):
