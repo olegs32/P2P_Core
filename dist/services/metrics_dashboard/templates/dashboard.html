@@ -1572,8 +1572,8 @@
                     }
                 }
 
-                // Update cluster state
-                updateClusterState(data.workers);
+                // Update cluster state (pass stats for accurate worker count)
+                updateClusterState(data.workers, data.stats);
 
                 // Update workers
                 updateWorkers(data.workers);
@@ -1665,7 +1665,12 @@
         function updateWorkers(workers) {
             const container = document.getElementById('workersContainer');
 
-            if (!workers || Object.keys(workers).length === 0) {
+            // More robust check - ensure workers is an object with actual worker data
+            const hasWorkers = workers && typeof workers === 'object' && Object.keys(workers).length > 0;
+
+            console.log('updateWorkers called:', hasWorkers, 'worker count:', hasWorkers ? Object.keys(workers).length : 0);
+
+            if (!hasWorkers) {
                 container.innerHTML = '<div class="text-muted text-center p-4">No workers connected</div>';
                 return;
             }
@@ -1942,9 +1947,15 @@
         }
 
         // Update cluster state
-        function updateClusterState(workers) {
+        function updateClusterState(workers, stats) {
             const container = document.getElementById('coordClusterState');
-            if (!workers || Object.keys(workers).length === 0) {
+
+            // Use stats.active_workers if available, otherwise fallback to Object.keys
+            const workerCount = (stats && stats.active_workers !== undefined)
+                ? stats.active_workers
+                : (workers ? Object.keys(workers).length : 0);
+
+            if (workerCount === 0) {
                 container.innerHTML = `
                     <div class="mt-3 p-3" style="background-color: rgba(255,255,255,0.05); border-radius: 8px;">
                         <h6 class="mb-2">Cluster State</h6>
@@ -1954,10 +1965,11 @@
                 return;
             }
 
-            const workerCount = Object.keys(workers).length;
-            const totalServices = Object.values(workers).reduce((acc, w) => {
-                return acc + (w.services ? Object.keys(w.services).length : 0);
-            }, 0);
+            const totalServices = (workers && typeof workers === 'object')
+                ? Object.values(workers).reduce((acc, w) => {
+                    return acc + (w.services ? Object.keys(w.services).length : 0);
+                }, 0)
+                : 0;
 
             let html = `
                 <div class="mt-3 p-3" style="background-color: rgba(255,255,255,0.05); border-radius: 8px;">
