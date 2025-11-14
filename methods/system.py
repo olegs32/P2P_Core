@@ -1356,9 +1356,11 @@ class ServiceMethods:
                         "name": service_path.name,
                         "path": str(service_path),
                         "has_main": main_file.exists(),
-                        "has_manifest": manifest_file.exists()
+                        "has_manifest": manifest_file.exists(),
+                        "version": "unknown",
+                        "description": ""
                     }
-                    
+
                     # Read manifest if exists
                     if manifest_file.exists():
                         try:
