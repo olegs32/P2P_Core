@@ -305,6 +305,10 @@
             background-color: rgba(0, 0, 0, 0.7);
         }
 
+        .service-detail-modal {
+            z-index: 2100;
+        }
+
         .modal-content {
             background-color: var(--bg-card);
             margin: 5% auto;
@@ -697,7 +701,7 @@
     </div>
 
     <!-- Service Metrics Modal -->
-    <div id="serviceModal" class="modal">
+    <div id="serviceModal" class="modal service-detail-modal">
         <div class="modal-content">
             <div class="modal-header">
                 <h2 id="modalTitle">Service Metrics</h2>
