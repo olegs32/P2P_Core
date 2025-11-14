@@ -3980,9 +3980,13 @@
                 });
 
                 const result = await response.json();
+                console.log('Service files response:', result);
 
                 if (result.success) {
-                    document.getElementById('editorFileTree').innerHTML = editorBuildFileTreeHTML(result.files);
+                    // result.tree is the root directory object, we need its children
+                    const items = result.tree && result.tree.children ? result.tree.children : [];
+                    console.log('File tree items:', items);
+                    document.getElementById('editorFileTree').innerHTML = editorBuildFileTreeHTML(items);
                     editorLoadManifest();
                 } else {
                     document.getElementById('editorFileTree').innerHTML = `<p class="text-danger">Ошибка: ${result.error}</p>`;
@@ -3995,6 +3999,10 @@
 
         // Build file tree HTML recursively
         function editorBuildFileTreeHTML(items, level = 0) {
+            if (!items || !Array.isArray(items) || items.length === 0) {
+                return '<p class="text-muted">Нет файлов</p>';
+            }
+
             let html = '<ul class="list-unstyled" style="margin-left: ' + (level * 15) + 'px;">';
 
             items.forEach(item => {
