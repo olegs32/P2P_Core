@@ -1092,7 +1092,7 @@
             if (homeTab && homeTab.classList.contains('active')) {
                 if (data.metrics) {
                     console.log('Updating metrics from WebSocket');
-                    updateMetricsFromWS(data.metrics);
+                    updateMetricsFromWS(data.metrics, data.history);
                 } else {
                     console.warn('No metrics in WebSocket data');
                 }
@@ -1112,9 +1112,10 @@
             }
         }
 
-        function updateMetricsFromWS(metrics) {
+        function updateMetricsFromWS(metrics, history) {
             // This replaces the HTTP polling in updateMetrics()
             console.log('updateMetricsFromWS called with:', metrics);
+            console.log('History data:', history);
             try {
                 // Update statistics
                 if (metrics.stats) {
@@ -1180,6 +1181,12 @@
                     if (metrics.coordinator.services) {
                         console.log('Updating coordinator services');
                         updateCoordinatorServices(metrics.coordinator.services);
+                    }
+
+                    // Update coordinator chart
+                    if (history && history.coordinator) {
+                        console.log('Updating coordinator chart with history');
+                        updateChart('coordinator', history.coordinator);
                     }
                 } else {
                     console.warn('No coordinator metrics');

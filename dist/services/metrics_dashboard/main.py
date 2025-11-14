@@ -839,7 +839,19 @@ class Run(BaseService):
         try:
             # Collect metrics
             metrics_data = await self.get_cluster_metrics()
-            
+
+            # Collect metrics history for charts
+            history_data = {}
+
+            # Coordinator history
+            if "coordinator" in self.metrics_history:
+                history_data["coordinator"] = self.metrics_history["coordinator"][-50:]  # Last 50 points
+
+            # Worker histories
+            for worker_id in self.worker_metrics.keys():
+                if worker_id in self.metrics_history:
+                    history_data[worker_id] = self.metrics_history[worker_id][-50:]
+
             # Collect logs (last 100 entries)
             logs_data = {"logs": [], "total": 0}
             if hasattr(self.proxy, 'log_collector'):
@@ -853,7 +865,7 @@ class Run(BaseService):
                     )
                 except Exception as e:
                     self.logger.debug(f"Failed to get logs: {e}")
-            
+
             # Collect log sources
             log_sources = {"nodes": [], "loggers": [], "log_levels": []}
             if hasattr(self.proxy, 'log_collector'):
@@ -861,22 +873,23 @@ class Run(BaseService):
                     log_sources = await self.proxy.log_collector.get_log_sources()
                 except Exception as e:
                     self.logger.debug(f"Failed to get log sources: {e}")
-            
+
             # Collect service data (certificates, etc.)
             service_data = {}
             try:
                 service_data = await self.get_service_data(service_type="certificates")
             except Exception as e:
                 self.logger.debug(f"Failed to get service data: {e}")
-            
+
             return {
                 "metrics": metrics_data,
+                "history": history_data,
                 "logs": logs_data,
                 "log_sources": log_sources,
                 "service_data": service_data,
                 "timestamp": datetime.now().isoformat()
             }
-            
+
         except Exception as e:
             self.logger.error(f"Error gathering WebSocket data: {e}")
             return {
