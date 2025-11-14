@@ -806,7 +806,7 @@ class NetworkComponent(P2PComponent):
         join_addresses = self.context.get_shared("join_addresses", [])
 
         def setup_service_gossip_integration():
-            self.logger.debug("🔧 Setting up service gossip integration...")
+            self.logger.debug("Setting up service gossip integration...")
             service_manager = self.context.get_shared("service_manager")
             if service_manager:
                 self.logger.debug(f"   Service manager found: {type(service_manager).__name__}")
@@ -816,9 +816,9 @@ class NetworkComponent(P2PComponent):
                     return await service_manager.get_services_info_for_gossip()
 
                 self.network.gossip.set_service_info_provider(service_info_provider_wrapper)
-                self.logger.debug("✓ Service info provider connected to gossip (with exe-safe wrapper)")
+                self.logger.debug("Service info provider connected to gossip (with exe-safe wrapper)")
             else:
-                self.logger.warning("⚠️  Service manager NOT found during gossip setup!")
+                self.logger.warning("Service manager NOT found during gossip setup!")
 
         # Вызвать после инициализации сервисов или через callback
         self.context.set_shared("setup_service_gossip", setup_service_gossip_integration)
@@ -908,14 +908,14 @@ class ServiceComponent(P2PComponent):
         await self.service_handler.initialize_all()
 
         # Настройка gossip если необходимо
-        self.logger.debug("🔧 Attempting to setup gossip integration...")
+        self.logger.debug("Attempting to setup gossip integration...")
         setup_gossip = self.context.get_shared("setup_service_gossip")
         if setup_gossip:
             self.logger.debug("   Found setup_gossip callback, calling it...")
             setup_gossip()
-            self.logger.debug("✓ Gossip setup finished")
+            self.logger.debug("Gossip setup finished")
         else:
-            self.logger.warning("⚠️  setup_service_gossip callback NOT found in context!")
+            self.logger.warning("setup_service_gossip callback NOT found in context!")
 
         # Регистрация в контексте для обратной совместимости
         self.context.set_shared("service_layer", self.service_handler)
@@ -1323,7 +1323,6 @@ class WebServerComponent(P2PComponent):
                             # ssl = ServerSSLContext(self.context)
                             # ca_temp_cert = ssl.create_temp_files(read_cert_bytes(ca_cert_file))
                             # print('ca_temp_cert', ca_temp_cert)
-                            print(challenge)
 
                             # Запрашиваем сертификат
                             cert_pem, key_pem = await request_certificate_from_coordinator(

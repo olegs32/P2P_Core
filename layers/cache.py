@@ -17,8 +17,7 @@ try:
     import aioredis
     REDIS_AVAILABLE = True
 except (ImportError, TypeError) as e:
-    print(f"Redis недоступен: {e}")
-    print("Используется только локальное кеширование")
+    # Redis недоступен, используется только локальное кеширование
     REDIS_AVAILABLE = False
     aioredis = None
 
@@ -117,11 +116,9 @@ class P2PMultiLevelCache:
 
                 # Тестирование соединения
                 await self.l2_cache.ping()
-                print(f"Подключение к Redis успешно: {self.config.redis_url}")
 
             except Exception as e:
-                print(f"Ошибка подключения к Redis: {e}")
-                print("Переключение на локальный распределенный кеш")
+                # Переключение на локальный распределенный кеш
                 self.redis_available = False
 
         if not self.redis_available:
@@ -156,7 +153,7 @@ class P2PMultiLevelCache:
                     self.access_frequency[key] = self.access_frequency.get(key, 0) + 1
                     return data
             except Exception as e:
-                print(f"Ошибка чтения из L2 кеша: {e}")
+                pass  # Ошибка чтения из L2 кеша
 
         return None
 
@@ -173,7 +170,7 @@ class P2PMultiLevelCache:
             try:
                 await self.l2_cache.setex(cache_key, cache_ttl, json.dumps(value, default=str))
             except Exception as e:
-                print(f"Ошибка записи в L2 кеш: {e}")
+                pass  # Ошибка записи в L2 кеш
 
     async def invalidate(self, key: str, scope: str = "global"):
         """Инвалидация кеша"""
@@ -189,7 +186,7 @@ class P2PMultiLevelCache:
                 # Уведомление других узлов
                 await self._notify_cache_invalidation(key, scope)
             except Exception as e:
-                print(f"Ошибка инвалидации L2 кеша: {e}")
+                pass  # Ошибка инвалидации L2 кеша
 
     async def _notify_cache_invalidation(self, key: str, scope: str):
         """Уведомление других узлов об инвалидации"""
@@ -205,7 +202,7 @@ class P2PMultiLevelCache:
                     })
                 )
             except Exception as e:
-                print(f"Ошибка публикации инвалидации: {e}")
+                pass  # Ошибка публикации инвалидации
 
     async def setup_invalidation_listener(self):
         """Настройка слушателя инвалидации кеша"""
@@ -246,7 +243,7 @@ class P2PMultiLevelCache:
                 self.l2_cache.add_listener(local_invalidation_handler)
 
         except Exception as e:
-            print(f"Ошибка настройки слушателя инвалидации: {e}")
+            pass  # Ошибка настройки слушателя инвалидации
 
     async def close(self):
         """Закрытие соединений кеша"""
@@ -254,7 +251,7 @@ class P2PMultiLevelCache:
             try:
                 await self.l2_cache.close()
             except Exception as e:
-                print(f"Ошибка закрытия кеша: {e}")
+                pass  # Ошибка закрытия кеша
 
 
 # Кеширующий декоратор для RPC методов

@@ -1439,7 +1439,7 @@ class ServiceManager:
             except Exception as e:
                 self.logger.error(f"Error getting info for service {service_name}: {e}")
                 import traceback
-                print(traceback.format_exc())
+                self.logger.debug(traceback.format_exc())
                 # Fallback информация при ошибке
                 services_info[service_name] = {
                     "version": "unknown",
@@ -1941,9 +1941,6 @@ class P2PServiceHandler:
                         # Генерируем сертификат подписанный CA
                         ca_cert_file = self.context.config.ssl_ca_cert_file
                         ca_key_file = self.context.config.ssl_ca_key_file
-
-                        print(cert_tmp_path)
-                        print(key_tmp_path)
 
                         success = generate_signed_certificate(
                             cert_file=cert_tmp_path,

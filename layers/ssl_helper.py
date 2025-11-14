@@ -52,8 +52,6 @@ def read_cert_bytes(cert_file: str, context=None) -> Optional[bytes]:
     storage = _get_storage_manager(context)
 
     if not storage:
-        import traceback
-        print(traceback.format_exc())
         raise RuntimeError("Secure storage is not available - cannot read certificates")
 
     try:
@@ -414,7 +412,7 @@ def generate_signed_certificate(
         import traceback
 
         logger.error(f"Failed to generate signed certificate: {e}")
-        print(traceback.format_exc())
+        logger.debug(traceback.format_exc())
         return False
 
 
