@@ -154,6 +154,58 @@ class Run(BaseService):
             """Get dashboard statistics"""
             return await self.get_dashboard_stats()
 
+        # Logs API endpoints
+        @app.get("/api/logs/sources")
+        async def get_log_sources():
+            """Get available log sources (nodes and loggers)"""
+            try:
+                if hasattr(self.proxy, 'log_collector'):
+                    return await self.proxy.log_collector.get_log_sources()
+                else:
+                    return {"nodes": [], "loggers": [], "log_levels": []}
+            except Exception as e:
+                self.logger.error(f"Error getting log sources: {e}")
+                return {"nodes": [], "loggers": [], "log_levels": [], "error": str(e)}
+
+        @app.get("/api/logs")
+        async def get_logs(
+            node_id: Optional[str] = None,
+            level: Optional[str] = None,
+            logger_name: Optional[str] = None,
+            limit: int = 100,
+            offset: int = 0
+        ):
+            """Get logs with filtering"""
+            try:
+                if hasattr(self.proxy, 'log_collector'):
+                    return await self.proxy.log_collector.get_logs(
+                        node_id=node_id,
+                        level=level,
+                        logger_name=logger_name,
+                        limit=limit,
+                        offset=offset
+                    )
+                else:
+                    return {"logs": [], "total": 0, "nodes": []}
+            except Exception as e:
+                self.logger.error(f"Error getting logs: {e}")
+                return {"logs": [], "total": 0, "nodes": [], "error": str(e)}
+
+        @app.post("/api/logs/clear")
+        async def clear_logs(request: Request):
+            """Clear logs for a node or all nodes"""
+            try:
+                data = await request.json()
+                node_id = data.get('node_id')
+
+                if hasattr(self.proxy, 'log_collector'):
+                    return await self.proxy.log_collector.clear_logs(node_id=node_id)
+                else:
+                    return {"success": False, "error": "log_collector not available"}
+            except Exception as e:
+                self.logger.error(f"Error clearing logs: {e}")
+                return {"success": False, "error": str(e)}
+
         @app.post("/api/dashboard/control-service")
         async def control_service_endpoint(request: Request):
             """Control a service on a worker"""
