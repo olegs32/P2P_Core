@@ -178,14 +178,23 @@ class MethodCaller:
             # node_info может быть как словарем, так и объектом NodeInfo
             if isinstance(node_info, dict):
                 node_address = node_info.get('address')
+                node_port = node_info.get('port', 8001)  # Default port 8001
+                if not node_address:
+                    raise RuntimeError(f"Address not available for node '{self.target_node}'")
+                node_url = f"https://{node_address}:{node_port}"
             else:
-                node_address = getattr(node_info, 'address', None)
-
-            if not node_address:
-                raise RuntimeError(f"Address not available for node '{self.target_node}'")
+                # Объект NodeInfo имеет метод get_url()
+                if hasattr(node_info, 'get_url'):
+                    node_url = node_info.get_url(https=True)
+                else:
+                    node_address = getattr(node_info, 'address', None)
+                    node_port = getattr(node_info, 'port', 8001)
+                    if not node_address:
+                        raise RuntimeError(f"Address not available for node '{self.target_node}'")
+                    node_url = f"https://{node_address}:{node_port}"
 
         # Используем стандартный /rpc endpoint
-        url = f"https://{node_address}/rpc"
+        url = f"{node_url}/rpc"
         method_path = f"{self.service_name}/{self.method_name}"
 
         self.logger.debug(f"Remote RPC call to {self.target_node}: {method_path}")
