@@ -107,11 +107,35 @@
             min-height: 100vh;
         }
 
-        .tab-content {
+        /* Hide main tab-content by default, but not nested ones */
+        body > .tab-content,
+        #homeTab,
+        #certificatesTab,
+        #logsTab,
+        #controlTab {
             display: none;
         }
 
-        .tab-content.active {
+        /* Show active main tabs */
+        body > .tab-content.active,
+        #homeTab.active,
+        #certificatesTab.active,
+        #logsTab.active,
+        #controlTab.active {
+            display: block;
+        }
+
+        /* Bootstrap tabs inside Control Panel should work normally */
+        #controlTab .tab-content {
+            display: block;
+        }
+
+        #controlTab .tab-pane {
+            display: none;
+        }
+
+        #controlTab .tab-pane.active,
+        #controlTab .tab-pane.show {
             display: block;
         }
 
