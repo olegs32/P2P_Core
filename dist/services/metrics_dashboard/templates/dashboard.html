@@ -842,16 +842,8 @@
     </div>
     <!-- Logs Tab Content -->
     <div class="tab-content" id="logsTab">
-        <!-- Header -->
-        <div class="dashboard-header">
-            <div class="container">
-                <h1>Централизованные Логи</h1>
-                <p class="text-muted">Просмотр и фильтрация логов со всех узлов кластера</p>
-            </div>
-        </div>
-
         <!-- Content -->
-        <div class="container py-4">
+        <div class="container py-3">
             <!-- Filters -->
             <div class="card mb-4">
                 <div class="card-body">
@@ -864,7 +856,10 @@
                             </select>
                         </div>
                         <div class="col-md-3">
-                            <label for="logLevelFilter" class="form-label">Уровень</label>
+                            <label for="logLevelFilter" class="form-label">
+                                Уровень
+                                <small class="text-muted">(и выше)</small>
+                            </label>
                             <select class="form-select" id="logLevelFilter">
                                 <option value="">Все уровни</option>
                             </select>
@@ -976,6 +971,8 @@
                         loadCertificates();
                     } else if (targetTab === 'logs') {
                         document.getElementById('logsTab').classList.add('active');
+                        // Scroll to top when switching to logs tab
+                        window.scrollTo(0, 0);
                     }
                 });
             });
