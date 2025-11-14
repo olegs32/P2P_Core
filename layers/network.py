@@ -513,20 +513,23 @@ class SimpleGossipProtocol:
                 response_data = response.json()
                 await self._process_gossip_response(response_data)
 
-                # Обновление времени последнего контакта
-                target_node.last_seen = datetime.now()
-                if target_node.status != 'alive':
-                    target_node.status = 'alive'
-                    await self._notify_listeners(target_node.node_id, 'alive', target_node)
+                # Обновление времени последнего контакта в node_registry
+                # ВАЖНО: используем node_id чтобы найти актуальный объект в registry
+                if target_node.node_id in self.node_registry:
+                    self.node_registry[target_node.node_id].last_seen = datetime.now()
+                    if self.node_registry[target_node.node_id].status != 'alive':
+                        self.node_registry[target_node.node_id].status = 'alive'
+                        await self._notify_listeners(target_node.node_id, 'alive', self.node_registry[target_node.node_id])
             else:
                 self.log.info(f"⚠️  Gossip failed to {target_node.node_id}: HTTP {response.status_code}")
-                target_node.status = 'suspected'
+                if target_node.node_id in self.node_registry:
+                    self.node_registry[target_node.node_id].status = 'suspected'
 
         except Exception as e:
             self.log.info(f"❌ Failed to send gossip to {target_node.node_id}: {e}")
             # Пометка узла как подозрительного
-            if target_node.status == 'alive':
-                target_node.status = 'suspected'
+            if target_node.node_id in self.node_registry and self.node_registry[target_node.node_id].status == 'alive':
+                self.node_registry[target_node.node_id].status = 'suspected'
 
     async def _process_gossip_response(self, gossip_data: Dict):
         """Обработка ответа на gossip сообщение"""
