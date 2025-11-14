@@ -806,10 +806,13 @@ class NetworkComponent(P2PComponent):
             service_manager = self.context.get_shared("service_manager")
             if service_manager:
                 self.logger.info(f"   Service manager found: {type(service_manager).__name__}")
-                self.network.gossip.set_service_info_provider(
-                    service_manager.get_services_info_for_gossip
-                )
-                self.logger.info("✓ Service info provider connected to gossip")
+                # Оборачиваем в lambda чтобы избежать проблем с bound methods в exe сборках
+                # В exe может потеряться привязка self при передаче метода между модулями
+                async def service_info_provider_wrapper():
+                    return await service_manager.get_services_info_for_gossip()
+
+                self.network.gossip.set_service_info_provider(service_info_provider_wrapper)
+                self.logger.info("✓ Service info provider connected to gossip (with exe-safe wrapper)")
             else:
                 self.logger.warning("⚠️  Service manager NOT found during gossip setup!")
 
