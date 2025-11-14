@@ -1539,9 +1539,13 @@
             indicator.classList.add('active');
 
             try {
-                // Fetch cluster metrics
-                const response = await fetch('/api/dashboard/metrics');
-                const data = await response.json();
+                // Fetch ALL dashboard data in a single request (optimized!)
+                const response = await fetch('/api/dashboard/full-data');
+                const fullData = await response.json();
+
+                // Extract metrics and history from combined response
+                const data = fullData.metrics;
+                const history = fullData.history;
 
                 // Update statistics
                 document.getElementById('activeWorkers').textContent = data.stats.active_workers || 0;
@@ -1564,19 +1568,17 @@
                         updateCoordinatorServices(data.coordinator.services);
                     }
 
-                    // Fetch and update coordinator history
-                    const historyResponse = await fetch('/api/dashboard/history/coordinator');
-                    const historyData = await historyResponse.json();
-                    if (historyData.history) {
-                        updateChart('coordinator', historyData.history);
+                    // Update coordinator history (from combined response)
+                    if (history.coordinator) {
+                        updateChart('coordinator', history.coordinator);
                     }
                 }
 
                 // Update cluster state (pass stats for accurate worker count)
                 updateClusterState(data.workers, data.stats);
 
-                // Update workers
-                updateWorkers(data.workers);
+                // Update workers (pass history to avoid additional requests)
+                updateWorkers(data.workers, history);
 
             } catch (error) {
                 console.error('Failed to update metrics:', error);
@@ -1662,7 +1664,7 @@
         }
 
         // Update workers
-        function updateWorkers(workers) {
+        function updateWorkers(workers, history) {
             const container = document.getElementById('workersContainer');
 
             // More robust check - ensure workers is an object with actual worker data
@@ -1691,14 +1693,10 @@
                 // Update worker metrics
                 updateWorkerCard(workerId, workerData);
 
-                // Fetch and update worker history
-                fetch(`/api/dashboard/history/${workerId}`)
-                    .then(r => r.json())
-                    .then(data => {
-                        if (data.history) {
-                            updateChart(workerId, data.history);
-                        }
-                    });
+                // Update worker history (from combined response - no extra fetch!)
+                if (history && history[workerId]) {
+                    updateChart(workerId, history[workerId]);
+                }
             });
         }
 

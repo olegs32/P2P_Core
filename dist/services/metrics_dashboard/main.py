@@ -114,6 +114,31 @@ class Run(BaseService):
                 )
 
         # API endpoints for dashboard data
+        @app.get("/api/dashboard/full-data")
+        async def get_full_dashboard_data():
+            """Get all dashboard data in a single request (optimized)"""
+            # Get cluster metrics with gossip fallback
+            metrics_data = await self.get_cluster_metrics()
+
+            # Collect history for all nodes
+            history_data = {}
+
+            # Coordinator history
+            coord_history = await self.get_metrics_history("coordinator", limit=50)
+            history_data["coordinator"] = coord_history.get("history", [])
+
+            # Worker history
+            for worker_id in metrics_data.get("workers", {}).keys():
+                worker_history = await self.get_metrics_history(worker_id, limit=50)
+                history_data[worker_id] = worker_history.get("history", [])
+
+            # Return everything in one response
+            return {
+                "timestamp": datetime.now().isoformat(),
+                "metrics": metrics_data,
+                "history": history_data
+            }
+
         @app.get("/api/dashboard/metrics")
         async def get_dashboard_metrics():
             """Get all cluster metrics"""
