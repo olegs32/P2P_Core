@@ -737,6 +737,8 @@ def create_argument_parser():
     parser.add_argument('--port', type=int, default=None)
     parser.add_argument('--address', default=None,
                         help=f'Адрес привязки (по умолчанию из .env: {env_config["bind_address"]})')
+    parser.add_argument('--advertise-address', default=None,
+                        help='IP адрес для анонсирования другим узлам (если не указан, определяется автоматически по маршруту к координатору)')
     parser.add_argument('--coord', '--coordinator', default=None,
                         help=f'Адрес координатора (по умолчанию из .env: {env_config["coordinator_address"]})')
     parser.add_argument('--redis-url', default=None,
@@ -845,6 +847,10 @@ async def main():
                         if args.address:
                             config.bind_address = args.address
                             logger.info(f"Bind address overridden from CLI: {config.bind_address}")
+
+                        if args.advertise_address:
+                            config.advertise_address = args.advertise_address
+                            logger.info(f"Advertise address overridden from CLI: {config.advertise_address}")
 
                         if args.node_id:
                             config.node_id = args.node_id

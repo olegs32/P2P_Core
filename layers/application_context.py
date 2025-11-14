@@ -47,6 +47,7 @@ class P2PConfig:
     node_id: str
     port: int
     bind_address: str = "0.0.0.0"
+    advertise_address: Optional[str] = None  # Explicit advertise address (overrides auto-detection)
     coordinator_mode: bool = False
     version = "2.1.0"
 
@@ -764,6 +765,9 @@ class NetworkComponent(P2PComponent):
         if not transport:
             raise RuntimeError("Transport not available")
 
+        # Get coordinator addresses for smart IP detection
+        coordinator_addresses = self.context.config.coordinator_addresses or []
+
         self.network = P2PNetworkLayer(
             transport,
             self.context.config.node_id,
@@ -772,6 +776,8 @@ class NetworkComponent(P2PComponent):
             self.context.config.coordinator_mode,
             ssl_verify=self.context.config.ssl_verify,
             ca_cert_file=self.context.config.ssl_ca_cert_file,
+            advertise_address=self.context.config.advertise_address,
+            coordinator_addresses=coordinator_addresses,
             context=self.context
         )
 

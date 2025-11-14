@@ -703,14 +703,32 @@ class P2PNetworkLayer:
     def __init__(self, transport_layer,
                  node_id: str, bind_address: str = "127.0.0.1", bind_port: int = 8000,
                  coordinator_mode: bool = False, ssl_verify: bool = True, ca_cert_file: str = None,
+                 advertise_address: str = None, coordinator_addresses: list = None,
                  context=None):
         self.log = logging.getLogger('Network')
         self.context = context  # Сохраняем context для доступа к storage_manager
 
-        if bind_address == '0.0.0.0':
-            self.advertise_address = self._get_local_ip()
+        # Determine advertise address with priority:
+        # 1. Explicit advertise_address parameter (highest priority)
+        # 2. Smart detection using coordinator address (if available)
+        # 3. bind_address if not 0.0.0.0
+        # 4. Auto-detect using default route (fallback)
+        if advertise_address:
+            self.advertise_address = advertise_address
+            self.log.info(f"Using explicit advertise address: {advertise_address}")
+        elif bind_address == '0.0.0.0':
+            # Smart detection - use coordinator address if available
+            target_host = None
+            if coordinator_addresses and len(coordinator_addresses) > 0:
+                # Extract host from first coordinator address (format: "host:port")
+                coord_addr = coordinator_addresses[0]
+                target_host = coord_addr.split(':')[0] if ':' in coord_addr else coord_addr
+                self.log.info(f"Using coordinator address for smart IP detection: {target_host}")
+
+            self.advertise_address = self._get_local_ip(target_host=target_host)
         else:
             self.advertise_address = bind_address
+
         self.transport = transport_layer
         self.gossip = SimpleGossipProtocol(node_id, self.advertise_address, bind_port, coordinator_mode,
                                           ssl_verify=ssl_verify, ca_cert_file=ca_cert_file, context=context)
@@ -734,20 +752,40 @@ class P2PNetworkLayer:
         self.request_history = []
         self.max_history_size = 1000
 
-    def _get_local_ip(self):
-        """Получить локальный IP для рекламы при bind 0.0.0.0"""
+    def _get_local_ip(self, target_host: str = None):
+        """
+        Получить локальный IP для рекламы при bind 0.0.0.0
+
+        Args:
+            target_host: Целевой хост для определения правильного интерфейса (например, coordinator IP)
+                        Если None, используется 8.8.8.8 (может выбрать VPN интерфейс)
+
+        Returns:
+            Локальный IP адрес который будет использоваться для подключения к target_host
+        """
         import socket
+
+        # Определяем целевой хост для проверки маршрута
+        target = target_host if target_host else "8.8.8.8"
+
         try:
             # Создаем временное соединение чтобы определить локальный IP
+            # который будет использован для подключения к целевому хосту
             with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
-                s.connect(("8.8.8.8", 80))  # Не отправляет данные, просто определяет маршрут
+                s.connect((target, 80))  # Не отправляет данные, просто определяет маршрут
                 local_ip = s.getsockname()[0]
+
+            self.log.info(f"Detected local IP: {local_ip} (route to {target})")
             return local_ip
-        except Exception:
+        except Exception as e:
+            self.log.warning(f"Failed to detect IP via route to {target}: {e}")
             # Fallback на получение IP через hostname
             try:
-                return socket.gethostbyname(socket.gethostname())
-            except Exception:
+                local_ip = socket.gethostbyname(socket.gethostname())
+                self.log.info(f"Using hostname IP: {local_ip}")
+                return local_ip
+            except Exception as e2:
+                self.log.error(f"Failed to get IP via hostname: {e2}, using 127.0.0.1")
                 return '127.0.0.1'  # Последний fallback
 
     async def start(self, join_addresses: List[str] = None):
