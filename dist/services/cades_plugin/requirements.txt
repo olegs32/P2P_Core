@@ -2,7 +2,3 @@
 
 # Core cryptography library
 cryptography>=41.0.0
-
-# Optional: GOST cryptography support (uncomment if needed)
-# pygost>=5.0.0
-# gost-crypto>=1.0.0
