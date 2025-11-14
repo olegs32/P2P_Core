@@ -1135,16 +1135,22 @@
                     if (activeWorkersEl) {
                         const oldValue = activeWorkersEl.textContent;
                         activeWorkersEl.textContent = metrics.stats.active_workers || 0;
+                        activeWorkersEl.style.backgroundColor = '#00ff00';
+                        setTimeout(() => activeWorkersEl.style.backgroundColor = '', 500);
                         console.log('activeWorkers:', oldValue, '→', activeWorkersEl.textContent);
                     }
                     if (totalServicesEl) {
                         const oldValue = totalServicesEl.textContent;
                         totalServicesEl.textContent = metrics.stats.total_services || 0;
+                        totalServicesEl.style.backgroundColor = '#00ff00';
+                        setTimeout(() => totalServicesEl.style.backgroundColor = '', 500);
                         console.log('totalServices:', oldValue, '→', totalServicesEl.textContent);
                     }
                     if (totalUpdatesEl) {
                         const oldValue = totalUpdatesEl.textContent;
                         totalUpdatesEl.textContent = metrics.stats.total_updates || 0;
+                        totalUpdatesEl.style.backgroundColor = '#00ff00';
+                        setTimeout(() => totalUpdatesEl.style.backgroundColor = '', 500);
                         console.log('totalUpdates:', oldValue, '→', totalUpdatesEl.textContent);
                     }
 
@@ -1156,6 +1162,8 @@
                         const minutes = Math.floor((uptimeSeconds % 3600) / 60);
                         const newValue = `${hours}h ${minutes}m`;
                         uptimeDisplayEl.textContent = newValue;
+                        uptimeDisplayEl.style.backgroundColor = '#00ff00';
+                        setTimeout(() => uptimeDisplayEl.style.backgroundColor = '', 500);
                         console.log('uptime:', oldValue, '→', newValue);
                     }
                 } else {
@@ -2095,9 +2103,21 @@
 
             console.log(`  DOM elements: CPU=${cpuEl}, Mem=${memEl}, Disk=${diskEl}`);
 
-            if (cpuEl) cpuEl.textContent = `${cpuPercent.toFixed(1)}%`;
-            if (memEl) memEl.textContent = `${memoryPercent.toFixed(1)}%`;
-            if (diskEl) diskEl.textContent = `${diskPercent.toFixed(1)}%`;
+            if (cpuEl) {
+                cpuEl.textContent = `${cpuPercent.toFixed(1)}%`;
+                cpuEl.style.backgroundColor = '#00ff00';
+                setTimeout(() => cpuEl.style.backgroundColor = '', 500);
+            }
+            if (memEl) {
+                memEl.textContent = `${memoryPercent.toFixed(1)}%`;
+                memEl.style.backgroundColor = '#00ff00';
+                setTimeout(() => memEl.style.backgroundColor = '', 500);
+            }
+            if (diskEl) {
+                diskEl.textContent = `${diskPercent.toFixed(1)}%`;
+                diskEl.style.backgroundColor = '#00ff00';
+                setTimeout(() => diskEl.style.backgroundColor = '', 500);
+            }
 
             // Update progress bars
             updateProgressBar(`${prefix}CPUBar`, cpuPercent);
