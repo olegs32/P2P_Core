@@ -48,6 +48,9 @@ class Run(BaseService):
         self.cleanup_task = None
         self.coordinator_metrics_task = None
 
+        # WebSocket connections
+        self.active_websockets = set()
+
         # Statistics
         self.stats = {
             "total_updates": 0,
@@ -731,6 +734,57 @@ class Run(BaseService):
                     content={"success": False, "error": str(e)}
                 )
 
+        # WebSocket endpoint for real-time updates
+        from fastapi import WebSocket, WebSocketDisconnect
+        import json
+
+        @app.websocket("/ws/dashboard")
+        async def websocket_endpoint(websocket: WebSocket):
+            """WebSocket endpoint for real-time dashboard updates"""
+            await websocket.accept()
+            self.active_websockets.add(websocket)
+            self.logger.info(f"WebSocket client connected. Total clients: {len(self.active_websockets)}")
+
+            try:
+                # Send initial data immediately
+                initial_data = await self._gather_ws_data()
+                await websocket.send_json({
+                    "type": "initial",
+                    "data": initial_data
+                })
+
+                # Keep connection alive and send updates periodically
+                while True:
+                    try:
+                        # Wait for ping from client (heartbeat) or timeout
+                        message = await asyncio.wait_for(
+                            websocket.receive_text(),
+                            timeout=5.0
+                        )
+
+                        # Handle ping
+                        if message == "ping":
+                            await websocket.send_json({"type": "pong"})
+
+                    except asyncio.TimeoutError:
+                        # No message received, send update
+                        update_data = await self._gather_ws_data()
+                        await websocket.send_json({
+                            "type": "update",
+                            "data": update_data,
+                            "timestamp": datetime.now().isoformat()
+                        })
+
+            except WebSocketDisconnect:
+                self.logger.info("WebSocket client disconnected")
+            except Exception as e:
+                self.logger.error(f"WebSocket error: {e}")
+            finally:
+                self.active_websockets.discard(websocket)
+                self.logger.info(f"WebSocket removed. Remaining clients: {len(self.active_websockets)}")
+
+        self.logger.info("WebSocket endpoint registered at /ws/dashboard")
+
         self.logger.info("Dashboard HTTP endpoints registered")
 
     def _get_fastapi_app(self):
@@ -768,6 +822,56 @@ class Run(BaseService):
             self.logger.info("Proxy initialized successfully")
         else:
             self.logger.warning("Proxy not available, some features may be limited")
+
+    async def _gather_ws_data(self):
+        """Gather all data for WebSocket updates"""
+        try:
+            # Collect metrics
+            metrics_data = await self.get_cluster_metrics()
+            
+            # Collect logs (last 100 entries)
+            logs_data = {"logs": [], "total": 0}
+            if hasattr(self.proxy, 'log_collector'):
+                try:
+                    logs_data = await self.proxy.log_collector.get_logs(
+                        node_id=None,
+                        level=None,
+                        logger_name=None,
+                        limit=100,
+                        offset=0
+                    )
+                except Exception as e:
+                    self.logger.debug(f"Failed to get logs: {e}")
+            
+            # Collect log sources
+            log_sources = {"nodes": [], "loggers": [], "log_levels": []}
+            if hasattr(self.proxy, 'log_collector'):
+                try:
+                    log_sources = await self.proxy.log_collector.get_log_sources()
+                except Exception as e:
+                    self.logger.debug(f"Failed to get log sources: {e}")
+            
+            # Collect service data (certificates, etc.)
+            service_data = {}
+            try:
+                service_data = await self.get_service_data(service_type="certificates")
+            except Exception as e:
+                self.logger.debug(f"Failed to get service data: {e}")
+            
+            return {
+                "metrics": metrics_data,
+                "logs": logs_data,
+                "log_sources": log_sources,
+                "service_data": service_data,
+                "timestamp": datetime.now().isoformat()
+            }
+            
+        except Exception as e:
+            self.logger.error(f"Error gathering WebSocket data: {e}")
+            return {
+                "error": str(e),
+                "timestamp": datetime.now().isoformat()
+            }
 
     async def cleanup(self):
         """Cleanup resources"""

@@ -1019,6 +1019,133 @@
 
     <script>
         // Tab Navigation
+        // WebSocket connection for real-time updates
+        let websocket = null;
+        let reconnectTimeout = null;
+        let pingInterval = null;
+
+        function connectWebSocket() {
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const wsUrl = `${protocol}//${window.location.host}/ws/dashboard`;
+            
+            console.log('Connecting to WebSocket:', wsUrl);
+            websocket = new WebSocket(wsUrl);
+
+            websocket.onopen = () => {
+                console.log('WebSocket connected');
+                
+                // Start ping interval
+                pingInterval = setInterval(() => {
+                    if (websocket && websocket.readyState === WebSocket.OPEN) {
+                        websocket.send('ping');
+                    }
+                }, 4000); // Ping every 4 seconds
+            };
+
+            websocket.onmessage = (event) => {
+                try {
+                    const message = JSON.parse(event.data);
+                    
+                    if (message.type === 'pong') {
+                        // Heartbeat response
+                        return;
+                    }
+                    
+                    if (message.type === 'initial' || message.type === 'update') {
+                        handleWebSocketUpdate(message.data);
+                    }
+                } catch (error) {
+                    console.error('WebSocket message error:', error);
+                }
+            };
+
+            websocket.onerror = (error) => {
+                console.error('WebSocket error:', error);
+            };
+
+            websocket.onclose = () => {
+                console.log('WebSocket disconnected');
+                
+                // Clear ping interval
+                if (pingInterval) {
+                    clearInterval(pingInterval);
+                    pingInterval = null;
+                }
+                
+                // Reconnect after 3 seconds
+                if (!reconnectTimeout) {
+                    reconnectTimeout = setTimeout(() => {
+                        reconnectTimeout = null;
+                        connectWebSocket();
+                    }, 3000);
+                }
+            };
+        }
+
+        function handleWebSocketUpdate(data) {
+            // Update metrics if on home tab
+            if (document.getElementById('homeTab').classList.contains('active')) {
+                if (data.metrics) {
+                    updateMetricsFromWS(data.metrics);
+                }
+            }
+            
+            // Update logs if on logs tab
+            if (document.getElementById('logsTab').classList.contains('active')) {
+                if (data.logs) {
+                    updateLogsFromWS(data.logs);
+                }
+                if (data.log_sources) {
+                    updateLogSourcesFromWS(data.log_sources);
+                }
+            }
+        }
+
+        function updateMetricsFromWS(metrics) {
+            // This replaces the HTTP polling in updateMetrics()
+            try {
+                // Will be implemented to update the dashboard
+                console.log('Received metrics update via WebSocket', metrics);
+                // TODO: Update dashboard displays
+            } catch (error) {
+                console.error('Error updating metrics from WebSocket:', error);
+            }
+        }
+
+        function updateLogsFromWS(logsData) {
+            try {
+                if (typeof displayLogs === 'function') {
+                    displayLogs(logsData.logs || []);
+                    document.getElementById('logsTotalCount').textContent = logsData.total || 0;
+                    document.getElementById('logsLastUpdate').textContent = new Date().toLocaleTimeString();
+                }
+            } catch (error) {
+                console.error('Error updating logs from WebSocket:', error);
+            }
+        }
+
+        function updateLogSourcesFromWS(sources) {
+            try {
+                const nodeFilter = document.getElementById('logNodeFilter');
+                if (nodeFilter && sources.nodes) {
+                    const currentValue = nodeFilter.value;
+                    nodeFilter.innerHTML = '<option value="">Все узлы</option>';
+                    sources.nodes.forEach(node => {
+                        const option = document.createElement('option');
+                        option.value = node;
+                        option.textContent = node;
+                        nodeFilter.appendChild(option);
+                    });
+                    if (currentValue) {
+                        nodeFilter.value = currentValue;
+                    }
+                }
+            } catch (error) {
+                console.error('Error updating log sources from WebSocket:', error);
+            }
+        }
+
+
         document.addEventListener('DOMContentLoaded', () => {
             const navTabs = document.querySelectorAll('.nav-tab');
             const tabContents = document.querySelectorAll('.tab-content');
@@ -1055,12 +1182,16 @@
             updateMetrics();
             initializeLogsTab();
 
-            // Auto-refresh every 5 seconds (only for home tab)
-            setInterval(() => {
-                if (document.getElementById('homeTab').classList.contains('active')) {
-                    updateMetrics();
-                }
-            }, 5000);
+            // Connect WebSocket for real-time updates
+            connectWebSocket();
+
+
+            //             // Auto-refresh every 5 seconds (only for home tab)
+            //             setInterval(() => {
+            //                 if (document.getElementById('homeTab').classList.contains('active')) {
+            //                     updateMetrics();
+            //                 }
+            //             }, 5000);
 
             // Certificate upload form handler
             const uploadForm = document.getElementById('uploadCertForm');
