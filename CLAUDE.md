@@ -345,6 +345,79 @@ my_registry = {}  # This breaks everything
 
 Example: `"system/get_system_info"`
 
+### Built-in Services vs Pluggable Services
+
+**IMPORTANT DISTINCTION**: The system has two types of services:
+
+#### 1. Built-in Core Services (`methods/`)
+
+**Location**: `methods/` directory
+
+**Characteristics**:
+- Loaded at system startup (not via plugin discovery)
+- Part of the core framework
+- Cannot be stopped or reloaded
+- Available on all nodes
+
+**Services**:
+- **system** (`methods/system.py`): System information, health checks, node management
+- **log_collector** (`methods/log_collector.py`): Centralized log collection (coordinator only)
+
+**Usage**:
+```python
+# Built-in services are always available
+info = await proxy.system.get_system_info()
+logs = await proxy.log_collector.get_logs(node_id="worker-1")
+```
+
+#### 2. Pluggable Services (`dist/services/`)
+
+**Location**: `dist/services/` directory
+
+**Characteristics**:
+- Discovered and loaded automatically via ServiceLoader
+- Can be added/removed/updated without system restart
+- Each service in its own subdirectory
+- Optional per deployment (can be enabled/disabled)
+
+**Available Services**:
+
+| Service | Description | Node Type |
+|---------|-------------|-----------|
+| **orchestrator** | Service orchestration, deployment, and management | Coordinator |
+| **metrics_dashboard** | Web UI for monitoring cluster metrics and logs | Coordinator |
+| **metrics_reporter** | Collect and report node metrics to coordinator | Worker |
+| **update_manager** | Manage service updates on workers | Worker |
+| **update_server** | Distribute service updates from coordinator | Coordinator |
+| **certs_tool** | Legacy Windows CSP certificate management | Any |
+| **test_monitoring** | Testing and monitoring utilities | Any |
+| **test_metric_service** | Metrics testing and validation | Any |
+
+**Service Structure**:
+```
+dist/services/my_service/
+├── main.py              # Required: Run(BaseService) class
+├── requirements.txt     # Optional: pip dependencies
+├── manifest.json        # Optional: metadata
+├── templates/           # Optional: web templates (for dashboard services)
+└── static/              # Optional: static assets (CSS, JS)
+```
+
+**Key Differences**:
+
+| Aspect | Built-in Services | Pluggable Services |
+|--------|-------------------|-------------------|
+| Location | `methods/` | `dist/services/` |
+| Loading | At startup | Auto-discovery |
+| Lifecycle | Always running | Can start/stop |
+| Updates | Requires system restart | Hot-reload possible |
+| Purpose | Core functionality | Extended features |
+
+**When to Use Each**:
+
+- **Built-in service**: Core system functionality that all nodes need (e.g., health checks, logging)
+- **Pluggable service**: Optional features, extensions, or domain-specific logic (e.g., monitoring, deployment)
+
 ---
 
 ## Communication Patterns
@@ -366,6 +439,91 @@ gossip_interval_max: 30     # seconds
 compression_enabled: true   # LZ4 compression
 compression_threshold: 1024 # bytes
 max_gossip_targets: 5       # nodes to gossip with per round
+```
+
+### Multi-Homed Node Support
+
+**NEW FEATURE**: Automatic detection and handling of nodes with multiple network interfaces.
+
+**Location**: `layers/network.py` (`SimpleGossipProtocol`)
+
+**Features**:
+- **Address probing**: Tests connectivity to each detected interface
+- **Smart interface selection**: Chooses the most appropriate IP based on reachability
+- **VPN-aware**: Detects VPN interfaces and prioritizes them when appropriate
+- **Subnet awareness**: Prefers IPs in the same subnet as the coordinator
+
+**How it works**:
+1. Node starts and detects all local IP addresses
+2. For each IP, attempts to bind and test connectivity
+3. Gossip protocol probes each candidate address
+4. Updates node info with the most reachable address
+5. Continuously monitors and updates if network topology changes
+
+**Configuration**:
+```python
+# In P2PConfig
+enable_address_probing: bool = True  # Default: enabled
+probe_timeout_seconds: float = 2.0   # Timeout for each probe
+```
+
+**Example scenario**:
+```
+Node has interfaces:
+- 192.168.1.100 (LAN)
+- 10.8.0.5 (VPN)
+- 127.0.0.1 (loopback)
+
+If coordinator is at 10.8.0.1 (VPN network):
+→ System selects 10.8.0.5 (same subnet)
+
+If coordinator is at 192.168.1.50 (LAN):
+→ System selects 192.168.1.100 (same subnet)
+```
+
+**Benefits**:
+- Automatic failover between interfaces
+- No manual IP configuration needed
+- Works across complex network topologies
+- Handles VPN connections transparently
+
+### VPN and Complex Network Support
+
+**Features for enterprise environments**:
+
+1. **Smart IP Detection**: Automatically detects the best IP for cluster communication
+   - Filters out loopback, link-local, and APIPA addresses
+   - Prefers non-VPN IPs when coordinator is on LAN
+   - Prefers VPN IPs when coordinator is on VPN
+
+2. **Subnet-Aware Routing**: Calculates network proximity
+   ```python
+   # Automatically detects if IPs are in same subnet
+   coordinator: 10.8.0.1/24
+   worker: 10.8.0.50/24  ✓ Same subnet, high priority
+   worker: 192.168.1.10/24  ✗ Different subnet, lower priority
+   ```
+
+3. **Gossip Fallback Mechanisms**: Multiple strategies for node discovery
+   - Direct address from configuration
+   - Cached gossip state (persisted to disk)
+   - Service info from last known state
+   - Address probing on multiple interfaces
+
+**Troubleshooting multi-homed nodes**:
+
+```python
+# Check detected addresses
+info = await proxy.system.get_system_info()
+print(info['network']['interfaces'])
+
+# Force specific interface via config
+bind_address: "10.8.0.5"  # Bind to specific IP
+
+# Check gossip node registry
+nodes = await proxy.system.get_cluster_nodes()
+for node in nodes:
+    print(f"{node['node_id']}: {node['address']}:{node['port']}")
 ```
 
 ### RPC Communication
@@ -434,6 +592,206 @@ connection_manager = ConnectionManager(
     ca_cert_file="certs/ca_cert.cer",
     context=context  # For secure storage access
 )
+```
+
+---
+
+## Log Collection System
+
+### Overview
+
+**NEW FEATURE**: Centralized log collection infrastructure for gathering logs from all nodes in the cluster.
+
+**Location**: `methods/log_collector.py`
+
+The log collection system provides syslog-like functionality built into the P2P framework:
+- Centralized log storage on coordinator
+- Real-time log streaming from workers
+- Filtering by node, level, and logger name
+- Integration with metrics dashboard web UI
+
+### Architecture
+
+```
+Worker Nodes                    Coordinator
+     │                               │
+     ├─► P2PLogHandler              │
+     │   (captures logs)             │
+     │                               │
+     ├─► Buffers in memory          │
+     │   (deque, max 1000)           │
+     │                               │
+     ├─► Periodic flush ────────────►│ LogCollector
+     │   (via RPC)                   │ (stores & indexes)
+     │                               │
+     │                               ├─► Query API
+     │                               │   (filter, paginate)
+     │                               │
+     │                               └─► Metrics Dashboard
+                                         (web UI for logs)
+```
+
+### LogCollector Service
+
+**Built-in service** running on coordinator that collects and stores logs from all nodes.
+
+**Key Features**:
+- Per-node log storage (deque with configurable max size)
+- Multi-level filtering (node_id, level, logger_name)
+- Pagination support (limit/offset)
+- Statistics and log sources tracking
+- Thread-safe operations
+
+**Configuration**:
+```python
+# In P2PConfig
+max_log_entries: int = 1000  # Max logs per node
+```
+
+**RPC Methods**:
+```python
+# Add logs from worker
+await proxy.log_collector.add_logs(
+    node_id="worker-1",
+    logs=[{
+        "timestamp": "2025-11-14T10:30:00",
+        "level": "INFO",
+        "logger_name": "Service.system",
+        "message": "Service started",
+        "module": "system",
+        "funcName": "initialize",
+        "lineno": 42
+    }]
+)
+
+# Get logs with filtering
+logs = await proxy.log_collector.get_logs(
+    node_id="worker-1",        # Optional: filter by node
+    level="ERROR",              # Optional: filter by level
+    logger_name="Gossip",       # Optional: filter by logger
+    limit=100,                  # Max results
+    offset=0                    # Pagination offset
+)
+
+# Get available log sources
+sources = await proxy.log_collector.get_log_sources()
+# Returns: {"nodes": [...], "loggers": [...], "log_levels": [...]}
+
+# Clear logs
+await proxy.log_collector.clear_logs(node_id="worker-1")  # or None for all
+
+# Get statistics
+stats = await proxy.log_collector.get_stats()
+```
+
+### P2PLogHandler
+
+**Custom logging handler** that captures logs on worker nodes for transmission to coordinator.
+
+**Usage in services**:
+```python
+import logging
+from methods.log_collector import P2PLogHandler
+
+# In service initialization
+log_handler = P2PLogHandler(node_id=self.context.config.node_id)
+log_handler.setLevel(logging.INFO)
+
+# Attach to root logger or service logger
+logging.getLogger().addHandler(log_handler)
+
+# Later, flush logs to coordinator
+new_logs = log_handler.get_new_logs()
+if new_logs:
+    await self.proxy.log_collector.add_logs(
+        node_id=self.context.config.node_id,
+        logs=new_logs
+    )
+```
+
+**How it works**:
+1. Handler captures all log records via `emit()`
+2. Stores in memory buffer (deque, max 1000 entries)
+3. `get_new_logs()` retrieves buffered logs
+4. Logs are cleared from buffer after retrieval (prevents duplicates)
+5. Worker services periodically flush to coordinator
+
+### Log Entry Structure
+
+```python
+@dataclass
+class LogEntry:
+    timestamp: str        # ISO format datetime
+    node_id: str          # Node identifier
+    level: str            # DEBUG, INFO, WARNING, ERROR, CRITICAL
+    logger_name: str      # e.g., "Service.system", "Gossip"
+    message: str          # Log message
+    module: str           # Python module name
+    funcName: str         # Function name
+    lineno: int           # Line number
+```
+
+### Web UI Integration
+
+The metrics dashboard service (`dist/services/metrics_dashboard/`) includes a web-based log viewer:
+
+**Access**: `https://coordinator:8001/dashboard` → Logs tab
+
+**Features**:
+- Real-time log updates
+- Filter by node, level, logger
+- Search functionality
+- Color-coded log levels
+- Timestamp display
+- Auto-refresh
+
+**API Endpoints** (in metrics_dashboard):
+```bash
+# Get logs via HTTP
+GET /api/logs?node_id=worker-1&level=ERROR&limit=100
+
+# Get log sources
+GET /api/logs/sources
+
+# Clear logs
+DELETE /api/logs?node_id=worker-1
+```
+
+### Best Practices
+
+**For Service Developers**:
+1. Use standard Python logging, not print statements
+2. Set appropriate log levels (DEBUG for diagnostics, INFO for events, ERROR for problems)
+3. Include context in messages (node_id, operation, etc.)
+4. Avoid logging sensitive data (passwords, tokens)
+
+**For Operators**:
+1. Monitor ERROR and CRITICAL logs regularly
+2. Set `max_log_entries` based on cluster size and log volume
+3. Use filtering to focus on specific issues
+4. Clear old logs periodically to free memory
+
+**Example: Service with logging**:
+```python
+class Run(BaseService):
+    SERVICE_NAME = "my_service"
+
+    async def initialize(self):
+        # Standard logging - automatically captured by P2PLogHandler
+        self.logger.info(f"Initializing {self.service_name}")
+
+    @service_method(public=True)
+    async def process_data(self, data: dict) -> dict:
+        try:
+            # Log important operations
+            self.logger.debug(f"Processing data: {len(data)} items")
+            result = await self._do_work(data)
+            self.logger.info("Data processed successfully")
+            return result
+        except Exception as e:
+            # Log errors with context
+            self.logger.error(f"Failed to process data: {e}", exc_info=True)
+            raise
 ```
 
 ---
@@ -637,6 +995,390 @@ JWT_ALGORITHM = os.getenv('JWT_ALGORITHM', 'HS256')
 
 ---
 
+## Metrics Dashboard and Web UI
+
+### Overview
+
+**Location**: `dist/services/metrics_dashboard/`
+
+The metrics dashboard provides a comprehensive web interface for monitoring and managing the P2P cluster.
+
+**Access**: `https://coordinator:port/dashboard`
+
+**Key Features**:
+- Real-time cluster metrics visualization
+- Historical metrics with graphs (last 100 data points)
+- Centralized log viewer with filtering
+- Service management (start/stop/restart)
+- Node status monitoring
+- Interactive UI with auto-refresh
+
+### Architecture
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    Metrics Dashboard                         │
+│                    (Coordinator Only)                        │
+└─────────────────────────────────────────────────────────────┘
+         ▲                  ▲                  ▲
+         │                  │                  │
+    RPC Calls          HTTP API         WebSocket (future)
+         │                  │                  │
+         └──────────────────┴──────────────────┘
+                           │
+         ┌─────────────────┴─────────────────┐
+         │                                   │
+    ┌────▼────┐                         ┌────▼────┐
+    │ Worker  │                         │ Worker  │
+    │  Node   │                         │  Node   │
+    └─────────┘                         └─────────┘
+         │                                   │
+    Metrics Reporter                    Metrics Reporter
+    (sends metrics)                     (sends metrics)
+```
+
+### Dashboard Service
+
+**Service Name**: `metrics_dashboard`
+
+**Runs On**: Coordinator node only (automatically disabled on workers)
+
+**Responsibilities**:
+- Collect metrics from all worker nodes
+- Store historical data (configurable retention)
+- Provide HTTP endpoints for web UI
+- Integrate with log_collector for log viewing
+- Manage service lifecycle on workers
+
+**Initialization**:
+```python
+async def initialize(self):
+    # Only runs on coordinator
+    if self.context.config.coordinator_mode:
+        # Register HTTP endpoints
+        self._register_http_endpoints()
+
+        # Start background tasks
+        self.cleanup_task = asyncio.create_task(self._cleanup_loop())
+        self.coordinator_metrics_task = asyncio.create_task(
+            self._coordinator_metrics_loop()
+        )
+```
+
+### HTTP Endpoints
+
+The dashboard registers the following HTTP endpoints on the coordinator's FastAPI app:
+
+#### Web UI
+```bash
+GET /dashboard              # Main dashboard HTML
+GET /dashboard/static/*     # Static assets (CSS, JS)
+```
+
+#### Metrics API
+```bash
+# Get all cluster metrics (single optimized request)
+GET /api/dashboard/metrics
+# Returns: {
+#   "coordinator": {...},
+#   "workers": {
+#     "worker-1": {...},
+#     "worker-2": {...}
+#   },
+#   "services": [...],
+#   "cluster_stats": {...}
+# }
+
+# Get metrics history for a node
+GET /api/dashboard/history/{node_id}?limit=100
+
+# Get dashboard statistics
+GET /api/dashboard/stats
+```
+
+#### Service Management API
+```bash
+# Control services on workers
+POST /api/dashboard/control-service
+{
+  "worker_id": "worker-001",
+  "service_name": "my_service",
+  "action": "restart"  # start, stop, restart
+}
+
+# Get service states across cluster
+GET /api/dashboard/services
+```
+
+#### Logs API
+```bash
+# Get logs with filtering
+GET /api/logs?node_id=worker-1&level=ERROR&limit=100
+
+# Get available log sources
+GET /api/logs/sources
+
+# Clear logs
+DELETE /api/logs?node_id=worker-1
+```
+
+### Metrics Reporter Service
+
+**Location**: `dist/services/metrics_reporter/`
+
+**Service Name**: `metrics_reporter`
+
+**Runs On**: Worker nodes
+
+**Purpose**: Collects local metrics and reports them to the coordinator's dashboard.
+
+**Features**:
+- Adaptive reporting interval (30-300 seconds based on load)
+- Collects system metrics (CPU, memory, disk)
+- Collects service states and health
+- Compresses data before transmission
+- Handles coordinator unavailability gracefully
+
+**Metrics Collected**:
+```python
+{
+    "node_id": "worker-001",
+    "timestamp": "2025-11-14T10:30:00",
+    "system": {
+        "cpu_percent": 45.2,
+        "memory_percent": 62.8,
+        "disk_usage": {
+            "/": {"percent": 55.0, "total_gb": 500}
+        },
+        "uptime_seconds": 86400
+    },
+    "services": {
+        "my_service": {
+            "status": "running",
+            "metrics": {...},
+            "health": "healthy"
+        }
+    }
+}
+```
+
+**Reporting Flow**:
+```python
+# Worker collects metrics
+metrics = await self._collect_metrics()
+
+# Send to coordinator dashboard
+await self.proxy.metrics_dashboard.coordinator.report_metrics(
+    node_id=self.node_id,
+    metrics=metrics
+)
+```
+
+### Web UI Features
+
+#### Dashboard Tabs
+
+1. **Overview Tab**:
+   - Cluster statistics (total nodes, services, uptime)
+   - Coordinator status and metrics
+   - Active workers list with status indicators
+   - Real-time graphs for CPU, memory, disk
+
+2. **Workers Tab**:
+   - Detailed view of each worker node
+   - Individual worker metrics
+   - Service status per worker
+   - Historical metrics graphs
+
+3. **Services Tab**:
+   - All services across the cluster
+   - Service health and status
+   - Start/Stop/Restart controls
+   - Service-specific metrics
+
+4. **Logs Tab** (NEW):
+   - Centralized log viewer
+   - Filter by node, level, logger
+   - Search functionality
+   - Real-time updates
+   - Color-coded log levels
+   - Timestamp display
+
+#### Auto-Refresh
+
+The dashboard automatically refreshes every 5 seconds:
+```javascript
+// Client-side auto-refresh
+setInterval(async () => {
+    const metrics = await fetch('/api/dashboard/metrics');
+    updateDashboard(await metrics.json());
+}, 5000);
+```
+
+### RPC Methods
+
+**Dashboard Service Methods** (coordinator):
+```python
+# Report metrics from worker
+@service_method(public=True)
+async def report_metrics(
+    self,
+    node_id: str,
+    metrics: Dict[str, Any]
+) -> Dict[str, Any]:
+    # Store metrics with timestamp
+    # Update metrics history
+    # Return acknowledgment
+
+# Get all cluster metrics (optimized single call)
+@service_method(public=True)
+async def get_cluster_metrics(self) -> Dict[str, Any]:
+    # Returns coordinator + all workers + services in one response
+
+# Get metrics history
+@service_method(public=True)
+async def get_metrics_history(
+    self,
+    node_id: str,
+    limit: int = 100
+) -> List[Dict[str, Any]]:
+    # Returns last N metric snapshots
+
+# Control service on worker
+@service_method(public=True)
+async def control_service(
+    self,
+    worker_id: str,
+    service_name: str,
+    action: str
+) -> Dict[str, Any]:
+    # Forwards command to worker's orchestrator service
+```
+
+**Reporter Service Methods** (worker):
+```python
+# No public methods - reports via proxy calls
+```
+
+### Configuration
+
+```python
+# Dashboard (coordinator)
+dashboard_enabled: bool = True
+metrics_retention_count: int = 100  # Historical data points
+metrics_cleanup_interval: int = 300  # Cleanup stale workers (seconds)
+
+# Reporter (worker)
+reporter_enabled: bool = True
+reporter_interval_min: int = 30     # Minimum reporting interval (seconds)
+reporter_interval_max: int = 300    # Maximum reporting interval (seconds)
+```
+
+### Integration Example
+
+**Worker reports metrics**:
+```python
+# In metrics_reporter service (worker)
+async def _report_loop(self):
+    while self.running:
+        # Collect metrics
+        metrics = await self._collect_metrics()
+
+        # Report to coordinator
+        try:
+            result = await self.proxy.metrics_dashboard.coordinator.report_metrics(
+                node_id=self.node_id,
+                metrics=metrics
+            )
+            self.logger.debug(f"Metrics reported: {result}")
+        except Exception as e:
+            self.logger.error(f"Failed to report metrics: {e}")
+
+        # Wait before next report
+        await asyncio.sleep(self.report_interval)
+```
+
+**Dashboard displays metrics**:
+```python
+# In metrics_dashboard service (coordinator)
+@service_method(public=True)
+async def get_cluster_metrics(self) -> Dict[str, Any]:
+    # Collect coordinator metrics
+    coordinator_metrics = await self._collect_coordinator_metrics()
+
+    # Get all worker metrics from storage
+    worker_metrics = self.worker_metrics
+
+    # Get service states
+    services = await self._get_all_services()
+
+    # Return combined data
+    return {
+        "coordinator": coordinator_metrics,
+        "workers": worker_metrics,
+        "services": services,
+        "cluster_stats": {
+            "active_workers": len(worker_metrics),
+            "total_services": len(services),
+            "uptime": time.time() - self.start_time
+        }
+    }
+```
+
+### Best Practices
+
+**For Operators**:
+1. Monitor the dashboard regularly for cluster health
+2. Set up alerts for high CPU/memory usage
+3. Check logs tab for errors and warnings
+4. Use service controls to restart unhealthy services
+5. Archive old metrics if retention grows too large
+
+**For Developers**:
+1. Expose meaningful metrics in your services
+2. Use appropriate health check responses
+3. Log important events for dashboard visibility
+4. Test service start/stop/restart handling
+5. Handle coordinator disconnection gracefully in reporter
+
+### Troubleshooting
+
+**Issue: Dashboard not loading**
+```bash
+# Check coordinator is running
+curl https://coordinator:8001/health
+
+# Check dashboard service is loaded
+curl https://coordinator:8001/services | grep metrics_dashboard
+
+# Check logs
+curl https://coordinator:8001/api/logs?logger_name=metrics_dashboard
+```
+
+**Issue: Workers not appearing**
+```bash
+# Check worker's metrics_reporter service
+# Worker side:
+curl https://worker:8002/services | grep metrics_reporter
+
+# Check if worker can reach coordinator
+# Worker side:
+curl https://coordinator:8001/health
+
+# Check dashboard received reports
+# Coordinator side:
+curl https://coordinator:8001/api/dashboard/stats
+```
+
+**Issue: Stale metrics**
+```bash
+# Check reporter interval (may be set too high)
+# Check network connectivity between worker and coordinator
+# Check coordinator's cleanup task is running
+```
+
+---
+
 ## Testing Approach
 
 ### Integration Testing
@@ -723,13 +1465,18 @@ P2P_Core/
 │   ├── persistence.py           # State persistence
 │   ├── rate_limiter.py          # Rate limiting
 │   └── local_service_bridge.py  # Local/remote proxy
-├── methods/                     # Built-in RPC methods
-│   └── system.py                # System service
+├── methods/                     # Built-in core services
+│   ├── system.py                # System information service
+│   └── log_collector.py         # Centralized log collection
 ├── dist/services/               # Pluggable services
-│   ├── orchestrator/            # Service orchestration
-│   ├── metrics_dashboard/       # Metrics UI
-│   ├── metrics_reporter/        # Metrics collection
-│   └── update_manager/          # Service updates
+│   ├── orchestrator/            # Service orchestration & deployment
+│   ├── metrics_dashboard/       # Web UI for monitoring & logs
+│   ├── metrics_reporter/        # Worker metrics collection
+│   ├── update_manager/          # Service update management
+│   ├── update_server/           # Service update distribution
+│   ├── certs_tool/              # Legacy certificate management (Windows CSP)
+│   ├── test_monitoring/         # Testing & monitoring utilities
+│   └── test_metric_service/     # Metrics testing service
 ├── scripts/                     # Utility scripts
 ├── docs/                        # Documentation
 ├── p2p.py                       # Main entry point
@@ -1489,8 +2236,110 @@ class MyComponent(P2PComponent):
 - Must declare dependencies explicitly
 - Cannot skip initialization order
 
+### ADR-006: Why Centralized Log Collection?
+
+**Decision**: Implement centralized log collection infrastructure instead of relying on external logging systems
+
+**Rationale**:
+- **Integration**: Built directly into P2P framework, no external dependencies
+- **Simplicity**: No need to configure syslog, Elasticsearch, or other log aggregators
+- **Performance**: In-memory storage with bounded size (circular buffer)
+- **Filtering**: Rich query capabilities (by node, level, logger, time)
+- **Web UI**: Integrated with metrics dashboard for unified monitoring
+
+**Consequences**:
+- Logs are stored in memory (lost on coordinator restart)
+- Limited retention (configurable max entries per node)
+- Not suitable for long-term log archival (use external system for that)
+- Coordinator becomes single point for log queries
+- Workers must periodically flush logs to coordinator
+
+**Trade-offs**:
+- ✅ Simple deployment (no external services)
+- ✅ Fast queries (in-memory)
+- ✅ Unified UI (logs + metrics + services)
+- ❌ No persistence across restarts
+- ❌ Limited history retention
+- ❌ Coordinator load increases with log volume
+
+**When to use external logging**:
+- Long-term log retention required (>1000 entries per node)
+- Compliance/audit requirements
+- Advanced analytics needed
+- Multiple independent P2P clusters
+
+### ADR-007: Why Multi-Homed Node Support?
+
+**Decision**: Implement automatic interface detection and address probing instead of requiring manual IP configuration
+
+**Rationale**:
+- **Flexibility**: Handles complex network topologies (VPN, multi-NIC, cloud)
+- **Zero-config**: No manual IP selection needed
+- **Reliability**: Automatic failover between interfaces
+- **Enterprise-ready**: Supports common enterprise scenarios (VPN, DMZ, etc.)
+
+**Implementation**:
+- Probe all non-loopback interfaces on startup
+- Test connectivity to coordinator on each interface
+- Select interface based on subnet proximity and reachability
+- Update gossip info with selected address
+
+**Consequences**:
+- Increased startup time (probing adds ~2-5 seconds)
+- More complex network code
+- Potential for incorrect interface selection (can be overridden)
+- Background probing may affect network monitoring tools
+
+**Configuration override**:
+```yaml
+# Force specific interface if auto-detection fails
+bind_address: "10.8.0.5"
+enable_address_probing: false
+```
+
+### ADR-008: Why Separate Built-in and Pluggable Services?
+
+**Decision**: Distinguish between core services (`methods/`) and pluggable services (`dist/services/`)
+
+**Rationale**:
+- **Stability**: Core services (system, log_collector) are always available
+- **Extensibility**: Pluggable services can be added/removed without code changes
+- **Modularity**: Clear separation between framework and features
+- **Deployment flexibility**: Different nodes can run different service sets
+
+**Core Services** (`methods/`):
+- Loaded at startup, always running
+- Part of base framework
+- Cannot be disabled or updated independently
+- Examples: system info, log collection
+
+**Pluggable Services** (`dist/services/`):
+- Auto-discovered via ServiceLoader
+- Can be started/stopped dynamically
+- Can be updated without restart (hot-reload)
+- Examples: orchestrator, dashboard, metrics_reporter
+
+**Consequences**:
+- Clear mental model for developers
+- Easier to maintain and test core vs. plugins
+- More complex service loading logic
+- Need to document which services are core vs. pluggable
+
 ---
 
 **End of CLAUDE.md**
 
 This document should be your primary reference when working with the P2P_Core codebase. Follow these patterns, conventions, and architectural decisions to maintain consistency and quality.
+
+## Recent Updates
+
+**2025-11-14**:
+- Added Log Collection System documentation
+- Added Built-in vs Pluggable Services distinction
+- Added Multi-Homed Node Support documentation
+- Added VPN and Complex Network Support
+- Added Metrics Dashboard and Web UI comprehensive documentation
+- Updated service listings with all current services
+- Added ADR-006 (Centralized Log Collection)
+- Added ADR-007 (Multi-Homed Node Support)
+- Added ADR-008 (Built-in vs Pluggable Services)
