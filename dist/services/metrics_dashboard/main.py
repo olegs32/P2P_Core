@@ -752,7 +752,7 @@ class Run(BaseService):
                 # Send initial data immediately (includes logs and log sources)
                 initial_data = await self._gather_ws_data()
 
-                # Add logs and log sources to initial load only
+                # Add logs, log sources, and service data to initial load only
                 if hasattr(self.proxy, 'log_collector'):
                     try:
                         logs_data = await self.proxy.log_collector.get_logs(
@@ -768,6 +768,13 @@ class Run(BaseService):
                         initial_data["log_sources"] = log_sources
                     except Exception as e:
                         self.logger.debug(f"Failed to get logs for initial load: {e}")
+
+                # Add service data (certificates) to initial load only
+                try:
+                    service_data = await self.get_service_data(service_type="certificates")
+                    initial_data["service_data"] = service_data
+                except Exception as e:
+                    self.logger.debug(f"Failed to get service data for initial load: {e}")
 
                 await websocket.send_json({
                     "type": "initial",
@@ -874,19 +881,11 @@ class Run(BaseService):
                     history_data[worker_id] = self.metrics_history[worker_id][-50:]
 
             # NOTE: Logs are now event-driven via WebSocket (not sent in periodic updates)
-            # Only initial load includes logs
-
-            # Collect service data (certificates, etc.)
-            service_data = {}
-            try:
-                service_data = await self.get_service_data(service_type="certificates")
-            except Exception as e:
-                self.logger.debug(f"Failed to get service data: {e}")
+            # Service data (certificates) removed from periodic updates to avoid spam
 
             return {
                 "metrics": metrics_data,
                 "history": history_data,
-                "service_data": service_data,
                 "timestamp": datetime.now().isoformat()
             }
 
