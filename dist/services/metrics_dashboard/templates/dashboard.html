@@ -1083,19 +1083,30 @@
         }
 
         function handleWebSocketUpdate(data) {
+            console.log('WebSocket data received:', data);
+
             // Update metrics if on home tab
-            if (document.getElementById('homeTab').classList.contains('active')) {
+            const homeTab = document.getElementById('homeTab');
+            console.log('Home tab active:', homeTab && homeTab.classList.contains('active'));
+
+            if (homeTab && homeTab.classList.contains('active')) {
                 if (data.metrics) {
+                    console.log('Updating metrics from WebSocket');
                     updateMetricsFromWS(data.metrics);
+                } else {
+                    console.warn('No metrics in WebSocket data');
                 }
             }
-            
+
             // Update logs if on logs tab
-            if (document.getElementById('logsTab').classList.contains('active')) {
+            const logsTab = document.getElementById('logsTab');
+            if (logsTab && logsTab.classList.contains('active')) {
                 if (data.logs) {
+                    console.log('Updating logs from WebSocket');
                     updateLogsFromWS(data.logs);
                 }
                 if (data.log_sources) {
+                    console.log('Updating log sources from WebSocket');
                     updateLogSourcesFromWS(data.log_sources);
                 }
             }
@@ -1103,9 +1114,11 @@
 
         function updateMetricsFromWS(metrics) {
             // This replaces the HTTP polling in updateMetrics()
+            console.log('updateMetricsFromWS called with:', metrics);
             try {
                 // Update statistics
                 if (metrics.stats) {
+                    console.log('Updating stats:', metrics.stats);
                     document.getElementById('activeWorkers').textContent = metrics.stats.active_workers || 0;
                     document.getElementById('totalServices').textContent = metrics.stats.total_services || 0;
                     document.getElementById('totalUpdates').textContent = metrics.stats.total_updates || 0;
@@ -1115,29 +1128,39 @@
                     const hours = Math.floor(uptimeSeconds / 3600);
                     const minutes = Math.floor((uptimeSeconds % 3600) / 60);
                     document.getElementById('uptimeDisplay').textContent = `${hours}h ${minutes}m`;
+                } else {
+                    console.warn('No stats in metrics');
                 }
 
                 // Update coordinator metrics
                 if (metrics.coordinator && metrics.coordinator.metrics) {
+                    console.log('Updating coordinator metrics');
                     const coordMetrics = metrics.coordinator.metrics;
                     updateNodeMetrics('coord', coordMetrics);
 
                     // Update coordinator services
                     if (metrics.coordinator.services) {
+                        console.log('Updating coordinator services');
                         updateCoordinatorServices(metrics.coordinator.services);
                     }
+                } else {
+                    console.warn('No coordinator metrics');
                 }
 
                 // Update cluster state
                 if (metrics.workers && metrics.stats) {
+                    console.log('Updating cluster state');
                     updateClusterState(metrics.workers, metrics.stats);
                 }
 
                 // Update workers
                 if (metrics.workers) {
+                    console.log('Updating workers:', Object.keys(metrics.workers));
                     updateWorkersFromWS(metrics.workers);
+                } else {
+                    console.warn('No workers in metrics');
                 }
-                
+
             } catch (error) {
                 console.error('Error updating metrics from WebSocket:', error);
             }
