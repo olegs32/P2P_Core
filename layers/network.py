@@ -764,29 +764,99 @@ class P2PNetworkLayer:
             Локальный IP адрес который будет использоваться для подключения к target_host
         """
         import socket
+        import ipaddress
+        import psutil
 
-        # Определяем целевой хост для проверки маршрута
+        # Если target_host указан, пытаемся найти интерфейс в той же подсети
+        if target_host:
+            try:
+                # Получаем IP адрес координатора
+                target_ip = socket.gethostbyname(target_host)
+                self.log.info(f"Searching for interface in same subnet as coordinator {target_ip}")
+
+                # Получаем все сетевые интерфейсы
+                interfaces = psutil.net_if_addrs()
+
+                # Собираем все IPv4 адреса (кроме loopback и автоконфигурации)
+                candidate_ips = []
+
+                for iface_name, addresses in interfaces.items():
+                    for addr in addresses:
+                        if addr.family == socket.AF_INET:  # IPv4 only
+                            ip = addr.address
+                            netmask = addr.netmask
+
+                            # Пропускаем loopback
+                            if ip.startswith('127.'):
+                                continue
+
+                            # Пропускаем автоконфигурацию (APIPA)
+                            if ip.startswith('169.254.'):
+                                continue
+
+                            # Вычисляем подсеть
+                            try:
+                                network = ipaddress.IPv4Network(f"{ip}/{netmask}", strict=False)
+                                target_addr = ipaddress.IPv4Address(target_ip)
+
+                                # Проверяем, находится ли coordinator в этой подсети
+                                if target_addr in network:
+                                    self.log.info(f"✓ Found matching subnet: {iface_name} - {ip}/{netmask} (contains {target_ip})")
+                                    return ip
+                                else:
+                                    # Сохраняем как кандидата на случай, если не найдем точное совпадение
+                                    candidate_ips.append((ip, iface_name, str(network)))
+                                    self.log.debug(f"  Interface {iface_name}: {ip} (subnet: {network}) - does not contain {target_ip}")
+                            except Exception as e:
+                                self.log.debug(f"  Could not check subnet for {iface_name} {ip}: {e}")
+
+                # Если не нашли в той же подсети, выводим все кандидаты и используем первый не-VPN
+                if candidate_ips:
+                    self.log.warning(f"Coordinator {target_ip} not in same subnet as any interface")
+                    self.log.warning(f"Available interfaces:")
+                    for ip, iface, subnet in candidate_ips:
+                        # Простая эвристика: VPN адаптеры часто имеют маску /32 или /24 в диапазонах 10.x, 172.16-31.x
+                        is_vpn = ('/32' in subnet or
+                                 ip.startswith('10.') or
+                                 any(ip.startswith(f'172.{i}.') for i in range(16, 32)))
+                        marker = '(possibly VPN)' if is_vpn else ''
+                        self.log.warning(f"  - {iface}: {ip} (subnet: {subnet}) {marker}")
+
+                    # Выбираем первый не-VPN адрес
+                    for ip, iface, subnet in candidate_ips:
+                        is_vpn = ('/32' in subnet or
+                                 ip.startswith('10.') or
+                                 any(ip.startswith(f'172.{i}.') for i in range(16, 32)))
+                        if not is_vpn:
+                            self.log.info(f"Using non-VPN interface: {iface} - {ip}")
+                            return ip
+
+                    # Если все похожи на VPN, берем первый
+                    ip, iface, subnet = candidate_ips[0]
+                    self.log.warning(f"All interfaces appear to be VPN, using first: {iface} - {ip}")
+                    return ip
+
+            except Exception as e:
+                self.log.warning(f"Failed to detect IP via subnet matching: {e}")
+
+        # Fallback: старый метод через socket routing
         target = target_host if target_host else "8.8.8.8"
-
         try:
-            # Создаем временное соединение чтобы определить локальный IP
-            # который будет использован для подключения к целевому хосту
             with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
-                s.connect((target, 80))  # Не отправляет данные, просто определяет маршрут
+                s.connect((target, 80))
                 local_ip = s.getsockname()[0]
-
-            self.log.info(f"Detected local IP: {local_ip} (route to {target})")
+            self.log.info(f"Detected local IP via routing: {local_ip} (route to {target})")
             return local_ip
         except Exception as e:
             self.log.warning(f"Failed to detect IP via route to {target}: {e}")
-            # Fallback на получение IP через hostname
+            # Последний fallback - hostname
             try:
                 local_ip = socket.gethostbyname(socket.gethostname())
                 self.log.info(f"Using hostname IP: {local_ip}")
                 return local_ip
             except Exception as e2:
                 self.log.error(f"Failed to get IP via hostname: {e2}, using 127.0.0.1")
-                return '127.0.0.1'  # Последний fallback
+                return '127.0.0.1'
 
     async def start(self, join_addresses: List[str] = None):
         """Запуск сетевого уровня"""
