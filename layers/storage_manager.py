@@ -244,6 +244,33 @@ class P2PStorageManager:
         self._ensure_initialized()
         return self.archive.list_files(directory)
 
+    def list_configs(self) -> list:
+        """
+        Список конфигурационных файлов
+
+        Returns:
+            Список файлов в директории config
+        """
+        return self.list_files("config")
+
+    def list_certs(self) -> list:
+        """
+        Список файлов сертификатов
+
+        Returns:
+            Список файлов в директории certs
+        """
+        return self.list_files("certs")
+
+    def list_data_files(self) -> list:
+        """
+        Список файлов данных
+
+        Returns:
+            Список файлов в корневой директории data
+        """
+        return self.list_files("data")
+
     def exists(self, path: str) -> bool:
         """Проверка существования файла"""
         self._ensure_initialized()
