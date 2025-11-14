@@ -8,6 +8,9 @@
     <!-- Bootstrap CSS -->
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
 
+    <!-- Bootstrap Icons -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css">
+
     <!-- Chart.js -->
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 
@@ -4006,8 +4009,11 @@
                                  item.name.endsWith('.json') ? 'bi-file-earmark-text' :
                                  item.name.endsWith('.txt') ? 'bi-file-text' : 'bi-file';
 
+                    // Escape path for HTML attribute
+                    const escapedPath = item.path.replace(/'/g, "\\'");
+
                     html += `<li class="mb-1">
-                        <a href="#" class="text-decoration-none editor-file-link" data-path="${item.path}" onclick="editorLoadFile('${item.path}'); return false;">
+                        <a href="#" class="text-decoration-none editor-file-link" data-path="${item.path}" onclick="editorLoadFile('${escapedPath}'); return false;">
                             <i class="bi ${icon}"></i> ${item.name}
                         </a>
                     </li>`;
@@ -4390,18 +4396,26 @@
         document.getElementById('editorIncrementVersion')?.addEventListener('click', editorIncrementVersion);
 
         // Initialize editor when tab is shown
-        document.getElementById('editor-tab')?.addEventListener('shown.bs.tab', () => {
+        document.getElementById('editor-tab')?.addEventListener('shown.bs.tab', async () => {
             // Populate nodes
             const nodeSelect = document.getElementById('editorNodeSelect');
             nodeSelect.innerHTML = '<option value="coordinator">Coordinator</option>';
 
-            if (metricsData && metricsData.workers) {
-                Object.keys(metricsData.workers).forEach(workerId => {
-                    const option = document.createElement('option');
-                    option.value = workerId;
-                    option.textContent = workerId;
-                    nodeSelect.appendChild(option);
-                });
+            // Get latest metrics to populate worker nodes
+            try {
+                const response = await fetch('/api/dashboard/metrics');
+                const data = await response.json();
+
+                if (data.workers) {
+                    Object.keys(data.workers).forEach(workerId => {
+                        const option = document.createElement('option');
+                        option.value = workerId;
+                        option.textContent = workerId;
+                        nodeSelect.appendChild(option);
+                    });
+                }
+            } catch (error) {
+                console.log('Could not load worker nodes:', error);
             }
 
             // Load services
