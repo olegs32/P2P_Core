@@ -822,6 +822,325 @@ class SystemService(BaseService):
             "success": result.get("success", False)
         }
 
+    @service_method(description="Get node configuration", public=True)
+    async def get_config(self) -> Dict[str, Any]:
+        """
+        Get current node configuration as JSON
+
+        Returns:
+            Dictionary with configuration data
+        """
+        try:
+            if not hasattr(self, 'context') or not self.context:
+                return {"error": "Context not available", "config": {}}
+
+            # Get config as dict
+            config = self.context.config
+            config_dict = {
+                "node_id": config.node_id,
+                "port": config.port,
+                "bind_address": config.bind_address,
+                "coordinator_mode": config.coordinator_mode,
+                "coordinator_addresses": getattr(config, 'coordinator_addresses', []),
+                "redis_url": config.redis_url,
+                "redis_enabled": config.redis_enabled,
+                "gossip_interval_min": config.gossip_interval_min,
+                "gossip_interval_max": config.gossip_interval_max,
+                "gossip_compression_enabled": config.gossip_compression_enabled,
+                "https_enabled": config.https_enabled,
+                "ssl_cert_file": config.ssl_cert_file,
+                "ssl_key_file": config.ssl_key_file,
+                "ssl_ca_cert_file": config.ssl_ca_cert_file,
+                "ssl_verify": config.ssl_verify,
+                "rate_limit_enabled": config.rate_limit_enabled,
+                "rate_limit_rpc_requests": config.rate_limit_rpc_requests,
+                "state_directory": config.state_directory,
+                "max_log_entries": config.max_log_entries,
+            }
+
+            return {
+                "success": True,
+                "config": config_dict,
+                "node_id": self.context.config.node_id
+            }
+        except Exception as e:
+            self.logger.error(f"Failed to get config: {e}")
+            return {"error": str(e), "success": False}
+
+    @service_method(description="Update node configuration", public=True)
+    async def update_config(self, config_updates: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Update node configuration and save to storage
+
+        Args:
+            config_updates: Dictionary with configuration fields to update
+
+        Returns:
+            Success status and updated configuration
+        """
+        try:
+            if not hasattr(self, 'context') or not self.context:
+                return {"error": "Context not available", "success": False}
+
+            # Get current config
+            config = self.context.config
+            storage = self.context.get_shared("storage_manager")
+
+            if not storage:
+                return {"error": "Storage manager not available", "success": False}
+
+            # Update config fields (only safe fields)
+            safe_fields = {
+                'port', 'bind_address', 'redis_url', 'redis_enabled',
+                'gossip_interval_min', 'gossip_interval_max', 'gossip_compression_enabled',
+                'rate_limit_enabled', 'rate_limit_rpc_requests', 'max_log_entries',
+                'coordinator_addresses'
+            }
+
+            updated_fields = []
+            for field, value in config_updates.items():
+                if field in safe_fields and hasattr(config, field):
+                    setattr(config, field, value)
+                    updated_fields.append(field)
+                    self.logger.info(f"Updated config field: {field} = {value}")
+
+            # Save config to storage
+            config_filename = f"{config.node_id}_config.yaml"
+
+            # Convert config to YAML format
+            import yaml
+            config_dict = {
+                "node_id": config.node_id,
+                "port": config.port,
+                "bind_address": config.bind_address,
+                "coordinator_mode": config.coordinator_mode,
+                "coordinator_addresses": getattr(config, 'coordinator_addresses', []),
+                "redis_url": config.redis_url,
+                "redis_enabled": config.redis_enabled,
+                "gossip_interval_min": config.gossip_interval_min,
+                "gossip_interval_max": config.gossip_interval_max,
+                "gossip_compression_enabled": config.gossip_compression_enabled,
+                "https_enabled": config.https_enabled,
+                "ssl_cert_file": config.ssl_cert_file,
+                "ssl_key_file": config.ssl_key_file,
+                "ssl_ca_cert_file": config.ssl_ca_cert_file,
+                "ssl_verify": config.ssl_verify,
+                "rate_limit_enabled": config.rate_limit_enabled,
+                "rate_limit_rpc_requests": config.rate_limit_rpc_requests,
+                "state_directory": config.state_directory,
+                "max_log_entries": config.max_log_entries,
+            }
+
+            config_yaml = yaml.dump(config_dict, default_flow_style=False)
+            storage.write_config(config_filename, config_yaml.encode('utf-8'))
+            storage.save()
+
+            return {
+                "success": True,
+                "updated_fields": updated_fields,
+                "message": f"Configuration updated and saved ({len(updated_fields)} fields)"
+            }
+
+        except Exception as e:
+            self.logger.error(f"Failed to update config: {e}")
+            return {"error": str(e), "success": False}
+
+    @service_method(description="List files in secure storage", public=True)
+    async def list_storage_files(self) -> Dict[str, Any]:
+        """
+        List all files in secure storage
+
+        Returns:
+            Dictionary with file list categorized by type
+        """
+        try:
+            if not hasattr(self, 'context') or not self.context:
+                return {"error": "Context not available", "files": {}}
+
+            storage = self.context.get_shared("storage_manager")
+            if not storage:
+                return {"error": "Storage manager not available", "files": {}}
+
+            # Get file lists from storage
+            files = {
+                "configs": storage.list_configs(),
+                "certs": storage.list_certs(),
+                "data": storage.list_data_files()
+            }
+
+            return {
+                "success": True,
+                "files": files,
+                "total_files": sum(len(f) for f in files.values())
+            }
+
+        except Exception as e:
+            self.logger.error(f"Failed to list storage files: {e}")
+            return {"error": str(e), "success": False}
+
+    @service_method(description="Get file content from storage", public=True)
+    async def get_storage_file(self, filename: str, file_type: str = "data") -> Dict[str, Any]:
+        """
+        Get content of a file from secure storage
+
+        Args:
+            filename: Name of file to read
+            file_type: Type of file (config, cert, data)
+
+        Returns:
+            File content (base64 encoded for binary files)
+        """
+        try:
+            if not hasattr(self, 'context') or not self.context:
+                return {"error": "Context not available", "success": False}
+
+            storage = self.context.get_shared("storage_manager")
+            if not storage:
+                return {"error": "Storage manager not available", "success": False}
+
+            # Read file based on type
+            import base64
+
+            if file_type == "config":
+                content = storage.read_config(filename)
+            elif file_type == "cert":
+                content = storage.read_cert(filename)
+            elif file_type == "data":
+                content = storage.read_data(filename)
+            else:
+                return {"error": f"Invalid file type: {file_type}", "success": False}
+
+            if content is None:
+                return {"error": f"File not found: {filename}", "success": False}
+
+            # Try to decode as text, otherwise base64 encode
+            try:
+                content_str = content.decode('utf-8')
+                is_binary = False
+            except UnicodeDecodeError:
+                content_str = base64.b64encode(content).decode('utf-8')
+                is_binary = True
+
+            return {
+                "success": True,
+                "filename": filename,
+                "file_type": file_type,
+                "content": content_str,
+                "is_binary": is_binary,
+                "size": len(content)
+            }
+
+        except Exception as e:
+            self.logger.error(f"Failed to get storage file: {e}")
+            return {"error": str(e), "success": False}
+
+    @service_method(description="Add file to secure storage", public=True)
+    async def add_storage_file(
+        self,
+        filename: str,
+        content: str,
+        file_type: str = "data",
+        is_binary: bool = False
+    ) -> Dict[str, Any]:
+        """
+        Add or update file in secure storage
+
+        Args:
+            filename: Name of file
+            content: File content (base64 if binary)
+            file_type: Type of file (config, cert, data)
+            is_binary: Whether content is base64 encoded binary
+
+        Returns:
+            Success status
+        """
+        try:
+            if not hasattr(self, 'context') or not self.context:
+                return {"error": "Context not available", "success": False}
+
+            storage = self.context.get_shared("storage_manager")
+            if not storage:
+                return {"error": "Storage manager not available", "success": False}
+
+            # Decode content
+            import base64
+            if is_binary:
+                content_bytes = base64.b64decode(content)
+            else:
+                content_bytes = content.encode('utf-8')
+
+            # Write file based on type
+            if file_type == "config":
+                storage.write_config(filename, content_bytes)
+            elif file_type == "cert":
+                storage.write_cert(filename, content_bytes)
+            elif file_type == "data":
+                storage.write_data(filename, content_bytes)
+            else:
+                return {"error": f"Invalid file type: {file_type}", "success": False}
+
+            # Save storage
+            storage.save()
+
+            return {
+                "success": True,
+                "filename": filename,
+                "file_type": file_type,
+                "size": len(content_bytes),
+                "message": f"File {filename} saved to {file_type} storage"
+            }
+
+        except Exception as e:
+            self.logger.error(f"Failed to add storage file: {e}")
+            return {"error": str(e), "success": False}
+
+    @service_method(description="Delete file from secure storage", public=True)
+    async def delete_storage_file(self, filename: str, file_type: str = "data") -> Dict[str, Any]:
+        """
+        Delete file from secure storage
+
+        Args:
+            filename: Name of file to delete
+            file_type: Type of file (config, cert, data)
+
+        Returns:
+            Success status
+        """
+        try:
+            if not hasattr(self, 'context') or not self.context:
+                return {"error": "Context not available", "success": False}
+
+            storage = self.context.get_shared("storage_manager")
+            if not storage:
+                return {"error": "Storage manager not available", "success": False}
+
+            # Delete file based on type
+            if file_type == "config":
+                success = storage.delete_config(filename)
+            elif file_type == "cert":
+                success = storage.delete_cert(filename)
+            elif file_type == "data":
+                success = storage.delete_data(filename)
+            else:
+                return {"error": f"Invalid file type: {file_type}", "success": False}
+
+            if not success:
+                return {"error": f"File not found or could not be deleted: {filename}", "success": False}
+
+            # Save storage
+            storage.save()
+
+            return {
+                "success": True,
+                "filename": filename,
+                "file_type": file_type,
+                "message": f"File {filename} deleted from {file_type} storage"
+            }
+
+        except Exception as e:
+            self.logger.error(f"Failed to delete storage file: {e}")
+            return {"error": str(e), "success": False}
+
 
 # Для backward compatibility со старым кодом
 class SystemMethods(SystemService):
