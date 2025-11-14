@@ -163,6 +163,20 @@
         #logsTab .table-hover tbody tr:hover {
             background-color: rgba(255, 255, 255, 0.05);
         }
+        #logsTab .table thead th {
+            background-color: #2d3139;
+            color: var(--text-light);
+            border-color: var(--border-color);
+        }
+
+        #logsTab .table tbody td {
+            background-color: rgba(45, 49, 57, 0.3);
+            border-color: var(--border-color);
+        }
+
+        #logsTab .table tbody tr {
+            border-color: var(--border-color);
+        }
 
         #logsTab .form-check-input {
             background-color: #2d3139;
@@ -927,16 +941,11 @@
                                 <option value="">Все уровни</option>
                             </select>
                         </div>
-                        <div class="col-md-4">
+                        <div class="col-md-6">
                             <label for="logLoggerFilter" class="form-label">Источник (logger)</label>
                             <select class="form-select" id="logLoggerFilter">
                                 <option value="">Все источники</option>
                             </select>
-                        </div>
-                        <div class="col-md-2 d-flex align-items-end">
-                            <button class="btn btn-primary w-100" onclick="loadLogs()">
-                                <i class="bi bi-search"></i> Поиск
-                            </button>
                         </div>
                     </div>
                     <div class="row mt-3">
@@ -2820,6 +2829,29 @@
             if (logsTab) {
                 logsTab.addEventListener('click', () => {
                     loadLogSources();
+                    loadLogs(0);
+                });
+            }
+
+            // Add interactive filter listeners
+            const logNodeFilter = document.getElementById('logNodeFilter');
+            const logLevelFilter = document.getElementById('logLevelFilter');
+            const logLoggerFilter = document.getElementById('logLoggerFilter');
+
+            if (logNodeFilter) {
+                logNodeFilter.addEventListener('change', () => {
+                    loadLogs(0); // Reset to page 0 when filter changes
+                });
+            }
+
+            if (logLevelFilter) {
+                logLevelFilter.addEventListener('change', () => {
+                    loadLogs(0);
+                });
+            }
+
+            if (logLoggerFilter) {
+                logLoggerFilter.addEventListener('change', () => {
                     loadLogs(0);
                 });
             }
