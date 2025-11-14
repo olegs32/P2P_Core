@@ -966,7 +966,35 @@ class Run(BaseService):
             active_services += sum(1 for s in services.values()
                                   if isinstance(s, dict) and s.get("status") == "running")
 
-        # Count worker services
+        # Apply gossip fallback for worker services BEFORE counting
+        # This ensures we use fresher data from gossip when metrics_reporter hasn't sent services yet
+        if hasattr(self, 'context') and self.context:
+            try:
+                network = self.context.get_shared('network')
+                if network and hasattr(network, 'gossip'):
+                    gossip = network.gossip
+                    if hasattr(gossip, 'node_registry'):
+                        for node_id, node_info in gossip.node_registry.items():
+                            # Skip coordinator
+                            if node_info.role == 'coordinator':
+                                continue
+
+                            # Check if we have this worker in worker_metrics
+                            if node_id in self.worker_metrics:
+                                current_services = self.worker_metrics[node_id].get("services", {})
+                                gossip_services = node_info.services if hasattr(node_info, 'services') else {}
+
+                                # Use gossip if current services are empty or gossip has more
+                                if not current_services and gossip_services:
+                                    self.logger.info(f"Using gossip services for {node_id}: {len(gossip_services)} services")
+                                    self.worker_metrics[node_id]["services"] = gossip_services
+                                elif len(gossip_services) > len(current_services):
+                                    self.logger.info(f"Updating {node_id} from gossip: {len(gossip_services)} vs {len(current_services)} services")
+                                    self.worker_metrics[node_id]["services"] = gossip_services
+            except Exception as e:
+                self.logger.error(f"Error applying gossip fallback: {e}")
+
+        # Count worker services (AFTER gossip fallback)
         for worker_data in self.worker_metrics.values():
             services = worker_data.get("services", {})
             total_services += len(services)
