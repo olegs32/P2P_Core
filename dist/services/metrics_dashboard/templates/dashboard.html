@@ -3938,7 +3938,7 @@
         // Load services list
         async function editorLoadServices() {
             try {
-                const response = await fetch('/api/services/list', {
+                const response = await fetch('/api/services/p2p-list', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ node_id: editorCurrentNode })

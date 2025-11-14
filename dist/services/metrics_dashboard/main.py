@@ -351,9 +351,9 @@ class Run(BaseService):
                 return {"success": False, "error": str(e)}
 
         # Service Editor Endpoints
-        @app.post("/api/services/list")
-        async def list_services_endpoint(request: Request):
-            """List all available services"""
+        @app.post("/api/services/p2p-list")
+        async def list_p2p_services_endpoint(request: Request):
+            """List all available P2P services"""
             data = await request.json()
             node_id = data.get('node_id', 'coordinator')
 
@@ -363,10 +363,10 @@ class Run(BaseService):
                 else:
                     system_proxy = getattr(self.proxy.system, node_id)
 
-                result = await system_proxy.list_services()
+                result = await system_proxy.list_p2p_services()
                 return result
             except Exception as e:
-                self.logger.error(f"Failed to list services on {node_id}: {e}")
+                self.logger.error(f"Failed to list P2P services on {node_id}: {e}")
                 return {"success": False, "error": str(e)}
 
         @app.post("/api/services/files")
