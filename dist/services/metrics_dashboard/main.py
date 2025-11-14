@@ -759,15 +759,26 @@ class Run(BaseService):
                         # Wait for ping from client (heartbeat) or timeout
                         message = await asyncio.wait_for(
                             websocket.receive_text(),
-                            timeout=5.0
+                            timeout=10.0
                         )
 
-                        # Handle ping
+                        # Handle ping - send pong AND update data
                         if message == "ping":
+                            # Gather fresh data
+                            update_data = await self._gather_ws_data()
+
+                            # Send pong
                             await websocket.send_json({"type": "pong"})
 
+                            # Send update
+                            await websocket.send_json({
+                                "type": "update",
+                                "data": update_data,
+                                "timestamp": datetime.now().isoformat()
+                            })
+
                     except asyncio.TimeoutError:
-                        # No message received, send update
+                        # No message received in 10 seconds, send update anyway
                         update_data = await self._gather_ws_data()
                         await websocket.send_json({
                             "type": "update",
