@@ -215,8 +215,10 @@ class SimpleGossipProtocol:
         asyncio.create_task(self._failure_detection_loop())
         asyncio.create_task(self._cleanup_loop())
 
-        self.log.info(f"Gossip node started: {self.node_id} on {self.bind_address}:{self.bind_port}")
-        self.log.info(f"Role: {'Coordinator' if self.coordinator_mode else 'Worker'}")
+        self.log.info(f"Gossip node started: {self.node_id}")
+        self.log.info(f"  Bind address: {self.bind_address}:{self.bind_port}")
+        self.log.info(f"  Advertise address: {self.address}:{self.bind_port} (address other nodes will use)")
+        self.log.info(f"  Role: {'Coordinator' if self.coordinator_mode else 'Worker'}")
 
     async def _join_cluster(self):
         """Присоединение к существующему кластеру"""
@@ -242,14 +244,30 @@ class SimpleGossipProtocol:
                 if response.status_code == 200:
                     # Получение списка известных узлов
                     cluster_info = response.json()
-                    for node_data in cluster_info.get('nodes', []):
+                    discovered_nodes = cluster_info.get('nodes', [])
+
+                    for node_data in discovered_nodes:
                         node_info = NodeInfo.from_dict(node_data)
                         if node_info.node_id != self.node_id:
                             self.node_registry[node_info.node_id] = node_info
                             await self._notify_listeners(node_info.node_id, 'alive', node_info)
 
                     self.log.info(f"✅ Successfully joined cluster via {bootstrap_addr}")
-                    self.log.info(f"   Discovered {len(cluster_info.get('nodes', []))} nodes")
+                    self.log.info(f"   My advertise address: {self.address}:{self.bind_port}")
+                    self.log.info(f"   Discovered {len(discovered_nodes)} nodes in cluster:")
+
+                    for node_data in discovered_nodes:
+                        node_id = node_data.get('node_id', 'unknown')
+                        node_addr = node_data.get('address', 'unknown')
+                        node_port = node_data.get('port', 'unknown')
+                        node_role = node_data.get('role', 'unknown')
+                        services_count = len(node_data.get('services', {}))
+
+                        if node_id == self.node_id:
+                            self.log.info(f"     - {node_id} (self) at {node_addr}:{node_port} [{node_role}] - {services_count} services")
+                        else:
+                            self.log.info(f"     - {node_id} at {node_addr}:{node_port} [{node_role}] - {services_count} services")
+
                     break
 
             except Exception as e:
@@ -431,8 +449,13 @@ class SimpleGossipProtocol:
     async def _process_gossip_response(self, gossip_data: Dict):
         """Обработка ответа на gossip сообщение"""
         try:
+            sender_id = gossip_data.get('sender', 'unknown')
+            nodes_received = gossip_data.get('nodes', [])
+
+            self.log.debug(f"📨 Received gossip from {sender_id} with {len(nodes_received)} nodes")
+
             # Обновление информации об узлах
-            for node_data in gossip_data.get('nodes', []):
+            for node_data in nodes_received:
                 node_info = NodeInfo.from_dict(node_data)
 
                 if node_info.node_id == self.node_id:
@@ -442,20 +465,29 @@ class SimpleGossipProtocol:
 
                 if not existing_node:
                     # Новый узел
+                    services_count = len(node_info.services) if node_info.services else 0
                     self.node_registry[node_info.node_id] = node_info
                     await self._notify_listeners(node_info.node_id, 'alive', node_info)
-                    self.log.info(f"🆕 Discovered new node: {node_info.node_id} ({node_info.role})")
+                    self.log.info(f"🆕 Discovered new node via gossip: {node_info.node_id} at {node_info.address}:{node_info.port} [{node_info.role}] - {services_count} services")
 
                 elif existing_node.last_seen < node_info.last_seen:
                     # Обновление информации об узле
                     old_status = existing_node.status
+                    old_services_count = len(existing_node.services) if existing_node.services else 0
+                    new_services_count = len(node_info.services) if node_info.services else 0
+
                     self.node_registry[node_info.node_id] = node_info
+
+                    # Логируем если изменилось количество сервисов
+                    if old_services_count != new_services_count:
+                        self.log.debug(f"🔄 Node {node_info.node_id} services updated: {old_services_count} -> {new_services_count}")
 
                     if old_status != node_info.status:
                         await self._notify_listeners(node_info.node_id, node_info.status, node_info)
+                        self.log.info(f"🔄 Node {node_info.node_id} status changed: {old_status} -> {node_info.status}")
 
         except Exception as e:
-            self.log.info(f"❌ Error processing gossip response: {e}")
+            self.log.error(f"❌ Error processing gossip response: {e}")
 
     async def _failure_detection_loop(self):
         """Цикл обнаружения отказов узлов"""
@@ -651,9 +683,18 @@ class SimpleGossipProtocol:
         if self.service_info_callback:
             try:
                 services_info = await self.service_info_callback()
+                old_count = len(self.self_info.services) if self.self_info.services else 0
+                new_count = len(services_info) if services_info else 0
+
                 self.self_info.services = services_info
+
+                # Логируем только если изменилось количество сервисов
+                if old_count != new_count:
+                    self.log.info(f"📦 Services info updated: {old_count} -> {new_count} services")
+                    if services_info:
+                        self.log.debug(f"   Services: {list(services_info.keys())}")
             except Exception as e:
-                print(f"Error updating services info: {e}")
+                self.log.error(f"❌ Error updating services info: {e}")
 
 
 class P2PNetworkLayer:
