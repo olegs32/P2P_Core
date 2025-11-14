@@ -252,14 +252,15 @@ class Run(BaseService):
                 except Exception as e:
                     self.logger.debug(f"Could not get services from orchestrator: {e}")
                     # Fallback to service_manager for running services only
-                    if hasattr(self, '_service_manager') and self._service_manager:
-                        service_manager = self._service_manager
-                        for service_name, service_instance in service_manager.services.items():
-                            services[service_name] = {
-                                "status": service_instance.status.value if hasattr(service_instance.status, 'value') else str(service_instance.status),
-                                "uptime": getattr(service_instance, '_start_time', 0),
-                                "description": service_instance.info.description if hasattr(service_instance, 'info') else ""
-                            }
+                    if hasattr(self, 'context') and self.context:
+                        service_manager = self.context.get_shared('service_manager')
+                        if service_manager and hasattr(service_manager, 'services'):
+                            for service_name, service_instance in service_manager.services.items():
+                                services[service_name] = {
+                                    "status": service_instance.status.value if hasattr(service_instance.status, 'value') else str(service_instance.status),
+                                    "uptime": getattr(service_instance, '_start_time', 0),
+                                    "description": service_instance.info.description if hasattr(service_instance, 'info') else ""
+                                }
 
         except Exception as e:
             self.logger.error(f"Failed to collect service states: {e}")

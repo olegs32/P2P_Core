@@ -1082,15 +1082,13 @@ class ServiceComponent(P2PComponent):
             return list(self.context._method_registry.keys())
         return []
 
-    def get_service_info_for_gossip(self) -> dict:
+    async def get_service_info_for_gossip(self) -> dict:
         """Получить информацию о сервисах для gossip протокола"""
         if hasattr(self, 'service_manager'):
             try:
                 # Используем метод из ServiceManager если он есть
                 if hasattr(self.service_manager, 'get_services_info_for_gossip'):
-                    return asyncio.create_task(
-                        self.service_manager.get_services_info_for_gossip()
-                    )
+                    return await self.service_manager.get_services_info_for_gossip()
                 else:
                     # Fallback: создаем базовую информацию
                     services_info = {}

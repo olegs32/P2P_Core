@@ -1114,9 +1114,25 @@ class Run(BaseService):
         if self.coordinator_metrics:
             services_by_node["coordinator"] = self.coordinator_metrics.get("services", {})
 
-        # Worker services
+        # Worker services (from metrics reports)
         for worker_id, worker_data in self.worker_metrics.items():
             services_by_node[worker_id] = worker_data.get("services", {})
+
+        # Fallback: Query gossip protocol for nodes that haven't reported
+        if hasattr(self, 'context') and self.context:
+            try:
+                network = self.context.get_shared('network')
+                if network and hasattr(network, 'gossip'):
+                    gossip = network.gossip
+                    if hasattr(gossip, 'node_registry'):
+                        for node_id, node_info in gossip.node_registry.items():
+                            # If node not in services_by_node and has services in gossip
+                            if node_id not in services_by_node and hasattr(node_info, 'services'):
+                                if node_info.services:
+                                    self.logger.debug(f"Using gossip fallback for node {node_id} services")
+                                    services_by_node[node_id] = node_info.services
+            except Exception as e:
+                self.logger.debug(f"Could not query gossip for services: {e}")
 
         return {
             "timestamp": datetime.now().isoformat(),
