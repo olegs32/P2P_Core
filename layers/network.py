@@ -217,7 +217,7 @@ class SimpleGossipProtocol:
 
         self.log.info(f"Gossip node started: {self.node_id}")
         self.log.info(f"  Bind address: {self.bind_address}:{self.bind_port}")
-        self.log.info(f"  Advertise address: {self.address}:{self.bind_port} (address other nodes will use)")
+        self.log.info(f"  Advertise address: {self.self_info.address}:{self.bind_port} (address other nodes will use)")
         self.log.info(f"  Role: {'Coordinator' if self.coordinator_mode else 'Worker'}")
 
     async def _join_cluster(self):
@@ -253,7 +253,7 @@ class SimpleGossipProtocol:
                             await self._notify_listeners(node_info.node_id, 'alive', node_info)
 
                     self.log.info(f"✅ Successfully joined cluster via {bootstrap_addr}")
-                    self.log.info(f"   My advertise address: {self.address}:{self.bind_port}")
+                    self.log.info(f"   My advertise address: {self.self_info.address}:{self.bind_port}")
                     self.log.info(f"   Discovered {len(discovered_nodes)} nodes in cluster:")
 
                     for node_data in discovered_nodes:
