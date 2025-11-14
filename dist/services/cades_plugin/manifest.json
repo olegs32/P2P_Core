@@ -1,0 +1,206 @@
+{
+  "name": "cades_plugin",
+  "version": "1.0.0",
+  "description": "Self-hosted CAdES Plugin - Web-based digital signature service using secure storage",
+  "author": "P2P Core Team",
+  "dependencies": [
+    "service_framework",
+    "cryptography"
+  ],
+  "capabilities": [
+    "digital_signature",
+    "signature_verification",
+    "certificate_management",
+    "secure_storage"
+  ],
+  "exposed_methods": [
+    "import_certificate",
+    "list_certificates",
+    "get_certificate",
+    "delete_certificate",
+    "sign_data",
+    "verify_signature",
+    "get_public_key",
+    "get_statistics"
+  ],
+  "required_permissions": [
+    "secure_storage_read",
+    "secure_storage_write",
+    "cryptographic_operations"
+  ],
+  "configuration": {
+    "cert_storage_prefix": "user_certs",
+    "signature_algorithm": "sha256WithRSAEncryption",
+    "max_certificates": 100
+  },
+  "api": {
+    "import_certificate": {
+      "description": "Import certificate from PKCS#12 (PFX) file into secure storage",
+      "parameters": {
+        "pfx_base64": {
+          "type": "string",
+          "required": true,
+          "description": "Base64-encoded PKCS#12 data"
+        },
+        "password": {
+          "type": "string",
+          "required": true,
+          "description": "Password for PKCS#12 file"
+        }
+      },
+      "returns": {
+        "success": "boolean",
+        "certificate": "object",
+        "message": "string"
+      }
+    },
+    "list_certificates": {
+      "description": "List all certificates in secure storage",
+      "parameters": {},
+      "returns": {
+        "success": "boolean",
+        "certificates": "array",
+        "count": "number"
+      }
+    },
+    "get_certificate": {
+      "description": "Get certificate information by thumbprint",
+      "parameters": {
+        "thumbprint": {
+          "type": "string",
+          "required": true,
+          "description": "SHA1 thumbprint of certificate"
+        }
+      },
+      "returns": {
+        "success": "boolean",
+        "certificate": "object"
+      }
+    },
+    "delete_certificate": {
+      "description": "Delete certificate from secure storage",
+      "parameters": {
+        "thumbprint": {
+          "type": "string",
+          "required": true,
+          "description": "SHA1 thumbprint of certificate"
+        }
+      },
+      "returns": {
+        "success": "boolean",
+        "message": "string"
+      }
+    },
+    "sign_data": {
+      "description": "Create digital signature (CAdES-BES format)",
+      "parameters": {
+        "data_base64": {
+          "type": "string",
+          "required": true,
+          "description": "Base64-encoded data to sign"
+        },
+        "thumbprint": {
+          "type": "string",
+          "required": true,
+          "description": "Certificate thumbprint to use for signing"
+        },
+        "password": {
+          "type": "string",
+          "required": true,
+          "description": "Password for private key"
+        },
+        "detached": {
+          "type": "boolean",
+          "required": false,
+          "default": true,
+          "description": "Create detached signature"
+        }
+      },
+      "returns": {
+        "success": "boolean",
+        "signature": "string (base64)",
+        "signature_type": "string",
+        "signer": "string"
+      }
+    },
+    "verify_signature": {
+      "description": "Verify digital signature",
+      "parameters": {
+        "data_base64": {
+          "type": "string",
+          "required": true,
+          "description": "Base64-encoded original data"
+        },
+        "signature_base64": {
+          "type": "string",
+          "required": true,
+          "description": "Base64-encoded signature"
+        }
+      },
+      "returns": {
+        "success": "boolean",
+        "is_valid": "boolean",
+        "signature_info": "object"
+      }
+    },
+    "get_public_key": {
+      "description": "Get certificate public key in PEM format",
+      "parameters": {
+        "thumbprint": {
+          "type": "string",
+          "required": true,
+          "description": "Certificate thumbprint"
+        },
+        "password": {
+          "type": "string",
+          "required": true,
+          "description": "Password for PKCS#12"
+        }
+      },
+      "returns": {
+        "success": "boolean",
+        "certificate_pem": "string"
+      }
+    },
+    "get_statistics": {
+      "description": "Get service usage statistics",
+      "parameters": {},
+      "returns": {
+        "success": "boolean",
+        "statistics": "object"
+      }
+    }
+  },
+  "events": [
+    "certificate_imported",
+    "certificate_deleted",
+    "signature_created",
+    "signature_verified"
+  ],
+  "health_check": {
+    "endpoint": "health_check",
+    "interval": 60,
+    "timeout": 10
+  },
+  "resource_requirements": {
+    "memory": "128MB",
+    "disk_space": "50MB",
+    "network": "required"
+  },
+  "security": {
+    "sandbox": false,
+    "trusted": true,
+    "signature_required": false,
+    "encryption": "AES-256-GCM (via secure storage)"
+  },
+  "platform": {
+    "supported_os": ["linux", "windows", "darwin"],
+    "required_libraries": ["cryptography"]
+  },
+  "web_interface": {
+    "enabled": true,
+    "path": "/cades",
+    "static_files": "static/",
+    "templates": "templates/"
+  }
+}

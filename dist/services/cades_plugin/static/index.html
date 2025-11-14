@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CAdES Plugin - Управление сертификатами</title>
+    <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>🔐 CAdES Plugin</h1>
+            <p class="subtitle">Самописный аналог CAdES plugin для работы с ЭЦП в браузере</p>
+        </header>
+
+        <!-- Секция авторизации -->
+        <section id="auth-section" class="card">
+            <h2>Авторизация</h2>
+            <div class="form-group">
+                <label for="api-url">URL сервиса:</label>
+                <input type="text" id="api-url" value="https://localhost:8001/rpc" placeholder="https://localhost:8001/rpc">
+            </div>
+            <div class="form-group">
+                <label for="auth-token">JWT токен (опционально):</label>
+                <input type="text" id="auth-token" placeholder="Введите JWT токен">
+            </div>
+            <button onclick="initializePlugin()" class="btn btn-primary">Подключиться</button>
+            <div id="connection-status" class="status"></div>
+        </section>
+
+        <!-- Секция управления сертификатами -->
+        <section id="certs-section" class="card" style="display: none;">
+            <h2>📜 Мои сертификаты</h2>
+
+            <!-- Импорт сертификата -->
+            <div class="subsection">
+                <h3>Импорт сертификата</h3>
+                <div class="form-group">
+                    <label for="pfx-file">Файл PKCS#12 (.pfx, .p12):</label>
+                    <input type="file" id="pfx-file" accept=".pfx,.p12">
+                </div>
+                <div class="form-group">
+                    <label for="pfx-password">Пароль:</label>
+                    <input type="password" id="pfx-password" placeholder="Введите пароль">
+                </div>
+                <button onclick="importCertificate()" class="btn btn-success">Импортировать</button>
+            </div>
+
+            <!-- Список сертификатов -->
+            <div class="subsection">
+                <h3>Список сертификатов</h3>
+                <button onclick="loadCertificates()" class="btn btn-primary">Обновить список</button>
+                <div id="certs-list" class="certs-list"></div>
+            </div>
+        </section>
+
+        <!-- Секция подписи -->
+        <section id="sign-section" class="card" style="display: none;">
+            <h2>✍️ Создание подписи</h2>
+
+            <div class="form-group">
+                <label for="sign-cert-select">Выберите сертификат:</label>
+                <select id="sign-cert-select">
+                    <option value="">-- Выберите сертификат --</option>
+                </select>
+            </div>
+
+            <div class="form-group">
+                <label>Данные для подписи:</label>
+                <div class="radio-group">
+                    <label>
+                        <input type="radio" name="sign-data-type" value="text" checked>
+                        Текст
+                    </label>
+                    <label>
+                        <input type="radio" name="sign-data-type" value="file">
+                        Файл
+                    </label>
+                </div>
+            </div>
+
+            <div id="sign-text-input" class="form-group">
+                <label for="sign-text">Текст:</label>
+                <textarea id="sign-text" rows="5" placeholder="Введите текст для подписи"></textarea>
+            </div>
+
+            <div id="sign-file-input" class="form-group" style="display: none;">
+                <label for="sign-file">Файл:</label>
+                <input type="file" id="sign-file">
+            </div>
+
+            <div class="form-group">
+                <label for="sign-password">Пароль от закрытого ключа:</label>
+                <input type="password" id="sign-password" placeholder="Введите пароль">
+            </div>
+
+            <div class="form-group">
+                <label>
+                    <input type="checkbox" id="sign-detached" checked>
+                    Отсоединенная подпись
+                </label>
+            </div>
+
+            <button onclick="signData()" class="btn btn-primary">Подписать</button>
+
+            <div id="sign-result" class="result-box" style="display: none;">
+                <h3>Результат подписи</h3>
+                <div id="sign-result-content"></div>
+                <button onclick="downloadSignature()" class="btn btn-secondary">Скачать подпись</button>
+            </div>
+        </section>
+
+        <!-- Секция проверки подписи -->
+        <section id="verify-section" class="card" style="display: none;">
+            <h2>🔍 Проверка подписи</h2>
+
+            <div class="form-group">
+                <label>Исходные данные:</label>
+                <div class="radio-group">
+                    <label>
+                        <input type="radio" name="verify-data-type" value="text" checked>
+                        Текст
+                    </label>
+                    <label>
+                        <input type="radio" name="verify-data-type" value="file">
+                        Файл
+                    </label>
+                </div>
+            </div>
+
+            <div id="verify-text-input" class="form-group">
+                <label for="verify-text">Текст:</label>
+                <textarea id="verify-text" rows="5" placeholder="Введите исходный текст"></textarea>
+            </div>
+
+            <div id="verify-file-input" class="form-group" style="display: none;">
+                <label for="verify-file">Файл:</label>
+                <input type="file" id="verify-file">
+            </div>
+
+            <div class="form-group">
+                <label for="verify-signature-file">Файл подписи:</label>
+                <input type="file" id="verify-signature-file" accept=".sig">
+            </div>
+
+            <button onclick="verifySignature()" class="btn btn-primary">Проверить</button>
+
+            <div id="verify-result" class="result-box" style="display: none;">
+                <h3>Результат проверки</h3>
+                <div id="verify-result-content"></div>
+            </div>
+        </section>
+
+        <!-- Секция статистики -->
+        <section id="stats-section" class="card" style="display: none;">
+            <h2>📊 Статистика</h2>
+            <button onclick="loadStatistics()" class="btn btn-primary">Обновить</button>
+            <div id="stats-content" class="stats-grid"></div>
+        </section>
+    </div>
+
+    <script src="js/cades-plugin.js"></script>
+    <script src="js/app.js"></script>
+</body>
+</html>
