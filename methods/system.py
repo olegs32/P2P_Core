@@ -905,7 +905,11 @@ class SystemService(BaseService):
                     self.logger.info(f"Updated config field: {field} = {value}")
 
             # Save config to storage
-            config_filename = f"{config.node_id}_config.yaml"
+            # Use original config filename based on node mode
+            if config.coordinator_mode:
+                config_filename = "coordinator.yaml"
+            else:
+                config_filename = "worker.yaml"
 
             # Convert config to YAML format
             import yaml
@@ -1001,12 +1005,19 @@ class SystemService(BaseService):
             # Read file based on type
             import base64
 
+            # Remove directory prefix if present (list_files returns full paths like "config/coordinator.yaml")
+            # but read methods expect just filenames
+            if '/' in filename:
+                filename_only = filename.split('/')[-1]
+            else:
+                filename_only = filename
+
             if file_type == "config":
-                content = storage.read_config(filename)
+                content = storage.read_config(filename_only)
             elif file_type == "cert":
-                content = storage.read_cert(filename)
+                content = storage.read_cert(filename_only)
             elif file_type == "data":
-                content = storage.read_data(filename)
+                content = storage.read(filename_only)
             else:
                 return {"error": f"Invalid file type: {file_type}", "success": False}
 
@@ -1069,13 +1080,19 @@ class SystemService(BaseService):
             else:
                 content_bytes = content.encode('utf-8')
 
+            # Remove directory prefix if present
+            if '/' in filename:
+                filename_only = filename.split('/')[-1]
+            else:
+                filename_only = filename
+
             # Write file based on type
             if file_type == "config":
-                storage.write_config(filename, content_bytes)
+                storage.write_config(filename_only, content_bytes)
             elif file_type == "cert":
-                storage.write_cert(filename, content_bytes)
+                storage.write_cert(filename_only, content_bytes)
             elif file_type == "data":
-                storage.write_data(filename, content_bytes)
+                storage.write(filename_only, content_bytes)
             else:
                 return {"error": f"Invalid file type: {file_type}", "success": False}
 
@@ -1114,15 +1131,35 @@ class SystemService(BaseService):
             if not storage:
                 return {"error": "Storage manager not available", "success": False}
 
+            # Remove directory prefix if present
+            if '/' in filename:
+                filename_only = filename.split('/')[-1]
+            else:
+                filename_only = filename
+
             # Delete file based on type
+            # Note: P2PStorageManager doesn't have delete methods, need to use archive directly
+            archive = storage.get_archive()
+
             if file_type == "config":
-                success = storage.delete_config(filename)
+                file_path = f"config/{filename_only}"
             elif file_type == "cert":
-                success = storage.delete_cert(filename)
+                file_path = f"certs/{filename_only}"
             elif file_type == "data":
-                success = storage.delete_data(filename)
+                file_path = f"data/{filename_only}"
             else:
                 return {"error": f"Invalid file type: {file_type}", "success": False}
+
+            # Try to delete from archive
+            try:
+                if file_path in archive.files:
+                    del archive.files[file_path]
+                    success = True
+                else:
+                    success = False
+            except Exception as e:
+                self.logger.error(f"Failed to delete file: {e}")
+                success = False
 
             if not success:
                 return {"error": f"File not found or could not be deleted: {filename}", "success": False}
