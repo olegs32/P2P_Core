@@ -1171,7 +1171,7 @@
                 </li>
                 <li class="nav-item" role="presentation">
                     <button class="nav-link" id="editor-tab" data-bs-toggle="tab" data-bs-target="#editorPanel" type="button">
-                        Код-редактор
+                        Сервисы
                     </button>
                 </li>
                 <li class="nav-item" role="presentation">
@@ -1313,13 +1313,94 @@
                     </div>
                 </div>
 
-                <!-- Code Editor Panel (Placeholder) -->
+                <!-- Service Editor Panel -->
                 <div class="tab-pane fade" id="editorPanel" role="tabpanel">
                     <div class="card">
-                        <div class="card-body text-center py-5">
-                            <h4 class="text-muted">Код-редактор</h4>
-                            <p class="text-muted">Функционал находится в разработке</p>
-                            <span style="font-size: 4rem;">&#128187;</span>
+                        <div class="card-header">
+                            <div class="row align-items-center">
+                                <div class="col-md-3">
+                                    <label class="form-label mb-1">Нода:</label>
+                                    <select class="form-select form-select-sm" id="editorNodeSelect">
+                                        <option value="coordinator">Coordinator</option>
+                                    </select>
+                                </div>
+                                <div class="col-md-3">
+                                    <label class="form-label mb-1">Сервис:</label>
+                                    <select class="form-select form-select-sm" id="editorServiceSelect">
+                                        <option value="">Выберите сервис...</option>
+                                    </select>
+                                </div>
+                                <div class="col-md-4">
+                                    <label class="form-label mb-1">Версия:</label>
+                                    <div class="input-group input-group-sm">
+                                        <input type="text" class="form-control" id="editorServiceVersion" readonly>
+                                        <button class="btn btn-outline-secondary" type="button" id="editorIncrementVersion" title="Увеличить версию +0.0.1">
+                                            <i class="bi bi-arrow-up-circle"></i> +0.0.1
+                                        </button>
+                                    </div>
+                                </div>
+                                <div class="col-md-2 text-end">
+                                    <label class="form-label mb-1">&nbsp;</label>
+                                    <div>
+                                        <button class="btn btn-sm btn-primary" id="editorRefresh" title="Обновить">
+                                            <i class="bi bi-arrow-clockwise"></i>
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="card-body p-0">
+                            <div class="row g-0" style="height: calc(100vh - 300px);">
+                                <!-- Left Panel: File Tree -->
+                                <div class="col-md-3 border-end">
+                                    <div class="p-3 border-bottom bg-light">
+                                        <div class="d-flex justify-content-between align-items-center">
+                                            <h6 class="mb-0">Файлы</h6>
+                                            <div>
+                                                <button class="btn btn-sm btn-success me-1" id="editorNewFile" title="Новый файл">
+                                                    <i class="bi bi-file-plus"></i>
+                                                </button>
+                                                <button class="btn btn-sm btn-info" id="editorUploadFile" title="Загрузить файл">
+                                                    <i class="bi bi-upload"></i>
+                                                </button>
+                                                <input type="file" id="editorFileInput" style="display: none;">
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div id="editorFileTree" style="overflow-y: auto; height: calc(100% - 60px); padding: 10px;">
+                                        <p class="text-muted text-center mt-5">Выберите сервис</p>
+                                    </div>
+                                </div>
+
+                                <!-- Right Panel: Code Editor -->
+                                <div class="col-md-9">
+                                    <div class="p-3 border-bottom bg-light">
+                                        <div class="d-flex justify-content-between align-items-center">
+                                            <div>
+                                                <h6 class="mb-0" id="editorFileName">Файл не выбран</h6>
+                                                <small class="text-muted" id="editorFilePath"></small>
+                                            </div>
+                                            <div>
+                                                <button class="btn btn-sm btn-warning me-1" id="editorRenameFile" title="Переименовать" disabled>
+                                                    <i class="bi bi-pencil"></i> Переименовать
+                                                </button>
+                                                <button class="btn btn-sm btn-info me-1" id="editorDownloadFile" title="Скачать" disabled>
+                                                    <i class="bi bi-download"></i> Скачать
+                                                </button>
+                                                <button class="btn btn-sm btn-danger me-2" id="editorDeleteFile" title="Удалить" disabled>
+                                                    <i class="bi bi-trash"></i> Удалить
+                                                </button>
+                                                <button class="btn btn-sm btn-success" id="editorSaveFile" title="Сохранить" disabled>
+                                                    <i class="bi bi-save"></i> Сохранить
+                                                </button>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div style="height: calc(100% - 60px);">
+                                        <textarea id="editorCodeArea" class="form-control" style="font-family: 'Courier New', monospace; font-size: 14px; height: 100%; resize: none; border: none; border-radius: 0;" disabled></textarea>
+                                    </div>
+                                </div>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -3842,6 +3923,490 @@
                 alert(`Ошибка удаления файла: ${error.message}`);
             }
         }
+
+        // ==================== Service Editor Functions ====================
+
+        let editorCurrentNode = 'coordinator';
+        let editorCurrentService = '';
+        let editorCurrentFile = '';
+        let editorCurrentFilePath = '';
+        let editorFilesDirty = false;
+
+        // Load services list
+        async function editorLoadServices() {
+            try {
+                const response = await fetch('/api/services/list', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ node_id: editorCurrentNode })
+                });
+
+                const result = await response.json();
+
+                if (result.success) {
+                    const select = document.getElementById('editorServiceSelect');
+                    select.innerHTML = '<option value="">Выберите сервис...</option>';
+
+                    result.services.forEach(service => {
+                        const option = document.createElement('option');
+                        option.value = service.name;
+                        option.textContent = `${service.name} (v${service.version})`;
+                        select.appendChild(option);
+                    });
+                }
+            } catch (error) {
+                console.error('Failed to load services:', error);
+            }
+        }
+
+        // Load service files tree
+        async function editorLoadFileTree() {
+            if (!editorCurrentService) {
+                document.getElementById('editorFileTree').innerHTML = '<p class="text-muted text-center mt-5">Выберите сервис</p>';
+                return;
+            }
+
+            try {
+                const response = await fetch('/api/services/files', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        node_id: editorCurrentNode,
+                        service_name: editorCurrentService
+                    })
+                });
+
+                const result = await response.json();
+
+                if (result.success) {
+                    document.getElementById('editorFileTree').innerHTML = editorBuildFileTreeHTML(result.files);
+                    editorLoadManifest();
+                } else {
+                    document.getElementById('editorFileTree').innerHTML = `<p class="text-danger">Ошибка: ${result.error}</p>`;
+                }
+            } catch (error) {
+                console.error('Failed to load file tree:', error);
+                document.getElementById('editorFileTree').innerHTML = `<p class="text-danger">Ошибка загрузки</p>`;
+            }
+        }
+
+        // Build file tree HTML recursively
+        function editorBuildFileTreeHTML(items, level = 0) {
+            let html = '<ul class="list-unstyled" style="margin-left: ' + (level * 15) + 'px;">';
+
+            items.forEach(item => {
+                if (item.type === 'directory') {
+                    html += `<li class="mb-1">
+                        <i class="bi bi-folder-fill text-warning"></i>
+                        <strong>${item.name}</strong>
+                        ${editorBuildFileTreeHTML(item.children, level + 1)}
+                    </li>`;
+                } else {
+                    const icon = item.name.endsWith('.py') ? 'bi-file-code' :
+                                 item.name.endsWith('.json') ? 'bi-file-earmark-text' :
+                                 item.name.endsWith('.txt') ? 'bi-file-text' : 'bi-file';
+
+                    html += `<li class="mb-1">
+                        <a href="#" class="text-decoration-none editor-file-link" data-path="${item.path}" onclick="editorLoadFile('${item.path}'); return false;">
+                            <i class="bi ${icon}"></i> ${item.name}
+                        </a>
+                    </li>`;
+                }
+            });
+
+            html += '</ul>';
+            return html;
+        }
+
+        // Load file content
+        async function editorLoadFile(filePath) {
+            if (editorFilesDirty && !confirm('У вас есть несохраненные изменения. Продолжить?')) {
+                return;
+            }
+
+            editorCurrentFile = filePath.split('/').pop();
+            editorCurrentFilePath = filePath;
+
+            try {
+                const response = await fetch('/api/services/file/get', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        node_id: editorCurrentNode,
+                        service_name: editorCurrentService,
+                        file_path: filePath
+                    })
+                });
+
+                const result = await response.json();
+
+                if (result.success) {
+                    document.getElementById('editorCodeArea').value = result.content;
+                    document.getElementById('editorCodeArea').disabled = false;
+                    document.getElementById('editorFileName').textContent = editorCurrentFile;
+                    document.getElementById('editorFilePath').textContent = filePath;
+                    document.getElementById('editorSaveFile').disabled = false;
+                    document.getElementById('editorRenameFile').disabled = false;
+                    document.getElementById('editorDeleteFile').disabled = false;
+                    document.getElementById('editorDownloadFile').disabled = false;
+
+                    // Highlight selected file
+                    document.querySelectorAll('.editor-file-link').forEach(link => {
+                        link.classList.remove('fw-bold', 'text-primary');
+                    });
+                    document.querySelector(`.editor-file-link[data-path="${filePath}"]`)?.classList.add('fw-bold', 'text-primary');
+
+                    editorFilesDirty = false;
+                } else {
+                    alert(`Ошибка загрузки файла: ${result.error}`);
+                }
+            } catch (error) {
+                console.error('Failed to load file:', error);
+                alert('Ошибка загрузки файла');
+            }
+        }
+
+        // Save file
+        async function editorSaveFile() {
+            if (!editorCurrentFile) return;
+
+            const content = document.getElementById('editorCodeArea').value;
+
+            try {
+                const response = await fetch('/api/services/file/update', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        node_id: editorCurrentNode,
+                        service_name: editorCurrentService,
+                        file_path: editorCurrentFilePath,
+                        content: content,
+                        is_binary: false
+                    })
+                });
+
+                const result = await response.json();
+
+                if (result.success) {
+                    editorFilesDirty = false;
+
+                    // Show success message
+                    const fileName = document.getElementById('editorFileName');
+                    const originalText = fileName.textContent;
+                    fileName.textContent = '✓ Сохранено';
+                    fileName.classList.add('text-success');
+                    setTimeout(() => {
+                        fileName.textContent = originalText;
+                        fileName.classList.remove('text-success');
+                    }, 2000);
+                } else {
+                    alert(`Ошибка сохранения: ${result.error}`);
+                }
+            } catch (error) {
+                console.error('Failed to save file:', error);
+                alert('Ошибка сохранения файла');
+            }
+        }
+
+        // Delete file
+        async function editorDeleteFile() {
+            if (!editorCurrentFile) return;
+
+            if (!confirm(`Удалить файл ${editorCurrentFile}?`)) return;
+
+            try {
+                const response = await fetch('/api/services/file/delete', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        node_id: editorCurrentNode,
+                        service_name: editorCurrentService,
+                        file_path: editorCurrentFilePath
+                    })
+                });
+
+                const result = await response.json();
+
+                if (result.success) {
+                    editorCurrentFile = '';
+                    editorCurrentFilePath = '';
+                    document.getElementById('editorCodeArea').value = '';
+                    document.getElementById('editorCodeArea').disabled = true;
+                    document.getElementById('editorFileName').textContent = 'Файл не выбран';
+                    document.getElementById('editorFilePath').textContent = '';
+                    document.getElementById('editorSaveFile').disabled = true;
+                    document.getElementById('editorRenameFile').disabled = true;
+                    document.getElementById('editorDeleteFile').disabled = true;
+                    document.getElementById('editorDownloadFile').disabled = true;
+                    editorFilesDirty = false;
+
+                    // Reload tree
+                    editorLoadFileTree();
+                } else {
+                    alert(`Ошибка удаления: ${result.error}`);
+                }
+            } catch (error) {
+                console.error('Failed to delete file:', error);
+                alert('Ошибка удаления файла');
+            }
+        }
+
+        // Rename file
+        async function editorRenameFile() {
+            if (!editorCurrentFile) return;
+
+            const newName = prompt('Новое имя файла:', editorCurrentFile);
+            if (!newName || newName === editorCurrentFile) return;
+
+            try {
+                const response = await fetch('/api/services/file/rename', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        node_id: editorCurrentNode,
+                        service_name: editorCurrentService,
+                        old_path: editorCurrentFilePath,
+                        new_name: newName
+                    })
+                });
+
+                const result = await response.json();
+
+                if (result.success) {
+                    // Update current file path
+                    const pathParts = editorCurrentFilePath.split('/');
+                    pathParts[pathParts.length - 1] = newName;
+                    editorCurrentFilePath = pathParts.join('/');
+                    editorCurrentFile = newName;
+
+                    document.getElementById('editorFileName').textContent = newName;
+                    document.getElementById('editorFilePath').textContent = editorCurrentFilePath;
+
+                    // Reload tree
+                    editorLoadFileTree();
+                } else {
+                    alert(`Ошибка переименования: ${result.error}`);
+                }
+            } catch (error) {
+                console.error('Failed to rename file:', error);
+                alert('Ошибка переименования файла');
+            }
+        }
+
+        // Download file
+        function editorDownloadFile() {
+            if (!editorCurrentFile) return;
+
+            const content = document.getElementById('editorCodeArea').value;
+            const blob = new Blob([content], { type: 'text/plain' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = editorCurrentFile;
+            a.click();
+            URL.revokeObjectURL(url);
+        }
+
+        // New file
+        async function editorNewFile() {
+            if (!editorCurrentService) {
+                alert('Сначала выберите сервис');
+                return;
+            }
+
+            const fileName = prompt('Имя нового файла:');
+            if (!fileName) return;
+
+            try {
+                const response = await fetch('/api/services/file/update', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        node_id: editorCurrentNode,
+                        service_name: editorCurrentService,
+                        file_path: fileName,
+                        content: '',
+                        is_binary: false
+                    })
+                });
+
+                const result = await response.json();
+
+                if (result.success) {
+                    editorLoadFileTree();
+                    editorLoadFile(fileName);
+                } else {
+                    alert(`Ошибка создания файла: ${result.error}`);
+                }
+            } catch (error) {
+                console.error('Failed to create file:', error);
+                alert('Ошибка создания файла');
+            }
+        }
+
+        // Upload file
+        function editorUploadFile() {
+            if (!editorCurrentService) {
+                alert('Сначала выберите сервис');
+                return;
+            }
+
+            document.getElementById('editorFileInput').click();
+        }
+
+        // Handle file upload
+        document.getElementById('editorFileInput')?.addEventListener('change', async (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+
+            const reader = new FileReader();
+            reader.onload = async (event) => {
+                try {
+                    const content = event.target.result;
+
+                    const response = await fetch('/api/services/file/update', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            node_id: editorCurrentNode,
+                            service_name: editorCurrentService,
+                            file_path: file.name,
+                            content: content,
+                            is_binary: false
+                        })
+                    });
+
+                    const result = await response.json();
+
+                    if (result.success) {
+                        editorLoadFileTree();
+                        editorLoadFile(file.name);
+                    } else {
+                        alert(`Ошибка загрузки файла: ${result.error}`);
+                    }
+                } catch (error) {
+                    console.error('Failed to upload file:', error);
+                    alert('Ошибка загрузки файла');
+                }
+            };
+            reader.readAsText(file);
+
+            // Reset input
+            e.target.value = '';
+        });
+
+        // Load manifest version
+        async function editorLoadManifest() {
+            if (!editorCurrentService) return;
+
+            try {
+                const response = await fetch('/api/services/manifest', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        node_id: editorCurrentNode,
+                        service_name: editorCurrentService
+                    })
+                });
+
+                const result = await response.json();
+
+                if (result.success && result.manifest) {
+                    document.getElementById('editorServiceVersion').value = result.manifest.version || '1.0.0';
+                }
+            } catch (error) {
+                console.error('Failed to load manifest:', error);
+            }
+        }
+
+        // Increment version
+        async function editorIncrementVersion() {
+            if (!editorCurrentService) return;
+
+            try {
+                const response = await fetch('/api/services/version/increment', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        node_id: editorCurrentNode,
+                        service_name: editorCurrentService
+                    })
+                });
+
+                const result = await response.json();
+
+                if (result.success) {
+                    document.getElementById('editorServiceVersion').value = result.new_version;
+                    alert(`Версия увеличена до ${result.new_version}`);
+                } else {
+                    alert(`Ошибка: ${result.error}`);
+                }
+            } catch (error) {
+                console.error('Failed to increment version:', error);
+                alert('Ошибка увеличения версии');
+            }
+        }
+
+        // Track changes
+        document.getElementById('editorCodeArea')?.addEventListener('input', () => {
+            editorFilesDirty = true;
+        });
+
+        // Event listeners
+        document.getElementById('editorNodeSelect')?.addEventListener('change', (e) => {
+            editorCurrentNode = e.target.value;
+            editorLoadServices();
+        });
+
+        document.getElementById('editorServiceSelect')?.addEventListener('change', (e) => {
+            editorCurrentService = e.target.value;
+            editorCurrentFile = '';
+            editorCurrentFilePath = '';
+            document.getElementById('editorCodeArea').value = '';
+            document.getElementById('editorCodeArea').disabled = true;
+            document.getElementById('editorFileName').textContent = 'Файл не выбран';
+            document.getElementById('editorFilePath').textContent = '';
+            document.getElementById('editorSaveFile').disabled = true;
+            document.getElementById('editorRenameFile').disabled = true;
+            document.getElementById('editorDeleteFile').disabled = true;
+            document.getElementById('editorDownloadFile').disabled = true;
+            editorFilesDirty = false;
+            editorLoadFileTree();
+        });
+
+        document.getElementById('editorRefresh')?.addEventListener('click', () => {
+            editorLoadServices();
+            if (editorCurrentService) {
+                editorLoadFileTree();
+            }
+        });
+
+        document.getElementById('editorSaveFile')?.addEventListener('click', editorSaveFile);
+        document.getElementById('editorDeleteFile')?.addEventListener('click', editorDeleteFile);
+        document.getElementById('editorRenameFile')?.addEventListener('click', editorRenameFile);
+        document.getElementById('editorDownloadFile')?.addEventListener('click', editorDownloadFile);
+        document.getElementById('editorNewFile')?.addEventListener('click', editorNewFile);
+        document.getElementById('editorUploadFile')?.addEventListener('click', editorUploadFile);
+        document.getElementById('editorIncrementVersion')?.addEventListener('click', editorIncrementVersion);
+
+        // Initialize editor when tab is shown
+        document.getElementById('editor-tab')?.addEventListener('shown.bs.tab', () => {
+            // Populate nodes
+            const nodeSelect = document.getElementById('editorNodeSelect');
+            nodeSelect.innerHTML = '<option value="coordinator">Coordinator</option>';
+
+            if (metricsData && metricsData.workers) {
+                Object.keys(metricsData.workers).forEach(workerId => {
+                    const option = document.createElement('option');
+                    option.value = workerId;
+                    option.textContent = workerId;
+                    nodeSelect.appendChild(option);
+                });
+            }
+
+            // Load services
+            editorLoadServices();
+        });
     </script>
 </body>
 </html>
