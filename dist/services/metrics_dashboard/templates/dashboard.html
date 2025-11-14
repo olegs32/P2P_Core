@@ -466,6 +466,10 @@
                 <span class="nav-tab-icon">&#128272;</span>
                 <span>Сертификаты</span>
             </a>
+            <a class="nav-tab" data-tab="logs">
+                <span class="nav-tab-icon">&#128220;</span>
+                <span>Логи</span>
+            </a>
         </div>
     </div>
 
@@ -836,6 +840,111 @@
             </div>
         </div>
     </div>
+    <!-- Logs Tab Content -->
+    <div class="tab-content" id="logsTab">
+        <!-- Header -->
+        <div class="dashboard-header">
+            <div class="container">
+                <h1>Централизованные Логи</h1>
+                <p class="text-muted">Просмотр и фильтрация логов со всех узлов кластера</p>
+            </div>
+        </div>
+
+        <!-- Content -->
+        <div class="container py-4">
+            <!-- Filters -->
+            <div class="card mb-4">
+                <div class="card-body">
+                    <h5 class="card-title mb-3">Фильтры</h5>
+                    <div class="row g-3">
+                        <div class="col-md-3">
+                            <label for="logNodeFilter" class="form-label">Узел</label>
+                            <select class="form-select" id="logNodeFilter">
+                                <option value="">Все узлы</option>
+                            </select>
+                        </div>
+                        <div class="col-md-3">
+                            <label for="logLevelFilter" class="form-label">Уровень</label>
+                            <select class="form-select" id="logLevelFilter">
+                                <option value="">Все уровни</option>
+                            </select>
+                        </div>
+                        <div class="col-md-4">
+                            <label for="logLoggerFilter" class="form-label">Источник (logger)</label>
+                            <select class="form-select" id="logLoggerFilter">
+                                <option value="">Все источники</option>
+                            </select>
+                        </div>
+                        <div class="col-md-2 d-flex align-items-end">
+                            <button class="btn btn-primary w-100" onclick="loadLogs()">
+                                <i class="bi bi-search"></i> Поиск
+                            </button>
+                        </div>
+                    </div>
+                    <div class="row mt-3">
+                        <div class="col-md-6">
+                            <div class="form-check form-switch">
+                                <input class="form-check-input" type="checkbox" id="logsAutoRefresh" checked>
+                                <label class="form-check-label" for="logsAutoRefresh">
+                                    Авто-обновление (каждые 5 сек)
+                                </label>
+                            </div>
+                        </div>
+                        <div class="col-md-6 text-end">
+                            <button class="btn btn-danger btn-sm" onclick="clearLogs()">
+                                <i class="bi bi-trash"></i> Очистить логи
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Logs Table -->
+            <div class="card">
+                <div class="card-body">
+                    <div class="d-flex justify-content-between align-items-center mb-3">
+                        <h5 class="card-title mb-0">Логи (<span id="logsTotalCount">0</span>)</h5>
+                        <small class="text-muted" id="logsLastUpdate">Никогда</small>
+                    </div>
+
+                    <div class="table-responsive">
+                        <table class="table table-sm table-hover">
+                            <thead class="table-dark">
+                                <tr>
+                                    <th style="width: 180px">Время</th>
+                                    <th style="width: 150px">Узел</th>
+                                    <th style="width: 80px">Уровень</th>
+                                    <th style="width: 200px">Источник</th>
+                                    <th>Сообщение</th>
+                                </tr>
+                            </thead>
+                            <tbody id="logsTableBody">
+                                <tr>
+                                    <td colspan="5" class="text-center text-muted">
+                                        Загрузка логов...
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+
+                    <!-- Pagination -->
+                    <div class="d-flex justify-content-between align-items-center mt-3">
+                        <div>
+                            <small class="text-muted">
+                                Показано <span id="logsShowingCount">0</span> из <span id="logsTotalCountFooter">0</span>
+                            </small>
+                        </div>
+                        <nav>
+                            <ul class="pagination pagination-sm mb-0" id="logsPagination">
+                                <!-- Pagination will be inserted here -->
+                            </ul>
+                        </nav>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
 
     <!-- Bootstrap JS -->
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
@@ -865,6 +974,8 @@
                         document.getElementById('certificatesTab').classList.add('active');
                         // Load certificates when tab is opened
                         loadCertificates();
+                    } else if (targetTab === 'logs') {
+                        document.getElementById('logsTab').classList.add('active');
                     }
                 });
             });
@@ -872,6 +983,7 @@
             // Initialize dashboard
             initCoordinatorChart();
             updateMetrics();
+            initializeLogsTab();
 
             // Auto-refresh every 5 seconds (only for home tab)
             setInterval(() => {
@@ -2396,6 +2508,260 @@
             } catch (error) {
                 console.error('Failed to control service:', error);
                 alert(`Error: ${error.message}`);
+            }
+        }
+
+        // ========== LOGS TAB FUNCTIONALITY ==========
+
+        let logsCurrentPage = 0;
+        let logsPageSize = 100;
+        let logsAutoRefreshInterval = null;
+
+        // Load log sources (nodes, levels, loggers)
+        async function loadLogSources() {
+            try {
+                const response = await fetch('/api/logs/sources');
+                const data = await response.json();
+
+                // Populate node filter
+                const nodeFilter = document.getElementById('logNodeFilter');
+                nodeFilter.innerHTML = '<option value="">Все узлы</option>';
+                data.nodes.forEach(node => {
+                    const option = document.createElement('option');
+                    option.value = node;
+                    option.textContent = node;
+                    nodeFilter.appendChild(option);
+                });
+
+                // Populate level filter
+                const levelFilter = document.getElementById('logLevelFilter');
+                levelFilter.innerHTML = '<option value="">Все уровни</option>';
+                data.log_levels.forEach(level => {
+                    const option = document.createElement('option');
+                    option.value = level;
+                    option.textContent = level;
+                    levelFilter.appendChild(option);
+                });
+
+                // Populate logger filter
+                const loggerFilter = document.getElementById('logLoggerFilter');
+                loggerFilter.innerHTML = '<option value="">Все источники</option>';
+                data.loggers.forEach(logger => {
+                    const option = document.createElement('option');
+                    option.value = logger;
+                    option.textContent = logger;
+                    loggerFilter.appendChild(option);
+                });
+
+            } catch (error) {
+                console.error('Failed to load log sources:', error);
+            }
+        }
+
+        // Load logs with current filters
+        async function loadLogs(page = 0) {
+            try {
+                logsCurrentPage = page;
+                const offset = page * logsPageSize;
+
+                const nodeFilter = document.getElementById('logNodeFilter').value;
+                const levelFilter = document.getElementById('logLevelFilter').value;
+                const loggerFilter = document.getElementById('logLoggerFilter').value;
+
+                // Build query params
+                const params = new URLSearchParams({
+                    limit: logsPageSize,
+                    offset: offset
+                });
+                if (nodeFilter) params.append('node_id', nodeFilter);
+                if (levelFilter) params.append('level', levelFilter);
+                if (loggerFilter) params.append('logger_name', loggerFilter);
+
+                const response = await fetch(`/api/logs?${params}`);
+                const data = await response.json();
+
+                // Update UI
+                displayLogs(data.logs);
+                updateLogsPagination(data.total);
+                document.getElementById('logsTotalCount').textContent = data.total;
+                document.getElementById('logsTotalCountFooter').textContent = data.total;
+                document.getElementById('logsShowingCount').textContent = data.logs.length;
+                document.getElementById('logsLastUpdate').textContent = new Date().toLocaleTimeString();
+
+            } catch (error) {
+                console.error('Failed to load logs:', error);
+                document.getElementById('logsTableBody').innerHTML = `
+                    <tr>
+                        <td colspan="5" class="text-center text-danger">
+                            Ошибка загрузки логов: ${error.message}
+                        </td>
+                    </tr>
+                `;
+            }
+        }
+
+        // Display logs in table
+        function displayLogs(logs) {
+            const tbody = document.getElementById('logsTableBody');
+
+            if (logs.length === 0) {
+                tbody.innerHTML = `
+                    <tr>
+                        <td colspan="5" class="text-center text-muted">
+                            Логи не найдены
+                        </td>
+                    </tr>
+                `;
+                return;
+            }
+
+            tbody.innerHTML = logs.map(log => {
+                const levelClass = getLogLevelClass(log.level);
+                const timestamp = new Date(log.timestamp).toLocaleString('ru-RU');
+
+                return `
+                    <tr>
+                        <td><small>${timestamp}</small></td>
+                        <td><small><span class="badge bg-secondary">${log.node_id}</span></small></td>
+                        <td><small><span class="badge ${levelClass}">${log.level}</span></small></td>
+                        <td><small>${log.logger_name}</small></td>
+                        <td><small>${escapeHtml(log.message)}</small></td>
+                    </tr>
+                `;
+            }).join('');
+        }
+
+        // Get badge class for log level
+        function getLogLevelClass(level) {
+            switch (level) {
+                case 'DEBUG': return 'bg-secondary';
+                case 'INFO': return 'bg-info';
+                case 'WARNING': return 'bg-warning';
+                case 'ERROR': return 'bg-danger';
+                case 'CRITICAL': return 'bg-dark';
+                default: return 'bg-secondary';
+            }
+        }
+
+        // Update pagination
+        function updateLogsPagination(total) {
+            const pagination = document.getElementById('logsPagination');
+            const totalPages = Math.ceil(total / logsPageSize);
+
+            if (totalPages <= 1) {
+                pagination.innerHTML = '';
+                return;
+            }
+
+            let html = '';
+
+            // Previous button
+            html += `
+                <li class="page-item ${logsCurrentPage === 0 ? 'disabled' : ''}">
+                    <a class="page-link" href="#" onclick="loadLogs(${logsCurrentPage - 1}); return false;">Пред</a>
+                </li>
+            `;
+
+            // Page numbers (show max 5 pages)
+            const startPage = Math.max(0, logsCurrentPage - 2);
+            const endPage = Math.min(totalPages, startPage + 5);
+
+            for (let i = startPage; i < endPage; i++) {
+                html += `
+                    <li class="page-item ${i === logsCurrentPage ? 'active' : ''}">
+                        <a class="page-link" href="#" onclick="loadLogs(${i}); return false;">${i + 1}</a>
+                    </li>
+                `;
+            }
+
+            // Next button
+            html += `
+                <li class="page-item ${logsCurrentPage >= totalPages - 1 ? 'disabled' : ''}">
+                    <a class="page-link" href="#" onclick="loadLogs(${logsCurrentPage + 1}); return false;">След</a>
+                </li>
+            `;
+
+            pagination.innerHTML = html;
+        }
+
+        // Clear logs
+        async function clearLogs() {
+            if (!confirm('Вы уверены что хотите очистить логи?')) {
+                return;
+            }
+
+            try {
+                const nodeFilter = document.getElementById('logNodeFilter').value;
+
+                const response = await fetch('/api/logs/clear', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({node_id: nodeFilter || null})
+                });
+
+                const result = await response.json();
+
+                if (result.success) {
+                    alert(`Удалено ${result.cleared} логов`);
+                    loadLogs(0);
+                } else {
+                    alert(`Ошибка: ${result.error}`);
+                }
+            } catch (error) {
+                console.error('Failed to clear logs:', error);
+                alert(`Ошибка: ${error.message}`);
+            }
+        }
+
+        // HTML escape
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        // Setup auto-refresh for logs
+        function setupLogsAutoRefresh() {
+            const checkbox = document.getElementById('logsAutoRefresh');
+
+            checkbox.addEventListener('change', () => {
+                if (checkbox.checked) {
+                    // Start auto-refresh
+                    logsAutoRefreshInterval = setInterval(() => {
+                        if (document.getElementById('logsTab').classList.contains('active')) {
+                            loadLogs(logsCurrentPage);
+                        }
+                    }, 5000);
+                } else {
+                    // Stop auto-refresh
+                    if (logsAutoRefreshInterval) {
+                        clearInterval(logsAutoRefreshInterval);
+                        logsAutoRefreshInterval = null;
+                    }
+                }
+            });
+
+            // Trigger initial state
+            if (checkbox.checked) {
+                logsAutoRefreshInterval = setInterval(() => {
+                    if (document.getElementById('logsTab').classList.contains('active')) {
+                        loadLogs(logsCurrentPage);
+                    }
+                }, 5000);
+            }
+        }
+
+        // Initialize logs tab
+        function initializeLogsTab() {
+            setupLogsAutoRefresh();
+
+            // Load logs when tab is shown
+            const logsTab = document.querySelector('[data-tab="logs"]');
+            if (logsTab) {
+                logsTab.addEventListener('click', () => {
+                    loadLogSources();
+                    loadLogs(0);
+                });
             }
         }
     </script>
