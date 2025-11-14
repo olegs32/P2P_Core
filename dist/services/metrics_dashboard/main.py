@@ -259,7 +259,7 @@ class Run(BaseService):
                 else:
                     system_proxy = getattr(self.proxy.system, node_id)
 
-                result = await system_proxy.update_config(config_updates)
+                result = await system_proxy.update_config(config_updates=config_updates)
                 return result
             except Exception as e:
                 self.logger.error(f"Failed to update config on {node_id}: {e}")
@@ -297,7 +297,7 @@ class Run(BaseService):
                 else:
                     system_proxy = getattr(self.proxy.system, node_id)
 
-                result = await system_proxy.get_storage_file(filename, file_type)
+                result = await system_proxy.get_storage_file(filename=filename, file_type=file_type)
                 return result
             except Exception as e:
                 self.logger.error(f"Failed to get storage file from {node_id}: {e}")
@@ -319,7 +319,12 @@ class Run(BaseService):
                 else:
                     system_proxy = getattr(self.proxy.system, node_id)
 
-                result = await system_proxy.add_storage_file(filename, content, file_type, is_binary)
+                result = await system_proxy.add_storage_file(
+                    filename=filename,
+                    content=content,
+                    file_type=file_type,
+                    is_binary=is_binary
+                )
                 return result
             except Exception as e:
                 self.logger.error(f"Failed to add storage file to {node_id}: {e}")
@@ -339,7 +344,7 @@ class Run(BaseService):
                 else:
                     system_proxy = getattr(self.proxy.system, node_id)
 
-                result = await system_proxy.delete_storage_file(filename, file_type)
+                result = await system_proxy.delete_storage_file(filename=filename, file_type=file_type)
                 return result
             except Exception as e:
                 self.logger.error(f"Failed to delete storage file from {node_id}: {e}")
