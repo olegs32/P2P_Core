@@ -985,10 +985,26 @@ class ServiceComponent(P2PComponent):
         try:
             from methods.log_collector import P2PLogHandler
 
-            # Создаём handler с буфером
+            # Get log_collector for immediate callback (real-time streaming)
+            immediate_callback = None
+            log_collector = self.context.get_shared("log_collector")
+            if log_collector and hasattr(log_collector, 'add_logs'):
+                # Create async callback that sends logs immediately
+                async def immediate_log_callback(node_id, logs):
+                    try:
+                        await log_collector.add_logs(node_id, logs)
+                    except Exception as e:
+                        # Don't fail logging if collector fails
+                        self.logger.debug(f"Failed to send immediate log: {e}")
+
+                immediate_callback = immediate_log_callback
+                self.logger.debug("Real-time log streaming enabled")
+
+            # Создаём handler с буфером и immediate callback
             log_handler = P2PLogHandler(
                 node_id=self.context.config.node_id,
-                max_logs=self.context.config.max_log_entries
+                max_logs=self.context.config.max_log_entries,
+                immediate_callback=immediate_callback
             )
 
             # Устанавливаем уровень логирования (захватываем всё от INFO и выше)
@@ -1000,7 +1016,7 @@ class ServiceComponent(P2PComponent):
             # Сохраняем ссылку на handler в контексте
             self.context.set_shared("log_handler", log_handler)
 
-            self.logger.info(f"Global log handler installed (buffer size: {self.context.config.max_log_entries})")
+            self.logger.info(f"Global log handler installed (buffer size: {self.context.config.max_log_entries}, real-time: {immediate_callback is not None})")
 
         except Exception as e:
             self.logger.error(f"Failed to setup log handler: {e}")

@@ -68,12 +68,14 @@ class LogCollector(BaseService):
             self.node_id = config.node_id
 
             # Start background task to collect local logs (for coordinator)
+            # NOTE: This is a fallback - logs are now sent immediately via callback
+            # This loop only catches logs if immediate callback fails
             if config.coordinator_mode:
                 import asyncio
                 self._local_log_collection_task = asyncio.create_task(
                     self._collect_local_logs_loop()
                 )
-                self.logger.debug("Started local log collection for coordinator")
+                self.logger.debug("Started local log collection fallback loop for coordinator")
 
         self.logger.info(f"Log collector initialized (max_logs: {self.max_logs})")
 
@@ -312,14 +314,20 @@ class LogCollector(BaseService):
         return stats
 
     async def _collect_local_logs_loop(self):
-        """Background task to collect logs from local P2PLogHandler"""
+        """
+        Background task to collect logs from local P2PLogHandler (fallback)
+
+        NOTE: This is a fallback mechanism. Logs are now sent immediately via
+        callback in P2PLogHandler.emit(). This loop only catches logs if the
+        immediate callback fails or is not configured.
+        """
         import asyncio
 
-        self.logger.debug("Starting local log collection loop for coordinator")
+        self.logger.debug("Starting local log collection fallback loop for coordinator")
 
         while True:
             try:
-                await asyncio.sleep(5)  # Collect every 5 seconds
+                await asyncio.sleep(60)  # Check every 60 seconds (fallback only)
 
                 # Get log handler from context
                 if hasattr(self, 'context'):
@@ -345,13 +353,17 @@ class P2PLogHandler(logging.Handler):
     """
     Custom logging handler that captures logs and stores them in memory
     for later transmission to coordinator
+
+    Can optionally call a callback immediately when log is received
+    for real-time log streaming
     """
 
-    def __init__(self, node_id: str, max_logs: int = 1000):
+    def __init__(self, node_id: str, max_logs: int = 1000, immediate_callback=None):
         super().__init__()
         self.node_id = node_id
         self.buffer = deque(maxlen=max_logs) # REMOVED: Lock not needed in asyncio
         self.last_sent_index = 0
+        self.immediate_callback = immediate_callback  # Callback for immediate log sending
 
     def emit(self, record: logging.LogRecord):
         """Capture log record"""
@@ -370,6 +382,19 @@ class P2PLogHandler(logging.Handler):
 
             # REMOVED: with self.lock - asyncio is single-threaded
             self.buffer.append(log_entry)
+
+            # If callback is set, call it immediately (for real-time streaming)
+            if self.immediate_callback:
+                try:
+                    import asyncio
+                    # Schedule callback in event loop
+                    loop = asyncio.get_event_loop()
+                    if loop.is_running():
+                        asyncio.create_task(self.immediate_callback(self.node_id, [log_entry.to_dict()]))
+                except Exception as e:
+                    # Don't fail logging if callback fails
+                    pass
+
         except Exception:
             self.handleError(record)
 
