@@ -228,6 +228,123 @@ class Run(BaseService):
 
             return await self.control_service(worker_id, service_name, action)
 
+        @app.post("/api/dashboard/get-config")
+        async def get_config_endpoint(request: Request):
+            """Get configuration from a node"""
+            data = await request.json()
+            node_id = data.get('node_id', 'coordinator')
+
+            try:
+                if node_id == 'coordinator':
+                    system_proxy = self.proxy.system
+                else:
+                    system_proxy = getattr(self.proxy.system, node_id)
+
+                result = await system_proxy.get_config()
+                return result
+            except Exception as e:
+                self.logger.error(f"Failed to get config from {node_id}: {e}")
+                return {"success": False, "error": str(e)}
+
+        @app.post("/api/dashboard/update-config")
+        async def update_config_endpoint(request: Request):
+            """Update configuration on a node"""
+            data = await request.json()
+            node_id = data.get('node_id', 'coordinator')
+            config_updates = data.get('config_updates', {})
+
+            try:
+                if node_id == 'coordinator':
+                    system_proxy = self.proxy.system
+                else:
+                    system_proxy = getattr(self.proxy.system, node_id)
+
+                result = await system_proxy.update_config(config_updates)
+                return result
+            except Exception as e:
+                self.logger.error(f"Failed to update config on {node_id}: {e}")
+                return {"success": False, "error": str(e)}
+
+        @app.post("/api/dashboard/list-storage-files")
+        async def list_storage_files_endpoint(request: Request):
+            """List storage files on a node"""
+            data = await request.json()
+            node_id = data.get('node_id', 'coordinator')
+
+            try:
+                if node_id == 'coordinator':
+                    system_proxy = self.proxy.system
+                else:
+                    system_proxy = getattr(self.proxy.system, node_id)
+
+                result = await system_proxy.list_storage_files()
+                return result
+            except Exception as e:
+                self.logger.error(f"Failed to list storage files on {node_id}: {e}")
+                return {"success": False, "error": str(e)}
+
+        @app.post("/api/dashboard/get-storage-file")
+        async def get_storage_file_endpoint(request: Request):
+            """Get storage file content from a node"""
+            data = await request.json()
+            node_id = data.get('node_id', 'coordinator')
+            filename = data.get('filename')
+            file_type = data.get('file_type', 'data')
+
+            try:
+                if node_id == 'coordinator':
+                    system_proxy = self.proxy.system
+                else:
+                    system_proxy = getattr(self.proxy.system, node_id)
+
+                result = await system_proxy.get_storage_file(filename, file_type)
+                return result
+            except Exception as e:
+                self.logger.error(f"Failed to get storage file from {node_id}: {e}")
+                return {"success": False, "error": str(e)}
+
+        @app.post("/api/dashboard/add-storage-file")
+        async def add_storage_file_endpoint(request: Request):
+            """Add storage file to a node"""
+            data = await request.json()
+            node_id = data.get('node_id', 'coordinator')
+            filename = data.get('filename')
+            content = data.get('content')
+            file_type = data.get('file_type', 'data')
+            is_binary = data.get('is_binary', False)
+
+            try:
+                if node_id == 'coordinator':
+                    system_proxy = self.proxy.system
+                else:
+                    system_proxy = getattr(self.proxy.system, node_id)
+
+                result = await system_proxy.add_storage_file(filename, content, file_type, is_binary)
+                return result
+            except Exception as e:
+                self.logger.error(f"Failed to add storage file to {node_id}: {e}")
+                return {"success": False, "error": str(e)}
+
+        @app.post("/api/dashboard/delete-storage-file")
+        async def delete_storage_file_endpoint(request: Request):
+            """Delete storage file from a node"""
+            data = await request.json()
+            node_id = data.get('node_id', 'coordinator')
+            filename = data.get('filename')
+            file_type = data.get('file_type', 'data')
+
+            try:
+                if node_id == 'coordinator':
+                    system_proxy = self.proxy.system
+                else:
+                    system_proxy = getattr(self.proxy.system, node_id)
+
+                result = await system_proxy.delete_storage_file(filename, file_type)
+                return result
+            except Exception as e:
+                self.logger.error(f"Failed to delete storage file from {node_id}: {e}")
+                return {"success": False, "error": str(e)}
+
         @app.get("/api/dashboard/service/{node_id}/{service_name}/metrics")
         async def get_service_metrics(node_id: str, service_name: str):
             """Get detailed metrics for a specific service on a node"""
@@ -746,7 +863,6 @@ class Run(BaseService):
             """WebSocket endpoint for real-time dashboard updates"""
             await websocket.accept()
             self.active_websockets.add(websocket)
-            self.logger.info(f"WebSocket client connected. Total clients: {len(self.active_websockets)}")
 
             try:
                 # Send initial data immediately (includes logs and log sources)
@@ -815,14 +931,13 @@ class Run(BaseService):
                         })
 
             except WebSocketDisconnect:
-                self.logger.info("WebSocket client disconnected")
+                pass  # Client disconnected normally
             except Exception as e:
                 self.logger.error(f"WebSocket error: {e}")
             finally:
                 self.active_websockets.discard(websocket)
-                self.logger.info(f"WebSocket removed. Remaining clients: {len(self.active_websockets)}")
 
-        self.logger.info("WebSocket endpoint registered at /ws/dashboard")
+        self.logger.debug("WebSocket endpoint registered at /ws/dashboard")
 
         self.logger.info("Dashboard HTTP endpoints registered")
 

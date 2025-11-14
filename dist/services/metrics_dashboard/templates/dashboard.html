@@ -3556,7 +3556,7 @@
             document.getElementById('configSuccess').style.display = 'none';
 
             try {
-                let url = '/rpc';
+                // Using HTTP endpoint instead of direct RPC
                 let method = 'system/get_config';
 
                 // If worker selected, call via node-specific method
@@ -3564,20 +3564,16 @@
                     method = `system/${selectedNode}/get_config`;
                 }
 
-                const response = await fetch(url, {
+                const response = await fetch('/api/dashboard/get-config', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({
-                        method: method,
-                        params: {},
-                        id: Date.now()
-                    })
+                    body: JSON.stringify({node_id: selectedNode})
                 });
 
                 const result = await response.json();
 
-                if (result.result && result.result.success) {
-                    const config = result.result.config;
+                if (result && result.success) {
+                    const config = result.config;
                     document.getElementById('configEditor').value = JSON.stringify(config, null, 2);
 
                     document.getElementById('configLoadingSpinner').style.display = 'none';
@@ -3610,20 +3606,20 @@
                     method = `system/${selectedNode}/update_config`;
                 }
 
-                const response = await fetch('/rpc', {
+                const response = await fetch('/api/dashboard/update-config', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
                     body: JSON.stringify({
-                        method: method,
-                        params: {config_updates: config},
+                        node_id: selectedNode,
+                        config_updates: config,
                         id: Date.now()
                     })
                 });
 
                 const result = await response.json();
 
-                if (result.result && result.result.success) {
-                    document.getElementById('configSuccess').textContent = `Конфигурация сохранена успешно! Обновлено полей: ${result.result.updated_fields?.length || 0}`;
+                if (result && result.success) {
+                    document.getElementById('configSuccess').textContent = `Конфигурация сохранена успешно! Обновлено полей: ${result.updated_fields?.length || 0}`;
                     document.getElementById('configSuccess').style.display = 'block';
 
                     // Reload config after save
@@ -3653,17 +3649,13 @@
                 const response = await fetch('/rpc', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({
-                        method: method,
-                        params: {},
-                        id: Date.now()
-                    })
+                    body: JSON.stringify({node_id: selectedNode})
                 });
 
                 const result = await response.json();
 
-                if (result.result && result.result.success) {
-                    const files = result.result.files;
+                if (result && result.success) {
+                    const files = result.files;
 
                     updateFilesList('configsFilesList', files.configs || [], 'config');
                     updateFilesList('certsFilesList', files.certs || [], 'cert');
@@ -3712,26 +3704,21 @@
             const selectedNode = nodeSelect.value;
 
             try {
-                let method = 'system/get_storage_file';
-                if (selectedNode !== 'coordinator') {
-                    method = `system/${selectedNode}/get_storage_file`;
-                }
-
-                const response = await fetch('/rpc', {
+                const response = await fetch('/api/dashboard/get-storage-file', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
                     body: JSON.stringify({
-                        method: method,
-                        params: {filename, file_type: fileType},
-                        id: Date.now()
+                        node_id: selectedNode,
+                        filename: filename,
+                        file_type: fileType
                     })
                 });
 
                 const result = await response.json();
 
-                if (result.result && result.result.success) {
-                    const content = result.result.content;
-                    const isBinary = result.result.is_binary;
+                if (result && result.success) {
+                    const content = result.content;
+                    const isBinary = result.is_binary;
 
                     document.getElementById('viewFileModalTitle').textContent = `${filename} ${isBinary ? '(бинарный)' : ''}`;
                     document.getElementById('viewFileContent').textContent = content;
@@ -3769,29 +3756,21 @@
             }
 
             try {
-                let method = 'system/add_storage_file';
-                if (selectedNode !== 'coordinator') {
-                    method = `system/${selectedNode}/add_storage_file`;
-                }
-
-                const response = await fetch('/rpc', {
+                const response = await fetch('/api/dashboard/add-storage-file', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
                     body: JSON.stringify({
-                        method: method,
-                        params: {
-                            filename,
-                            content,
-                            file_type: fileType,
-                            is_binary: false
-                        },
-                        id: Date.now()
+                        node_id: selectedNode,
+                        filename: filename,
+                        content: content,
+                        file_type: fileType,
+                        is_binary: false
                     })
                 });
 
                 const result = await response.json();
 
-                if (result.result && result.result.success) {
+                if (result && result.success) {
                     // Close modal
                     const modal = bootstrap.Modal.getInstance(document.getElementById('addFileModal'));
                     modal.hide();
@@ -3818,24 +3797,19 @@
             const selectedNode = nodeSelect.value;
 
             try {
-                let method = 'system/delete_storage_file';
-                if (selectedNode !== 'coordinator') {
-                    method = `system/${selectedNode}/delete_storage_file`;
-                }
-
-                const response = await fetch('/rpc', {
+                const response = await fetch('/api/dashboard/delete-storage-file', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
                     body: JSON.stringify({
-                        method: method,
-                        params: {filename, file_type: fileType},
-                        id: Date.now()
+                        node_id: selectedNode,
+                        filename: filename,
+                        file_type: fileType
                     })
                 });
 
                 const result = await response.json();
 
-                if (result.result && result.result.success) {
+                if (result && result.success) {
                     // Reload files list
                     await loadStorageFiles();
 
