@@ -24,7 +24,7 @@ except ImportError:
 class NodeInfo:
     """Информация об узле P2P сети"""
     node_id: str
-    address: str
+    address: str  # Primary address (for backwards compatibility and display)
     port: int
     role: str
     capabilities: List[str]
@@ -32,6 +32,15 @@ class NodeInfo:
     metadata: Dict[str, Any]
     status: str = "alive"  # alive, suspected, dead
     services: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    addresses: List[str] = field(default_factory=list)  # All available addresses (multi-homed support)
+
+    def __post_init__(self):
+        """Ensure addresses list contains at least the primary address"""
+        if not self.addresses:
+            self.addresses = [self.address]
+        elif self.address not in self.addresses:
+            # Primary address should always be first in the list
+            self.addresses.insert(0, self.address)
 
     def to_dict(self) -> Dict[str, Any]:
         data = asdict(self)
@@ -44,9 +53,14 @@ class NodeInfo:
         return cls(**data)
 
     def get_url(self, https: bool = True) -> str:
-        """Получение URL узла"""
+        """Получение URL узла (primary address)"""
         protocol = "https" if https else "http"
         return f"{protocol}://{self.address}:{self.port}"
+
+    def get_all_urls(self, https: bool = True) -> List[str]:
+        """Получение всех URL узла (all addresses)"""
+        protocol = "https" if https else "http"
+        return [f"{protocol}://{addr}:{self.port}" for addr in self.addresses]
 
     def is_alive(self, timeout_seconds: int = 60) -> bool:
         """Проверка, жив ли узел"""
@@ -112,7 +126,7 @@ class SimpleGossipProtocol:
     """Упрощенная реализация gossip протокола без внешних зависимостей"""
 
     def __init__(self, node_id: str, bind_address: str, bind_port: int, coordinator_mode: bool = False,
-                 ssl_verify: bool = True, ca_cert_file: str = None, context=None):
+                 ssl_verify: bool = True, ca_cert_file: str = None, context=None, all_addresses: List[str] = None):
 
         self.cleanup_interval = None
         self.failure_timeout = None
@@ -137,6 +151,9 @@ class SimpleGossipProtocol:
         self.running = False
         self.service_info_callback = None
 
+        # Кеш успешных адресов для каждого узла (для multi-homed nodes)
+        self.successful_addresses: Dict[str, str] = {}  # node_id -> successful_address
+
         # Информация о собственном узле
         self.self_info = NodeInfo(
             node_id=node_id,
@@ -148,7 +165,8 @@ class SimpleGossipProtocol:
             metadata={
                 'started_at': datetime.now().isoformat(),
                 'version': self.context.config.version
-            }
+            },
+            addresses=all_addresses if all_addresses else [bind_address]
         )
 
         # HTTP клиент для общения с другими узлами
@@ -220,6 +238,47 @@ class SimpleGossipProtocol:
         self.log.info(f"  Advertise address: {self.self_info.address}:{self.bind_port} (address other nodes will use)")
         self.log.info(f"  Role: {'Coordinator' if self.coordinator_mode else 'Worker'}")
 
+    async def _probe_node_addresses(self, node_info: NodeInfo, timeout: float = 3.0) -> Optional[str]:
+        """
+        Проверка доступности адресов узла и нахождение рабочего
+
+        Args:
+            node_info: Информация об узле с несколькими адресами
+            timeout: Timeout для проверки каждого адреса
+
+        Returns:
+            Первый успешно проверенный адрес или None
+        """
+        if not node_info.addresses or len(node_info.addresses) == 1:
+            # Только один адрес - проверять нечего
+            return node_info.address
+
+        self.log.info(f"Probing {len(node_info.addresses)} addresses for node {node_info.node_id}")
+
+        protocol = "https" if self.ssl_verify else "http"
+
+        for addr in node_info.addresses:
+            try:
+                url = f"{protocol}://{addr}:{node_info.port}/health"
+                self.log.debug(f"  Trying {url}...")
+
+                response = await self.http_client.get(url, timeout=timeout)
+
+                if response.status_code == 200:
+                    self.log.info(f"  ✓ Successfully connected to {addr}:{node_info.port}")
+                    # Кешируем успешный адрес
+                    self.successful_addresses[node_info.node_id] = addr
+                    return addr
+                else:
+                    self.log.debug(f"  ✗ {addr} returned status {response.status_code}")
+
+            except Exception as e:
+                self.log.debug(f"  ✗ {addr} failed: {e}")
+                continue
+
+        self.log.warning(f"Could not reach node {node_info.node_id} on any address")
+        return None
+
     async def _join_cluster(self):
         """Присоединение к существующему кластеру"""
         for bootstrap_addr in self.bootstrap_nodes:
@@ -262,11 +321,26 @@ class SimpleGossipProtocol:
                         node_port = node_data.get('port', 'unknown')
                         node_role = node_data.get('role', 'unknown')
                         services_count = len(node_data.get('services', {}))
+                        addresses = node_data.get('addresses', [node_addr])
 
                         if node_id == self.node_id:
                             self.log.info(f"     - {node_id} (self) at {node_addr}:{node_port} [{node_role}] - {services_count} services")
                         else:
-                            self.log.info(f"     - {node_id} at {node_addr}:{node_port} [{node_role}] - {services_count} services")
+                            addr_info = f"{len(addresses)} addresses" if len(addresses) > 1 else f"{node_addr}"
+                            self.log.info(f"     - {node_id} at {addr_info}:{node_port} [{node_role}] - {services_count} services")
+
+                    # Проверяем доступность адресов для multi-homed узлов
+                    self.log.info("Probing node addresses for reachability...")
+                    for node_data in discovered_nodes:
+                        node_info = NodeInfo.from_dict(node_data)
+                        if node_info.node_id != self.node_id and len(node_info.addresses) > 1:
+                            # Проверяем доступность адресов узла
+                            reachable_addr = await self._probe_node_addresses(node_info)
+                            if reachable_addr:
+                                # Обновляем primary address в node_info
+                                node_info.address = reachable_addr
+                                self.node_registry[node_info.node_id] = node_info
+                                self.log.info(f"Node {node_info.node_id}: using {reachable_addr} as primary address")
 
                     break
 
@@ -423,7 +497,13 @@ class SimpleGossipProtocol:
                 'message_type': 'gossip'
             }
 
-            url = f"{target_node.get_url(https=self.ssl_verify)}/internal/gossip/exchange"
+            # Используем кешированный адрес если он есть
+            target_address = target_node.address
+            if target_node.node_id in self.successful_addresses:
+                target_address = self.successful_addresses[target_node.node_id]
+
+            protocol = "https" if self.ssl_verify else "http"
+            url = f"{protocol}://{target_address}:{target_node.port}/internal/gossip/exchange"
             response = await self.http_client.post(url, json=gossip_data, timeout=5.0)
 
             if response.status_code == 200:
@@ -729,9 +809,14 @@ class P2PNetworkLayer:
         else:
             self.advertise_address = bind_address
 
+        # Collect all local IP addresses for multi-homed support
+        # This allows other nodes to try all addresses and find the reachable one
+        all_addresses = self._get_all_local_ips()
+
         self.transport = transport_layer
         self.gossip = SimpleGossipProtocol(node_id, self.advertise_address, bind_port, coordinator_mode,
-                                          ssl_verify=ssl_verify, ca_cert_file=ca_cert_file, context=context)
+                                          ssl_verify=ssl_verify, ca_cert_file=ca_cert_file, context=context,
+                                          all_addresses=all_addresses)
         self.load_balancer_index = 0
 
         # SSL параметры для HTTPS клиента
@@ -857,6 +942,49 @@ class P2PNetworkLayer:
             except Exception as e2:
                 self.log.error(f"Failed to get IP via hostname: {e2}, using 127.0.0.1")
                 return '127.0.0.1'
+
+    def _get_all_local_ips(self) -> List[str]:
+        """
+        Получить все локальные IP адреса для multi-homed узлов
+
+        Returns:
+            Список всех IPv4 адресов узла (кроме loopback и auto-config)
+        """
+        import socket
+        import psutil
+
+        addresses = []
+
+        try:
+            interfaces = psutil.net_if_addrs()
+
+            for iface_name, addrs in interfaces.items():
+                for addr in addrs:
+                    if addr.family == socket.AF_INET:  # IPv4 only
+                        ip = addr.address
+
+                        # Пропускаем loopback
+                        if ip.startswith('127.'):
+                            continue
+
+                        # Пропускаем автоконфигурацию (APIPA)
+                        if ip.startswith('169.254.'):
+                            continue
+
+                        addresses.append(ip)
+                        self.log.debug(f"Found interface {iface_name}: {ip}")
+
+            if addresses:
+                self.log.info(f"Node has {len(addresses)} network addresses: {', '.join(addresses)}")
+            else:
+                self.log.warning("No valid network addresses found, using 127.0.0.1")
+                addresses = ['127.0.0.1']
+
+        except Exception as e:
+            self.log.error(f"Failed to enumerate network interfaces: {e}")
+            addresses = ['127.0.0.1']
+
+        return addresses
 
     async def start(self, join_addresses: List[str] = None):
         """Запуск сетевого уровня"""
