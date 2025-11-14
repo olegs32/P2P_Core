@@ -3579,7 +3579,7 @@
                     document.getElementById('configLoadingSpinner').style.display = 'none';
                     document.getElementById('configEditorContainer').style.display = 'block';
                 } else {
-                    throw new Error(result.result?.error || 'Failed to load config');
+                    throw new Error(result?.error || 'Failed to load config');
                 }
             } catch (error) {
                 console.error('Failed to load config:', error);
@@ -3625,7 +3625,7 @@
                     // Reload config after save
                     setTimeout(() => loadConfig(), 2000);
                 } else {
-                    throw new Error(result.result?.error || 'Failed to save config');
+                    throw new Error(result?.error || 'Failed to save config');
                 }
             } catch (error) {
                 console.error('Failed to save config:', error);
@@ -3641,12 +3641,8 @@
             const selectedNode = nodeSelect.value;
 
             try {
-                let method = 'system/list_storage_files';
-                if (selectedNode !== 'coordinator') {
-                    method = `system/${selectedNode}/list_storage_files`;
-                }
 
-                const response = await fetch('/rpc', {
+                const response = await fetch('/api/dashboard/list-storage-files', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
                     body: JSON.stringify({node_id: selectedNode})
@@ -3661,7 +3657,7 @@
                     updateFilesList('certsFilesList', files.certs || [], 'cert');
                     updateFilesList('dataFilesList', files.data || [], 'data');
                 } else {
-                    throw new Error(result.result?.error || 'Failed to load files');
+                    throw new Error(result?.error || 'Failed to load files');
                 }
             } catch (error) {
                 console.error('Failed to load storage files:', error);
@@ -3726,7 +3722,7 @@
                     const modal = new bootstrap.Modal(document.getElementById('viewFileModal'));
                     modal.show();
                 } else {
-                    throw new Error(result.result?.error || 'Failed to load file');
+                    throw new Error(result?.error || 'Failed to load file');
                 }
             } catch (error) {
                 console.error('Failed to view file:', error);
@@ -3780,7 +3776,7 @@
 
                     alert('Файл успешно сохранен');
                 } else {
-                    throw new Error(result.result?.error || 'Failed to save file');
+                    throw new Error(result?.error || 'Failed to save file');
                 }
             } catch (error) {
                 console.error('Failed to add file:', error);
@@ -3815,7 +3811,7 @@
 
                     alert('Файл успешно удален');
                 } else {
-                    throw new Error(result.result?.error || 'Failed to delete file');
+                    throw new Error(result?.error || 'Failed to delete file');
                 }
             } catch (error) {
                 console.error('Failed to delete file:', error);
