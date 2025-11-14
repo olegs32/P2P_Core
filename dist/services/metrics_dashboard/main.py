@@ -1118,7 +1118,7 @@ class Run(BaseService):
         for worker_id, worker_data in self.worker_metrics.items():
             services_by_node[worker_id] = worker_data.get("services", {})
 
-        # Fallback: Query gossip protocol for nodes that haven't reported
+        # Fallback: Query gossip protocol for nodes that haven't reported OR have empty services
         if hasattr(self, 'context') and self.context:
             try:
                 network = self.context.get_shared('network')
@@ -1126,13 +1126,20 @@ class Run(BaseService):
                     gossip = network.gossip
                     if hasattr(gossip, 'node_registry'):
                         for node_id, node_info in gossip.node_registry.items():
-                            # If node not in services_by_node and has services in gossip
-                            if node_id not in services_by_node and hasattr(node_info, 'services'):
-                                if node_info.services:
-                                    self.logger.debug(f"Using gossip fallback for node {node_id} services")
-                                    services_by_node[node_id] = node_info.services
+                            # Use gossip if:
+                            # 1. Node not in services_by_node yet
+                            # 2. OR node has empty/no services in services_by_node but has services in gossip
+                            current_services = services_by_node.get(node_id, {})
+                            gossip_services = node_info.services if hasattr(node_info, 'services') else {}
+
+                            if not current_services and gossip_services:
+                                self.logger.info(f"Using gossip for node {node_id}: {len(gossip_services)} services from gossip")
+                                services_by_node[node_id] = gossip_services
+                            elif len(gossip_services) > len(current_services):
+                                self.logger.info(f"Updating node {node_id}: gossip has more services ({len(gossip_services)} vs {len(current_services)})")
+                                services_by_node[node_id] = gossip_services
             except Exception as e:
-                self.logger.debug(f"Could not query gossip for services: {e}")
+                self.logger.error(f"Could not query gossip for services: {e}")
 
         return {
             "timestamp": datetime.now().isoformat(),
