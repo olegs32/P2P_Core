@@ -1115,7 +1115,7 @@
     </div>
 
     <!-- Control Panel Tab -->
-    <div class="tab-content" id="controlTab" style="display: none">
+    <div class="tab-content" id="controlTab">
         <div class="container-fluid py-4">
             <h2 class="mb-4">Панель управления</h2>
 
@@ -1707,6 +1707,12 @@
                     // Add active class to clicked tab
                     tab.classList.add('active');
 
+                    // Hide all tab contents first
+                    document.getElementById('homeTab').classList.remove('active');
+                    document.getElementById('certificatesTab').classList.remove('active');
+                    document.getElementById('logsTab').classList.remove('active');
+                    document.getElementById('controlTab').classList.remove('active');
+
                     // Show corresponding content
                     if (targetTab === 'home') {
                         document.getElementById('homeTab').classList.add('active');
@@ -1719,7 +1725,7 @@
                         // Scroll to top when switching to logs tab
                         window.scrollTo(0, 0);
                     } else if (targetTab === 'control') {
-                        document.getElementById('controlTab').style.display = 'block';
+                        document.getElementById('controlTab').classList.add('active');
                         // Initialize control panel
                         initializeControlPanel();
                     }
