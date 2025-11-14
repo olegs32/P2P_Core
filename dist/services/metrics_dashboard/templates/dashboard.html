@@ -119,6 +119,63 @@
         #logsTab {
             margin-left: var(--sidebar-width);
             min-height: 100vh;
+            background-color: var(--bg-dark);
+        }
+
+        /* Dark theme for cards in logs tab */
+        #logsTab .card {
+            background-color: var(--bg-card);
+            border-color: var(--border-color);
+            color: var(--text-light);
+        }
+
+        #logsTab .card-title {
+            color: var(--text-light);
+        }
+
+        #logsTab .form-label {
+            color: var(--text-light);
+        }
+
+        #logsTab .form-select,
+        #logsTab .form-control {
+            background-color: #2d3139;
+            border-color: var(--border-color);
+            color: var(--text-light);
+        }
+
+        #logsTab .form-select:focus,
+        #logsTab .form-control:focus {
+            background-color: #2d3139;
+            border-color: var(--tab-active);
+            color: var(--text-light);
+        }
+
+        #logsTab .form-select option {
+            background-color: #2d3139;
+            color: var(--text-light);
+        }
+
+        #logsTab .table {
+            color: var(--text-light);
+        }
+
+        #logsTab .table-hover tbody tr:hover {
+            background-color: rgba(255, 255, 255, 0.05);
+        }
+
+        #logsTab .form-check-input {
+            background-color: #2d3139;
+            border-color: var(--border-color);
+        }
+
+        #logsTab .form-check-input:checked {
+            background-color: var(--tab-active);
+            border-color: var(--tab-active);
+        }
+
+        #logsTab .form-check-label {
+            color: var(--text-light);
         }
 
         /* Override Bootstrap text-muted for dark theme */

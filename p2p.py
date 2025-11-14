@@ -546,8 +546,14 @@ async def run_coordinator_from_context(app_context: P2PApplicationContext):
         logger.info(f"  Service Info: {protocol}://{display_address}:{config.port}/services/{{service_name}}")
 
         # Метрики и мониторинг
+        logger.info(f"  Dashboard (Web UI): {protocol}://{display_address}:{config.port}/dashboard")
         logger.info(f"  System Metrics: {protocol}://{display_address}:{config.port}/metrics")
         logger.info(f"  Service Metrics: {protocol}://{display_address}:{config.port}/metrics/{{service_name}}")
+        logger.info(f"  Cluster Metrics: {protocol}://{display_address}:{config.port}/api/dashboard/metrics")
+
+        # Логи
+        logger.info(f"  Logs API: {protocol}://{display_address}:{config.port}/api/logs")
+        logger.info(f"  Log Sources: {protocol}://{display_address}:{config.port}/api/logs/sources")
 
         # Кластер и сеть
         logger.info(f"  Cluster Nodes: {protocol}://{display_address}:{config.port}/cluster/nodes")
