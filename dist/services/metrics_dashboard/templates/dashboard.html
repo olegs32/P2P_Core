@@ -33,6 +33,7 @@
             --danger: #dc3545;
             --info: #17a2b8;
             --sidebar-width: 250px;
+            --sidebar-collapsed-width: 70px;
             --sidebar-bg: #1a1d23;
             --tab-active: #667eea;
         }
@@ -43,6 +44,7 @@
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
             margin: 0;
             padding: 0;
+            transition: margin-left 0.3s ease;
         }
 
         /* Sidebar Styles */
@@ -57,12 +59,37 @@
             z-index: 1000;
             display: flex;
             flex-direction: column;
+            transition: width 0.3s ease;
+        }
+
+        .sidebar.collapsed {
+            width: var(--sidebar-collapsed-width);
+        }
+
+        .sidebar.collapsed .nav-tab span:not(.nav-tab-icon) {
+            display: none;
+        }
+
+        .sidebar.collapsed .sidebar-header h4 {
+            display: none;
+        }
+
+        .sidebar.collapsed .nav-tab {
+            justify-content: center;
+            padding: 1rem 0;
+        }
+
+        .sidebar.collapsed .nav-tab-icon {
+            font-size: 1.5rem;
         }
 
         .sidebar-header {
             padding: 1.5rem 1rem;
             border-bottom: 1px solid var(--border-color);
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
         }
 
         .sidebar-header h4 {
@@ -108,10 +135,58 @@
             text-align: center;
         }
 
+        .sidebar-toggle {
+            background: rgba(255, 255, 255, 0.2);
+            border: none;
+            color: white;
+            cursor: pointer;
+            padding: 0.5rem;
+            border-radius: 6px;
+            font-size: 1.2rem;
+            transition: all 0.3s;
+            line-height: 1;
+        }
+
+        .sidebar-toggle:hover {
+            background: rgba(255, 255, 255, 0.3);
+        }
+
         /* Main Content Area */
         .main-content {
             margin-left: var(--sidebar-width);
             min-height: 100vh;
+            transition: margin-left 0.3s ease;
+        }
+
+        .sidebar.collapsed ~ .main-content {
+            margin-left: var(--sidebar-collapsed-width);
+        }
+
+        /* Fullscreen mode for editor */
+        .fullscreen-editor {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw !important;
+            height: 100vh !important;
+            z-index: 9999;
+            background-color: var(--bg-dark);
+            margin: 0 !important;
+        }
+
+        .fullscreen-editor .card-body {
+            padding: 0 !important;
+        }
+
+        .fullscreen-editor .row {
+            height: 100vh !important;
+            margin: 0 !important;
+        }
+
+        .fullscreen-toggle-btn {
+            padding: 0.25rem 0.5rem;
+            font-size: 1.2rem;
+            line-height: 1;
         }
 
         /* Hide main tab-content by default, but not nested ones */
@@ -661,6 +736,9 @@
     <div class="sidebar">
         <div class="sidebar-header">
             <h4>P2P Dashboard</h4>
+            <button class="sidebar-toggle" onclick="toggleSidebar()" title="Свернуть/развернуть">
+                <i class="bi bi-list"></i>
+            </button>
         </div>
         <div class="sidebar-nav">
             <a class="nav-tab active" data-tab="home">
@@ -1403,6 +1481,9 @@
                                                 <button class="btn btn-sm btn-success" id="editorSaveFile" title="Сохранить" disabled>
                                                     <i class="bi bi-save"></i> Сохранить
                                                 </button>
+                                                <button class="btn btn-sm btn-secondary ms-2 fullscreen-toggle-btn" id="editorFullscreenToggle" title="Полноэкранный режим" onclick="toggleEditorFullscreen()">
+                                                    <i class="bi bi-arrows-fullscreen"></i>
+                                                </button>
                                             </div>
                                         </div>
                                     </div>
@@ -1487,6 +1568,62 @@
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
 
     <script>
+        // ==================== Sidebar Toggle ====================
+        function toggleSidebar() {
+            const sidebar = document.querySelector('.sidebar');
+            sidebar.classList.toggle('collapsed');
+
+            // Save state to localStorage
+            const isCollapsed = sidebar.classList.contains('collapsed');
+            localStorage.setItem('sidebarCollapsed', isCollapsed);
+        }
+
+        // Restore sidebar state from localStorage
+        document.addEventListener('DOMContentLoaded', () => {
+            const isCollapsed = localStorage.getItem('sidebarCollapsed') === 'true';
+            if (isCollapsed) {
+                document.querySelector('.sidebar').classList.add('collapsed');
+            }
+        });
+
+        // ==================== Editor Fullscreen Toggle ====================
+        let isEditorFullscreen = false;
+
+        function toggleEditorFullscreen() {
+            const editorPanel = document.getElementById('editorPanel');
+            const fullscreenBtn = document.getElementById('editorFullscreenToggle');
+            const icon = fullscreenBtn.querySelector('i');
+
+            isEditorFullscreen = !isEditorFullscreen;
+
+            if (isEditorFullscreen) {
+                editorPanel.classList.add('fullscreen-editor');
+                icon.className = 'bi bi-fullscreen-exit';
+                fullscreenBtn.title = 'Выйти из полноэкранного режима';
+
+                // Resize Ace Editor
+                if (aceEditor) {
+                    setTimeout(() => aceEditor.resize(), 100);
+                }
+            } else {
+                editorPanel.classList.remove('fullscreen-editor');
+                icon.className = 'bi bi-arrows-fullscreen';
+                fullscreenBtn.title = 'Полноэкранный режим';
+
+                // Resize Ace Editor
+                if (aceEditor) {
+                    setTimeout(() => aceEditor.resize(), 100);
+                }
+            }
+        }
+
+        // Exit fullscreen on Esc key
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape' && isEditorFullscreen) {
+                toggleEditorFullscreen();
+            }
+        });
+
         // Tab Navigation
         // WebSocket connection for real-time updates
         let websocket = null;
