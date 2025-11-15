@@ -193,7 +193,7 @@
         }
 
         /* Hide main tab-content by default, but not nested ones */
-        body > .tab-content,
+        .main-content > .tab-content,
         #homeTab,
         #certificatesTab,
         #logsTab,
@@ -202,7 +202,7 @@
         }
 
         /* Show active main tabs */
-        body > .tab-content.active,
+        .main-content > .tab-content.active,
         #homeTab.active,
         #certificatesTab.active,
         #logsTab.active,
@@ -1988,7 +1988,8 @@
 
         document.addEventListener('DOMContentLoaded', () => {
             const navTabs = document.querySelectorAll('.nav-tab');
-            const tabContents = document.querySelectorAll('.tab-content');
+            // Select only main tabs, not nested ones
+            const tabContents = document.querySelectorAll('.main-content > .tab-content');
 
             navTabs.forEach(tab => {
                 tab.addEventListener('click', (e) => {
@@ -2002,12 +2003,6 @@
                     // Add active class to clicked tab
                     tab.classList.add('active');
 
-                    // Hide all tab contents first
-                    document.getElementById('homeTab').classList.remove('active');
-                    document.getElementById('certificatesTab').classList.remove('active');
-                    document.getElementById('logsTab').classList.remove('active');
-                    document.getElementById('controlTab').classList.remove('active');
-
                     // Show corresponding content
                     if (targetTab === 'home') {
                         document.getElementById('homeTab').classList.add('active');
@@ -2017,8 +2012,6 @@
                         loadCertificates();
                     } else if (targetTab === 'logs') {
                         document.getElementById('logsTab').classList.add('active');
-                        // Scroll to top when switching to logs tab
-                        window.scrollTo(0, 0);
                     } else if (targetTab === 'control') {
                         document.getElementById('controlTab').classList.add('active');
                         // Initialize control panel
