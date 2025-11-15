@@ -17,6 +17,10 @@
     <!-- HTMX for dynamic updates -->
     <script src="https://unpkg.com/htmx.org@1.9.10"></script>
 
+    <!-- Ace Editor for syntax highlighting -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/ace/1.32.2/ace.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/ace/1.32.2/ext-language_tools.js"></script>
+
     <style>
         :root {
             --bg-dark: #1a1d23;
@@ -1402,8 +1406,8 @@
                                             </div>
                                         </div>
                                     </div>
-                                    <div style="height: calc(100% - 60px);">
-                                        <textarea id="editorCodeArea" class="form-control" style="font-family: 'Courier New', monospace; font-size: 14px; height: 100%; resize: none; border: none; border-radius: 0;" disabled></textarea>
+                                    <div style="height: calc(100% - 60px); position: relative;">
+                                        <div id="editorCodeArea" style="width: 100%; height: 100%; font-size: 14px;"></div>
                                     </div>
                                 </div>
                             </div>
@@ -3992,6 +3996,56 @@
         let editorCurrentFile = '';
         let editorCurrentFilePath = '';
         let editorFilesDirty = false;
+        let aceEditor = null;
+
+        // Initialize Ace Editor
+        function initAceEditor() {
+            if (aceEditor) return; // Already initialized
+
+            aceEditor = ace.edit("editorCodeArea");
+            aceEditor.setTheme("ace/theme/monokai");
+            aceEditor.setOptions({
+                fontSize: "14px",
+                showPrintMargin: false,
+                enableBasicAutocompletion: true,
+                enableLiveAutocompletion: true,
+                enableSnippets: true,
+                showLineNumbers: true,
+                tabSize: 4,
+                wrap: true
+            });
+
+            // Track changes
+            aceEditor.on('change', () => {
+                editorFilesDirty = true;
+            });
+
+            // Initially disable
+            aceEditor.setReadOnly(true);
+        }
+
+        // Get Ace mode by file extension
+        function getAceModeByExtension(filename) {
+            const ext = filename.split('.').pop().toLowerCase();
+            const modeMap = {
+                'py': 'python',
+                'json': 'json',
+                'js': 'javascript',
+                'html': 'html',
+                'htm': 'html',
+                'css': 'css',
+                'scss': 'scss',
+                'md': 'markdown',
+                'txt': 'text',
+                'yaml': 'yaml',
+                'yml': 'yaml',
+                'xml': 'xml',
+                'sh': 'sh',
+                'bash': 'sh',
+                'sql': 'sql'
+            };
+            return `ace/mode/${modeMap[ext] || 'text'}`;
+        }
 
         // Load services list
         async function editorLoadServices() {
@@ -4113,8 +4167,16 @@
                 const result = await response.json();
 
                 if (result.success) {
-                    document.getElementById('editorCodeArea').value = result.content;
-                    document.getElementById('editorCodeArea').disabled = false;
+                    // Set content in Ace Editor
+                    if (aceEditor) {
+                        aceEditor.setValue(result.content, -1); // -1 moves cursor to start
+                        aceEditor.setReadOnly(false);
+
+                        // Set syntax highlighting based on file extension
+                        const mode = getAceModeByExtension(editorCurrentFile);
+                        aceEditor.session.setMode(mode);
+                    }
+
                     document.getElementById('editorFileName').textContent = editorCurrentFile;
                     document.getElementById('editorFilePath').textContent = filePath;
                     document.getElementById('editorSaveFile').disabled = false;
@@ -4142,7 +4204,7 @@
         async function editorSaveFile() {
             if (!editorCurrentFile) return;
 
-            const content = document.getElementById('editorCodeArea').value;
+            const content = aceEditor ? aceEditor.getValue() : '';
 
             try {
                 const response = await fetch('/api/services/file/update', {
@@ -4202,8 +4264,13 @@
                 if (result.success) {
                     editorCurrentFile = '';
                     editorCurrentFilePath = '';
-                    document.getElementById('editorCodeArea').value = '';
-                    document.getElementById('editorCodeArea').disabled = true;
+
+                    // Clear Ace Editor
+                    if (aceEditor) {
+                        aceEditor.setValue('', -1);
+                        aceEditor.setReadOnly(true);
+                    }
+
                     document.getElementById('editorFileName').textContent = 'Файл не выбран';
                     document.getElementById('editorFilePath').textContent = '';
                     document.getElementById('editorSaveFile').disabled = true;
@@ -4269,7 +4336,7 @@
         function editorDownloadFile() {
             if (!editorCurrentFile) return;
 
-            const content = document.getElementById('editorCodeArea').value;
+            const content = aceEditor ? aceEditor.getValue() : '';
             const blob = new Blob([content], { type: 'text/plain' });
             const url = URL.createObjectURL(blob);
             const a = document.createElement('a');
@@ -4460,11 +4527,6 @@
             }
         }
 
-        // Track changes
-        document.getElementById('editorCodeArea')?.addEventListener('input', () => {
-            editorFilesDirty = true;
-        });
-
         // Event listeners
         document.getElementById('editorNodeSelect')?.addEventListener('change', (e) => {
             editorCurrentNode = e.target.value;
@@ -4475,8 +4537,13 @@
             editorCurrentService = e.target.value;
             editorCurrentFile = '';
             editorCurrentFilePath = '';
-            document.getElementById('editorCodeArea').value = '';
-            document.getElementById('editorCodeArea').disabled = true;
+
+            // Clear Ace Editor
+            if (aceEditor) {
+                aceEditor.setValue('', -1);
+                aceEditor.setReadOnly(true);
+            }
+
             document.getElementById('editorFileName').textContent = 'Файл не выбран';
             document.getElementById('editorFilePath').textContent = '';
             document.getElementById('editorSaveFile').disabled = true;
@@ -4505,6 +4572,9 @@
 
         // Initialize editor when tab is shown
         document.getElementById('editor-tab')?.addEventListener('shown.bs.tab', async () => {
+            // Initialize Ace Editor
+            initAceEditor();
+
             // Populate nodes
             const nodeSelect = document.getElementById('editorNodeSelect');
             nodeSelect.innerHTML = '<option value="coordinator">Coordinator</option>';
