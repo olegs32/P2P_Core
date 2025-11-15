@@ -1212,7 +1212,7 @@
                                 <p class="mt-2 text-muted">Загрузка конфигурации...</p>
                             </div>
                             <div id="configEditorContainer" style="display: none;">
-                                <textarea class="form-control font-monospace" id="configEditor" rows="25" style="font-size: 0.9rem; background-color: #2d3139; color: #e4e6eb; border-color: #3a3f4b;"></textarea>
+                                <div id="configEditor" style="height: 600px; width: 100%; border: 1px solid #3a3f4b;"></div>
                                 <small class="text-muted mt-2 d-block">
                                     Редактируйте конфигурацию в формате JSON. Изменения будут применены после сохранения.
                                 </small>
@@ -1363,9 +1363,9 @@
                             <div class="row g-0" style="height: calc(100vh - 300px);">
                                 <!-- Left Panel: File Tree -->
                                 <div class="col-md-3 border-end">
-                                    <div class="p-3 border-bottom bg-light">
+                                    <div class="p-3 border-bottom" style="background-color: #1e1e1e; height: 60px;">
                                         <div class="d-flex justify-content-between align-items-center">
-                                            <h6 class="mb-0">Файлы</h6>
+                                            <h6 class="mb-0 text-light">Файлы</h6>
                                             <div>
                                                 <button class="btn btn-sm btn-success me-1" id="editorNewFile" title="Новый файл">
                                                     <i class="bi bi-file-plus"></i>
@@ -1384,10 +1384,10 @@
 
                                 <!-- Right Panel: Code Editor -->
                                 <div class="col-md-9">
-                                    <div class="p-3 border-bottom bg-light">
+                                    <div class="p-3 border-bottom" style="background-color: #1e1e1e; height: 60px;">
                                         <div class="d-flex justify-content-between align-items-center">
                                             <div>
-                                                <h6 class="mb-0" id="editorFileName">Файл не выбран</h6>
+                                                <h6 class="mb-0 text-light" id="editorFileName">Файл не выбран</h6>
                                                 <small class="text-muted" id="editorFilePath"></small>
                                             </div>
                                             <div>
@@ -3744,7 +3744,14 @@
 
                 if (result && result.success) {
                     const config = result.config;
-                    document.getElementById('configEditor').value = JSON.stringify(config, null, 2);
+
+                    // Initialize Ace Editor if not already done
+                    if (!configAceEditor) {
+                        initConfigAceEditor();
+                    }
+
+                    // Set config content in Ace Editor
+                    configAceEditor.setValue(JSON.stringify(config, null, 2), -1);
 
                     document.getElementById('configLoadingSpinner').style.display = 'none';
                     document.getElementById('configEditorContainer').style.display = 'block';
@@ -3762,7 +3769,7 @@
         async function saveConfig() {
             const nodeSelect = document.getElementById('controlNodeSelect');
             const selectedNode = nodeSelect.value;
-            const configText = document.getElementById('configEditor').value;
+            const configText = configAceEditor ? configAceEditor.getValue() : '';
 
             document.getElementById('configError').style.display = 'none';
             document.getElementById('configSuccess').style.display = 'none';
@@ -3997,6 +4004,7 @@
         let editorCurrentFilePath = '';
         let editorFilesDirty = false;
         let aceEditor = null;
+        let configAceEditor = null;
 
         // Initialize Ace Editor
         function initAceEditor() {
@@ -4022,6 +4030,25 @@
 
             // Initially disable
             aceEditor.setReadOnly(true);
+        }
+
+        // Initialize Ace Editor for Configurator
+        function initConfigAceEditor() {
+            if (configAceEditor) return; // Already initialized
+
+            configAceEditor = ace.edit("configEditor");
+            configAceEditor.setTheme("ace/theme/monokai");
+            configAceEditor.session.setMode("ace/mode/json");
+            configAceEditor.setOptions({
+                fontSize: "14px",
+                showPrintMargin: false,
+                enableBasicAutocompletion: true,
+                enableLiveAutocompletion: true,
+                enableSnippets: true,
+                showLineNumbers: true,
+                tabSize: 2,
+                wrap: true
+            });
         }
 
         // Get Ace mode by file extension
@@ -4149,6 +4176,9 @@
             if (editorFilesDirty && !confirm('У вас есть несохраненные изменения. Продолжить?')) {
                 return;
             }
+
+            // Normalize path: replace backslashes with forward slashes
+            filePath = filePath.replace(/\\/g, '/');
 
             editorCurrentFile = filePath.split('/').pop();
             editorCurrentFilePath = filePath;
