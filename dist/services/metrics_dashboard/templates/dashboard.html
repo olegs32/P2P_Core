@@ -158,29 +158,32 @@
             transition: margin-left 0.3s ease;
         }
 
-        .sidebar.collapsed ~ .main-content {
+        body.sidebar-collapsed .main-content {
             margin-left: var(--sidebar-collapsed-width);
         }
 
         /* Fullscreen mode for editor */
-        .fullscreen-editor {
+        .editor-fullscreen-wrapper {
+            position: relative;
+        }
+
+        .editor-fullscreen-wrapper.fullscreen {
             position: fixed;
             top: 0;
             left: 0;
-            width: 100vw !important;
-            height: 100vh !important;
+            width: 100vw;
+            height: 100vh;
             z-index: 9999;
             background-color: var(--bg-dark);
-            margin: 0 !important;
         }
 
-        .fullscreen-editor .card-body {
-            padding: 0 !important;
+        .editor-fullscreen-wrapper.fullscreen .col-md-3 {
+            display: none; /* Hide file tree in fullscreen */
         }
 
-        .fullscreen-editor .row {
-            height: 100vh !important;
-            margin: 0 !important;
+        .editor-fullscreen-wrapper.fullscreen .col-md-9 {
+            width: 100%;
+            max-width: 100%;
         }
 
         .fullscreen-toggle-btn {
@@ -1438,9 +1441,10 @@
                             </div>
                         </div>
                         <div class="card-body p-0">
-                            <div class="row g-0" style="height: calc(100vh - 300px);">
-                                <!-- Left Panel: File Tree -->
-                                <div class="col-md-3 border-end">
+                            <div id="editorFullscreenWrapper" class="editor-fullscreen-wrapper">
+                                <div class="row g-0" style="height: calc(100vh - 300px);">
+                                    <!-- Left Panel: File Tree -->
+                                    <div class="col-md-3 border-end">
                                     <div class="p-3 border-bottom" style="background-color: #1e1e1e; height: 60px;">
                                         <div class="d-flex justify-content-between align-items-center">
                                             <h6 class="mb-0 text-light">Файлы</h6>
@@ -1490,6 +1494,7 @@
                                     <div style="height: calc(100% - 60px); position: relative;">
                                         <div id="editorCodeArea" style="width: 100%; height: 100%; font-size: 14px;"></div>
                                     </div>
+                                </div>
                                 </div>
                             </div>
                         </div>
@@ -1573,6 +1578,9 @@
             const sidebar = document.querySelector('.sidebar');
             sidebar.classList.toggle('collapsed');
 
+            // Toggle body class for main-content margin
+            document.body.classList.toggle('sidebar-collapsed', sidebar.classList.contains('collapsed'));
+
             // Save state to localStorage
             const isCollapsed = sidebar.classList.contains('collapsed');
             localStorage.setItem('sidebarCollapsed', isCollapsed);
@@ -1582,7 +1590,9 @@
         document.addEventListener('DOMContentLoaded', () => {
             const isCollapsed = localStorage.getItem('sidebarCollapsed') === 'true';
             if (isCollapsed) {
-                document.querySelector('.sidebar').classList.add('collapsed');
+                const sidebar = document.querySelector('.sidebar');
+                sidebar.classList.add('collapsed');
+                document.body.classList.add('sidebar-collapsed');
             }
         });
 
@@ -1590,14 +1600,16 @@
         let isEditorFullscreen = false;
 
         function toggleEditorFullscreen() {
-            const editorPanel = document.getElementById('editorPanel');
+            const wrapper = document.getElementById('editorFullscreenWrapper');
             const fullscreenBtn = document.getElementById('editorFullscreenToggle');
             const icon = fullscreenBtn.querySelector('i');
 
             isEditorFullscreen = !isEditorFullscreen;
 
             if (isEditorFullscreen) {
-                editorPanel.classList.add('fullscreen-editor');
+                wrapper.classList.add('fullscreen');
+                // Change row height in fullscreen
+                wrapper.querySelector('.row').style.height = '100vh';
                 icon.className = 'bi bi-fullscreen-exit';
                 fullscreenBtn.title = 'Выйти из полноэкранного режима';
 
@@ -1606,7 +1618,9 @@
                     setTimeout(() => aceEditor.resize(), 100);
                 }
             } else {
-                editorPanel.classList.remove('fullscreen-editor');
+                wrapper.classList.remove('fullscreen');
+                // Restore original height
+                wrapper.querySelector('.row').style.height = 'calc(100vh - 300px)';
                 icon.className = 'bi bi-arrows-fullscreen';
                 fullscreenBtn.title = 'Полноэкранный режим';
 
