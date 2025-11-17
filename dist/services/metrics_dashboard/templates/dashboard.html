@@ -5036,10 +5036,16 @@
 
             // Load services
             editorLoadServices();
+        });
 
-            // Initialize Repository and Updates tabs
-            initializeRepository();
-            initializeUpdates();
+        // Initialize repository tab when shown
+        document.getElementById('repository-tab')?.addEventListener('shown.bs.tab', async () => {
+            await initializeRepository();
+        });
+
+        // Initialize updates tab when shown
+        document.getElementById('updates-tab')?.addEventListener('shown.bs.tab', async () => {
+            await initializeUpdates();
         });
 
         // ============ Repository Functions ============
