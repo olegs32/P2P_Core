@@ -5,14 +5,14 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>P2P Cluster Dashboard</title>
 
-    <!-- Bootstrap CSS -->
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <!-- Bootstrap CSS (local with CDN fallback) -->
+    <link href="/static/css/bootstrap.min.css" rel="stylesheet" onerror="this.onerror=null; this.href='https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css';">
 
-    <!-- Chart.js -->
-    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    <!-- Chart.js (local with CDN fallback) -->
+    <script src="/static/js/chart.umd.min.js" onerror="this.remove(); var s=document.createElement('script'); s.src='https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js'; document.head.appendChild(s);"></script>
 
-    <!-- HTMX for dynamic updates -->
-    <script src="https://unpkg.com/htmx.org@1.9.10"></script>
+    <!-- HTMX for dynamic updates (local with CDN fallback) -->
+    <script src="/static/js/htmx.min.js" onerror="this.remove(); var s=document.createElement('script'); s.src='https://unpkg.com/htmx.org@1.9.10'; document.head.appendChild(s);"></script>
 
     <style>
         :root {
@@ -1368,8 +1368,8 @@
         </div>
     </div>
 
-    <!-- Bootstrap JS -->
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <!-- Bootstrap JS (local with CDN fallback) -->
+    <script src="/static/js/bootstrap.bundle.min.js" onerror="this.remove(); var s=document.createElement('script'); s.src='https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js'; document.body.appendChild(s);"></script>
 
     <script>
         // Tab Navigation

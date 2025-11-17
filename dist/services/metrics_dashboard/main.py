@@ -939,6 +939,14 @@ class Run(BaseService):
 
         self.logger.debug("WebSocket endpoint registered at /ws/dashboard")
 
+        # Mount static files directory
+        static_dir = Path(__file__).parent / "static"
+        if static_dir.exists():
+            app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
+            self.logger.debug(f"Static files mounted from {static_dir}")
+        else:
+            self.logger.warning(f"Static directory not found at {static_dir} - CDN fallback will be used")
+
         self.logger.info("Dashboard HTTP endpoints registered")
 
     def _get_fastapi_app(self):
