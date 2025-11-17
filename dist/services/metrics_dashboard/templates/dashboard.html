@@ -754,14 +754,6 @@
                 <span class="nav-tab-icon">&#127968;</span>
                 <span>Главная</span>
             </a>
-            <a class="nav-tab" data-tab="repository">
-                <span class="nav-tab-icon">&#128230;</span>
-                <span>Репозиторий</span>
-            </a>
-            <a class="nav-tab" data-tab="updates">
-                <span class="nav-tab-icon">&#128260;</span>
-                <span>Обновления</span>
-            </a>
             <a class="nav-tab" data-tab="certificates">
                 <span class="nav-tab-icon">&#128272;</span>
                 <span>Сертификаты</span>
@@ -897,293 +889,6 @@
                         <h3 class="mb-3">Workers</h3>
                         <div id="workersContainer">
                             <!-- Workers will be dynamically inserted here -->
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
-
-        <!-- Repository Tab Content -->
-        <div class="tab-content" id="repositoryTab">
-            <!-- Header -->
-            <div class="dashboard-header">
-                <div class="container">
-                    <h1 class="mb-2">Artifact Repository</h1>
-                    <p class="mb-0 opacity-75">Manage artifacts, versions, and deployments</p>
-                </div>
-            </div>
-
-            <div class="container mt-4">
-                <!-- Repository Stats -->
-                <div class="row g-4 mb-4">
-                    <div class="col-md-3">
-                        <div class="card h-100">
-                            <div class="card-body">
-                                <div class="d-flex justify-content-between align-items-center mb-2">
-                                    <h6 class="mb-0">Total Artifacts</h6>
-                                    <i class="bi bi-archive-fill text-primary"></i>
-                                </div>
-                                <h3 class="mb-0" id="repoTotalArtifacts">-</h3>
-                            </div>
-                        </div>
-                    </div>
-                    <div class="col-md-3">
-                        <div class="card h-100">
-                            <div class="card-body">
-                                <div class="d-flex justify-content-between align-items-center mb-2">
-                                    <h6 class="mb-0">Total Size</h6>
-                                    <i class="bi bi-hdd-fill text-info"></i>
-                                </div>
-                                <h3 class="mb-0" id="repoTotalSize">-</h3>
-                            </div>
-                        </div>
-                    </div>
-                    <div class="col-md-3">
-                        <div class="card h-100">
-                            <div class="card-body">
-                                <div class="d-flex justify-content-between align-items-center mb-2">
-                                    <h6 class="mb-0">Total Downloads</h6>
-                                    <i class="bi bi-download text-success"></i>
-                                </div>
-                                <h3 class="mb-0" id="repoTotalDownloads">-</h3>
-                            </div>
-                        </div>
-                    </div>
-                    <div class="col-md-3">
-                        <div class="card h-100">
-                            <div class="card-body">
-                                <div class="d-flex justify-content-between align-items-center mb-2">
-                                    <h6 class="mb-0">Services</h6>
-                                    <i class="bi bi-gear-fill text-warning"></i>
-                                </div>
-                                <h3 class="mb-0" id="repoServiceCount">-</h3>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- Upload Section -->
-                <div class="card mb-4">
-                    <div class="card-header d-flex justify-content-between align-items-center">
-                        <h5 class="mb-0">Upload Artifact</h5>
-                        <button class="btn btn-sm btn-primary" onclick="toggleUploadForm()">
-                            <i class="bi bi-plus-circle me-1"></i>Upload
-                        </button>
-                    </div>
-                    <div class="card-body" id="uploadFormSection" style="display: none;">
-                        <form id="uploadArtifactForm" enctype="multipart/form-data">
-                            <div class="row g-3">
-                                <div class="col-md-6">
-                                    <label class="form-label">Name</label>
-                                    <input type="text" class="form-control" name="name" required>
-                                </div>
-                                <div class="col-md-3">
-                                    <label class="form-label">Version</label>
-                                    <input type="text" class="form-control" name="version" placeholder="1.0.0" required>
-                                </div>
-                                <div class="col-md-3">
-                                    <label class="form-label">Type</label>
-                                    <select class="form-select" name="artifact_type" required>
-                                        <option value="binary">Binary</option>
-                                        <option value="service">Service</option>
-                                        <option value="config">Config</option>
-                                        <option value="docker">Docker</option>
-                                    </select>
-                                </div>
-                                <div class="col-md-6">
-                                    <label class="form-label">Platform</label>
-                                    <input type="text" class="form-control" name="platform" placeholder="linux, windows">
-                                </div>
-                                <div class="col-md-6">
-                                    <label class="form-label">Architecture</label>
-                                    <input type="text" class="form-control" name="architecture" placeholder="x86_64, arm64">
-                                </div>
-                                <div class="col-12">
-                                    <label class="form-label">Description</label>
-                                    <textarea class="form-control" name="description" rows="2"></textarea>
-                                </div>
-                                <div class="col-12">
-                                    <label class="form-label">Tags (comma-separated)</label>
-                                    <input type="text" class="form-control" name="tags" placeholder="stable, production, v1">
-                                </div>
-                                <div class="col-12">
-                                    <label class="form-label">File</label>
-                                    <input type="file" class="form-control" name="file" required>
-                                </div>
-                                <div class="col-12">
-                                    <button type="submit" class="btn btn-primary">
-                                        <i class="bi bi-upload me-1"></i>Upload Artifact
-                                    </button>
-                                    <button type="button" class="btn btn-secondary" onclick="toggleUploadForm()">Cancel</button>
-                                </div>
-                            </div>
-                        </form>
-                    </div>
-                </div>
-
-                <!-- Artifacts List -->
-                <div class="card">
-                    <div class="card-header d-flex justify-content-between align-items-center">
-                        <h5 class="mb-0">Artifacts</h5>
-                        <div class="d-flex gap-2">
-                            <select class="form-select form-select-sm" id="artifactTypeFilter" onchange="filterArtifacts()">
-                                <option value="">All Types</option>
-                                <option value="binary">Binary</option>
-                                <option value="service">Service</option>
-                                <option value="config">Config</option>
-                                <option value="docker">Docker</option>
-                            </select>
-                            <button class="btn btn-sm btn-outline-secondary" onclick="loadArtifacts()">
-                                <i class="bi bi-arrow-clockwise"></i>
-                            </button>
-                        </div>
-                    </div>
-                    <div class="card-body">
-                        <div class="table-responsive">
-                            <table class="table table-hover">
-                                <thead>
-                                    <tr>
-                                        <th>Name</th>
-                                        <th>Version</th>
-                                        <th>Type</th>
-                                        <th>Platform</th>
-                                        <th>Size</th>
-                                        <th>Downloads</th>
-                                        <th>Uploaded</th>
-                                        <th>Actions</th>
-                                    </tr>
-                                </thead>
-                                <tbody id="artifactsTableBody">
-                                    <tr>
-                                        <td colspan="8" class="text-center text-muted">Loading artifacts...</td>
-                                    </tr>
-                                </tbody>
-                            </table>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
-
-        <!-- Updates Tab Content -->
-        <div class="tab-content" id="updatesTab">
-            <!-- Header -->
-            <div class="dashboard-header">
-                <div class="container">
-                    <h1 class="mb-2">Cluster Updates</h1>
-                    <p class="mb-0 opacity-75">Manage and monitor cluster-wide updates</p>
-                </div>
-            </div>
-
-            <div class="container mt-4">
-                <!-- Create Update Section -->
-                <div class="card mb-4">
-                    <div class="card-header d-flex justify-content-between align-items-center">
-                        <h5 class="mb-0">Create Update Task</h5>
-                        <button class="btn btn-sm btn-primary" onclick="toggleUpdateForm()">
-                            <i class="bi bi-plus-circle me-1"></i>New Update
-                        </button>
-                    </div>
-                    <div class="card-body" id="updateFormSection" style="display: none;">
-                        <form id="createUpdateForm">
-                            <div class="row g-3">
-                                <div class="col-md-6">
-                                    <label class="form-label">Artifact</label>
-                                    <select class="form-select" name="artifact_id" id="updateArtifactSelect" required>
-                                        <option value="">Select artifact...</option>
-                                    </select>
-                                </div>
-                                <div class="col-md-6">
-                                    <label class="form-label">Update Strategy</label>
-                                    <select class="form-select" name="strategy" required>
-                                        <option value="rolling">Rolling (Sequential)</option>
-                                        <option value="canary">Canary (Test First)</option>
-                                        <option value="blue_green">Blue-Green (Parallel)</option>
-                                        <option value="all_at_once">All at Once</option>
-                                    </select>
-                                </div>
-                                <div class="col-md-6">
-                                    <label class="form-label">Target Nodes</label>
-                                    <select class="form-select" multiple name="target_nodes" id="updateNodesSelect" size="5" required>
-                                        <!-- Populated dynamically -->
-                                    </select>
-                                    <small class="text-muted">Hold Ctrl/Cmd to select multiple</small>
-                                </div>
-                                <div class="col-md-3">
-                                    <label class="form-label">Interval (seconds)</label>
-                                    <input type="number" class="form-control" name="interval_seconds" value="30" min="1">
-                                </div>
-                                <div class="col-md-3">
-                                    <label class="form-label">Max Failures</label>
-                                    <input type="number" class="form-control" name="max_failures" value="1" min="0">
-                                </div>
-                                <div class="col-md-6">
-                                    <div class="form-check">
-                                        <input class="form-check-input" type="checkbox" name="backup_enabled" id="backupEnabled" checked>
-                                        <label class="form-check-label" for="backupEnabled">
-                                            Create backup before update
-                                        </label>
-                                    </div>
-                                    <div class="form-check">
-                                        <input class="form-check-input" type="checkbox" name="auto_rollback" id="autoRollback" checked>
-                                        <label class="form-check-label" for="autoRollback">
-                                            Auto rollback on failure
-                                        </label>
-                                    </div>
-                                </div>
-                                <div class="col-12">
-                                    <button type="submit" class="btn btn-primary">
-                                        <i class="bi bi-play-circle me-1"></i>Start Update
-                                    </button>
-                                    <button type="button" class="btn btn-secondary" onclick="toggleUpdateForm()">Cancel</button>
-                                </div>
-                            </div>
-                        </form>
-                    </div>
-                </div>
-
-                <!-- Active Updates -->
-                <div class="card mb-4">
-                    <div class="card-header d-flex justify-content-between align-items-center">
-                        <h5 class="mb-0">Active Updates</h5>
-                        <button class="btn btn-sm btn-outline-secondary" onclick="loadActiveUpdates()">
-                            <i class="bi bi-arrow-clockwise"></i>
-                        </button>
-                    </div>
-                    <div class="card-body" id="activeUpdatesSection">
-                        <p class="text-muted text-center">No active updates</p>
-                    </div>
-                </div>
-
-                <!-- Update History -->
-                <div class="card">
-                    <div class="card-header d-flex justify-content-between align-items-center">
-                        <h5 class="mb-0">Update History</h5>
-                        <button class="btn btn-sm btn-outline-secondary" onclick="loadUpdateHistory()">
-                            <i class="bi bi-arrow-clockwise"></i>
-                        </button>
-                    </div>
-                    <div class="card-body">
-                        <div class="table-responsive">
-                            <table class="table table-hover">
-                                <thead>
-                                    <tr>
-                                        <th>Update ID</th>
-                                        <th>Artifact</th>
-                                        <th>Version</th>
-                                        <th>Strategy</th>
-                                        <th>Nodes</th>
-                                        <th>Status</th>
-                                        <th>Duration</th>
-                                        <th>Started</th>
-                                    </tr>
-                                </thead>
-                                <tbody id="updateHistoryTableBody">
-                                    <tr>
-                                        <td colspan="8" class="text-center text-muted">Loading history...</td>
-                                    </tr>
-                                </tbody>
-                            </table>
                         </div>
                     </div>
                 </div>
@@ -1664,24 +1369,269 @@
                     </div>
                 </div>
 
-                <!-- Updates Panel (Placeholder) -->
+                <!-- Updates Panel -->
                 <div class="tab-pane fade" id="updatesPanel" role="tabpanel">
+                    <!-- Create Update Section -->
+                    <div class="card mb-4">
+                        <div class="card-header d-flex justify-content-between align-items-center">
+                            <h5 class="mb-0">Create Update Task</h5>
+                            <button class="btn btn-sm btn-primary" onclick="toggleUpdateForm()">
+                                <i class="bi bi-plus-circle me-1"></i>New Update
+                            </button>
+                        </div>
+                        <div class="card-body" id="updateFormSection" style="display: none;">
+                            <form id="createUpdateForm">
+                                <div class="row g-3">
+                                    <div class="col-md-6">
+                                        <label class="form-label">Artifact</label>
+                                        <select class="form-select" name="artifact_id" id="updateArtifactSelect" required>
+                                            <option value="">Select artifact...</option>
+                                        </select>
+                                    </div>
+                                    <div class="col-md-6">
+                                        <label class="form-label">Update Strategy</label>
+                                        <select class="form-select" name="strategy" required>
+                                            <option value="rolling">Rolling (Sequential)</option>
+                                            <option value="canary">Canary (Test First)</option>
+                                            <option value="blue_green">Blue-Green (Parallel)</option>
+                                            <option value="all_at_once">All at Once</option>
+                                        </select>
+                                    </div>
+                                    <div class="col-md-6">
+                                        <label class="form-label">Target Nodes</label>
+                                        <select class="form-select" multiple name="target_nodes" id="updateNodesSelect" size="5" required>
+                                            <!-- Populated dynamically -->
+                                        </select>
+                                        <small class="text-muted">Hold Ctrl/Cmd to select multiple</small>
+                                    </div>
+                                    <div class="col-md-3">
+                                        <label class="form-label">Interval (seconds)</label>
+                                        <input type="number" class="form-control" name="interval_seconds" value="30" min="1">
+                                    </div>
+                                    <div class="col-md-3">
+                                        <label class="form-label">Max Failures</label>
+                                        <input type="number" class="form-control" name="max_failures" value="1" min="0">
+                                    </div>
+                                    <div class="col-md-6">
+                                        <div class="form-check">
+                                            <input class="form-check-input" type="checkbox" name="backup_enabled" id="backupEnabled" checked>
+                                            <label class="form-check-label" for="backupEnabled">
+                                                Create backup before update
+                                            </label>
+                                        </div>
+                                        <div class="form-check">
+                                            <input class="form-check-input" type="checkbox" name="auto_rollback" id="autoRollback" checked>
+                                            <label class="form-check-label" for="autoRollback">
+                                                Auto rollback on failure
+                                            </label>
+                                        </div>
+                                    </div>
+                                    <div class="col-12">
+                                        <button type="submit" class="btn btn-primary">
+                                            <i class="bi bi-play-circle me-1"></i>Start Update
+                                        </button>
+                                        <button type="button" class="btn btn-secondary" onclick="toggleUpdateForm()">Cancel</button>
+                                    </div>
+                                </div>
+                            </form>
+                        </div>
+                    </div>
+
+                    <!-- Active Updates -->
+                    <div class="card mb-4">
+                        <div class="card-header d-flex justify-content-between align-items-center">
+                            <h5 class="mb-0">Active Updates</h5>
+                            <button class="btn btn-sm btn-outline-secondary" onclick="loadActiveUpdates()">
+                                <i class="bi bi-arrow-clockwise"></i>
+                            </button>
+                        </div>
+                        <div class="card-body" id="activeUpdatesSection">
+                            <p class="text-muted text-center">No active updates</p>
+                        </div>
+                    </div>
+
+                    <!-- Update History -->
                     <div class="card">
-                        <div class="card-body text-center py-5">
-                            <h4 class="text-muted">Обновление</h4>
-                            <p class="text-muted">Функционал находится в разработке</p>
-                            <span style="font-size: 4rem;">&#128640;</span>
+                        <div class="card-header d-flex justify-content-between align-items-center">
+                            <h5 class="mb-0">Update History</h5>
+                            <button class="btn btn-sm btn-outline-secondary" onclick="loadUpdateHistory()">
+                                <i class="bi bi-arrow-clockwise"></i>
+                            </button>
+                        </div>
+                        <div class="card-body">
+                            <div class="table-responsive">
+                                <table class="table table-hover">
+                                    <thead>
+                                        <tr>
+                                            <th>Update ID</th>
+                                            <th>Artifact</th>
+                                            <th>Version</th>
+                                            <th>Strategy</th>
+                                            <th>Nodes</th>
+                                            <th>Status</th>
+                                            <th>Duration</th>
+                                            <th>Started</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="updateHistoryTableBody">
+                                        <tr>
+                                            <td colspan="8" class="text-center text-muted">Loading history...</td>
+                                        </tr>
+                                    </tbody>
+                                </table>
+                            </div>
                         </div>
                     </div>
                 </div>
 
-                <!-- Repository Panel (Placeholder) -->
+                <!-- Repository Panel -->
                 <div class="tab-pane fade" id="repositoryPanel" role="tabpanel">
+                    <!-- Repository Stats -->
+                    <div class="row g-4 mb-4">
+                        <div class="col-md-3">
+                            <div class="card h-100">
+                                <div class="card-body">
+                                    <div class="d-flex justify-content-between align-items-center mb-2">
+                                        <h6 class="mb-0">Total Artifacts</h6>
+                                        <i class="bi bi-archive-fill text-primary"></i>
+                                    </div>
+                                    <h3 class="mb-0" id="repoTotalArtifacts">-</h3>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-md-3">
+                            <div class="card h-100">
+                                <div class="card-body">
+                                    <div class="d-flex justify-content-between align-items-center mb-2">
+                                        <h6 class="mb-0">Total Size</h6>
+                                        <i class="bi bi-hdd-fill text-info"></i>
+                                    </div>
+                                    <h3 class="mb-0" id="repoTotalSize">-</h3>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-md-3">
+                            <div class="card h-100">
+                                <div class="card-body">
+                                    <div class="d-flex justify-content-between align-items-center mb-2">
+                                        <h6 class="mb-0">Total Downloads</h6>
+                                        <i class="bi bi-download text-success"></i>
+                                    </div>
+                                    <h3 class="mb-0" id="repoTotalDownloads">-</h3>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-md-3">
+                            <div class="card h-100">
+                                <div class="card-body">
+                                    <div class="d-flex justify-content-between align-items-center mb-2">
+                                        <h6 class="mb-0">Services</h6>
+                                        <i class="bi bi-gear-fill text-warning"></i>
+                                    </div>
+                                    <h3 class="mb-0" id="repoServiceCount">-</h3>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Upload Section -->
+                    <div class="card mb-4">
+                        <div class="card-header d-flex justify-content-between align-items-center">
+                            <h5 class="mb-0">Upload Artifact</h5>
+                            <button class="btn btn-sm btn-primary" onclick="toggleUploadForm()">
+                                <i class="bi bi-plus-circle me-1"></i>Upload
+                            </button>
+                        </div>
+                        <div class="card-body" id="uploadFormSection" style="display: none;">
+                            <form id="uploadArtifactForm" enctype="multipart/form-data">
+                                <div class="row g-3">
+                                    <div class="col-md-6">
+                                        <label class="form-label">Name</label>
+                                        <input type="text" class="form-control" name="name" required>
+                                    </div>
+                                    <div class="col-md-3">
+                                        <label class="form-label">Version</label>
+                                        <input type="text" class="form-control" name="version" placeholder="1.0.0" required>
+                                    </div>
+                                    <div class="col-md-3">
+                                        <label class="form-label">Type</label>
+                                        <select class="form-select" name="artifact_type" required>
+                                            <option value="binary">Binary</option>
+                                            <option value="service">Service</option>
+                                            <option value="config">Config</option>
+                                            <option value="docker">Docker</option>
+                                        </select>
+                                    </div>
+                                    <div class="col-md-6">
+                                        <label class="form-label">Platform</label>
+                                        <input type="text" class="form-control" name="platform" placeholder="linux, windows">
+                                    </div>
+                                    <div class="col-md-6">
+                                        <label class="form-label">Architecture</label>
+                                        <input type="text" class="form-control" name="architecture" placeholder="x86_64, arm64">
+                                    </div>
+                                    <div class="col-12">
+                                        <label class="form-label">Description</label>
+                                        <textarea class="form-control" name="description" rows="2"></textarea>
+                                    </div>
+                                    <div class="col-12">
+                                        <label class="form-label">Tags (comma-separated)</label>
+                                        <input type="text" class="form-control" name="tags" placeholder="stable, production, v1">
+                                    </div>
+                                    <div class="col-12">
+                                        <label class="form-label">File</label>
+                                        <input type="file" class="form-control" name="file" required>
+                                    </div>
+                                    <div class="col-12">
+                                        <button type="submit" class="btn btn-primary">
+                                            <i class="bi bi-upload me-1"></i>Upload Artifact
+                                        </button>
+                                        <button type="button" class="btn btn-secondary" onclick="toggleUploadForm()">Cancel</button>
+                                    </div>
+                                </div>
+                            </form>
+                        </div>
+                    </div>
+
+                    <!-- Artifacts List -->
                     <div class="card">
-                        <div class="card-body text-center py-5">
-                            <h4 class="text-muted">Репозиторий</h4>
-                            <p class="text-muted">Функционал находится в разработке</p>
-                            <span style="font-size: 4rem;">&#128230;</span>
+                        <div class="card-header d-flex justify-content-between align-items-center">
+                            <h5 class="mb-0">Artifacts</h5>
+                            <div class="d-flex gap-2">
+                                <select class="form-select form-select-sm" id="artifactTypeFilter" onchange="filterArtifacts()">
+                                    <option value="">All Types</option>
+                                    <option value="binary">Binary</option>
+                                    <option value="service">Service</option>
+                                    <option value="config">Config</option>
+                                    <option value="docker">Docker</option>
+                                </select>
+                                <button class="btn btn-sm btn-outline-secondary" onclick="loadArtifacts()">
+                                    <i class="bi bi-arrow-clockwise"></i>
+                                </button>
+                            </div>
+                        </div>
+                        <div class="card-body">
+                            <div class="table-responsive">
+                                <table class="table table-hover">
+                                    <thead>
+                                        <tr>
+                                            <th>Name</th>
+                                            <th>Version</th>
+                                            <th>Type</th>
+                                            <th>Platform</th>
+                                            <th>Size</th>
+                                            <th>Downloads</th>
+                                            <th>Uploaded</th>
+                                            <th>Actions</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="artifactsTableBody">
+                                        <tr>
+                                            <td colspan="8" class="text-center text-muted">Loading artifacts...</td>
+                                        </tr>
+                                    </tbody>
+                                </table>
+                            </div>
                         </div>
                     </div>
                 </div>
