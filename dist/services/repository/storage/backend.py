@@ -27,6 +27,8 @@ def _load_artifact_module():
 _artifact_mod = _load_artifact_module()
 Artifact = _artifact_mod.Artifact
 ArtifactStatus = _artifact_mod.ArtifactStatus
+ArtifactType = _artifact_mod.ArtifactType
+ArtifactDependency = _artifact_mod.ArtifactDependency
 
 
 class StorageBackend:
@@ -293,7 +295,7 @@ class StorageBackend:
             FROM artifact_dependencies WHERE artifact_id = ?
         """, (artifact_id,))
 
-        from ..models.artifact import ArtifactDependency
+        # ArtifactDependency already loaded at module level
         artifact.dependencies = [
             ArtifactDependency(
                 name=row['dependency_name'],
@@ -352,8 +354,7 @@ class StorageBackend:
 
     def _row_to_artifact(self, row: sqlite3.Row) -> Artifact:
         """Convert database row to Artifact object"""
-        from ..models.artifact import ArtifactType, ArtifactStatus
-
+        # ArtifactType and ArtifactStatus already loaded at module level
         return Artifact(
             id=row['id'],
             name=row['name'],
