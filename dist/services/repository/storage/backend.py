@@ -9,8 +9,24 @@ from pathlib import Path
 from typing import Optional, List, Dict, Any, BinaryIO
 from datetime import datetime
 import logging
+import sys
+import importlib.util
 
-from ..models.artifact import Artifact, ArtifactStatus
+# Load artifact module dynamically (avoid relative imports in ServiceLoader context)
+def _load_artifact_module():
+    """Load artifact module from models directory"""
+    service_dir = Path(__file__).parent.parent
+    artifact_path = service_dir / 'models' / 'artifact.py'
+
+    spec = importlib.util.spec_from_file_location('repository_artifact_for_backend', str(artifact_path))
+    module = importlib.util.module_from_spec(spec)
+    sys.modules['repository_artifact_for_backend'] = module
+    spec.loader.exec_module(module)
+    return module
+
+_artifact_mod = _load_artifact_module()
+Artifact = _artifact_mod.Artifact
+ArtifactStatus = _artifact_mod.ArtifactStatus
 
 
 class StorageBackend:

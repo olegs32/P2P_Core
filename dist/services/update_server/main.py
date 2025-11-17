@@ -679,16 +679,17 @@ class Run(BaseService):
                     })
 
                 # Update gossip metadata
-                gossip.local_node_metadata['update_server'] = {
-                    'active_updates': active_updates_summary,
-                    'active_updates_count': len(self.active_updates),
-                    'total_updates_started': self.total_updates_started,
-                    'total_updates_completed': self.total_updates_completed,
-                    'total_updates_failed': self.total_updates_failed,
-                    'total_updates_rolled_back': self.total_updates_rolled_back,
-                    'strategy_usage': self.strategy_usage,
-                    'last_updated': datetime.now().isoformat()
-                }
+                if hasattr(gossip, 'self_info') and hasattr(gossip.self_info, 'metadata'):
+                    gossip.self_info.metadata['update_server'] = {
+                        'active_updates': active_updates_summary,
+                        'active_updates_count': len(self.active_updates),
+                        'total_updates_started': self.total_updates_started,
+                        'total_updates_completed': self.total_updates_completed,
+                        'total_updates_failed': self.total_updates_failed,
+                        'total_updates_rolled_back': self.total_updates_rolled_back,
+                        'strategy_usage': self.strategy_usage,
+                        'last_updated': datetime.now().isoformat()
+                    }
 
                 self.logger.debug(
                     f"Published update server info to gossip: "

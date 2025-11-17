@@ -578,8 +578,8 @@ class Run(BaseService):
 
                 # Publish to gossip metadata
                 gossip = network.gossip
-                if hasattr(gossip, 'local_node_metadata'):
-                    gossip.local_node_metadata['repository'] = {
+                if hasattr(gossip, 'self_info') and hasattr(gossip.self_info, 'metadata'):
+                    gossip.self_info.metadata['repository'] = {
                         'available_versions': latest_versions,
                         'last_updated': datetime.now().isoformat(),
                         'total_artifacts': len(latest_versions)
