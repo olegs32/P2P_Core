@@ -1564,11 +1564,23 @@
                                     </div>
                                     <div class="col-md-6">
                                         <label class="form-label">Platform</label>
-                                        <input type="text" class="form-control" name="platform" placeholder="linux, windows">
+                                        <select class="form-select" name="platform">
+                                            <option value="">Any platform</option>
+                                            <option value="linux">Linux</option>
+                                            <option value="windows">Windows</option>
+                                            <option value="macos">macOS</option>
+                                            <option value="docker">Docker</option>
+                                        </select>
                                     </div>
                                     <div class="col-md-6">
                                         <label class="form-label">Architecture</label>
-                                        <input type="text" class="form-control" name="architecture" placeholder="x86_64, arm64">
+                                        <select class="form-select" name="architecture">
+                                            <option value="">Any architecture</option>
+                                            <option value="x86_64">x86_64 (64-bit)</option>
+                                            <option value="arm64">ARM64 (aarch64)</option>
+                                            <option value="armv7">ARMv7 (32-bit)</option>
+                                            <option value="i386">i386 (32-bit x86)</option>
+                                        </select>
                                     </div>
                                     <div class="col-12">
                                         <label class="form-label">Description</label>
@@ -5170,6 +5182,10 @@
                     body: formData
                 });
 
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+
                 const data = await response.json();
 
                 if (data.success) {
@@ -5179,11 +5195,11 @@
                     loadArtifacts();
                     loadRepositoryStats();
                 } else {
-                    alert(`Upload failed: ${data.error}`);
+                    alert(`Upload failed: ${data.error || 'Unknown error'}`);
                 }
             } catch (error) {
                 console.error('Upload failed:', error);
-                alert('Upload failed');
+                alert(`Upload failed: ${error.message}`);
             }
         });
 

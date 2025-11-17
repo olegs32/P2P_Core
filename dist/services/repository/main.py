@@ -97,12 +97,15 @@ class Run(BaseService):
     def _register_http_endpoints(self):
         """Register HTTP endpoints with FastAPI"""
         if not self.context:
+            self.logger.error("Cannot register HTTP endpoints: context not available")
             return
 
         app = self.context.get_shared("fastapi_app")
         if not app:
-            self.logger.warning("FastAPI app not available")
+            self.logger.error("Cannot register HTTP endpoints: FastAPI app not available")
             return
+
+        self.logger.info("Registering repository HTTP endpoints...")
 
         @app.post("/api/repository/upload")
         async def upload_artifact(
@@ -318,7 +321,13 @@ class Run(BaseService):
                 self.logger.error(f"Failed to get stats: {e}")
                 raise HTTPException(status_code=500, detail=str(e))
 
-        self.logger.info("Repository HTTP endpoints registered")
+        self.logger.info("Repository HTTP endpoints registered successfully:")
+        self.logger.info("  POST /api/repository/upload")
+        self.logger.info("  GET  /api/repository/artifacts")
+        self.logger.info("  GET  /api/repository/artifacts/{artifact_id}")
+        self.logger.info("  GET  /api/repository/artifacts/{artifact_id}/download")
+        self.logger.info("  DELETE /api/repository/artifacts/{artifact_id}")
+        self.logger.info("  GET  /api/repository/stats")
 
     # RPC Methods
 
