@@ -112,12 +112,25 @@ class Run(BaseService):
 
         # Register HTTP endpoints if on coordinator
         if self.context and self.context.config.coordinator_mode:
+            # Try to register endpoints now
             self._register_http_endpoints()
+
+            # If failed, schedule retry after a short delay
+            if not hasattr(self, '_endpoints_registered'):
+                self.logger.debug("Will retry endpoint registration after delay")
+                asyncio.create_task(self._retry_register_endpoints())
 
             # Start gossip publishing task for coordinators
             self.gossip_publish_task = asyncio.create_task(self._gossip_publish_loop())
 
         self.logger.info("Repository service initialized")
+
+    async def _retry_register_endpoints(self):
+        """Retry registering HTTP endpoints after delay"""
+        await asyncio.sleep(2)  # Wait for FastAPI app to be available
+        if not hasattr(self, '_endpoints_registered'):
+            self.logger.debug("Retrying HTTP endpoint registration...")
+            self._register_http_endpoints()
 
     async def cleanup(self):
         """Cleanup repository service"""
@@ -131,15 +144,35 @@ class Run(BaseService):
             except asyncio.CancelledError:
                 pass
 
+    def _get_fastapi_app(self):
+        """Get FastAPI app from service manager or context"""
+        try:
+            # Try to get from service manager (rpc handler has app)
+            if hasattr(self, '_service_manager') and self._service_manager:
+                if hasattr(self._service_manager, 'rpc'):
+                    if hasattr(self._service_manager.rpc, 'app'):
+                        return self._service_manager.rpc.app
+
+            # Try to get from context
+            if hasattr(self, 'context') and self.context:
+                service_layer = self.context.get_shared("service_layer")
+                if service_layer and hasattr(service_layer, 'app'):
+                    return service_layer.app
+
+            return None
+        except Exception as e:
+            self.logger.error(f"Error getting FastAPI app: {e}")
+            return None
+
     def _register_http_endpoints(self):
         """Register HTTP endpoints with FastAPI"""
-        if not self.context:
-            self.logger.error("Cannot register HTTP endpoints: context not available")
+        # Skip if already registered
+        if hasattr(self, '_endpoints_registered'):
             return
 
-        app = self.context.get_shared("fastapi_app")
+        app = self._get_fastapi_app()
         if not app:
-            self.logger.error("Cannot register HTTP endpoints: FastAPI app not available")
+            self.logger.warning("FastAPI app not available, HTTP endpoints not registered")
             return
 
         self.logger.info("Registering repository HTTP endpoints...")
@@ -357,6 +390,9 @@ class Run(BaseService):
             except Exception as e:
                 self.logger.error(f"Failed to get stats: {e}")
                 raise HTTPException(status_code=500, detail=str(e))
+
+        # Mark as registered
+        self._endpoints_registered = True
 
         self.logger.info("Repository HTTP endpoints registered successfully:")
         self.logger.info("  POST /api/repository/upload")
