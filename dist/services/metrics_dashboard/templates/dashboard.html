@@ -8,11 +8,18 @@
     <!-- Bootstrap CSS -->
     <link href="/static/css/bootstrap.min.css" rel="stylesheet">
 
+    <!-- Bootstrap Icons -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css">
+
     <!-- Chart.js -->
     <script src="/static/js/chart.umd.min.js"></script>
 
     <!-- HTMX for dynamic updates -->
     <script src="/static/js/htmx.min.js"></script>
+
+    <!-- Ace Editor for syntax highlighting -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/ace/1.32.2/ace.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/ace/1.32.2/ext-language_tools.js"></script>
 
     <style>
         :root {
@@ -26,6 +33,7 @@
             --danger: #dc3545;
             --info: #17a2b8;
             --sidebar-width: 250px;
+            --sidebar-collapsed-width: 70px;
             --sidebar-bg: #1a1d23;
             --tab-active: #667eea;
         }
@@ -36,6 +44,7 @@
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
             margin: 0;
             padding: 0;
+            transition: margin-left 0.3s ease;
         }
 
         /* Sidebar Styles */
@@ -50,12 +59,37 @@
             z-index: 1000;
             display: flex;
             flex-direction: column;
+            transition: width 0.3s ease;
+        }
+
+        .sidebar.collapsed {
+            width: var(--sidebar-collapsed-width);
+        }
+
+        .sidebar.collapsed .nav-tab span:not(.nav-tab-icon) {
+            display: none;
+        }
+
+        .sidebar.collapsed .sidebar-header h4 {
+            display: none;
+        }
+
+        .sidebar.collapsed .nav-tab {
+            justify-content: center;
+            padding: 1rem 0;
+        }
+
+        .sidebar.collapsed .nav-tab-icon {
+            font-size: 1.5rem;
         }
 
         .sidebar-header {
             padding: 1.5rem 1rem;
             border-bottom: 1px solid var(--border-color);
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
         }
 
         .sidebar-header h4 {
@@ -101,24 +135,103 @@
             text-align: center;
         }
 
+        .sidebar-toggle {
+            background: rgba(255, 255, 255, 0.2);
+            border: none;
+            color: white;
+            cursor: pointer;
+            padding: 0.5rem;
+            border-radius: 6px;
+            font-size: 1.2rem;
+            transition: all 0.3s;
+            line-height: 1;
+        }
+
+        .sidebar-toggle:hover {
+            background: rgba(255, 255, 255, 0.3);
+        }
+
         /* Main Content Area */
         .main-content {
             margin-left: var(--sidebar-width);
             min-height: 100vh;
+            transition: margin-left 0.3s ease;
         }
 
-        .tab-content {
+        body.sidebar-collapsed .main-content {
+            margin-left: var(--sidebar-collapsed-width);
+        }
+
+        /* Fullscreen mode for editor */
+        .editor-fullscreen-wrapper {
+            position: relative;
+        }
+
+        .editor-fullscreen-wrapper.fullscreen {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            z-index: 9999;
+            background-color: var(--bg-dark);
+        }
+
+        .editor-fullscreen-wrapper.fullscreen .col-md-3 {
+            display: none; /* Hide file tree in fullscreen */
+        }
+
+        .editor-fullscreen-wrapper.fullscreen .col-md-9 {
+            width: 100%;
+            max-width: 100%;
+        }
+
+        .fullscreen-toggle-btn {
+            padding: 0.25rem 0.5rem;
+            font-size: 1.2rem;
+            line-height: 1;
+        }
+
+        /* Main tabs common styles */
+        .main-content > .tab-content {
+            min-height: 100vh;
+            overflow-y: auto;
+        }
+
+        /* Hide main tab-content by default, but not nested ones */
+        .main-content > .tab-content,
+        #homeTab,
+        #certificatesTab,
+        #logsTab,
+        #controlTab {
             display: none;
         }
 
-        .tab-content.active {
+        /* Show active main tabs */
+        .main-content > .tab-content.active,
+        #homeTab.active,
+        #certificatesTab.active,
+        #logsTab.active,
+        #controlTab.active {
             display: block;
         }
 
-        /* Logs tab needs margin like main-content since it's outside */
+        /* Bootstrap tabs inside Control Panel should work normally */
+        #controlTab .tab-content {
+            display: block;
+        }
+
+        #controlTab .tab-pane {
+            display: none;
+        }
+
+        #controlTab .tab-pane.active,
+        #controlTab .tab-pane.show {
+            display: block;
+        }
+
+        /* Dark theme for logs tab */
         #logsTab {
-            margin-left: var(--sidebar-width);
-            min-height: 100vh;
             background-color: var(--bg-dark);
         }
 
@@ -195,8 +308,6 @@
 
         /* Control Panel tab styles */
         #controlTab {
-            margin-left: var(--sidebar-width);
-            min-height: 100vh;
             background-color: var(--bg-dark);
         }
 
@@ -630,6 +741,9 @@
     <div class="sidebar">
         <div class="sidebar-header">
             <h4>P2P Dashboard</h4>
+            <button class="sidebar-toggle" onclick="toggleSidebar()" title="Свернуть/развернуть">
+                <i class="bi bi-list"></i>
+            </button>
         </div>
         <div class="sidebar-nav">
             <a class="nav-tab active" data-tab="home">
@@ -1017,9 +1131,9 @@
                 </div>
             </div>
         </div>
-    </div>
-    <!-- Logs Tab Content -->
-    <div class="tab-content" id="logsTab">
+
+        <!-- Logs Tab Content -->
+        <div class="tab-content" id="logsTab">
         <!-- Content -->
         <div class="container py-3">
             <!-- Filters -->
@@ -1147,7 +1261,7 @@
                 </li>
                 <li class="nav-item" role="presentation">
                     <button class="nav-link" id="editor-tab" data-bs-toggle="tab" data-bs-target="#editorPanel" type="button">
-                        Код-редактор
+                        Сервисы
                     </button>
                 </li>
                 <li class="nav-item" role="presentation">
@@ -1181,7 +1295,7 @@
                                 <p class="mt-2 text-muted">Загрузка конфигурации...</p>
                             </div>
                             <div id="configEditorContainer" style="display: none;">
-                                <textarea class="form-control font-monospace" id="configEditor" rows="25" style="font-size: 0.9rem; background-color: #2d3139; color: #e4e6eb; border-color: #3a3f4b;"></textarea>
+                                <div id="configEditor" style="height: 600px; width: 100%; border: 1px solid #3a3f4b;"></div>
                                 <small class="text-muted mt-2 d-block">
                                     Редактируйте конфигурацию в формате JSON. Изменения будут применены после сохранения.
                                 </small>
@@ -1289,13 +1403,102 @@
                     </div>
                 </div>
 
-                <!-- Code Editor Panel (Placeholder) -->
+                <!-- Service Editor Panel -->
                 <div class="tab-pane fade" id="editorPanel" role="tabpanel">
                     <div class="card">
-                        <div class="card-body text-center py-5">
-                            <h4 class="text-muted">Код-редактор</h4>
-                            <p class="text-muted">Функционал находится в разработке</p>
-                            <span style="font-size: 4rem;">&#128187;</span>
+                        <div class="card-header">
+                            <div class="row align-items-center">
+                                <div class="col-md-3">
+                                    <label class="form-label mb-1">Нода:</label>
+                                    <select class="form-select form-select-sm" id="editorNodeSelect">
+                                        <option value="coordinator">Coordinator</option>
+                                    </select>
+                                </div>
+                                <div class="col-md-3">
+                                    <label class="form-label mb-1">Сервис:</label>
+                                    <select class="form-select form-select-sm" id="editorServiceSelect">
+                                        <option value="">Выберите сервис...</option>
+                                    </select>
+                                </div>
+                                <div class="col-md-4">
+                                    <label class="form-label mb-1">Версия:</label>
+                                    <div class="input-group input-group-sm">
+                                        <input type="text" class="form-control" id="editorServiceVersion" placeholder="1.0.0">
+                                        <button class="btn btn-outline-success" type="button" id="editorSaveVersion" title="Сохранить версию">
+                                            <i class="bi bi-check-circle"></i>
+                                        </button>
+                                        <button class="btn btn-outline-secondary" type="button" id="editorIncrementVersion" title="Увеличить версию +0.0.1">
+                                            <i class="bi bi-arrow-up-circle"></i> +0.0.1
+                                        </button>
+                                    </div>
+                                </div>
+                                <div class="col-md-2 text-end">
+                                    <label class="form-label mb-1">&nbsp;</label>
+                                    <div>
+                                        <button class="btn btn-sm btn-primary" id="editorRefresh" title="Обновить">
+                                            <i class="bi bi-arrow-clockwise"></i>
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="card-body p-0">
+                            <div id="editorFullscreenWrapper" class="editor-fullscreen-wrapper">
+                                <div class="row g-0" style="height: calc(100vh - 300px);">
+                                    <!-- Left Panel: File Tree -->
+                                    <div class="col-md-3 border-end">
+                                    <div class="p-3 border-bottom" style="background-color: #1e1e1e; height: 60px;">
+                                        <div class="d-flex justify-content-between align-items-center">
+                                            <h6 class="mb-0 text-light">Файлы</h6>
+                                            <div>
+                                                <button class="btn btn-sm btn-success me-1" id="editorNewFile" title="Новый файл">
+                                                    <i class="bi bi-file-plus"></i>
+                                                </button>
+                                                <button class="btn btn-sm btn-info" id="editorUploadFile" title="Загрузить файл">
+                                                    <i class="bi bi-upload"></i>
+                                                </button>
+                                                <input type="file" id="editorFileInput" style="display: none;">
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div id="editorFileTree" style="overflow-y: auto; height: calc(100% - 60px); padding: 10px;">
+                                        <p class="text-muted text-center mt-5">Выберите сервис</p>
+                                    </div>
+                                </div>
+
+                                <!-- Right Panel: Code Editor -->
+                                <div class="col-md-9">
+                                    <div class="p-3 border-bottom" style="background-color: #1e1e1e; height: 60px;">
+                                        <div class="d-flex justify-content-between align-items-center">
+                                            <div>
+                                                <h6 class="mb-0 text-light" id="editorFileName">Файл не выбран</h6>
+                                                <small class="text-muted" id="editorFilePath"></small>
+                                            </div>
+                                            <div>
+                                                <button class="btn btn-sm btn-warning me-1" id="editorRenameFile" title="Переименовать" disabled>
+                                                    <i class="bi bi-pencil"></i> Переименовать
+                                                </button>
+                                                <button class="btn btn-sm btn-info me-1" id="editorDownloadFile" title="Скачать" disabled>
+                                                    <i class="bi bi-download"></i> Скачать
+                                                </button>
+                                                <button class="btn btn-sm btn-danger me-2" id="editorDeleteFile" title="Удалить" disabled>
+                                                    <i class="bi bi-trash"></i> Удалить
+                                                </button>
+                                                <button class="btn btn-sm btn-success" id="editorSaveFile" title="Сохранить" disabled>
+                                                    <i class="bi bi-save"></i> Сохранить
+                                                </button>
+                                                <button class="btn btn-sm btn-secondary ms-2 fullscreen-toggle-btn" id="editorFullscreenToggle" title="Полноэкранный режим" onclick="toggleEditorFullscreen()">
+                                                    <i class="bi bi-arrows-fullscreen"></i>
+                                                </button>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div style="height: calc(100% - 60px); position: relative;">
+                                        <div id="editorCodeArea" style="width: 100%; height: 100%; font-size: 14px;"></div>
+                                    </div>
+                                </div>
+                                </div>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -1367,11 +1570,77 @@
             </div>
         </div>
     </div>
+    </div> <!-- End of main-content -->
 
     <!-- Bootstrap JS -->
     <script src="/static/js/bootstrap.bundle.min.js"></script>
 
     <script>
+        // ==================== Sidebar Toggle ====================
+        function toggleSidebar() {
+            const sidebar = document.querySelector('.sidebar');
+            sidebar.classList.toggle('collapsed');
+
+            // Toggle body class for main-content margin
+            document.body.classList.toggle('sidebar-collapsed', sidebar.classList.contains('collapsed'));
+
+            // Save state to localStorage
+            const isCollapsed = sidebar.classList.contains('collapsed');
+            localStorage.setItem('sidebarCollapsed', isCollapsed);
+        }
+
+        // Restore sidebar state from localStorage
+        document.addEventListener('DOMContentLoaded', () => {
+            const isCollapsed = localStorage.getItem('sidebarCollapsed') === 'true';
+            if (isCollapsed) {
+                const sidebar = document.querySelector('.sidebar');
+                sidebar.classList.add('collapsed');
+                document.body.classList.add('sidebar-collapsed');
+            }
+        });
+
+        // ==================== Editor Fullscreen Toggle ====================
+        let isEditorFullscreen = false;
+
+        function toggleEditorFullscreen() {
+            const wrapper = document.getElementById('editorFullscreenWrapper');
+            const fullscreenBtn = document.getElementById('editorFullscreenToggle');
+            const icon = fullscreenBtn.querySelector('i');
+
+            isEditorFullscreen = !isEditorFullscreen;
+
+            if (isEditorFullscreen) {
+                wrapper.classList.add('fullscreen');
+                // Change row height in fullscreen
+                wrapper.querySelector('.row').style.height = '100vh';
+                icon.className = 'bi bi-fullscreen-exit';
+                fullscreenBtn.title = 'Выйти из полноэкранного режима';
+
+                // Resize Ace Editor
+                if (aceEditor) {
+                    setTimeout(() => aceEditor.resize(), 100);
+                }
+            } else {
+                wrapper.classList.remove('fullscreen');
+                // Restore original height
+                wrapper.querySelector('.row').style.height = 'calc(100vh - 300px)';
+                icon.className = 'bi bi-arrows-fullscreen';
+                fullscreenBtn.title = 'Полноэкранный режим';
+
+                // Resize Ace Editor
+                if (aceEditor) {
+                    setTimeout(() => aceEditor.resize(), 100);
+                }
+            }
+        }
+
+        // Exit fullscreen on Esc key
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape' && isEditorFullscreen) {
+                toggleEditorFullscreen();
+            }
+        });
+
         // Tab Navigation
         // WebSocket connection for real-time updates
         let websocket = null;
@@ -1457,9 +1726,11 @@
                 if (data.logs) {
                     updateLogsFromWS(data.logs);
                 }
-                if (data.log_sources) {
-                    updateLogSourcesFromWS(data.log_sources);
-                }
+            }
+
+            // ALWAYS update log sources (filters), regardless of active tab
+            if (data.log_sources) {
+                updateLogSourcesFromWS(data.log_sources);
             }
         }
 
@@ -1603,8 +1874,38 @@
                 const tbody = document.getElementById('logsTableBody');
                 if (!tbody) return;
 
-                // Prepend new logs to table
-                newLogs.reverse().forEach(log => {
+                // Get current filter values
+                const nodeFilter = document.getElementById('logNodeFilter')?.value || '';
+                const levelFilter = document.getElementById('logLevelFilter')?.value || '';
+                const loggerFilter = document.getElementById('logLoggerFilter')?.value || '';
+
+                // Filter logs before displaying
+                const filteredLogs = newLogs.filter(log => {
+                    // Apply node filter
+                    if (nodeFilter && log.node_id !== nodeFilter) {
+                        return false;
+                    }
+
+                    // Apply level filter (level and higher)
+                    if (levelFilter) {
+                        const levels = ['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'];
+                        const filterIndex = levels.indexOf(levelFilter);
+                        const logIndex = levels.indexOf(log.level);
+                        if (filterIndex !== -1 && logIndex !== -1 && logIndex < filterIndex) {
+                            return false;
+                        }
+                    }
+
+                    // Apply logger filter
+                    if (loggerFilter && log.logger_name !== loggerFilter) {
+                        return false;
+                    }
+
+                    return true;
+                });
+
+                // Prepend filtered logs to table
+                filteredLogs.reverse().forEach(log => {
                     const levelClass = getLogLevelClass(log.level);
                     const timestamp = new Date(log.timestamp).toLocaleString('ru-RU');
 
@@ -1693,7 +1994,8 @@
 
         document.addEventListener('DOMContentLoaded', () => {
             const navTabs = document.querySelectorAll('.nav-tab');
-            const tabContents = document.querySelectorAll('.tab-content');
+            // Select only main tabs, not nested ones
+            const tabContents = document.querySelectorAll('.main-content > .tab-content');
 
             navTabs.forEach(tab => {
                 tab.addEventListener('click', (e) => {
@@ -1707,12 +2009,6 @@
                     // Add active class to clicked tab
                     tab.classList.add('active');
 
-                    // Hide all tab contents first
-                    document.getElementById('homeTab').classList.remove('active');
-                    document.getElementById('certificatesTab').classList.remove('active');
-                    document.getElementById('logsTab').classList.remove('active');
-                    document.getElementById('controlTab').classList.remove('active');
-
                     // Show corresponding content
                     if (targetTab === 'home') {
                         document.getElementById('homeTab').classList.add('active');
@@ -1722,8 +2018,6 @@
                         loadCertificates();
                     } else if (targetTab === 'logs') {
                         document.getElementById('logsTab').classList.add('active');
-                        // Scroll to top when switching to logs tab
-                        window.scrollTo(0, 0);
                     } else if (targetTab === 'control') {
                         document.getElementById('controlTab').classList.add('active');
                         // Initialize control panel
@@ -1779,6 +2073,29 @@
                 deployForm.addEventListener('submit', async (e) => {
                     e.preventDefault();
                     await deployCertificate();
+                });
+            }
+
+            // Log filters event handlers
+            const logNodeFilter = document.getElementById('logNodeFilter');
+            const logLevelFilter = document.getElementById('logLevelFilter');
+            const logLoggerFilter = document.getElementById('logLoggerFilter');
+
+            if (logNodeFilter) {
+                logNodeFilter.addEventListener('change', () => {
+                    loadLogs(0); // Reload logs from page 0
+                });
+            }
+
+            if (logLevelFilter) {
+                logLevelFilter.addEventListener('change', () => {
+                    loadLogs(0); // Reload logs from page 0
+                });
+            }
+
+            if (logLoggerFilter) {
+                logLoggerFilter.addEventListener('change', () => {
+                    loadLogs(0); // Reload logs from page 0
                 });
             }
         });
@@ -3574,7 +3891,14 @@
 
                 if (result && result.success) {
                     const config = result.config;
-                    document.getElementById('configEditor').value = JSON.stringify(config, null, 2);
+
+                    // Initialize Ace Editor if not already done
+                    if (!configAceEditor) {
+                        initConfigAceEditor();
+                    }
+
+                    // Set config content in Ace Editor
+                    configAceEditor.setValue(JSON.stringify(config, null, 2), -1);
 
                     document.getElementById('configLoadingSpinner').style.display = 'none';
                     document.getElementById('configEditorContainer').style.display = 'block';
@@ -3592,7 +3916,7 @@
         async function saveConfig() {
             const nodeSelect = document.getElementById('controlNodeSelect');
             const selectedNode = nodeSelect.value;
-            const configText = document.getElementById('configEditor').value;
+            const configText = configAceEditor ? configAceEditor.getValue() : '';
 
             document.getElementById('configError').style.display = 'none';
             document.getElementById('configSuccess').style.display = 'none';
@@ -3818,6 +4142,640 @@
                 alert(`Ошибка удаления файла: ${error.message}`);
             }
         }
+
+        // ==================== Service Editor Functions ====================
+
+        let editorCurrentNode = 'coordinator';
+        let editorCurrentService = '';
+        let editorCurrentFile = '';
+        let editorCurrentFilePath = '';
+        let editorFilesDirty = false;
+        let aceEditor = null;
+        let configAceEditor = null;
+
+        // Initialize Ace Editor
+        function initAceEditor() {
+            if (aceEditor) return; // Already initialized
+
+            aceEditor = ace.edit("editorCodeArea");
+            aceEditor.setTheme("ace/theme/monokai");
+            aceEditor.setOptions({
+                fontSize: "14px",
+                showPrintMargin: false,
+                enableBasicAutocompletion: true,
+                enableLiveAutocompletion: true,
+                enableSnippets: true,
+                showLineNumbers: true,
+                tabSize: 4,
+                wrap: true
+            });
+
+            // Track changes
+            aceEditor.on('change', () => {
+                editorFilesDirty = true;
+            });
+
+            // Initially disable
+            aceEditor.setReadOnly(true);
+        }
+
+        // Initialize Ace Editor for Configurator
+        function initConfigAceEditor() {
+            if (configAceEditor) return; // Already initialized
+
+            configAceEditor = ace.edit("configEditor");
+            configAceEditor.setTheme("ace/theme/monokai");
+            configAceEditor.session.setMode("ace/mode/json");
+            configAceEditor.setOptions({
+                fontSize: "14px",
+                showPrintMargin: false,
+                enableBasicAutocompletion: true,
+                enableLiveAutocompletion: true,
+                enableSnippets: true,
+                showLineNumbers: true,
+                tabSize: 2,
+                wrap: true
+            });
+        }
+
+        // Get Ace mode by file extension
+        function getAceModeByExtension(filename) {
+            const ext = filename.split('.').pop().toLowerCase();
+            const modeMap = {
+                'py': 'python',
+                'json': 'json',
+                'js': 'javascript',
+                'html': 'html',
+                'htm': 'html',
+                'css': 'css',
+                'scss': 'scss',
+                'md': 'markdown',
+                'txt': 'text',
+                'yaml': 'yaml',
+                'yml': 'yaml',
+                'xml': 'xml',
+                'sh': 'sh',
+                'bash': 'sh',
+                'sql': 'sql'
+            };
+            return `ace/mode/${modeMap[ext] || 'text'}`;
+        }
+
+        // Load services list
+        async function editorLoadServices() {
+            try {
+                const response = await fetch('/api/services/p2p-list', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ node_id: editorCurrentNode })
+                });
+
+                const result = await response.json();
+
+                if (result.success) {
+                    const select = document.getElementById('editorServiceSelect');
+                    select.innerHTML = '<option value="">Выберите сервис...</option>';
+
+                    result.services.forEach(service => {
+                        const option = document.createElement('option');
+                        option.value = service.name;
+                        option.textContent = `${service.name} (v${service.version})`;
+                        select.appendChild(option);
+                    });
+                }
+            } catch (error) {
+                console.error('Failed to load services:', error);
+            }
+        }
+
+        // Load service files tree
+        async function editorLoadFileTree() {
+            if (!editorCurrentService) {
+                document.getElementById('editorFileTree').innerHTML = '<p class="text-muted text-center mt-5">Выберите сервис</p>';
+                return;
+            }
+
+            try {
+                const response = await fetch('/api/services/files', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        node_id: editorCurrentNode,
+                        service_name: editorCurrentService
+                    })
+                });
+
+                const result = await response.json();
+                console.log('Service files response:', result);
+
+                if (result.success) {
+                    // result.tree is the root directory object, we need its children
+                    const items = result.tree && result.tree.children ? result.tree.children : [];
+                    console.log('File tree items:', items);
+                    document.getElementById('editorFileTree').innerHTML = editorBuildFileTreeHTML(items);
+                    editorLoadManifest();
+                } else {
+                    document.getElementById('editorFileTree').innerHTML = `<p class="text-danger">Ошибка: ${result.error}</p>`;
+                }
+            } catch (error) {
+                console.error('Failed to load file tree:', error);
+                document.getElementById('editorFileTree').innerHTML = `<p class="text-danger">Ошибка загрузки</p>`;
+            }
+        }
+
+        // Build file tree HTML recursively
+        function editorBuildFileTreeHTML(items, level = 0) {
+            if (!items || !Array.isArray(items) || items.length === 0) {
+                return '<p class="text-muted">Нет файлов</p>';
+            }
+
+            let html = '<ul class="list-unstyled" style="margin-left: ' + (level * 15) + 'px;">';
+
+            items.forEach(item => {
+                if (item.type === 'directory') {
+                    html += `<li class="mb-1">
+                        <i class="bi bi-folder-fill text-warning"></i>
+                        <strong>${item.name}</strong>
+                        ${editorBuildFileTreeHTML(item.children, level + 1)}
+                    </li>`;
+                } else {
+                    const icon = item.name.endsWith('.py') ? 'bi-file-code' :
+                                 item.name.endsWith('.json') ? 'bi-file-earmark-text' :
+                                 item.name.endsWith('.txt') ? 'bi-file-text' : 'bi-file';
+
+                    // Escape path for HTML attribute
+                    const escapedPath = item.path.replace(/'/g, "\\'");
+
+                    html += `<li class="mb-1">
+                        <a href="#" class="text-decoration-none editor-file-link" data-path="${item.path}" onclick="editorLoadFile('${escapedPath}'); return false;">
+                            <i class="bi ${icon}"></i> ${item.name}
+                        </a>
+                    </li>`;
+                }
+            });
+
+            html += '</ul>';
+            return html;
+        }
+
+        // Load file content
+        async function editorLoadFile(filePath) {
+            if (editorFilesDirty && !confirm('У вас есть несохраненные изменения. Продолжить?')) {
+                return;
+            }
+
+            // Normalize path: replace backslashes with forward slashes
+            filePath = filePath.replace(/\\/g, '/');
+
+            editorCurrentFile = filePath.split('/').pop();
+            editorCurrentFilePath = filePath;
+
+            try {
+                const response = await fetch('/api/services/file/get', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        node_id: editorCurrentNode,
+                        service_name: editorCurrentService,
+                        file_path: filePath
+                    })
+                });
+
+                const result = await response.json();
+
+                if (result.success) {
+                    // Set content in Ace Editor
+                    if (aceEditor) {
+                        aceEditor.setValue(result.content, -1); // -1 moves cursor to start
+                        aceEditor.setReadOnly(false);
+
+                        // Set syntax highlighting based on file extension
+                        const mode = getAceModeByExtension(editorCurrentFile);
+                        aceEditor.session.setMode(mode);
+                    }
+
+                    document.getElementById('editorFileName').textContent = editorCurrentFile;
+                    document.getElementById('editorFilePath').textContent = filePath;
+                    document.getElementById('editorSaveFile').disabled = false;
+                    document.getElementById('editorRenameFile').disabled = false;
+                    document.getElementById('editorDeleteFile').disabled = false;
+                    document.getElementById('editorDownloadFile').disabled = false;
+
+                    // Highlight selected file
+                    document.querySelectorAll('.editor-file-link').forEach(link => {
+                        link.classList.remove('fw-bold', 'text-primary');
+                    });
+                    document.querySelector(`.editor-file-link[data-path="${filePath}"]`)?.classList.add('fw-bold', 'text-primary');
+
+                    editorFilesDirty = false;
+                } else {
+                    alert(`Ошибка загрузки файла: ${result.error}`);
+                }
+            } catch (error) {
+                console.error('Failed to load file:', error);
+                alert('Ошибка загрузки файла');
+            }
+        }
+
+        // Save file
+        async function editorSaveFile() {
+            if (!editorCurrentFile) return;
+
+            const content = aceEditor ? aceEditor.getValue() : '';
+
+            try {
+                const response = await fetch('/api/services/file/update', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        node_id: editorCurrentNode,
+                        service_name: editorCurrentService,
+                        file_path: editorCurrentFilePath,
+                        content: content,
+                        is_binary: false
+                    })
+                });
+
+                const result = await response.json();
+
+                if (result.success) {
+                    editorFilesDirty = false;
+
+                    // Show success message
+                    const fileName = document.getElementById('editorFileName');
+                    const originalText = fileName.textContent;
+                    fileName.textContent = '✓ Сохранено';
+                    fileName.classList.add('text-success');
+                    setTimeout(() => {
+                        fileName.textContent = originalText;
+                        fileName.classList.remove('text-success');
+                    }, 2000);
+                } else {
+                    alert(`Ошибка сохранения: ${result.error}`);
+                }
+            } catch (error) {
+                console.error('Failed to save file:', error);
+                alert('Ошибка сохранения файла');
+            }
+        }
+
+        // Delete file
+        async function editorDeleteFile() {
+            if (!editorCurrentFile) return;
+
+            if (!confirm(`Удалить файл ${editorCurrentFile}?`)) return;
+
+            try {
+                const response = await fetch('/api/services/file/delete', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        node_id: editorCurrentNode,
+                        service_name: editorCurrentService,
+                        file_path: editorCurrentFilePath
+                    })
+                });
+
+                const result = await response.json();
+
+                if (result.success) {
+                    editorCurrentFile = '';
+                    editorCurrentFilePath = '';
+
+                    // Clear Ace Editor
+                    if (aceEditor) {
+                        aceEditor.setValue('', -1);
+                        aceEditor.setReadOnly(true);
+                    }
+
+                    document.getElementById('editorFileName').textContent = 'Файл не выбран';
+                    document.getElementById('editorFilePath').textContent = '';
+                    document.getElementById('editorSaveFile').disabled = true;
+                    document.getElementById('editorRenameFile').disabled = true;
+                    document.getElementById('editorDeleteFile').disabled = true;
+                    document.getElementById('editorDownloadFile').disabled = true;
+                    editorFilesDirty = false;
+
+                    // Reload tree
+                    editorLoadFileTree();
+                } else {
+                    alert(`Ошибка удаления: ${result.error}`);
+                }
+            } catch (error) {
+                console.error('Failed to delete file:', error);
+                alert('Ошибка удаления файла');
+            }
+        }
+
+        // Rename file
+        async function editorRenameFile() {
+            if (!editorCurrentFile) return;
+
+            const newName = prompt('Новое имя файла:', editorCurrentFile);
+            if (!newName || newName === editorCurrentFile) return;
+
+            try {
+                const response = await fetch('/api/services/file/rename', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        node_id: editorCurrentNode,
+                        service_name: editorCurrentService,
+                        old_path: editorCurrentFilePath,
+                        new_name: newName
+                    })
+                });
+
+                const result = await response.json();
+
+                if (result.success) {
+                    // Update current file path
+                    const pathParts = editorCurrentFilePath.split('/');
+                    pathParts[pathParts.length - 1] = newName;
+                    editorCurrentFilePath = pathParts.join('/');
+                    editorCurrentFile = newName;
+
+                    document.getElementById('editorFileName').textContent = newName;
+                    document.getElementById('editorFilePath').textContent = editorCurrentFilePath;
+
+                    // Reload tree
+                    editorLoadFileTree();
+                } else {
+                    alert(`Ошибка переименования: ${result.error}`);
+                }
+            } catch (error) {
+                console.error('Failed to rename file:', error);
+                alert('Ошибка переименования файла');
+            }
+        }
+
+        // Download file
+        function editorDownloadFile() {
+            if (!editorCurrentFile) return;
+
+            const content = aceEditor ? aceEditor.getValue() : '';
+            const blob = new Blob([content], { type: 'text/plain' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = editorCurrentFile;
+            a.click();
+            URL.revokeObjectURL(url);
+        }
+
+        // New file
+        async function editorNewFile() {
+            if (!editorCurrentService) {
+                alert('Сначала выберите сервис');
+                return;
+            }
+
+            const fileName = prompt('Имя нового файла:');
+            if (!fileName) return;
+
+            try {
+                const response = await fetch('/api/services/file/update', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        node_id: editorCurrentNode,
+                        service_name: editorCurrentService,
+                        file_path: fileName,
+                        content: '',
+                        is_binary: false
+                    })
+                });
+
+                const result = await response.json();
+
+                if (result.success) {
+                    editorLoadFileTree();
+                    editorLoadFile(fileName);
+                } else {
+                    alert(`Ошибка создания файла: ${result.error}`);
+                }
+            } catch (error) {
+                console.error('Failed to create file:', error);
+                alert('Ошибка создания файла');
+            }
+        }
+
+        // Upload file
+        function editorUploadFile() {
+            if (!editorCurrentService) {
+                alert('Сначала выберите сервис');
+                return;
+            }
+
+            document.getElementById('editorFileInput').click();
+        }
+
+        // Handle file upload
+        document.getElementById('editorFileInput')?.addEventListener('change', async (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+
+            const reader = new FileReader();
+            reader.onload = async (event) => {
+                try {
+                    const content = event.target.result;
+
+                    const response = await fetch('/api/services/file/update', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            node_id: editorCurrentNode,
+                            service_name: editorCurrentService,
+                            file_path: file.name,
+                            content: content,
+                            is_binary: false
+                        })
+                    });
+
+                    const result = await response.json();
+
+                    if (result.success) {
+                        editorLoadFileTree();
+                        editorLoadFile(file.name);
+                    } else {
+                        alert(`Ошибка загрузки файла: ${result.error}`);
+                    }
+                } catch (error) {
+                    console.error('Failed to upload file:', error);
+                    alert('Ошибка загрузки файла');
+                }
+            };
+            reader.readAsText(file);
+
+            // Reset input
+            e.target.value = '';
+        });
+
+        // Load manifest version
+        async function editorLoadManifest() {
+            if (!editorCurrentService) return;
+
+            try {
+                const response = await fetch('/api/services/manifest', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        node_id: editorCurrentNode,
+                        service_name: editorCurrentService
+                    })
+                });
+
+                const result = await response.json();
+
+                if (result.success && result.manifest) {
+                    document.getElementById('editorServiceVersion').value = result.manifest.version || '1.0.0';
+                }
+            } catch (error) {
+                console.error('Failed to load manifest:', error);
+            }
+        }
+
+        // Save version
+        async function editorSaveVersion() {
+            if (!editorCurrentService) return;
+
+            const version = document.getElementById('editorServiceVersion').value.trim();
+            if (!version) {
+                alert('Введите версию');
+                return;
+            }
+
+            // Validate version format (basic check)
+            if (!/^\d+\.\d+\.\d+$/.test(version)) {
+                if (!confirm(`Версия "${version}" не соответствует формату X.Y.Z. Продолжить?`)) {
+                    return;
+                }
+            }
+
+            try {
+                const response = await fetch('/api/services/version/update', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        node_id: editorCurrentNode,
+                        service_name: editorCurrentService,
+                        version: version
+                    })
+                });
+
+                const result = await response.json();
+
+                if (result.success) {
+                    alert(`Версия сохранена: ${result.new_version}`);
+                } else {
+                    alert(`Ошибка: ${result.error}`);
+                }
+            } catch (error) {
+                console.error('Failed to save version:', error);
+                alert('Ошибка сохранения версии');
+            }
+        }
+
+        // Increment version
+        async function editorIncrementVersion() {
+            if (!editorCurrentService) return;
+
+            try {
+                const response = await fetch('/api/services/version/increment', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        node_id: editorCurrentNode,
+                        service_name: editorCurrentService
+                    })
+                });
+
+                const result = await response.json();
+
+                if (result.success) {
+                    document.getElementById('editorServiceVersion').value = result.new_version;
+                    alert(`Версия увеличена до ${result.new_version}`);
+                } else {
+                    alert(`Ошибка: ${result.error}`);
+                }
+            } catch (error) {
+                console.error('Failed to increment version:', error);
+                alert('Ошибка увеличения версии');
+            }
+        }
+
+        // Event listeners
+        document.getElementById('editorNodeSelect')?.addEventListener('change', (e) => {
+            editorCurrentNode = e.target.value;
+            editorLoadServices();
+        });
+
+        document.getElementById('editorServiceSelect')?.addEventListener('change', (e) => {
+            editorCurrentService = e.target.value;
+            editorCurrentFile = '';
+            editorCurrentFilePath = '';
+
+            // Clear Ace Editor
+            if (aceEditor) {
+                aceEditor.setValue('', -1);
+                aceEditor.setReadOnly(true);
+            }
+
+            document.getElementById('editorFileName').textContent = 'Файл не выбран';
+            document.getElementById('editorFilePath').textContent = '';
+            document.getElementById('editorSaveFile').disabled = true;
+            document.getElementById('editorRenameFile').disabled = true;
+            document.getElementById('editorDeleteFile').disabled = true;
+            document.getElementById('editorDownloadFile').disabled = true;
+            editorFilesDirty = false;
+            editorLoadFileTree();
+        });
+
+        document.getElementById('editorRefresh')?.addEventListener('click', () => {
+            editorLoadServices();
+            if (editorCurrentService) {
+                editorLoadFileTree();
+            }
+        });
+
+        document.getElementById('editorSaveFile')?.addEventListener('click', editorSaveFile);
+        document.getElementById('editorDeleteFile')?.addEventListener('click', editorDeleteFile);
+        document.getElementById('editorRenameFile')?.addEventListener('click', editorRenameFile);
+        document.getElementById('editorDownloadFile')?.addEventListener('click', editorDownloadFile);
+        document.getElementById('editorNewFile')?.addEventListener('click', editorNewFile);
+        document.getElementById('editorUploadFile')?.addEventListener('click', editorUploadFile);
+        document.getElementById('editorSaveVersion')?.addEventListener('click', editorSaveVersion);
+        document.getElementById('editorIncrementVersion')?.addEventListener('click', editorIncrementVersion);
+
+        // Initialize editor when tab is shown
+        document.getElementById('editor-tab')?.addEventListener('shown.bs.tab', async () => {
+            // Initialize Ace Editor
+            initAceEditor();
+
+            // Populate nodes
+            const nodeSelect = document.getElementById('editorNodeSelect');
+            nodeSelect.innerHTML = '<option value="coordinator">Coordinator</option>';
+
+            // Get latest metrics to populate worker nodes
+            try {
+                const response = await fetch('/api/dashboard/metrics');
+                const data = await response.json();
+
+                if (data.workers) {
+                    Object.keys(data.workers).forEach(workerId => {
+                        const option = document.createElement('option');
+                        option.value = workerId;
+                        option.textContent = workerId;
+                        nodeSelect.appendChild(option);
+                    });
+                }
+            } catch (error) {
+                console.log('Could not load worker nodes:', error);
+            }
+
+            // Load services
+            editorLoadServices();
+        });
     </script>
 </body>
 </html>

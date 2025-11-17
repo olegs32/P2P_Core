@@ -259,7 +259,7 @@ class Run(BaseService):
                 else:
                     system_proxy = getattr(self.proxy.system, node_id)
 
-                result = await system_proxy.update_config(config_updates)
+                result = await system_proxy.update_config(config_updates=config_updates)
                 return result
             except Exception as e:
                 self.logger.error(f"Failed to update config on {node_id}: {e}")
@@ -297,7 +297,7 @@ class Run(BaseService):
                 else:
                     system_proxy = getattr(self.proxy.system, node_id)
 
-                result = await system_proxy.get_storage_file(filename, file_type)
+                result = await system_proxy.get_storage_file(filename=filename, file_type=file_type)
                 return result
             except Exception as e:
                 self.logger.error(f"Failed to get storage file from {node_id}: {e}")
@@ -319,7 +319,12 @@ class Run(BaseService):
                 else:
                     system_proxy = getattr(self.proxy.system, node_id)
 
-                result = await system_proxy.add_storage_file(filename, content, file_type, is_binary)
+                result = await system_proxy.add_storage_file(
+                    filename=filename,
+                    content=content,
+                    file_type=file_type,
+                    is_binary=is_binary
+                )
                 return result
             except Exception as e:
                 self.logger.error(f"Failed to add storage file to {node_id}: {e}")
@@ -339,10 +344,231 @@ class Run(BaseService):
                 else:
                     system_proxy = getattr(self.proxy.system, node_id)
 
-                result = await system_proxy.delete_storage_file(filename, file_type)
+                result = await system_proxy.delete_storage_file(filename=filename, file_type=file_type)
                 return result
             except Exception as e:
                 self.logger.error(f"Failed to delete storage file from {node_id}: {e}")
+                return {"success": False, "error": str(e)}
+
+        # Service Editor Endpoints
+        @app.post("/api/services/p2p-list")
+        async def list_p2p_services_endpoint(request: Request):
+            """List all available P2P services"""
+            data = await request.json()
+            node_id = data.get('node_id', 'coordinator')
+
+            try:
+                if node_id == 'coordinator':
+                    system_proxy = self.proxy.system
+                else:
+                    system_proxy = getattr(self.proxy.system, node_id)
+
+                result = await system_proxy.list_p2p_services()
+                return result
+            except Exception as e:
+                self.logger.error(f"Failed to list P2P services on {node_id}: {e}")
+                return {"success": False, "error": str(e)}
+
+        @app.post("/api/services/files")
+        async def list_service_files_endpoint(request: Request):
+            """List files in a service directory"""
+            data = await request.json()
+            node_id = data.get('node_id', 'coordinator')
+            service_name = data.get('service_name')
+
+            if not service_name:
+                return {"success": False, "error": "service_name is required"}
+
+            try:
+                if node_id == 'coordinator':
+                    system_proxy = self.proxy.system
+                else:
+                    system_proxy = getattr(self.proxy.system, node_id)
+
+                result = await system_proxy.list_service_files(service_name=service_name)
+                return result
+            except Exception as e:
+                self.logger.error(f"Failed to list service files on {node_id}: {e}")
+                return {"success": False, "error": str(e)}
+
+        @app.post("/api/services/file/get")
+        async def get_service_file_endpoint(request: Request):
+            """Get content of a service file"""
+            data = await request.json()
+            node_id = data.get('node_id', 'coordinator')
+            service_name = data.get('service_name')
+            file_path = data.get('file_path')
+
+            if not service_name or not file_path:
+                return {"success": False, "error": "service_name and file_path are required"}
+
+            try:
+                if node_id == 'coordinator':
+                    system_proxy = self.proxy.system
+                else:
+                    system_proxy = getattr(self.proxy.system, node_id)
+
+                result = await system_proxy.get_service_file(
+                    service_name=service_name,
+                    file_path=file_path
+                )
+                return result
+            except Exception as e:
+                self.logger.error(f"Failed to get service file on {node_id}: {e}")
+                return {"success": False, "error": str(e)}
+
+        @app.post("/api/services/file/update")
+        async def update_service_file_endpoint(request: Request):
+            """Update content of a service file"""
+            data = await request.json()
+            node_id = data.get('node_id', 'coordinator')
+            service_name = data.get('service_name')
+            file_path = data.get('file_path')
+            content = data.get('content')
+            is_binary = data.get('is_binary', False)
+
+            if not service_name or not file_path or content is None:
+                return {"success": False, "error": "service_name, file_path, and content are required"}
+
+            try:
+                if node_id == 'coordinator':
+                    system_proxy = self.proxy.system
+                else:
+                    system_proxy = getattr(self.proxy.system, node_id)
+
+                result = await system_proxy.update_service_file(
+                    service_name=service_name,
+                    file_path=file_path,
+                    content=content,
+                    is_binary=is_binary
+                )
+                return result
+            except Exception as e:
+                self.logger.error(f"Failed to update service file on {node_id}: {e}")
+                return {"success": False, "error": str(e)}
+
+        @app.post("/api/services/file/delete")
+        async def delete_service_file_endpoint(request: Request):
+            """Delete a service file"""
+            data = await request.json()
+            node_id = data.get('node_id', 'coordinator')
+            service_name = data.get('service_name')
+            file_path = data.get('file_path')
+
+            if not service_name or not file_path:
+                return {"success": False, "error": "service_name and file_path are required"}
+
+            try:
+                if node_id == 'coordinator':
+                    system_proxy = self.proxy.system
+                else:
+                    system_proxy = getattr(self.proxy.system, node_id)
+
+                result = await system_proxy.delete_service_file(
+                    service_name=service_name,
+                    file_path=file_path
+                )
+                return result
+            except Exception as e:
+                self.logger.error(f"Failed to delete service file on {node_id}: {e}")
+                return {"success": False, "error": str(e)}
+
+        @app.post("/api/services/file/rename")
+        async def rename_service_file_endpoint(request: Request):
+            """Rename a service file"""
+            data = await request.json()
+            node_id = data.get('node_id', 'coordinator')
+            service_name = data.get('service_name')
+            old_path = data.get('old_path')
+            new_name = data.get('new_name')
+
+            if not service_name or not old_path or not new_name:
+                return {"success": False, "error": "service_name, old_path, and new_name are required"}
+
+            try:
+                if node_id == 'coordinator':
+                    system_proxy = self.proxy.system
+                else:
+                    system_proxy = getattr(self.proxy.system, node_id)
+
+                result = await system_proxy.rename_service_file(
+                    service_name=service_name,
+                    old_path=old_path,
+                    new_name=new_name
+                )
+                return result
+            except Exception as e:
+                self.logger.error(f"Failed to rename service file on {node_id}: {e}")
+                return {"success": False, "error": str(e)}
+
+        @app.post("/api/services/manifest")
+        async def get_service_manifest_endpoint(request: Request):
+            """Get service manifest.json"""
+            data = await request.json()
+            node_id = data.get('node_id', 'coordinator')
+            service_name = data.get('service_name')
+
+            if not service_name:
+                return {"success": False, "error": "service_name is required"}
+
+            try:
+                if node_id == 'coordinator':
+                    system_proxy = self.proxy.system
+                else:
+                    system_proxy = getattr(self.proxy.system, node_id)
+
+                result = await system_proxy.get_service_manifest(service_name=service_name)
+                return result
+            except Exception as e:
+                self.logger.error(f"Failed to get service manifest on {node_id}: {e}")
+                return {"success": False, "error": str(e)}
+
+        @app.post("/api/services/version/update")
+        async def update_service_version_endpoint(request: Request):
+            """Update service version in manifest"""
+            data = await request.json()
+            node_id = data.get('node_id', 'coordinator')
+            service_name = data.get('service_name')
+            version = data.get('version')
+
+            if not service_name or not version:
+                return {"success": False, "error": "service_name and version are required"}
+
+            try:
+                if node_id == 'coordinator':
+                    system_proxy = self.proxy.system
+                else:
+                    system_proxy = getattr(self.proxy.system, node_id)
+
+                result = await system_proxy.update_service_version(
+                    service_name=service_name,
+                    version=version
+                )
+                return result
+            except Exception as e:
+                self.logger.error(f"Failed to update service version on {node_id}: {e}")
+                return {"success": False, "error": str(e)}
+
+        @app.post("/api/services/version/increment")
+        async def increment_service_version_endpoint(request: Request):
+            """Increment service version in manifest"""
+            data = await request.json()
+            node_id = data.get('node_id', 'coordinator')
+            service_name = data.get('service_name')
+
+            if not service_name:
+                return {"success": False, "error": "service_name is required"}
+
+            try:
+                if node_id == 'coordinator':
+                    system_proxy = self.proxy.system
+                else:
+                    system_proxy = getattr(self.proxy.system, node_id)
+
+                result = await system_proxy.increment_service_version(service_name=service_name)
+                return result
+            except Exception as e:
+                self.logger.error(f"Failed to increment service version on {node_id}: {e}")
                 return {"success": False, "error": str(e)}
 
         @app.get("/api/dashboard/service/{node_id}/{service_name}/metrics")

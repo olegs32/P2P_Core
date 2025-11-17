@@ -1208,6 +1208,12 @@ class WebServerComponent(P2PComponent):
             raise RuntimeError("Service layer not available")
 
         import uvicorn
+        import logging
+
+        # Отключаем DEBUG спам от websockets и uvicorn
+        logging.getLogger("websockets.server").setLevel(logging.WARNING)
+        logging.getLogger("websockets.protocol").setLevel(logging.WARNING)
+        logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
 
         # Настройка HTTPS если включен
         ssl_config = {}
@@ -1438,7 +1444,7 @@ class WebServerComponent(P2PComponent):
             app=service_layer.app,
             host=self.context.config.bind_address,
             port=self.context.config.port,
-            log_level="debug",
+            log_level="warning",
             access_log=False,
             server_header=False,
             date_header=False,
