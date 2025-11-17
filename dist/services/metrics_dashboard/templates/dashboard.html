@@ -9,7 +9,7 @@
     <link href="/static/css/bootstrap.min.css" rel="stylesheet">
 
     <!-- Bootstrap Icons -->
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css">
+    <link rel="stylesheet" href="/static/css/bootstrap-icons.min.css">
 
     <!-- Chart.js -->
     <script src="/static/js/chart.umd.min.js"></script>
@@ -18,8 +18,12 @@
     <script src="/static/js/htmx.min.js"></script>
 
     <!-- Ace Editor for syntax highlighting -->
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/ace/1.32.2/ace.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/ace/1.32.2/ext-language_tools.js"></script>
+    <script src="/static/js/ace/ace.js"></script>
+    <script src="/static/js/ace/ext-language_tools.js"></script>
+    <script>
+        // Configure Ace Editor base path for loading additional files
+        ace.config.set('basePath', '/static/js/ace');
+    </script>
 
     <style>
         :root {
