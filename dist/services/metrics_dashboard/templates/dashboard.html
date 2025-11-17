@@ -754,6 +754,14 @@
                 <span class="nav-tab-icon">&#127968;</span>
                 <span>Главная</span>
             </a>
+            <a class="nav-tab" data-tab="repository">
+                <span class="nav-tab-icon">&#128230;</span>
+                <span>Репозиторий</span>
+            </a>
+            <a class="nav-tab" data-tab="updates">
+                <span class="nav-tab-icon">&#128260;</span>
+                <span>Обновления</span>
+            </a>
             <a class="nav-tab" data-tab="certificates">
                 <span class="nav-tab-icon">&#128272;</span>
                 <span>Сертификаты</span>
@@ -889,6 +897,293 @@
                         <h3 class="mb-3">Workers</h3>
                         <div id="workersContainer">
                             <!-- Workers will be dynamically inserted here -->
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Repository Tab Content -->
+        <div class="tab-content" id="repositoryTab">
+            <!-- Header -->
+            <div class="dashboard-header">
+                <div class="container">
+                    <h1 class="mb-2">Artifact Repository</h1>
+                    <p class="mb-0 opacity-75">Manage artifacts, versions, and deployments</p>
+                </div>
+            </div>
+
+            <div class="container mt-4">
+                <!-- Repository Stats -->
+                <div class="row g-4 mb-4">
+                    <div class="col-md-3">
+                        <div class="card h-100">
+                            <div class="card-body">
+                                <div class="d-flex justify-content-between align-items-center mb-2">
+                                    <h6 class="mb-0">Total Artifacts</h6>
+                                    <i class="bi bi-archive-fill text-primary"></i>
+                                </div>
+                                <h3 class="mb-0" id="repoTotalArtifacts">-</h3>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-3">
+                        <div class="card h-100">
+                            <div class="card-body">
+                                <div class="d-flex justify-content-between align-items-center mb-2">
+                                    <h6 class="mb-0">Total Size</h6>
+                                    <i class="bi bi-hdd-fill text-info"></i>
+                                </div>
+                                <h3 class="mb-0" id="repoTotalSize">-</h3>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-3">
+                        <div class="card h-100">
+                            <div class="card-body">
+                                <div class="d-flex justify-content-between align-items-center mb-2">
+                                    <h6 class="mb-0">Total Downloads</h6>
+                                    <i class="bi bi-download text-success"></i>
+                                </div>
+                                <h3 class="mb-0" id="repoTotalDownloads">-</h3>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-3">
+                        <div class="card h-100">
+                            <div class="card-body">
+                                <div class="d-flex justify-content-between align-items-center mb-2">
+                                    <h6 class="mb-0">Services</h6>
+                                    <i class="bi bi-gear-fill text-warning"></i>
+                                </div>
+                                <h3 class="mb-0" id="repoServiceCount">-</h3>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Upload Section -->
+                <div class="card mb-4">
+                    <div class="card-header d-flex justify-content-between align-items-center">
+                        <h5 class="mb-0">Upload Artifact</h5>
+                        <button class="btn btn-sm btn-primary" onclick="toggleUploadForm()">
+                            <i class="bi bi-plus-circle me-1"></i>Upload
+                        </button>
+                    </div>
+                    <div class="card-body" id="uploadFormSection" style="display: none;">
+                        <form id="uploadArtifactForm" enctype="multipart/form-data">
+                            <div class="row g-3">
+                                <div class="col-md-6">
+                                    <label class="form-label">Name</label>
+                                    <input type="text" class="form-control" name="name" required>
+                                </div>
+                                <div class="col-md-3">
+                                    <label class="form-label">Version</label>
+                                    <input type="text" class="form-control" name="version" placeholder="1.0.0" required>
+                                </div>
+                                <div class="col-md-3">
+                                    <label class="form-label">Type</label>
+                                    <select class="form-select" name="artifact_type" required>
+                                        <option value="binary">Binary</option>
+                                        <option value="service">Service</option>
+                                        <option value="config">Config</option>
+                                        <option value="docker">Docker</option>
+                                    </select>
+                                </div>
+                                <div class="col-md-6">
+                                    <label class="form-label">Platform</label>
+                                    <input type="text" class="form-control" name="platform" placeholder="linux, windows">
+                                </div>
+                                <div class="col-md-6">
+                                    <label class="form-label">Architecture</label>
+                                    <input type="text" class="form-control" name="architecture" placeholder="x86_64, arm64">
+                                </div>
+                                <div class="col-12">
+                                    <label class="form-label">Description</label>
+                                    <textarea class="form-control" name="description" rows="2"></textarea>
+                                </div>
+                                <div class="col-12">
+                                    <label class="form-label">Tags (comma-separated)</label>
+                                    <input type="text" class="form-control" name="tags" placeholder="stable, production, v1">
+                                </div>
+                                <div class="col-12">
+                                    <label class="form-label">File</label>
+                                    <input type="file" class="form-control" name="file" required>
+                                </div>
+                                <div class="col-12">
+                                    <button type="submit" class="btn btn-primary">
+                                        <i class="bi bi-upload me-1"></i>Upload Artifact
+                                    </button>
+                                    <button type="button" class="btn btn-secondary" onclick="toggleUploadForm()">Cancel</button>
+                                </div>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+
+                <!-- Artifacts List -->
+                <div class="card">
+                    <div class="card-header d-flex justify-content-between align-items-center">
+                        <h5 class="mb-0">Artifacts</h5>
+                        <div class="d-flex gap-2">
+                            <select class="form-select form-select-sm" id="artifactTypeFilter" onchange="filterArtifacts()">
+                                <option value="">All Types</option>
+                                <option value="binary">Binary</option>
+                                <option value="service">Service</option>
+                                <option value="config">Config</option>
+                                <option value="docker">Docker</option>
+                            </select>
+                            <button class="btn btn-sm btn-outline-secondary" onclick="loadArtifacts()">
+                                <i class="bi bi-arrow-clockwise"></i>
+                            </button>
+                        </div>
+                    </div>
+                    <div class="card-body">
+                        <div class="table-responsive">
+                            <table class="table table-hover">
+                                <thead>
+                                    <tr>
+                                        <th>Name</th>
+                                        <th>Version</th>
+                                        <th>Type</th>
+                                        <th>Platform</th>
+                                        <th>Size</th>
+                                        <th>Downloads</th>
+                                        <th>Uploaded</th>
+                                        <th>Actions</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="artifactsTableBody">
+                                    <tr>
+                                        <td colspan="8" class="text-center text-muted">Loading artifacts...</td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Updates Tab Content -->
+        <div class="tab-content" id="updatesTab">
+            <!-- Header -->
+            <div class="dashboard-header">
+                <div class="container">
+                    <h1 class="mb-2">Cluster Updates</h1>
+                    <p class="mb-0 opacity-75">Manage and monitor cluster-wide updates</p>
+                </div>
+            </div>
+
+            <div class="container mt-4">
+                <!-- Create Update Section -->
+                <div class="card mb-4">
+                    <div class="card-header d-flex justify-content-between align-items-center">
+                        <h5 class="mb-0">Create Update Task</h5>
+                        <button class="btn btn-sm btn-primary" onclick="toggleUpdateForm()">
+                            <i class="bi bi-plus-circle me-1"></i>New Update
+                        </button>
+                    </div>
+                    <div class="card-body" id="updateFormSection" style="display: none;">
+                        <form id="createUpdateForm">
+                            <div class="row g-3">
+                                <div class="col-md-6">
+                                    <label class="form-label">Artifact</label>
+                                    <select class="form-select" name="artifact_id" id="updateArtifactSelect" required>
+                                        <option value="">Select artifact...</option>
+                                    </select>
+                                </div>
+                                <div class="col-md-6">
+                                    <label class="form-label">Update Strategy</label>
+                                    <select class="form-select" name="strategy" required>
+                                        <option value="rolling">Rolling (Sequential)</option>
+                                        <option value="canary">Canary (Test First)</option>
+                                        <option value="blue_green">Blue-Green (Parallel)</option>
+                                        <option value="all_at_once">All at Once</option>
+                                    </select>
+                                </div>
+                                <div class="col-md-6">
+                                    <label class="form-label">Target Nodes</label>
+                                    <select class="form-select" multiple name="target_nodes" id="updateNodesSelect" size="5" required>
+                                        <!-- Populated dynamically -->
+                                    </select>
+                                    <small class="text-muted">Hold Ctrl/Cmd to select multiple</small>
+                                </div>
+                                <div class="col-md-3">
+                                    <label class="form-label">Interval (seconds)</label>
+                                    <input type="number" class="form-control" name="interval_seconds" value="30" min="1">
+                                </div>
+                                <div class="col-md-3">
+                                    <label class="form-label">Max Failures</label>
+                                    <input type="number" class="form-control" name="max_failures" value="1" min="0">
+                                </div>
+                                <div class="col-md-6">
+                                    <div class="form-check">
+                                        <input class="form-check-input" type="checkbox" name="backup_enabled" id="backupEnabled" checked>
+                                        <label class="form-check-label" for="backupEnabled">
+                                            Create backup before update
+                                        </label>
+                                    </div>
+                                    <div class="form-check">
+                                        <input class="form-check-input" type="checkbox" name="auto_rollback" id="autoRollback" checked>
+                                        <label class="form-check-label" for="autoRollback">
+                                            Auto rollback on failure
+                                        </label>
+                                    </div>
+                                </div>
+                                <div class="col-12">
+                                    <button type="submit" class="btn btn-primary">
+                                        <i class="bi bi-play-circle me-1"></i>Start Update
+                                    </button>
+                                    <button type="button" class="btn btn-secondary" onclick="toggleUpdateForm()">Cancel</button>
+                                </div>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+
+                <!-- Active Updates -->
+                <div class="card mb-4">
+                    <div class="card-header d-flex justify-content-between align-items-center">
+                        <h5 class="mb-0">Active Updates</h5>
+                        <button class="btn btn-sm btn-outline-secondary" onclick="loadActiveUpdates()">
+                            <i class="bi bi-arrow-clockwise"></i>
+                        </button>
+                    </div>
+                    <div class="card-body" id="activeUpdatesSection">
+                        <p class="text-muted text-center">No active updates</p>
+                    </div>
+                </div>
+
+                <!-- Update History -->
+                <div class="card">
+                    <div class="card-header d-flex justify-content-between align-items-center">
+                        <h5 class="mb-0">Update History</h5>
+                        <button class="btn btn-sm btn-outline-secondary" onclick="loadUpdateHistory()">
+                            <i class="bi bi-arrow-clockwise"></i>
+                        </button>
+                    </div>
+                    <div class="card-body">
+                        <div class="table-responsive">
+                            <table class="table table-hover">
+                                <thead>
+                                    <tr>
+                                        <th>Update ID</th>
+                                        <th>Artifact</th>
+                                        <th>Version</th>
+                                        <th>Strategy</th>
+                                        <th>Nodes</th>
+                                        <th>Status</th>
+                                        <th>Duration</th>
+                                        <th>Started</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="updateHistoryTableBody">
+                                    <tr>
+                                        <td colspan="8" class="text-center text-muted">Loading history...</td>
+                                    </tr>
+                                </tbody>
+                            </table>
                         </div>
                     </div>
                 </div>
@@ -4779,7 +5074,441 @@
 
             // Load services
             editorLoadServices();
+
+            // Initialize Repository and Updates tabs
+            initializeRepository();
+            initializeUpdates();
         });
+
+        // ============ Repository Functions ============
+
+        function toggleUploadForm() {
+            const section = document.getElementById('uploadFormSection');
+            section.style.display = section.style.display === 'none' ? 'block' : 'none';
+        }
+
+        async function initializeRepository() {
+            await loadArtifacts();
+            await loadRepositoryStats();
+        }
+
+        async function loadRepositoryStats() {
+            try {
+                const response = await fetch('/api/repository/stats');
+                const data = await response.json();
+
+                if (data.success && data.stats) {
+                    const stats = data.stats;
+                    document.getElementById('repoTotalArtifacts').textContent = stats.total_artifacts || 0;
+                    document.getElementById('repoTotalSize').textContent = formatBytes(stats.total_size_bytes || 0);
+                    document.getElementById('repoTotalDownloads').textContent = stats.total_downloads || 0;
+
+                    // Count services
+                    const serviceCount = (stats.by_type && stats.by_type.service) ? stats.by_type.service.count : 0;
+                    document.getElementById('repoServiceCount').textContent = serviceCount;
+                }
+            } catch (error) {
+                console.error('Failed to load repository stats:', error);
+            }
+        }
+
+        async function loadArtifacts() {
+            const tbody = document.getElementById('artifactsTableBody');
+            tbody.innerHTML = '<tr><td colspan="8" class="text-center text-muted">Loading artifacts...</td></tr>';
+
+            try {
+                const typeFilter = document.getElementById('artifactTypeFilter').value;
+                const url = typeFilter ? `/api/repository/artifacts?artifact_type=${typeFilter}` : '/api/repository/artifacts';
+
+                const response = await fetch(url);
+                const data = await response.json();
+
+                if (data.success && data.artifacts) {
+                    if (data.artifacts.length === 0) {
+                        tbody.innerHTML = '<tr><td colspan="8" class="text-center text-muted">No artifacts found</td></tr>';
+                        return;
+                    }
+
+                    tbody.innerHTML = '';
+                    data.artifacts.forEach(artifact => {
+                        const row = document.createElement('tr');
+                        row.innerHTML = `
+                            <td><strong>${artifact.name}</strong></td>
+                            <td><span class="badge bg-info">${artifact.version}</span></td>
+                            <td><span class="badge bg-secondary">${artifact.artifact_type}</span></td>
+                            <td>${artifact.platform || '-'}</td>
+                            <td>${formatBytes(artifact.size_bytes)}</td>
+                            <td>${artifact.download_count}</td>
+                            <td>${new Date(artifact.upload_date).toLocaleString()}</td>
+                            <td>
+                                <button class="btn btn-sm btn-outline-primary" onclick="downloadArtifact(${artifact.id})" title="Download">
+                                    <i class="bi bi-download"></i>
+                                </button>
+                                <button class="btn btn-sm btn-outline-danger" onclick="deleteArtifact(${artifact.id})" title="Delete">
+                                    <i class="bi bi-trash"></i>
+                                </button>
+                            </td>
+                        `;
+                        tbody.appendChild(row);
+                    });
+
+                    // Update artifact selector in updates tab
+                    updateArtifactSelector(data.artifacts);
+                } else {
+                    tbody.innerHTML = `<tr><td colspan="8" class="text-center text-danger">Error: ${data.error || 'Unknown error'}</td></tr>`;
+                }
+            } catch (error) {
+                console.error('Failed to load artifacts:', error);
+                tbody.innerHTML = '<tr><td colspan="8" class="text-center text-danger">Failed to load artifacts</td></tr>';
+            }
+        }
+
+        function updateArtifactSelector(artifacts) {
+            const select = document.getElementById('updateArtifactSelect');
+            select.innerHTML = '<option value="">Select artifact...</option>';
+            artifacts.forEach(artifact => {
+                const option = document.createElement('option');
+                option.value = artifact.id;
+                option.textContent = `${artifact.name} v${artifact.version} (${artifact.artifact_type})`;
+                option.dataset.name = artifact.name;
+                option.dataset.version = artifact.version;
+                select.appendChild(option);
+            });
+        }
+
+        function filterArtifacts() {
+            loadArtifacts();
+        }
+
+        async function downloadArtifact(artifactId) {
+            window.location.href = `/api/repository/artifacts/${artifactId}/download`;
+        }
+
+        async function deleteArtifact(artifactId) {
+            if (!confirm('Are you sure you want to delete this artifact?')) {
+                return;
+            }
+
+            try {
+                const response = await fetch(`/api/repository/artifacts/${artifactId}`, {
+                    method: 'DELETE'
+                });
+                const data = await response.json();
+
+                if (data.success) {
+                    alert('Artifact deleted successfully');
+                    loadArtifacts();
+                    loadRepositoryStats();
+                } else {
+                    alert(`Failed to delete artifact: ${data.error}`);
+                }
+            } catch (error) {
+                console.error('Failed to delete artifact:', error);
+                alert('Failed to delete artifact');
+            }
+        }
+
+        // Upload form handler
+        document.getElementById('uploadArtifactForm')?.addEventListener('submit', async (e) => {
+            e.preventDefault();
+
+            const formData = new FormData(e.target);
+
+            try {
+                const response = await fetch('/api/repository/upload', {
+                    method: 'POST',
+                    body: formData
+                });
+
+                const data = await response.json();
+
+                if (data.success) {
+                    alert('Artifact uploaded successfully');
+                    e.target.reset();
+                    toggleUploadForm();
+                    loadArtifacts();
+                    loadRepositoryStats();
+                } else {
+                    alert(`Upload failed: ${data.error}`);
+                }
+            } catch (error) {
+                console.error('Upload failed:', error);
+                alert('Upload failed');
+            }
+        });
+
+        // ============ Updates Functions ============
+
+        function toggleUpdateForm() {
+            const section = document.getElementById('updateFormSection');
+            section.style.display = section.style.display === 'none' ? 'block' : 'none';
+        }
+
+        async function initializeUpdates() {
+            await loadActiveUpdates();
+            await loadUpdateHistory();
+            await loadUpdateNodes();
+        }
+
+        async function loadUpdateNodes() {
+            try {
+                const response = await fetch('/api/dashboard/metrics');
+                const data = await response.json();
+
+                const select = document.getElementById('updateNodesSelect');
+                select.innerHTML = '';
+
+                // Add workers
+                if (data.workers) {
+                    Object.keys(data.workers).forEach(nodeId => {
+                        const option = document.createElement('option');
+                        option.value = nodeId;
+                        option.textContent = `Worker: ${nodeId}`;
+                        select.appendChild(option);
+                    });
+                }
+            } catch (error) {
+                console.error('Failed to load nodes:', error);
+            }
+        }
+
+        async function loadActiveUpdates() {
+            const section = document.getElementById('activeUpdatesSection');
+            section.innerHTML = '<p class="text-muted text-center">Loading...</p>';
+
+            try {
+                // Call RPC method via fetch
+                const response = await fetch('/rpc', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        method: 'update_server/list_active_updates',
+                        params: {},
+                        id: Date.now()
+                    })
+                });
+
+                const data = await response.json();
+                const result = data.result;
+
+                if (result && result.success && result.updates && result.updates.length > 0) {
+                    section.innerHTML = '';
+                    result.updates.forEach(update => {
+                        const card = document.createElement('div');
+                        card.className = 'card mb-3';
+                        card.innerHTML = `
+                            <div class="card-body">
+                                <div class="d-flex justify-content-between align-items-center mb-2">
+                                    <h6>Update #${update.id}: ${update.artifact_name} v${update.target_version}</h6>
+                                    <span class="badge bg-${getStatusColor(update.status)}">${update.status}</span>
+                                </div>
+                                <div class="mb-2">
+                                    <strong>Strategy:</strong> ${update.strategy} |
+                                    <strong>Nodes:</strong> ${update.success_count}/${update.target_nodes.length} completed
+                                </div>
+                                <div class="btn-group btn-group-sm">
+                                    <button class="btn btn-outline-warning" onclick="pauseUpdate(${update.id})">
+                                        <i class="bi bi-pause"></i> Pause
+                                    </button>
+                                    <button class="btn btn-outline-danger" onclick="cancelUpdate(${update.id})">
+                                        <i class="bi bi-x-circle"></i> Cancel
+                                    </button>
+                                </div>
+                            </div>
+                        `;
+                        section.appendChild(card);
+                    });
+                } else {
+                    section.innerHTML = '<p class="text-muted text-center">No active updates</p>';
+                }
+            } catch (error) {
+                console.error('Failed to load active updates:', error);
+                section.innerHTML = '<p class="text-danger text-center">Failed to load active updates</p>';
+            }
+        }
+
+        async function loadUpdateHistory() {
+            const tbody = document.getElementById('updateHistoryTableBody');
+            tbody.innerHTML = '<tr><td colspan="8" class="text-center text-muted">Loading history...</td></tr>';
+
+            try {
+                const response = await fetch('/rpc', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        method: 'update_server/get_update_history',
+                        params: { limit: 20 },
+                        id: Date.now()
+                    })
+                });
+
+                const data = await response.json();
+                const result = data.result;
+
+                if (result && result.success && result.history && result.history.length > 0) {
+                    tbody.innerHTML = '';
+                    result.history.forEach(update => {
+                        const row = document.createElement('tr');
+                        row.innerHTML = `
+                            <td>${update.id}</td>
+                            <td>${update.artifact_name}</td>
+                            <td><span class="badge bg-info">${update.target_version}</span></td>
+                            <td>${update.strategy}</td>
+                            <td>${update.success_count}/${update.target_nodes.length}</td>
+                            <td><span class="badge bg-${getStatusColor(update.status)}">${update.status}</span></td>
+                            <td>${update.total_duration_seconds ? update.total_duration_seconds.toFixed(1) + 's' : '-'}</td>
+                            <td>${new Date(update.created_at).toLocaleString()}</td>
+                        `;
+                        tbody.appendChild(row);
+                    });
+                } else {
+                    tbody.innerHTML = '<tr><td colspan="8" class="text-center text-muted">No update history</td></tr>';
+                }
+            } catch (error) {
+                console.error('Failed to load update history:', error);
+                tbody.innerHTML = '<tr><td colspan="8" class="text-center text-danger">Failed to load history</td></tr>';
+            }
+        }
+
+        function getStatusColor(status) {
+            const colors = {
+                'pending': 'secondary',
+                'in_progress': 'primary',
+                'paused': 'warning',
+                'completed': 'success',
+                'failed': 'danger',
+                'rolled_back': 'warning'
+            };
+            return colors[status] || 'secondary';
+        }
+
+        async function pauseUpdate(updateId) {
+            try {
+                const response = await fetch('/rpc', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        method: 'update_server/pause_update',
+                        params: { update_id: updateId },
+                        id: Date.now()
+                    })
+                });
+
+                const data = await response.json();
+                if (data.result && data.result.success) {
+                    alert('Update paused');
+                    loadActiveUpdates();
+                } else {
+                    alert(`Failed to pause: ${data.result.error}`);
+                }
+            } catch (error) {
+                console.error('Failed to pause update:', error);
+                alert('Failed to pause update');
+            }
+        }
+
+        async function cancelUpdate(updateId) {
+            if (!confirm('Are you sure you want to cancel this update?')) {
+                return;
+            }
+
+            try {
+                const response = await fetch('/rpc', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        method: 'update_server/cancel_update',
+                        params: { update_id: updateId },
+                        id: Date.now()
+                    })
+                });
+
+                const data = await response.json();
+                if (data.result && data.result.success) {
+                    alert('Update cancelled');
+                    loadActiveUpdates();
+                    loadUpdateHistory();
+                } else {
+                    alert(`Failed to cancel: ${data.result.error}`);
+                }
+            } catch (error) {
+                console.error('Failed to cancel update:', error);
+                alert('Failed to cancel update');
+            }
+        }
+
+        // Create update form handler
+        document.getElementById('createUpdateForm')?.addEventListener('submit', async (e) => {
+            e.preventDefault();
+
+            const formData = new FormData(e.target);
+            const selectedArtifact = document.getElementById('updateArtifactSelect').selectedOptions[0];
+
+            // Get selected nodes
+            const nodesSelect = document.getElementById('updateNodesSelect');
+            const targetNodes = Array.from(nodesSelect.selectedOptions).map(opt => opt.value);
+
+            if (targetNodes.length === 0) {
+                alert('Please select at least one target node');
+                return;
+            }
+
+            const params = {
+                artifact_id: parseInt(formData.get('artifact_id')),
+                artifact_name: selectedArtifact.dataset.name,
+                target_version: selectedArtifact.dataset.version,
+                target_nodes: targetNodes,
+                strategy: formData.get('strategy')
+            };
+
+            try {
+                // Start update
+                const response = await fetch('/rpc', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        method: 'update_server/start_update',
+                        params: params,
+                        id: Date.now()
+                    })
+                });
+
+                const data = await response.json();
+                const result = data.result;
+
+                if (result && result.success) {
+                    alert(`Update task created with ID: ${result.update_id}`);
+
+                    // Execute update
+                    const execResponse = await fetch('/rpc', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            method: 'update_server/execute_update_task',
+                            params: { update_id: result.update_id },
+                            id: Date.now()
+                        })
+                    });
+
+                    e.target.reset();
+                    toggleUpdateForm();
+                    loadActiveUpdates();
+                } else {
+                    alert(`Failed to create update: ${result.error}`);
+                }
+            } catch (error) {
+                console.error('Failed to create update:', error);
+                alert('Failed to create update');
+            }
+        });
+
+        function formatBytes(bytes) {
+            if (bytes === 0) return '0 B';
+            const k = 1024;
+            const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+        }
     </script>
 </body>
 </html>
