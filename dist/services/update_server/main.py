@@ -35,13 +35,41 @@ class Run(BaseService):
         self.update_id_counter = 0
         self.update_history: List[UpdateTask] = []
 
+        # Gossip integration
+        self.gossip_publish_task = None
+        self.gossip_publish_interval = 45  # seconds
+
+        # Metrics tracking
+        self.total_updates_started = 0
+        self.total_updates_completed = 0
+        self.total_updates_failed = 0
+        self.total_updates_rolled_back = 0
+        self.strategy_usage = {
+            "rolling": 0,
+            "canary": 0,
+            "blue_green": 0,
+            "all_at_once": 0
+        }
+
     async def initialize(self):
         """Initialize update server"""
         self.logger.info("Initializing Update Server service")
 
+        # Start gossip publishing loop
+        if hasattr(self, 'context'):
+            self.gossip_publish_task = asyncio.create_task(self._gossip_publish_loop())
+            self.logger.info("Started gossip publishing task")
+
     async def cleanup(self):
         """Cleanup update server"""
-        pass
+        # Cancel gossip task
+        if self.gossip_publish_task:
+            self.gossip_publish_task.cancel()
+            try:
+                await self.gossip_publish_task
+            except asyncio.CancelledError:
+                pass
+            self.logger.info("Stopped gossip publishing task")
 
     @service_method(description="Start cluster update", public=True)
     async def start_update(
@@ -67,9 +95,16 @@ class Run(BaseService):
 
             self.active_updates[task.id] = task
 
+            # Track metrics
+            self.total_updates_started += 1
+            self.strategy_usage[strategy] += 1
+            self.metrics.increment(f"updates_started_{strategy}")
+            self.metrics.gauge("active_updates", len(self.active_updates))
+
             return {"success": True, "update_id": task.id}
 
         except Exception as e:
+            self.metrics.increment("update_start_errors")
             return {"success": False, "error": str(e)}
 
     @service_method(description="Get update status", public=True)
@@ -124,13 +159,27 @@ class Run(BaseService):
             # Update final status
             if result["success"]:
                 task.status = UpdateStatus.COMPLETED
+                self.total_updates_completed += 1
+                self.metrics.increment("updates_completed")
+                self.metrics.increment(f"updates_completed_{task.strategy.value}")
             else:
                 task.status = UpdateStatus.FAILED
+                self.total_updates_failed += 1
+                self.metrics.increment("updates_failed")
+                self.metrics.increment(f"updates_failed_{task.strategy.value}")
 
             task.completed_at = datetime.now()
 
+            # Track duration
+            if task.started_at and task.completed_at:
+                duration_ms = (task.completed_at - task.started_at).total_seconds() * 1000
+                self.metrics.timer(f"update_duration_{task.strategy.value}", duration_ms)
+
             # Move to history
             self.update_history.append(task)
+
+            # Update active count
+            self.metrics.gauge("active_updates", len(self.active_updates))
 
             return result
 
@@ -138,6 +187,9 @@ class Run(BaseService):
             self.logger.error(f"Update execution failed: {e}", exc_info=True)
             task.status = UpdateStatus.FAILED
             task.completed_at = datetime.now()
+            self.total_updates_failed += 1
+            self.metrics.increment("updates_failed")
+            self.metrics.increment("update_execution_errors")
             return {"success": False, "error": str(e)}
 
     async def _execute_rolling_update(self, task: UpdateTask) -> Dict[str, Any]:
@@ -417,6 +469,9 @@ class Run(BaseService):
         """
         self.logger.info(f"Rolling back update {task.id}")
 
+        rollback_success = 0
+        rollback_failed = 0
+
         for node_id, node_update in task.node_updates.items():
             if node_update.status == NodeUpdateStatus.COMPLETED:
                 try:
@@ -428,13 +483,20 @@ class Run(BaseService):
                     if result.get("success"):
                         node_update.status = NodeUpdateStatus.ROLLED_BACK
                         node_update.logs.append("Rolled back successfully")
+                        rollback_success += 1
                     else:
                         self.logger.error(f"Rollback failed for {node_id}: {result.get('error')}")
+                        rollback_failed += 1
 
                 except Exception as e:
                     self.logger.error(f"Rollback exception for {node_id}: {e}")
+                    rollback_failed += 1
 
         task.status = UpdateStatus.ROLLED_BACK
+        self.total_updates_rolled_back += 1
+        self.metrics.increment("updates_rolled_back")
+        self.metrics.gauge("last_rollback_success_count", rollback_success)
+        self.metrics.gauge("last_rollback_failed_count", rollback_failed)
 
     @service_method(description="Pause update", public=True)
     async def pause_update(self, update_id: int) -> Dict[str, Any]:
@@ -503,3 +565,115 @@ class Run(BaseService):
             "history": [task.to_dict() for task in history],
             "total_count": len(self.update_history)
         }
+
+    @service_method(description="Get update server metrics", public=True)
+    async def get_metrics(self) -> Dict[str, Any]:
+        """Get update server metrics"""
+        return {
+            "success": True,
+            "metrics": {
+                "total_updates_started": self.total_updates_started,
+                "total_updates_completed": self.total_updates_completed,
+                "total_updates_failed": self.total_updates_failed,
+                "total_updates_rolled_back": self.total_updates_rolled_back,
+                "active_updates_count": len(self.active_updates),
+                "strategy_usage": self.strategy_usage,
+                "success_rate": (
+                    self.total_updates_completed / self.total_updates_started * 100
+                    if self.total_updates_started > 0 else 0
+                )
+            }
+        }
+
+    @service_method(description="Get gossip info from all nodes", public=True)
+    async def get_cluster_update_status(self) -> Dict[str, Any]:
+        """
+        Get update status from all nodes via gossip
+
+        Returns:
+            Dictionary with node update information
+        """
+        try:
+            network = self.context.get_shared("network")
+            if not network or not hasattr(network, 'gossip'):
+                return {
+                    "success": False,
+                    "error": "Network gossip not available"
+                }
+
+            gossip = network.gossip
+            node_registry = gossip.node_registry
+
+            cluster_status = {}
+            for node_id, node_info in node_registry.items():
+                metadata = node_info.metadata
+                if 'update_manager' in metadata:
+                    cluster_status[node_id] = metadata['update_manager']
+
+            return {
+                "success": True,
+                "cluster_status": cluster_status,
+                "node_count": len(cluster_status)
+            }
+
+        except Exception as e:
+            self.logger.error(f"Failed to get cluster update status: {e}")
+            return {
+                "success": False,
+                "error": str(e)
+            }
+
+    async def _gossip_publish_loop(self):
+        """
+        Periodically publish update server information to gossip
+
+        Publishes:
+        - Active update tasks
+        - Update statistics
+        - Strategy usage
+        """
+        while True:
+            try:
+                await asyncio.sleep(self.gossip_publish_interval)
+
+                network = self.context.get_shared("network")
+                if not network or not hasattr(network, 'gossip'):
+                    continue
+
+                gossip = network.gossip
+
+                # Prepare active updates summary
+                active_updates_summary = []
+                for task in self.active_updates.values():
+                    active_updates_summary.append({
+                        'update_id': task.id,
+                        'artifact_name': task.artifact_name,
+                        'target_version': task.target_version,
+                        'strategy': task.strategy.value,
+                        'status': task.status.value,
+                        'target_nodes': task.target_nodes,
+                        'success_count': task.success_count,
+                        'failure_count': task.failure_count
+                    })
+
+                # Update gossip metadata
+                gossip.local_node_metadata['update_server'] = {
+                    'active_updates': active_updates_summary,
+                    'active_updates_count': len(self.active_updates),
+                    'total_updates_started': self.total_updates_started,
+                    'total_updates_completed': self.total_updates_completed,
+                    'total_updates_failed': self.total_updates_failed,
+                    'total_updates_rolled_back': self.total_updates_rolled_back,
+                    'strategy_usage': self.strategy_usage,
+                    'last_updated': datetime.now().isoformat()
+                }
+
+                self.logger.debug(
+                    f"Published update server info to gossip: "
+                    f"{len(active_updates_summary)} active updates"
+                )
+
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                self.logger.error(f"Error in gossip publish loop: {e}", exc_info=True)

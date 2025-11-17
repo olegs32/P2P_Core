@@ -44,6 +44,18 @@ class Run(BaseService):
         self.update_in_progress = False
         self.last_check_time = None
 
+        # Gossip integration
+        self.gossip_publish_task: Optional[asyncio.Task] = None
+        self.gossip_publish_interval = 60  # seconds
+
+        # Metrics tracking
+        self.total_update_attempts = 0
+        self.successful_updates = 0
+        self.failed_updates = 0
+        self.total_rollbacks = 0
+        self.total_bytes_downloaded = 0
+        self.last_update_duration_ms = 0
+
     async def initialize(self):
         """Initialize update manager"""
         self.logger.info("Initializing Update Manager...")
@@ -59,7 +71,20 @@ class Run(BaseService):
         # Try to get public key from coordinator (non-critical, will retry later if needed)
         await self._fetch_public_key()
 
+        # Start gossip publishing task
+        self.gossip_publish_task = asyncio.create_task(self._gossip_publish_loop())
+
         self.logger.info("Update Manager initialized successfully")
+
+    async def cleanup(self):
+        """Cleanup update manager"""
+        # Stop gossip publishing task
+        if self.gossip_publish_task:
+            self.gossip_publish_task.cancel()
+            try:
+                await self.gossip_publish_task
+            except asyncio.CancelledError:
+                pass
 
     async def _load_state(self):
         """Load update manager state"""
@@ -250,6 +275,11 @@ class Run(BaseService):
 
         self.update_in_progress = True
         phase = "downloading"
+        start_time = datetime.now()
+
+        # Track metrics
+        self.total_update_attempts += 1
+        self.metrics.increment("update_attempts")
 
         try:
             self.logger.info(f"Executing update {update_id}: {artifact_name} -> {target_version}")
@@ -284,6 +314,10 @@ class Run(BaseService):
                 }
 
             self.logger.info(f"Artifact verified: {len(artifact_data)} bytes, SHA256: {calculated_sha256[:16]}...")
+
+            # Track bytes downloaded
+            self.total_bytes_downloaded += len(artifact_data)
+            self.metrics.gauge("total_bytes_downloaded", self.total_bytes_downloaded)
 
             # 3. Save artifact to downloads
             artifact_file = self.downloads_dir / f"artifact_{artifact_id}_{target_version}.bin"
@@ -323,7 +357,16 @@ class Run(BaseService):
 
             phase = "completed"
             self.logger.info(f"Update {update_id} installed successfully")
+
+            # Track success metrics
+            self.successful_updates += 1
+            duration_ms = (datetime.now() - start_time).total_seconds() * 1000
+            self.last_update_duration_ms = duration_ms
+
             self.metrics.increment("execute_update_success")
+            self.metrics.increment("successful_updates")
+            self.metrics.timer("update_duration_ms", duration_ms)
+            self.metrics.gauge("last_update_duration_ms", duration_ms)
 
             result = {
                 "success": True,
@@ -331,6 +374,7 @@ class Run(BaseService):
                 "version": target_version,
                 "backup_dir": str(backup_dir) if backup_dir else None,
                 "phase": phase,
+                "duration_ms": duration_ms,
                 "message": "Update installed successfully"
             }
 
@@ -344,7 +388,12 @@ class Run(BaseService):
 
         except Exception as e:
             self.logger.error(f"Failed to execute update: {e}", exc_info=True)
+
+            # Track failure metrics
+            self.failed_updates += 1
             self.metrics.increment("execute_update_errors")
+            self.metrics.increment("failed_updates")
+
             return {
                 "success": False,
                 "error": str(e),
@@ -853,8 +902,159 @@ class Run(BaseService):
         result = await self._rollback(backup_dir)
 
         if result["success"]:
+            self.total_rollbacks += 1
             self.metrics.increment("manual_rollback_success")
+            self.metrics.gauge("total_rollbacks", self.total_rollbacks)
         else:
             self.metrics.increment("manual_rollback_errors")
 
         return result
+
+    @service_method(description="Get update manager metrics", public=True)
+    async def get_metrics(self) -> Dict[str, Any]:
+        """
+        Get update manager metrics and statistics
+
+        Returns:
+            Dictionary with update manager metrics
+        """
+        try:
+            return {
+                "success": True,
+                "metrics": {
+                    # Current state
+                    "current_version": self.current_version,
+                    "update_in_progress": self.update_in_progress,
+                    "last_check_time": self.last_check_time,
+
+                    # Update counters
+                    "total_update_attempts": self.total_update_attempts,
+                    "successful_updates": self.successful_updates,
+                    "failed_updates": self.failed_updates,
+                    "total_rollbacks": self.total_rollbacks,
+
+                    # Bandwidth
+                    "total_bytes_downloaded": self.total_bytes_downloaded,
+
+                    # Performance
+                    "last_update_duration_ms": self.last_update_duration_ms,
+
+                    # Success rate
+                    "success_rate": (
+                        self.successful_updates / self.total_update_attempts * 100
+                        if self.total_update_attempts > 0 else 0
+                    ),
+
+                    # Average metrics
+                    "avg_download_size": (
+                        self.total_bytes_downloaded / self.successful_updates
+                        if self.successful_updates > 0 else 0
+                    )
+                }
+            }
+
+        except Exception as e:
+            self.logger.error(f"Failed to get update manager metrics: {e}")
+            return {"success": False, "error": str(e)}
+
+    async def _gossip_publish_loop(self):
+        """
+        Periodically publish node version information to gossip
+        Allows cluster to track current versions on each node
+        """
+        self.logger.info("Starting gossip publish loop for version tracking")
+
+        while True:
+            try:
+                await asyncio.sleep(self.gossip_publish_interval)
+
+                # Get network component for gossip access
+                if not self.context:
+                    continue
+
+                network = self.context.get_shared("network")
+                if not network or not hasattr(network, 'gossip'):
+                    self.logger.debug("Network/gossip not available yet")
+                    continue
+
+                # Publish current version to gossip metadata
+                gossip = network.gossip
+                if hasattr(gossip, 'local_node_metadata'):
+                    gossip.local_node_metadata['update_manager'] = {
+                        'current_version': self.current_version,
+                        'update_in_progress': self.update_in_progress,
+                        'last_check_time': self.last_check_time,
+                        'backups_count': len(list(self.backups_dir.iterdir())) if self.backups_dir.exists() else 0,
+                        'last_updated': datetime.now().isoformat()
+                    }
+
+                    self.logger.debug(f"Published version {self.current_version} to gossip")
+                    self.metrics.increment("gossip_publishes")
+
+            except asyncio.CancelledError:
+                self.logger.info("Gossip publish loop cancelled")
+                break
+            except Exception as e:
+                self.logger.error(f"Error in gossip publish loop: {e}")
+                self.metrics.increment("gossip_publish_errors")
+                await asyncio.sleep(10)  # Back off on error
+
+    @service_method(description="Check for available updates from gossip", public=True)
+    async def check_updates_from_gossip(self) -> Dict[str, Any]:
+        """
+        Check for available updates by reading repository info from gossip
+
+        Returns:
+            Available updates for this node
+        """
+        try:
+            if not self.context:
+                return {"success": False, "error": "Context not available"}
+
+            network = self.context.get_shared("network")
+            if not network or not hasattr(network, 'gossip'):
+                return {"success": False, "error": "Gossip not available"}
+
+            gossip = network.gossip
+            available_updates = []
+
+            # Look for repository info in gossip
+            for node_id, node_info in gossip.node_registry.items():
+                if hasattr(node_info, 'metadata') and 'repository' in node_info.metadata:
+                    repo_data = node_info.metadata['repository']
+                    if 'available_versions' in repo_data:
+                        # Check for updates
+                        for artifact_name, artifact_info in repo_data['available_versions'].items():
+                            if self._is_newer_version(artifact_info['version'], self.current_version):
+                                available_updates.append({
+                                    'artifact_name': artifact_name,
+                                    'current_version': self.current_version,
+                                    'available_version': artifact_info['version'],
+                                    'artifact_id': artifact_info['artifact_id'],
+                                    'source_node': node_id,
+                                    'artifact_type': artifact_info['artifact_type']
+                                })
+
+            return {
+                "success": True,
+                "available_updates": available_updates,
+                "has_updates": len(available_updates) > 0,
+                "current_version": self.current_version
+            }
+
+        except Exception as e:
+            self.logger.error(f"Failed to check updates from gossip: {e}")
+            return {"success": False, "error": str(e)}
+
+    def _is_newer_version(self, candidate: str, current: str) -> bool:
+        """
+        Check if candidate version is newer than current
+
+        Args:
+            candidate: Candidate version string
+            current: Current version string
+
+        Returns:
+            True if candidate is newer
+        """
+        return self._compare_versions(candidate, current) > 0

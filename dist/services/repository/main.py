@@ -47,6 +47,19 @@ class Run(BaseService):
         self.storage_path = Path("data/repository")
         self.db_path = "data/repository/repository.db"
 
+        # Gossip integration
+        self.gossip_publish_task: Optional[asyncio.Task] = None
+        self.gossip_publish_interval = 30  # seconds
+
+        # Metrics tracking
+        self.total_uploads = 0
+        self.total_downloads = 0
+        self.total_deletes = 0
+        self.upload_errors = 0
+        self.download_errors = 0
+        self.total_bytes_uploaded = 0
+        self.total_bytes_downloaded = 0
+
     async def initialize(self):
         """Initialize repository service"""
         self.logger.info("Initializing Repository service")
@@ -64,11 +77,22 @@ class Run(BaseService):
         if self.context and self.context.config.coordinator_mode:
             self._register_http_endpoints()
 
+            # Start gossip publishing task for coordinators
+            self.gossip_publish_task = asyncio.create_task(self._gossip_publish_loop())
+
         self.logger.info("Repository service initialized")
 
     async def cleanup(self):
         """Cleanup repository service"""
         self.logger.info("Repository service cleanup")
+
+        # Stop gossip publishing task
+        if self.gossip_publish_task:
+            self.gossip_publish_task.cancel()
+            try:
+                await self.gossip_publish_task
+            except asyncio.CancelledError:
+                pass
 
     def _register_http_endpoints(self):
         """Register HTTP endpoints with FastAPI"""
@@ -132,6 +156,14 @@ class Run(BaseService):
                     details=f"Uploaded {name} v{version}"
                 )
 
+                # Track metrics
+                self.total_uploads += 1
+                self.total_bytes_uploaded += len(file_data)
+                self.metrics.increment("artifacts_uploaded")
+                self.metrics.increment(f"artifacts_uploaded_{artifact_type}")
+                self.metrics.gauge("total_uploads", self.total_uploads)
+                self.metrics.gauge("total_bytes_uploaded", self.total_bytes_uploaded)
+
                 self.logger.info(f"Artifact uploaded: {name} v{version} ({len(file_data)} bytes)")
 
                 return {
@@ -143,6 +175,8 @@ class Run(BaseService):
                 }
 
             except Exception as e:
+                self.upload_errors += 1
+                self.metrics.increment("upload_errors")
                 self.logger.error(f"Failed to upload artifact: {e}")
                 raise HTTPException(status_code=500, detail=str(e))
 
@@ -211,6 +245,14 @@ class Run(BaseService):
                     ip_address=request.client.host
                 )
 
+                # Track metrics
+                self.total_downloads += 1
+                self.total_bytes_downloaded += artifact.size_bytes
+                self.metrics.increment("artifacts_downloaded")
+                self.metrics.increment(f"artifacts_downloaded_{artifact.artifact_type.value}")
+                self.metrics.gauge("total_downloads", self.total_downloads)
+                self.metrics.gauge("total_bytes_downloaded", self.total_bytes_downloaded)
+
                 # Return file
                 return FileResponse(
                     path=artifact.storage_path,
@@ -221,6 +263,8 @@ class Run(BaseService):
             except HTTPException:
                 raise
             except Exception as e:
+                self.download_errors += 1
+                self.metrics.increment("download_errors")
                 self.logger.error(f"Failed to download artifact: {e}")
                 raise HTTPException(status_code=500, detail=str(e))
 
@@ -243,6 +287,12 @@ class Run(BaseService):
 
                 success = self.storage.delete_artifact(artifact_id)
 
+                # Track metrics
+                if success:
+                    self.total_deletes += 1
+                    self.metrics.increment("artifacts_deleted")
+                    self.metrics.gauge("total_deletes", self.total_deletes)
+
                 return {
                     "success": success,
                     "message": f"Artifact {artifact.name} v{artifact.version} deleted"
@@ -251,6 +301,7 @@ class Run(BaseService):
             except HTTPException:
                 raise
             except Exception as e:
+                self.metrics.increment("delete_errors")
                 self.logger.error(f"Failed to delete artifact: {e}")
                 raise HTTPException(status_code=500, detail=str(e))
 
@@ -454,4 +505,177 @@ class Run(BaseService):
 
         except Exception as e:
             self.logger.error(f"Failed to search artifacts: {e}")
+            return {"success": False, "error": str(e)}
+
+    async def _gossip_publish_loop(self):
+        """
+        Periodically publish repository information to gossip
+        Allows all nodes to discover available versions
+        """
+        self.logger.info("Starting gossip publish loop")
+
+        while True:
+            try:
+                await asyncio.sleep(self.gossip_publish_interval)
+
+                # Get network component for gossip access
+                if not self.context:
+                    continue
+
+                network = self.context.get_shared("network")
+                if not network or not hasattr(network, 'gossip'):
+                    self.logger.debug("Network/gossip not available yet")
+                    continue
+
+                # Get latest versions by artifact type
+                latest_versions = await self._get_latest_versions_summary()
+
+                # Publish to gossip metadata
+                gossip = network.gossip
+                if hasattr(gossip, 'local_node_metadata'):
+                    gossip.local_node_metadata['repository'] = {
+                        'available_versions': latest_versions,
+                        'last_updated': datetime.now().isoformat(),
+                        'total_artifacts': len(latest_versions)
+                    }
+
+                    self.logger.debug(f"Published {len(latest_versions)} versions to gossip")
+                    self.metrics.increment("gossip_publishes")
+
+            except asyncio.CancelledError:
+                self.logger.info("Gossip publish loop cancelled")
+                break
+            except Exception as e:
+                self.logger.error(f"Error in gossip publish loop: {e}")
+                self.metrics.increment("gossip_publish_errors")
+                await asyncio.sleep(10)  # Back off on error
+
+    async def _get_latest_versions_summary(self) -> Dict[str, Any]:
+        """
+        Get summary of latest versions for each artifact
+
+        Returns:
+            Dictionary mapping artifact names to their latest versions
+        """
+        try:
+            artifacts = self.storage.list_artifacts(limit=1000)
+
+            # Group by name and find latest version
+            latest_by_name = {}
+            for artifact in artifacts:
+                name = artifact.name
+                if name not in latest_by_name:
+                    latest_by_name[name] = artifact
+                else:
+                    # Compare versions
+                    try:
+                        current_ver = SemanticVersion.parse(artifact.version)
+                        stored_ver = SemanticVersion.parse(latest_by_name[name].version)
+                        if current_ver > stored_ver:
+                            latest_by_name[name] = artifact
+                    except:
+                        # If parsing fails, use string comparison
+                        if artifact.version > latest_by_name[name].version:
+                            latest_by_name[name] = artifact
+
+            # Create summary
+            summary = {}
+            for name, artifact in latest_by_name.items():
+                summary[name] = {
+                    'version': artifact.version,
+                    'artifact_id': artifact.id,
+                    'artifact_type': artifact.artifact_type.value,
+                    'platform': artifact.platform,
+                    'size_bytes': artifact.size_bytes,
+                    'upload_date': artifact.upload_date.isoformat() if artifact.upload_date else None
+                }
+
+            return summary
+
+        except Exception as e:
+            self.logger.error(f"Failed to get latest versions summary: {e}")
+            return {}
+
+    @service_method(description="Get repository gossip info", public=True)
+    async def get_gossip_info(self) -> Dict[str, Any]:
+        """
+        Get repository information from gossip across cluster
+
+        Returns:
+            Dictionary with repository info from all nodes
+        """
+        try:
+            if not self.context:
+                return {"success": False, "error": "Context not available"}
+
+            network = self.context.get_shared("network")
+            if not network or not hasattr(network, 'gossip'):
+                return {"success": False, "error": "Gossip not available"}
+
+            gossip = network.gossip
+            repo_info = {}
+
+            # Collect repository info from all nodes
+            for node_id, node_info in gossip.node_registry.items():
+                if hasattr(node_info, 'metadata') and 'repository' in node_info.metadata:
+                    repo_info[node_id] = node_info.metadata['repository']
+
+            return {
+                "success": True,
+                "repository_nodes": repo_info,
+                "count": len(repo_info)
+            }
+
+        except Exception as e:
+            self.logger.error(f"Failed to get gossip info: {e}")
+            return {"success": False, "error": str(e)}
+
+    @service_method(description="Get repository metrics", public=True)
+    async def get_metrics(self) -> Dict[str, Any]:
+        """
+        Get repository metrics and statistics
+
+        Returns:
+            Dictionary with repository metrics
+        """
+        try:
+            # Get storage stats
+            storage_stats = self.storage.get_storage_stats() if self.storage else {}
+
+            return {
+                "success": True,
+                "metrics": {
+                    # Operation counts
+                    "total_uploads": self.total_uploads,
+                    "total_downloads": self.total_downloads,
+                    "total_deletes": self.total_deletes,
+
+                    # Error counts
+                    "upload_errors": self.upload_errors,
+                    "download_errors": self.download_errors,
+
+                    # Bandwidth
+                    "total_bytes_uploaded": self.total_bytes_uploaded,
+                    "total_bytes_downloaded": self.total_bytes_downloaded,
+
+                    # Storage stats
+                    "total_artifacts": storage_stats.get('total_artifacts', 0),
+                    "total_size_bytes": storage_stats.get('total_size_bytes', 0),
+                    "by_type": storage_stats.get('by_type', {}),
+                    "total_downloads_all_time": storage_stats.get('total_downloads', 0),
+
+                    # Averages
+                    "avg_upload_size": (
+                        self.total_bytes_uploaded / self.total_uploads
+                        if self.total_uploads > 0 else 0
+                    ),
+                    "avg_download_size": (
+                        self.total_bytes_downloaded / self.total_downloads
+                        if self.total_downloads > 0 else 0
+                    )
+                }
+            }
+
+        except Exception as e:
+            self.logger.error(f"Failed to get repository metrics: {e}")
             return {"success": False, "error": str(e)}
