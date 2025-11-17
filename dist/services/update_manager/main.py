@@ -212,14 +212,155 @@ class Run(BaseService):
         except:
             return 0
 
-    @service_method(description="Download and install update", public=True)
+    @service_method(description="Execute update from repository artifact", public=True)
+    async def execute_update(
+        self,
+        update_id: int,
+        artifact_id: int,
+        artifact_name: str,
+        target_version: str,
+        backup_enabled: bool = True,
+        auto_restart: bool = False
+    ) -> Dict[str, Any]:
+        """
+        Execute update from repository artifact (called by Update Server)
+
+        Args:
+            update_id: Update task ID from Update Server
+            artifact_id: Artifact ID in repository
+            artifact_name: Name of artifact
+            target_version: Target version
+            backup_enabled: Create backup before update
+            auto_restart: Automatically restart after installation
+        """
+        self.metrics.increment("execute_update_calls")
+
+        if self.update_in_progress:
+            return {
+                "success": False,
+                "error": "Update already in progress",
+                "phase": "busy"
+            }
+
+        if not self.proxy:
+            return {
+                "success": False,
+                "error": "Proxy not available"
+            }
+
+        self.update_in_progress = True
+        phase = "downloading"
+
+        try:
+            self.logger.info(f"Executing update {update_id}: {artifact_name} -> {target_version}")
+
+            # 1. Download artifact from repository
+            phase = "downloading"
+            self.logger.info(f"Downloading artifact {artifact_id} from repository...")
+            download_result = await self.proxy.repository.coordinator.download_artifact_rpc(
+                artifact_id=artifact_id,
+                node_id=self.context.config.node_id
+            )
+
+            if not download_result.get("success"):
+                return {
+                    "success": False,
+                    "error": f"Download failed: {download_result.get('error')}",
+                    "phase": phase
+                }
+
+            # 2. Verify artifact
+            phase = "validating"
+            artifact_data = download_result["file_data"]
+            expected_sha256 = download_result["sha256"]
+
+            calculated_sha256 = hashlib.sha256(artifact_data).hexdigest()
+            if calculated_sha256 != expected_sha256:
+                self.logger.error(f"SHA256 mismatch: expected {expected_sha256}, got {calculated_sha256}")
+                return {
+                    "success": False,
+                    "error": "Artifact integrity check failed (SHA256 mismatch)",
+                    "phase": phase
+                }
+
+            self.logger.info(f"Artifact verified: {len(artifact_data)} bytes, SHA256: {calculated_sha256[:16]}...")
+
+            # 3. Save artifact to downloads
+            artifact_file = self.downloads_dir / f"artifact_{artifact_id}_{target_version}.bin"
+            with open(artifact_file, 'wb') as f:
+                f.write(artifact_data)
+
+            # 4. Create backup if enabled
+            backup_dir = None
+            if backup_enabled:
+                phase = "backing_up"
+                backup_dir = await self._create_backup()
+                self.logger.info(f"Backup created: {backup_dir}")
+
+            # 5. Install artifact (determine type from extension or metadata)
+            phase = "installing"
+            install_result = await self._install_artifact(
+                artifact_file,
+                artifact_name,
+                target_version
+            )
+
+            if not install_result["success"]:
+                # Rollback on failure
+                if backup_dir:
+                    phase = "rolling_back"
+                    self.logger.error("Installation failed, rolling back...")
+                    await self._rollback(backup_dir)
+                return {
+                    "success": False,
+                    "error": install_result.get("error", "Installation failed"),
+                    "phase": phase
+                }
+
+            # 6. Update version
+            self.current_version = target_version
+            await self._save_state()
+
+            phase = "completed"
+            self.logger.info(f"Update {update_id} installed successfully")
+            self.metrics.increment("execute_update_success")
+
+            result = {
+                "success": True,
+                "update_id": update_id,
+                "version": target_version,
+                "backup_dir": str(backup_dir) if backup_dir else None,
+                "phase": phase,
+                "message": "Update installed successfully"
+            }
+
+            # 7. Auto restart if requested
+            if auto_restart:
+                self.logger.info("Auto-restart requested, scheduling restart...")
+                result["restarting"] = True
+                asyncio.create_task(self._schedule_restart())
+
+            return result
+
+        except Exception as e:
+            self.logger.error(f"Failed to execute update: {e}", exc_info=True)
+            self.metrics.increment("execute_update_errors")
+            return {
+                "success": False,
+                "error": str(e),
+                "phase": phase
+            }
+        finally:
+            self.update_in_progress = False
+
+    @service_method(description="Download and install update (legacy method)", public=True)
     async def install_update(
         self,
         version: str,
         auto_restart: bool = False
     ) -> Dict[str, Any]:
         """
-        Download and install an update
+        Download and install an update (legacy method for package-based updates)
 
         Args:
             version: Version to install
@@ -345,6 +486,231 @@ class Run(BaseService):
             f.write(f"{self.current_version}\n")
 
         return backup_dir
+
+    async def _install_artifact(
+        self,
+        artifact_file: Path,
+        artifact_name: str,
+        version: str
+    ) -> Dict[str, Any]:
+        """
+        Install artifact based on its type
+
+        Args:
+            artifact_file: Path to downloaded artifact
+            artifact_name: Name of artifact
+            version: Target version
+
+        Returns:
+            Result dictionary
+        """
+        try:
+            # Determine artifact type by name or extension
+            if artifact_name.endswith(('.tar.gz', '.tgz')):
+                # Service package (tarball)
+                return await self._install_package(artifact_file, version)
+
+            elif artifact_name.endswith(('.exe', '.bin', '')):
+                # Binary executable
+                return await self._install_binary(artifact_file, artifact_name)
+
+            elif artifact_name.endswith(('.zip',)):
+                # Zip archive
+                return await self._install_zip(artifact_file, version)
+
+            elif 'service' in artifact_name.lower():
+                # Assume service package
+                return await self._install_service(artifact_file, artifact_name, version)
+
+            else:
+                # Default: treat as binary
+                self.logger.warning(f"Unknown artifact type for {artifact_name}, treating as binary")
+                return await self._install_binary(artifact_file, artifact_name)
+
+        except Exception as e:
+            self.logger.error(f"Failed to install artifact: {e}", exc_info=True)
+            return {
+                "success": False,
+                "error": str(e)
+            }
+
+    async def _install_binary(self, binary_file: Path, artifact_name: str) -> Dict[str, Any]:
+        """
+        Install binary executable (replace current process)
+
+        Args:
+            binary_file: Path to binary file
+            artifact_name: Name of artifact
+
+        Returns:
+            Result dictionary
+        """
+        try:
+            import sys
+            import platform
+
+            self.logger.info(f"Installing binary: {artifact_name}")
+
+            # Get current executable path
+            current_exe = Path(sys.executable).resolve()
+            self.logger.info(f"Current executable: {current_exe}")
+
+            # Make binary executable (Unix)
+            if platform.system() != "Windows":
+                os.chmod(binary_file, 0o755)
+
+            # Platform-specific installation
+            if platform.system() == "Windows":
+                # On Windows, cannot replace running executable directly
+                # Use rename trick: current -> .old, new -> current
+                temp_old = current_exe.with_suffix(".old")
+
+                if current_exe.exists():
+                    os.chmod(current_exe, 0o755)
+                    shutil.move(str(current_exe), str(temp_old))
+
+                shutil.copy2(binary_file, current_exe)
+
+                # Try to remove old file (may fail if locked)
+                try:
+                    if temp_old.exists():
+                        os.remove(temp_old)
+                except:
+                    self.logger.debug(f"Could not remove {temp_old} (will be cleaned on restart)")
+
+            else:
+                # On Unix, can replace directly (old inode continues running)
+                shutil.copy2(binary_file, current_exe)
+                os.chmod(current_exe, 0o755)
+
+            self.logger.info("Binary installed successfully")
+            self.logger.warning("RESTART REQUIRED for update to take effect")
+
+            return {
+                "success": True,
+                "message": "Binary installed, restart required",
+                "restart_required": True
+            }
+
+        except Exception as e:
+            self.logger.error(f"Failed to install binary: {e}", exc_info=True)
+            return {
+                "success": False,
+                "error": str(e)
+            }
+
+    async def _install_service(
+        self,
+        service_file: Path,
+        service_name: str,
+        version: str
+    ) -> Dict[str, Any]:
+        """
+        Install service package to dist/services
+
+        Args:
+            service_file: Path to service package
+            service_name: Name of service
+            version: Version
+
+        Returns:
+            Result dictionary
+        """
+        try:
+            self.logger.info(f"Installing service: {service_name}")
+
+            # Extract service name from artifact name
+            # e.g., "my_service-1.0.0.tar.gz" -> "my_service"
+            base_name = service_name.split('-')[0].replace('.tar.gz', '').replace('.tgz', '')
+
+            # Target directory
+            services_dir = Path("dist/services")
+            service_dir = services_dir / base_name
+
+            # Extract package
+            extract_dir = self.downloads_dir / f"extract_{base_name}_{version}"
+            extract_dir.mkdir(parents=True, exist_ok=True)
+
+            if service_file.suffix in ['.tar', '.gz', '.tgz']:
+                with tarfile.open(service_file, 'r:*') as tar:
+                    tar.extractall(extract_dir)
+            else:
+                raise ValueError(f"Unsupported service package format: {service_file.suffix}")
+
+            # Copy to services directory
+            if service_dir.exists():
+                # Backup existing service
+                backup_service = service_dir.with_name(f"{service_dir.name}.backup")
+                if backup_service.exists():
+                    shutil.rmtree(backup_service)
+                shutil.move(str(service_dir), str(backup_service))
+
+            # Install new service
+            shutil.copytree(extract_dir, service_dir, dirs_exist_ok=True)
+
+            # Cleanup
+            shutil.rmtree(extract_dir)
+
+            self.logger.info(f"Service {base_name} installed successfully")
+
+            return {
+                "success": True,
+                "message": f"Service {base_name} installed",
+                "service_name": base_name,
+                "service_dir": str(service_dir)
+            }
+
+        except Exception as e:
+            self.logger.error(f"Failed to install service: {e}", exc_info=True)
+            return {
+                "success": False,
+                "error": str(e)
+            }
+
+    async def _install_zip(self, zip_file: Path, version: str) -> Dict[str, Any]:
+        """
+        Install from zip archive
+
+        Args:
+            zip_file: Path to zip file
+            version: Version
+
+        Returns:
+            Result dictionary
+        """
+        try:
+            import zipfile
+
+            self.logger.info(f"Installing from zip: {zip_file.name}")
+
+            # Extract to temporary directory
+            extract_dir = self.downloads_dir / f"extract_{version}"
+            extract_dir.mkdir(parents=True, exist_ok=True)
+
+            with zipfile.ZipFile(zip_file, 'r') as zf:
+                zf.extractall(extract_dir)
+
+            # Copy files to installation directories
+            for item in extract_dir.iterdir():
+                if item.is_dir():
+                    dst = Path(item.name)
+                    shutil.copytree(item, dst, dirs_exist_ok=True)
+                    self.logger.info(f"Updated: {item.name}")
+
+            # Cleanup
+            shutil.rmtree(extract_dir)
+
+            return {
+                "success": True,
+                "message": "Zip package installed"
+            }
+
+        except Exception as e:
+            self.logger.error(f"Failed to install zip: {e}", exc_info=True)
+            return {
+                "success": False,
+                "error": str(e)
+            }
 
     async def _install_package(self, package_file: Path, version: str) -> Dict[str, Any]:
         """Extract and install update package"""
