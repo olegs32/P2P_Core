@@ -27,12 +27,46 @@ from layers.service import BaseService, service_method
 from fastapi import UploadFile, File, Form, HTTPException, Request
 from fastapi.responses import FileResponse, StreamingResponse
 
-# Import models from local directory (service loader context)
+# Import models using importlib for dynamic loading in ServiceLoader context
 import sys
-sys.path.insert(0, os.path.dirname(__file__))
-from models.artifact import Artifact, ArtifactType, ArtifactStatus, ArtifactDependency
-from models.version import SemanticVersion, VersionComparator, VersionTag
-from storage.backend import StorageBackend
+import importlib.util
+
+def _load_local_module(module_name: str, file_path: str):
+    """Load a module from file path"""
+    spec = importlib.util.spec_from_file_location(module_name, file_path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    spec.loader.exec_module(module)
+    return module
+
+# Get service directory
+_service_dir = os.path.dirname(os.path.abspath(__file__))
+
+# Load models/artifact.py
+_artifact_module = _load_local_module(
+    'repository_artifact',
+    os.path.join(_service_dir, 'models', 'artifact.py')
+)
+Artifact = _artifact_module.Artifact
+ArtifactType = _artifact_module.ArtifactType
+ArtifactStatus = _artifact_module.ArtifactStatus
+ArtifactDependency = _artifact_module.ArtifactDependency
+
+# Load models/version.py
+_version_module = _load_local_module(
+    'repository_version',
+    os.path.join(_service_dir, 'models', 'version.py')
+)
+SemanticVersion = _version_module.SemanticVersion
+VersionComparator = _version_module.VersionComparator
+VersionTag = _version_module.VersionTag
+
+# Load storage/backend.py
+_backend_module = _load_local_module(
+    'repository_storage_backend',
+    os.path.join(_service_dir, 'storage', 'backend.py')
+)
+StorageBackend = _backend_module.StorageBackend
 
 
 class Run(BaseService):

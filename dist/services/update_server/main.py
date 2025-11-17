@@ -14,14 +14,32 @@ from datetime import datetime
 
 from layers.service import BaseService, service_method
 
-# Import models from local directory (service loader context)
+# Import models using importlib for dynamic loading in ServiceLoader context
 import sys
 import os
-sys.path.insert(0, os.path.dirname(__file__))
-from models.update_task import (
-    UpdateTask, UpdateStrategy, UpdateStatus,
-    NodeUpdate, NodeUpdateStatus
+import importlib.util
+
+def _load_local_module(module_name: str, file_path: str):
+    """Load a module from file path"""
+    spec = importlib.util.spec_from_file_location(module_name, file_path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    spec.loader.exec_module(module)
+    return module
+
+# Get service directory
+_service_dir = os.path.dirname(os.path.abspath(__file__))
+
+# Load models/update_task.py
+_update_task_module = _load_local_module(
+    'update_server_update_task',
+    os.path.join(_service_dir, 'models', 'update_task.py')
 )
+UpdateTask = _update_task_module.UpdateTask
+UpdateStrategy = _update_task_module.UpdateStrategy
+UpdateStatus = _update_task_module.UpdateStatus
+NodeUpdate = _update_task_module.NodeUpdate
+NodeUpdateStatus = _update_task_module.NodeUpdateStatus
 
 
 class Run(BaseService):
