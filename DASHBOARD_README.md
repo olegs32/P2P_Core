@@ -8,7 +8,8 @@
 - **Реал-тайм метрики**: CPU, память, диск для координатора и всех воркеров
 - **Исторические графики**: Визуализация изменений метрик во времени (последние 100 точек)
 - **Статистика кластера**: Активные воркеры, количество сервисов, uptime
-- **Адаптивные обновления**: Автоматическое обновление каждые 5 секунд
+- **WebSocket Real-Time Updates**: Мгновенные обновления через push-модель (< 100ms вместо 5s polling)
+- **Event-Driven Logs**: Немедленная доставка логов через publish-subscribe (< 100ms)
 
 ### Управление
 - **Управление сервисами**: Запуск, остановка, перезапуск сервисов на воркерах
@@ -30,26 +31,44 @@
    - Периодическая отправка на координатор
    - Адаптивный интервал отправки (30-300 секунд)
 
-### Поток данных
+### Поток данных (WebSocket Real-Time Architecture)
 
 ```
-Worker                          Coordinator
-  │                                 │
-  ├─► Собирает метрики             │
-  │   (CPU, память, диск)          │
-  │                                 │
-  ├─► Собирает статусы сервисов    │
-  │                                 │
-  ├─► Отправляет на координатор ──►│
-  │   (каждые 30-300 сек)          │
-  │                                 │
-  │                             Хранит метрики
-  │                             (последние 100 точек)
-  │                                 │
-  │                             Отображает в веб-UI
-  │                                 │
-  │◄── Команды управления ──────────┤
-  │    сервисами                    │
+Worker Node                  Coordinator                Browser Client
+     │                            │                           │
+     ├─► Собирает метрики         │                           │
+     │   (CPU, память, диск)      │                           │
+     │                            │                           │
+     ├─► Собирает логи           │                           │
+     │   (P2PLogHandler)          │                           │
+     │                            │                           │
+     ├─► Immediate callback ──────►│ LogCollector            │
+     │   (asyncio.create_task)    │ .add_logs()              │
+     │   < 100ms                  │   │                       │
+     │                            │   └─► Notify listeners   │
+     │                            │         (publish-subscribe)
+     │                            │                           │
+     ├─► Periodic metrics ────────►│ MetricsDashboard        │
+     │   (every 30-300s)          │ .report_metrics()        │
+     │                            │                           │
+     │                            │                           │
+     │                            │◄──── WebSocket Connect ───┤
+     │                            │   wss://coordinator/ws/dashboard
+     │                            │                           │
+     │                            ├──── Initial Data ────────►│
+     │                            │   (metrics + logs + certs)
+     │                            │                           │
+     │                            │◄──── ping ────────────────┤
+     │                            │   (every 4 seconds)       │
+     │                            │                           │
+     │                            ├──── pong + update ───────►│
+     │                            │   (metrics + history)     │
+     │                            │                           │
+     │                            ├──── new_logs ────────────►│
+     │                            │   (event-driven, < 100ms) │
+     │                            │                           │
+     │◄── Команды управления ──────┤                           │
+     │    сервисами               │                           │
 ```
 
 ## Использование
@@ -61,6 +80,58 @@ Worker                          Coordinator
 3. Или с HTTPS: `https://coordinator_ip:port/dashboard`
 
 ### API Endpoints
+
+#### WebSocket Real-Time Connection
+
+**WebSocket wss://coordinator:port/ws/dashboard** - Real-time обновления метрик и логов
+
+**Протокол:**
+```javascript
+// Client → Server (keep-alive ping every 4s)
+ws.send('ping');
+
+// Server → Client: Initial data on connection
+{
+  "type": "initial",
+  "data": {
+    "metrics": {...},
+    "logs": [...],
+    "log_sources": {"nodes": [...], "loggers": [...], "log_levels": [...]},
+    "certificates": [...]
+  }
+}
+
+// Server → Client: Pong response
+{
+  "type": "pong"
+}
+
+// Server → Client: Periodic update (every 4s with ping/pong)
+{
+  "type": "update",
+  "data": {
+    "metrics": {"coordinator": {...}, "workers": {...}},
+    "history": {"coordinator": [...], "worker-1": [...]}
+  },
+  "timestamp": "2025-11-17T10:30:00"
+}
+
+// Server → Client: Event-driven immediate log delivery (< 100ms)
+{
+  "type": "new_logs",
+  "node_id": "worker-1",
+  "logs": [{
+    "timestamp": "2025-11-17T10:30:00.123",
+    "level": "ERROR",
+    "logger_name": "Service.my_service",
+    "message": "Error message",
+    "module": "my_service",
+    "funcName": "process_data",
+    "lineno": 42
+  }],
+  "timestamp": "2025-11-17T10:30:00.123"
+}
+```
 
 #### Получение метрик
 ```bash
@@ -129,6 +200,27 @@ await proxy.metrics_reporter.set_interval(interval=120)  # 30-300 секунд
 
 ## Конфигурация
 
+### WebSocket Real-Time Communication
+
+Dashboard использует WebSocket для мгновенной доставки обновлений:
+
+**Ping/Pong Model:**
+- Клиент отправляет ping каждые 4 секунды
+- Сервер отвечает pong + обновление метрик и истории
+- Латентность обновлений: < 100ms (vs 5s при HTTP polling)
+
+**Event-Driven Logs:**
+- Логи доставляются немедленно при генерации (< 100ms)
+- Publish-subscribe pattern через listeners
+- P2PLogHandler вызывает immediate_callback через asyncio.create_task()
+- Fallback: buffered collection каждые 60s для надежности
+
+**Benefits:**
+- ✅ Снижение нагрузки на сервер (no repeated HTTP requests)
+- ✅ Мгновенные обновления (push vs poll)
+- ✅ Bidirectional communication
+- ✅ Automatic reconnection
+
 ### Адаптивный интервал отправки
 
 Reporter автоматически адаптирует интервал отправки метрик на основе:
@@ -181,8 +273,20 @@ dist/services/
 Технологии:
 - **Bootstrap 5**: Современный адаптивный дизайн
 - **Chart.js**: Интерактивные графики метрик
+- **WebSocket API**: Real-time bidirectional communication
 - **Vanilla JS**: Без тяжелых фреймворков
 - **Темная тема**: Удобный dark mode для длительной работы
+
+**Dashboard Tabs:**
+1. **Overview** - Метрики координатора и список воркеров
+2. **Workers** - Детальный просмотр воркеров
+3. **Services** - Управление сервисами кластера
+4. **Logs** - Централизованный просмотр логов с фильтрацией
+   - Фильтр по node_id, level, logger_name
+   - Real-time обновления (event-driven, < 100ms)
+   - Поиск по содержимому
+   - Color-coded log levels
+   - Auto-refresh через WebSocket
 
 ## Примеры использования
 

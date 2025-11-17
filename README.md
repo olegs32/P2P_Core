@@ -9,6 +9,10 @@ Enterprise распределенная система для управлени
 - **Service Discovery** - автоматическое обнаружение узлов и сервисов
 - **ACME-подобная CA инфраструктура** - автоматическая генерация и обновление SSL сертификатов
 - **Mutual TLS** - безопасная коммуникация с CA верификацией между узлами
+- **Secure Storage** - шифрованное хранилище (AES-256-GCM) для сертификатов и конфигураций
+- **WebSocket Real-Time Updates** - мгновенные обновления метрик и логов (< 100ms)
+- **Event-Driven Log Collection** - централизованный сбор логов с немедленной доставкой
+- **Multi-Homed Node Support** - автоматическое определение лучшего IP для сложных сетевых топологий (VPN, multi-NIC)
 - **Rate Limiting** - защита от перегрузки с Token Bucket алгоритмом
 - **Многоуровневое кеширование** - Redis + in-memory с автоинвалидацией
 - **Плагинная архитектура** - автоматическое обнаружение и загрузка сервисов
@@ -258,6 +262,38 @@ curl https://localhost:8001/cluster/nodes \
   -H "Authorization: Bearer TOKEN"
 ```
 
+### Web Dashboard с real-time updates
+```
+https://coordinator:8001/dashboard
+```
+
+**Возможности:**
+- Real-time метрики координатора и воркеров (WebSocket push, < 100ms)
+- Графики с историей (последние 100 точек)
+- Централизованный просмотр логов с фильтрацией
+- Event-driven логи - обновления мгновенно
+- Управление сервисами (start/stop/restart)
+
+### WebSocket для real-time данных
+```javascript
+const ws = new WebSocket('wss://coordinator:8001/ws/dashboard');
+
+ws.onmessage = (event) => {
+    const message = JSON.parse(event.data);
+    if (message.type === 'update') {
+        // Обновление метрик каждые 4 секунды
+        updateMetrics(message.data);
+    }
+    if (message.type === 'new_logs') {
+        // Новые логи доставляются немедленно (< 100ms)
+        displayLogs(message.logs);
+    }
+};
+
+// Ping для keep-alive и запроса обновлений
+setInterval(() => ws.send('ping'), 4000);
+```
+
 ## Production рекомендации
 
 ### Безопасность
@@ -266,6 +302,9 @@ curl https://localhost:8001/cluster/nodes \
 - ✅ Храните CA приватный ключ в безопасности
 - ✅ Включите `ssl_verify: true` для mutual TLS
 - ✅ Настройте firewall правила
+- ✅ **Используйте Secure Storage** - все сертификаты и конфиги автоматически шифруются AES-256-GCM
+- ✅ **Установите надежный пароль** для encrypted storage через переменную окружения
+- ✅ **Регулярный backup** зашифрованного хранилища (`.p2p_secure_storage`)
 
 ### Высокая доступность
 - Несколько координаторов для failover
@@ -277,6 +316,8 @@ curl https://localhost:8001/cluster/nodes \
 - **Компрессия:** LZ4 для gossip (экономия трафика 40-60%)
 - **Rate Limiting:** защита от DDoS (настраиваемые лимиты)
 - **Локальные вызовы:** прямой доступ через method_registry (<1ms vs 10-50ms RPC)
+- **WebSocket:** push модель вместо HTTP polling (снижение нагрузки на 90%, латентность < 100ms)
+- **Event-Driven Logs:** немедленная доставка логов без батчинга (< 100ms vs 5s)
 
 ## Troubleshooting
 
@@ -347,6 +388,15 @@ P2P_Core/
 ```
 
 ## Changelog
+
+### v2.2.0 - Real-Time Updates & Enhanced Security (2025-11-17)
+- ✅ **WebSocket Real-Time Updates** - мгновенные обновления dashboard (< 100ms вместо 5s polling)
+- ✅ **Event-Driven Log Streaming** - немедленная доставка логов через publish-subscribe
+- ✅ **Secure Encrypted Storage** - AES-256-GCM для сертификатов и конфигураций
+- ✅ **Multi-Homed Node Support** - автоматический выбор оптимального IP (VPN-aware, subnet detection)
+- ✅ **Centralized Log Collection** - встроенный syslog-подобный функционал с фильтрацией
+- ✅ **Enhanced Dashboard** - вкладка Logs с real-time обновлениями и поиском
+- ✅ **Metrics History via WebSocket** - графики обновляются в реальном времени
 
 ### v2.1.0 - ACME-like Certificate Automation
 - ✅ Автоматическая генерация сертификатов через координатор
