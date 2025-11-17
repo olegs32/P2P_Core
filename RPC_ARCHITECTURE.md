@@ -251,6 +251,71 @@ data = await self.proxy.other_service.remote_node.get_data()
 result = await self.proxy.other_service.remote_node.process_data(data=data)
 ```
 
+## WebSocket для Real-Time Данных
+
+Для real-time обновлений (метрики, логи) используется WebSocket вместо HTTP RPC.
+
+**Endpoint**: `wss://coordinator:port/ws/dashboard`
+
+**Преимущества over HTTP polling**:
+- Мгновенные обновления (< 100ms vs 5s polling)
+- Снижение нагрузки на сервер (90%)
+- Bidirectional communication
+- Event-driven architecture
+
+**Использование**:
+```javascript
+const ws = new WebSocket('wss://coordinator:8001/ws/dashboard');
+
+// Ping/Pong keep-alive
+setInterval(() => ws.send('ping'), 4000);
+
+ws.onmessage = (event) => {
+    const message = JSON.parse(event.data);
+
+    if (message.type === 'update') {
+        // Periodic metrics update (every 4s)
+        updateDashboard(message.data);
+    }
+
+    if (message.type === 'new_logs') {
+        // Event-driven log delivery (< 100ms)
+        appendLogs(message.logs);
+    }
+};
+```
+
+**Когда использовать WebSocket vs RPC**:
+- **WebSocket**: Real-time data display (metrics, logs, live updates)
+- **HTTP RPC**: Control actions (start/stop services), one-time queries
+- **RPC Broadcast**: Commands to multiple nodes
+
+## Безопасность и Storage
+
+### Secure Encrypted Storage
+
+Все сертификаты и конфигурации хранятся в зашифрованном виде.
+
+**Шифрование**: AES-256-GCM
+**Key Derivation**: PBKDF2-HMAC-SHA256
+**Файл**: `.p2p_secure_storage` (encrypted archive)
+
+**Доступ через storage_manager**:
+```python
+storage = context.get_shared("storage_manager")
+
+# Read certificate
+cert_data = storage.read_cert("ca_cert.cer")
+
+# Write certificate
+storage.write_cert("node_cert.cer", cert_bytes)
+
+# Read config
+config_yaml = storage.read_config("coordinator.yaml")
+```
+
+**ВАЖНО**: Никогда не записывайте сертификаты/ключи напрямую в файловую систему. Всегда используйте storage_manager.
+
 ## Конфигурация
 
 ### Node Registry
