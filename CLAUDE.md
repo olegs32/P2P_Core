@@ -2794,7 +2794,28 @@ This document should be your primary reference when working with the P2P_Core co
 
 ## Recent Updates
 
-**2025-11-14 (Latest Session - WebSocket Real-Time Updates)**:
+**2025-11-17 (Latest Session - Documentation Actualization for v2.2.0)**:
+- **Comprehensive documentation update across all project files**
+  - Updated README.md with WebSocket, Secure Storage, Event-Driven Logs, Multi-Homed Nodes
+  - Updated DASHBOARD_README.md with WebSocket architecture and event-driven log streaming
+  - Updated dist/services/metrics_dashboard/README.md with comprehensive WebSocket API and Logs tab docs
+  - Updated RPC_ARCHITECTURE.md with WebSocket usage patterns and Secure Storage sections
+  - Updated REFACTOR_README.md with complete v2.2.0 changelog and new features documentation
+- **Added detailed examples and API references**
+  - WebSocket protocol documentation with client/server examples
+  - Event-driven log streaming architecture with publish-subscribe pattern
+  - Secure Encrypted Storage usage patterns (AES-256-GCM)
+  - Multi-homed node support configuration examples
+  - Performance metrics and comparisons (90% reduction in server load, <100ms latency)
+- **Version 2.2.0 release highlights**
+  - WebSocket Real-Time Updates (< 100ms vs 5s HTTP polling)
+  - Event-Driven Log Streaming with immediate delivery (< 100ms)
+  - Secure Encrypted Storage for all sensitive data (AES-256-GCM)
+  - Multi-Homed Node Support with VPN-aware IP selection
+  - Enhanced Dashboard with Logs tab and real-time updates
+  - Metrics History via WebSocket with smooth animations
+
+**2025-11-14 (WebSocket Real-Time Updates Implementation)**:
 - **Implemented WebSocket-based real-time dashboard updates**
   - Replaced HTTP polling with WebSocket push model
   - Client sends ping every 4 seconds, server responds with pong + data update
