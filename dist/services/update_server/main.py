@@ -14,7 +14,11 @@ from datetime import datetime
 
 from layers.service import BaseService, service_method
 
-from .models.update_task import (
+# Import models from local directory (service loader context)
+import sys
+import os
+sys.path.insert(0, os.path.dirname(__file__))
+from models.update_task import (
     UpdateTask, UpdateStrategy, UpdateStatus,
     NodeUpdate, NodeUpdateStatus
 )

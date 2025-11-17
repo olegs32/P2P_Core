@@ -27,9 +27,12 @@ from layers.service import BaseService, service_method
 from fastapi import UploadFile, File, Form, HTTPException, Request
 from fastapi.responses import FileResponse, StreamingResponse
 
-from .models.artifact import Artifact, ArtifactType, ArtifactStatus, ArtifactDependency
-from .models.version import SemanticVersion, VersionComparator, VersionTag
-from .storage.backend import StorageBackend
+# Import models from local directory (service loader context)
+import sys
+sys.path.insert(0, os.path.dirname(__file__))
+from models.artifact import Artifact, ArtifactType, ArtifactStatus, ArtifactDependency
+from models.version import SemanticVersion, VersionComparator, VersionTag
+from storage.backend import StorageBackend
 
 
 class Run(BaseService):
