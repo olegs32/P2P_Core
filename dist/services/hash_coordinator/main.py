@@ -1047,6 +1047,10 @@ class Run(BaseService):
                 for sol in solutions:
                     self.logger.warning(f"  Solution: {sol.get('combination')} → {sol.get('hash')}")
 
+            # Генерируем новые батчи если нужно (lookahead)
+            active_workers = await self._get_active_workers()
+            await generator.ensure_lookahead_batches(active_workers)
+
             # ВАЖНО: Публикуем обновленные batches в gossip
             await self._publish_batches(job_id, generator)
 
