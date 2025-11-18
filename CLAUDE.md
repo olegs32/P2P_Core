@@ -2786,6 +2786,78 @@ enable_address_probing: false
 - **HTTP POST**: Control actions (start/stop services, certificate management)
 - **HTTP GET**: One-time queries, static resources
 
+### ADR-010: Why Version Confirmation After Updates?
+
+**Decision**: Wait for workers to return with expected version before marking update as COMPLETED
+
+**Problem**:
+Updates were marked as COMPLETED immediately after RPC call succeeded, but:
+- Worker might fail during restart
+- Update script might fail to replace executable
+- Worker might restart with old version due to errors
+- Dashboard showed "completed" when worker was still restarting
+
+**Solution**:
+- Add `_wait_for_node_version()` that polls worker every 5 seconds
+- Call `system.get_system_info()` to get actual running version
+- Only mark COMPLETED when version matches expected version
+- Timeout after 120 seconds with FAILED status
+
+**Implementation**:
+```python
+async def _wait_for_node_version(self, node_id: str, expected_version: str, timeout: int = 120):
+    start_time = time.time()
+    while (time.time() - start_time) < timeout:
+        try:
+            system_info = await self.proxy.system.__getattr__(node_id).get_system_info()
+            current_version = system_info.get("version", "unknown")
+            if current_version == expected_version:
+                return True
+        except Exception:
+            pass  # Worker not available yet
+        await asyncio.sleep(5)
+    return False
+```
+
+**Status Progression**:
+1. `PENDING` - Update queued
+2. `DOWNLOADING` - Downloading artifact from repository
+3. `INSTALLING` - Installing artifact on node (implied)
+4. `RESTARTING` - Update installed, waiting for node restart
+5. `COMPLETED` - Node came back with expected version
+6. `FAILED` - Timeout or version mismatch
+
+**Rationale**:
+- **Reliability**: Detect failed updates that would otherwise appear successful
+- **Observability**: Dashboard shows accurate update progress
+- **Debugging**: Clear distinction between install success and restart failure
+- **Safety**: Prevents treating failed updates as successful
+
+**Consequences**:
+- ✅ Update status reflects actual state
+- ✅ Failed restarts properly detected
+- ✅ Version mismatches caught immediately
+- ✅ Better debugging experience
+- ❌ Updates take longer (additional 5-120 seconds for verification)
+- ❌ Network issues can cause false failures
+- ❌ Requires workers to report correct version in system_info
+
+**Applied to**:
+- Rolling updates: Sequential verification per node
+- Canary updates: Canary verified before proceeding to other nodes
+- All-at-once updates: Parallel verification of all nodes
+
+**Trade-offs**:
+- **Without verification** (old):
+  - ✅ Fast (no wait time)
+  - ❌ False positives (failed updates marked as completed)
+  - ❌ No visibility into restart failures
+
+- **With verification** (new):
+  - ✅ Accurate status tracking
+  - ✅ Catches restart failures
+  - ❌ Slower (additional verification time)
+
 ---
 
 **End of CLAUDE.md**
@@ -2794,7 +2866,44 @@ This document should be your primary reference when working with the P2P_Core co
 
 ## Recent Updates
 
-**2025-11-17 (Latest Session - Documentation Actualization for v2.2.0)**:
+**2025-11-18 (Latest Session - Update System Improvements and Service Discovery Fix)**:
+- **Update History Persistence Implementation**
+  - Added `from_dict()` and `to_dict()` methods to UpdateTask and NodeUpdate models
+  - History now persists to `data/update_server/update_history.json` on cleanup
+  - Proper datetime and enum serialization/deserialization
+  - Update counter resumes from last ID to prevent duplicates
+  - History survives coordinator restarts
+- **Fixed Artifact Loading Bug in Dashboard**
+  - Added `loadArtifactSelector()` function called from `initializeUpdates()`
+  - Artifacts now populate in Create Update Task form immediately
+  - No longer requires visiting Repository tab first to load artifacts
+- **Windows Executable Replacement Mechanism**
+  - Replaced failing in-place replacement with batch script approach
+  - Creates `update_and_restart.bat` that executes on process shutdown
+  - Script waits for process exit, renames old exe, copies new exe, restarts
+  - Fixed batch script self-deletion using `(goto) 2>nul & del "%~f0"` trick
+  - Console window properly closes after update completion
+  - Prevents `PermissionError [WinError 5]` when replacing running executable
+- **Service Loading Path Discovery Fix**
+  - Fixed `get_services_path()` to correctly discover pluggable services in `dist/services/`
+  - Was searching: `/layers/services` → Now searches: `/dist/services/`
+  - Added project root detection (parent of layers/ directory)
+  - All 9 services now load correctly including metrics_dashboard, repository, update_server
+  - Dashboard now accessible at `/dashboard` endpoint
+- **Version Confirmation Tracking After Updates**
+  - Added `_wait_for_node_version()` method to verify worker returned with new version
+  - Updates wait up to 120 seconds for worker to restart with expected version
+  - Status progression: DOWNLOADING → RESTARTING → COMPLETED (instead of immediate COMPLETED)
+  - Applied to all update strategies: rolling, canary, all-at-once
+  - Checks actual worker version via `system.get_system_info()` RPC call every 5 seconds
+  - Update only marked COMPLETED when worker is online with new version
+  - Timeout results in FAILED status with clear error message
+- **Security Fix: Configuration Storage**
+  - Removed accidental exposure of config files to disk
+  - Confirmed all configs stored only in encrypted secure storage
+  - Config path `config/coordinator.yaml` refers to path INSIDE secure storage, not filesystem
+
+**2025-11-17 (Documentation Actualization for v2.2.0)**:
 - **Comprehensive documentation update across all project files**
   - Updated README.md with WebSocket, Secure Storage, Event-Driven Logs, Multi-Homed Nodes
   - Updated DASHBOARD_README.md with WebSocket architecture and event-driven log streaming
