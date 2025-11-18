@@ -1499,7 +1499,7 @@ class Run(BaseService):
         async def get_job_status(job_id: str):
             """Get status of specific hash job"""
             try:
-                result = await self.proxy.hash_coordinator.get_job_status(job_id)
+                result = await self.proxy.hash_coordinator.get_job_status(job_id=job_id)
                 return result
 
             except Exception as e:

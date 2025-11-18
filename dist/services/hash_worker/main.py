@@ -22,71 +22,13 @@ from typing import Dict, List, Optional, Any, Set
 
 from layers.service import BaseService, service_method
 
-
-class HashAlgorithms:
-    """Поддерживаемые hash алгоритмы"""
-
-    ALGORITHMS = {
-        # SHA-2 family
-        "md5": lambda: hashlib.md5(),
-        "sha1": lambda: hashlib.sha1(),
-        "sha224": lambda: hashlib.sha224(),
-        "sha256": lambda: hashlib.sha256(),
-        "sha384": lambda: hashlib.sha384(),
-        "sha512": lambda: hashlib.sha512(),
-        "sha512_224": lambda: hashlib.new('sha512_224'),
-        "sha512_256": lambda: hashlib.new('sha512_256'),
-
-        # SHA-3 family
-        "sha3_224": lambda: hashlib.sha3_224(),
-        "sha3_256": lambda: hashlib.sha3_256(),
-        "sha3_384": lambda: hashlib.sha3_384(),
-        "sha3_512": lambda: hashlib.sha3_512(),
-        "shake_128": lambda: hashlib.shake_128(),
-        "shake_256": lambda: hashlib.shake_256(),
-
-        # BLAKE2
-        "blake2b": lambda: hashlib.blake2b(),
-        "blake2s": lambda: hashlib.blake2s(),
-    }
-
-    @staticmethod
-    def compute_hash(data: bytes, algo: str, output_length: int = None) -> bytes:
-        """Вычисляет хеш с поддержкой различных алгоритмов"""
-        if algo == "ntlm":
-            # NTLM = MD4(UTF-16LE(password))
-            return hashlib.new('md4', data.decode('utf-8').encode('utf-16le')).digest()
-
-        elif algo.startswith("wpa"):
-            # WPA/WPA2 обрабатывается отдельно
-            raise ValueError("WPA requires SSID parameter, use compute_wpa_psk()")
-
-        elif algo in HashAlgorithms.ALGORITHMS:
-            hasher = HashAlgorithms.ALGORITHMS[algo]()
-            hasher.update(data)
-
-            # SHAKE требует output_length
-            if algo.startswith("shake_"):
-                if output_length is None:
-                    output_length = 32  # default 256 bits
-                return hasher.digest(output_length)
-            else:
-                return hasher.digest()
-        else:
-            raise ValueError(f"Unsupported algorithm: {algo}")
-
-    @staticmethod
-    def compute_wpa_psk(passphrase: str, ssid: str) -> bytes:
-        """
-        WPA/WPA2 PSK = PBKDF2-HMAC-SHA1(passphrase, SSID, 4096 iterations, 32 bytes)
-        """
-        return hashlib.pbkdf2_hmac(
-            'sha1',
-            passphrase.encode('utf-8'),
-            ssid.encode('utf-8'),
-            iterations=4096,
-            dklen=32
-        )
+# Import worker functions from separate module (required for multiprocessing pickling)
+from .hash_computer_workers import (
+    compute_brute_subchunk,
+    compute_dict_subchunk,
+    HashAlgorithms,
+    MutationEngine
+)
 
 
 class SystemMonitor:
@@ -137,164 +79,6 @@ class SystemMonitor:
 
         # Минимум 1 worker, максимум max_workers
         return max(1, min(optimal, max_workers))
-
-
-class MutationEngine:
-    """Движок мутаций для dictionary attack"""
-
-    @staticmethod
-    def apply_mutations(word: str, rules: List[str]) -> List[str]:
-        """
-        Применяет правила мутации к слову
-
-        Правила:
-        - l: lowercase
-        - u: uppercase
-        - c: capitalize
-        - $X: append character X
-        - ^X: prepend character X
-        - sa@: substitute 'a' with '@'
-        - d: duplicate
-        - r: reverse
-        """
-        mutations = [word]
-
-        for rule in rules:
-            new_mutations = []
-
-            for w in mutations:
-                if rule == "l":
-                    new_mutations.append(w.lower())
-                elif rule == "u":
-                    new_mutations.append(w.upper())
-                elif rule == "c":
-                    new_mutations.append(w.capitalize())
-                elif rule == "d":
-                    new_mutations.append(w + w)
-                elif rule == "r":
-                    new_mutations.append(w[::-1])
-                elif rule.startswith("$"):
-                    # Append
-                    new_mutations.append(w + rule[1:])
-                elif rule.startswith("^"):
-                    # Prepend
-                    new_mutations.append(rule[1:] + w)
-                elif rule.startswith("s"):
-                    # Substitute: sab = replace 'a' with 'b'
-                    if len(rule) == 3:
-                        new_mutations.append(w.replace(rule[1], rule[2]))
-                else:
-                    new_mutations.append(w)
-
-            mutations = new_mutations
-
-        return mutations
-
-
-# ==================== Top-level functions for multiprocessing ====================
-# Эти функции должны быть top-level для pickling в multiprocessing
-
-def _compute_brute_subchunk(args):
-    """Worker function для brute force sub-chunk (picklable)"""
-    (start_idx, end_idx, charset_list, length, hash_algo, ssid,
-     target_hash_set_hex) = args
-
-    solutions = []
-    hash_count = 0
-    base = len(charset_list)
-
-    # Преобразуем hex hashes обратно в bytes
-    if target_hash_set_hex:
-        target_hash_set = {bytes.fromhex(h) for h in target_hash_set_hex}
-    else:
-        target_hash_set = None
-
-    # index_to_combination inline
-    def idx_to_comb(idx):
-        result = [None] * length
-        for pos in range(length - 1, -1, -1):
-            result[pos] = charset_list[idx % base]
-            idx //= base
-        return ''.join(result)
-
-    for idx in range(start_idx, end_idx):
-        combination = idx_to_comb(idx)
-
-        # Вычисляем хеш
-        if hash_algo.startswith("wpa"):
-            if not ssid:
-                raise ValueError("SSID required for WPA/WPA2")
-            hash_bytes = HashAlgorithms.compute_wpa_psk(combination, ssid)
-        else:
-            hash_bytes = HashAlgorithms.compute_hash(
-                combination.encode(),
-                hash_algo
-            )
-
-        # Проверка на совпадение
-        if target_hash_set and hash_bytes in target_hash_set:
-            hash_hex = hash_bytes.hex()
-            solutions.append({
-                "combination": combination,
-                "hash": hash_hex,
-                "index": idx,
-                "mode": "brute"
-            })
-
-        hash_count += 1
-
-    return solutions, hash_count
-
-
-def _compute_dict_subchunk(args):
-    """Worker function для dictionary sub-chunk (picklable)"""
-    (words, mutations, hash_algo, ssid, target_hash_set_hex, base_index) = args
-
-    solutions = []
-    hash_count = 0
-
-    # Преобразуем hex hashes обратно в bytes
-    if target_hash_set_hex:
-        target_hash_set = {bytes.fromhex(h) for h in target_hash_set_hex}
-    else:
-        target_hash_set = None
-
-    mutation_engine = MutationEngine()
-
-    for idx, word in enumerate(words):
-        # Генерируем мутации
-        if mutations:
-            candidates = mutation_engine.apply_mutations(word, mutations)
-        else:
-            candidates = [word]
-
-        # Проверяем каждый кандидат
-        for candidate in candidates:
-            # Вычисляем хеш
-            if hash_algo.startswith("wpa"):
-                if not ssid:
-                    raise ValueError("SSID required for WPA/WPA2")
-                hash_bytes = HashAlgorithms.compute_wpa_psk(candidate, ssid)
-            else:
-                hash_bytes = HashAlgorithms.compute_hash(
-                    candidate.encode(),
-                    hash_algo
-                )
-
-            # Проверка на совпадение
-            if target_hash_set and hash_bytes in target_hash_set:
-                hash_hex = hash_bytes.hex()
-                solutions.append({
-                    "combination": candidate,
-                    "hash": hash_hex,
-                    "index": base_index + idx,
-                    "base_word": word,
-                    "mode": "dictionary"
-                })
-
-            hash_count += 1
-
-    return solutions, hash_count
 
 
 class HashComputer:
@@ -479,7 +263,7 @@ class HashComputer:
             current = subchunk_end
 
         # Выполняем параллельно с async результатами
-        results = pool.map(_compute_brute_subchunk, tasks)
+        results = pool.map(compute_brute_subchunk, tasks)
 
         # Собираем результаты
         for solutions, hash_count in results:
@@ -643,7 +427,7 @@ class HashComputer:
             current = subchunk_end
 
         # Параллельное выполнение
-        results = pool.map(_compute_dict_subchunk, tasks)
+        results = pool.map(compute_dict_subchunk, tasks)
 
         # Собираем результаты
         for solutions, hash_count in results:
