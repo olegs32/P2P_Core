@@ -332,13 +332,8 @@ class DynamicChunkGenerator:
                     logger = logging.getLogger("DynamicChunkGenerator")
                     logger.info(f"Chunk {chunk_id} status: {old_status} → solved")
 
-                    # Обновляем производительность
-                    if hasattr(chunk, 'assigned_worker'):
-                        self.performance.record_chunk_completion(
-                            chunk.assigned_worker,
-                            chunk.chunk_size,
-                            hash_count
-                        )
+                    # Производительность обновляется в _process_worker_chunk_status
+                    # где есть доступ к time_taken из gossip
                     return
 
         if not found:
@@ -1022,10 +1017,30 @@ class Run(BaseService):
         # Обрабатываем статус "solved" - чанк завершен
         if chunk_status == "solved":
             hash_count = status.get("hash_count", 0)
+            time_taken = status.get("time_taken", 0)
             solutions = status.get("solutions", [])
 
             # Обновляем статус чанка в generator
             generator.chunk_completed(chunk_id, hash_count, solutions)
+
+            # Обновляем производительность воркера
+            if time_taken > 0:
+                # Находим chunk_size для расчета производительности
+                chunk_size = 0
+                for batch in generator.generated_batches.values():
+                    for chunk in batch.chunks:
+                        if int(chunk.chunk_id) == int(chunk_id):
+                            chunk_size = chunk.chunk_size
+                            break
+                    if chunk_size > 0:
+                        break
+
+                if chunk_size > 0:
+                    generator.performance.update_worker_performance(
+                        worker_id,
+                        chunk_size,
+                        time_taken
+                    )
 
             if solutions:
                 self.logger.warning(f"Worker {worker_id} found {len(solutions)} solutions in chunk {chunk_id}!")
