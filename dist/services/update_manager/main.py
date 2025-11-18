@@ -659,14 +659,14 @@ copy /y "{binary_file}" "{current_exe}"
 if errorlevel 1 (
     echo Failed to copy new executable
     move /y "{temp_old}" "{current_exe}" 2>nul
-    goto end
+    exit /b 1
 )
 
 echo Update complete, restarting...
 start "" "{current_exe}"
 
-:end
-del /f /q "{update_script}" 2>nul
+REM Self-delete trick: call del from separate context then exit
+(goto) 2>nul & del "%~f0"
 """
 
                 with open(update_script, 'w') as f:

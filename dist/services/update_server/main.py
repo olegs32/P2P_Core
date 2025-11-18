@@ -10,6 +10,7 @@ Coordinates updates across the cluster:
 import asyncio
 import logging
 import json
+import time
 from typing import Dict, List, Optional, Any
 from datetime import datetime
 from pathlib import Path
@@ -226,6 +227,41 @@ class Run(BaseService):
             self.metrics.increment("update_execution_errors")
             return {"success": False, "error": str(e)}
 
+    async def _wait_for_node_version(self, node_id: str, expected_version: str, timeout: int = 120) -> bool:
+        """
+        Wait for node to come back online with expected version
+
+        Args:
+            node_id: Node ID to check
+            expected_version: Expected version after update
+            timeout: Timeout in seconds
+
+        Returns:
+            True if node came back with expected version, False otherwise
+        """
+        self.logger.info(f"Waiting for {node_id} to come back with version {expected_version}")
+        start_time = time.time()
+
+        while (time.time() - start_time) < timeout:
+            try:
+                # Try to get system info from node
+                system_info = await self.proxy.system.__getattr__(node_id).get_system_info()
+                current_version = system_info.get("version", "unknown")
+
+                if current_version == expected_version:
+                    self.logger.info(f"✓ Node {node_id} confirmed with version {current_version}")
+                    return True
+                else:
+                    self.logger.debug(f"Node {node_id} has version {current_version}, waiting for {expected_version}")
+
+            except Exception as e:
+                self.logger.debug(f"Node {node_id} not available yet: {e}")
+
+            await asyncio.sleep(5)  # Check every 5 seconds
+
+        self.logger.warning(f"Timeout waiting for {node_id} to return with version {expected_version}")
+        return False
+
     async def _execute_rolling_update(self, task: UpdateTask) -> Dict[str, Any]:
         """
         Execute rolling update (one node at a time)
@@ -266,10 +302,28 @@ class Run(BaseService):
                 )
 
                 if result.get("success"):
-                    node_update.status = NodeUpdateStatus.COMPLETED
-                    node_update.end_time = datetime.now()
-                    task.success_count += 1
-                    node_update.logs.append(f"Update completed successfully")
+                    # Update installed, now wait for restart and version confirmation
+                    node_update.status = NodeUpdateStatus.RESTARTING
+                    node_update.logs.append(f"Update installed, waiting for node restart...")
+
+                    # Wait for node to come back with new version
+                    version_confirmed = await self._wait_for_node_version(
+                        node_id,
+                        task.target_version,
+                        timeout=120
+                    )
+
+                    if version_confirmed:
+                        node_update.status = NodeUpdateStatus.COMPLETED
+                        node_update.end_time = datetime.now()
+                        task.success_count += 1
+                        node_update.logs.append(f"Update completed and version confirmed")
+                    else:
+                        node_update.status = NodeUpdateStatus.FAILED
+                        node_update.error = "Node did not come back with expected version"
+                        node_update.end_time = datetime.now()
+                        task.failure_count += 1
+                        node_update.logs.append(f"Update failed: timeout waiting for version confirmation")
                 else:
                     node_update.status = NodeUpdateStatus.FAILED
                     node_update.error = result.get("error", "Unknown error")
@@ -367,9 +421,32 @@ class Run(BaseService):
                     "canary_node": canary_node
                 }
 
-            node_update.status = NodeUpdateStatus.COMPLETED
-            node_update.end_time = datetime.now()
-            task.success_count += 1
+            # Update installed, wait for restart and version confirmation
+            node_update.status = NodeUpdateStatus.RESTARTING
+            node_update.logs.append(f"Canary update installed, waiting for node restart...")
+
+            version_confirmed = await self._wait_for_node_version(
+                canary_node,
+                task.target_version,
+                timeout=120
+            )
+
+            if version_confirmed:
+                node_update.status = NodeUpdateStatus.COMPLETED
+                node_update.end_time = datetime.now()
+                task.success_count += 1
+                node_update.logs.append(f"Canary update completed and version confirmed")
+            else:
+                node_update.status = NodeUpdateStatus.FAILED
+                node_update.error = "Canary did not come back with expected version"
+                node_update.end_time = datetime.now()
+                task.failure_count += 1
+
+                return {
+                    "success": False,
+                    "error": f"Canary update failed: timeout waiting for version confirmation",
+                    "canary_node": canary_node
+                }
 
         except Exception as e:
             self.logger.error(f"Canary update failed: {e}")
@@ -463,23 +540,61 @@ class Run(BaseService):
             return_exceptions=True
         )
 
-        # Process results
+        # Process results - mark nodes as restarting if update succeeded
+        nodes_to_verify = []
         for (node_id, _), result in zip(tasks_list, results):
             node_update = task.node_updates[node_id]
 
             if isinstance(result, Exception):
                 node_update.status = NodeUpdateStatus.FAILED
                 node_update.error = str(result)
+                node_update.end_time = datetime.now()
                 task.failure_count += 1
             elif result.get("success"):
-                node_update.status = NodeUpdateStatus.COMPLETED
-                task.success_count += 1
+                node_update.status = NodeUpdateStatus.RESTARTING
+                node_update.logs.append(f"Update installed, waiting for node restart...")
+                nodes_to_verify.append(node_id)
             else:
                 node_update.status = NodeUpdateStatus.FAILED
                 node_update.error = result.get("error", "Unknown error")
+                node_update.end_time = datetime.now()
                 task.failure_count += 1
 
-            node_update.end_time = datetime.now()
+        # Wait for all nodes to come back with new version
+        if nodes_to_verify:
+            self.logger.info(f"Waiting for {len(nodes_to_verify)} nodes to restart with new version...")
+
+            verify_tasks = []
+            for node_id in nodes_to_verify:
+                verify_tasks.append((
+                    node_id,
+                    self._wait_for_node_version(node_id, task.target_version, timeout=120)
+                ))
+
+            verify_results = await asyncio.gather(
+                *[t[1] for t in verify_tasks],
+                return_exceptions=True
+            )
+
+            for (node_id, _), version_confirmed in zip(verify_tasks, verify_results):
+                node_update = task.node_updates[node_id]
+
+                if isinstance(version_confirmed, Exception):
+                    node_update.status = NodeUpdateStatus.FAILED
+                    node_update.error = f"Version check failed: {version_confirmed}"
+                    node_update.end_time = datetime.now()
+                    task.failure_count += 1
+                elif version_confirmed:
+                    node_update.status = NodeUpdateStatus.COMPLETED
+                    node_update.end_time = datetime.now()
+                    task.success_count += 1
+                    node_update.logs.append(f"Update completed and version confirmed")
+                else:
+                    node_update.status = NodeUpdateStatus.FAILED
+                    node_update.error = "Node did not come back with expected version"
+                    node_update.end_time = datetime.now()
+                    task.failure_count += 1
+                    node_update.logs.append(f"Version confirmation timeout")
 
         # Calculate duration
         if task.started_at:
