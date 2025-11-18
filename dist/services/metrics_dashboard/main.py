@@ -1324,6 +1324,9 @@ class Run(BaseService):
         else:
             self.logger.warning(f"Static directory not found at {static_dir} - CDN fallback will be used")
 
+        # Register Hash Jobs API
+        self._register_hash_jobs_api(app)
+
         self.logger.info("Dashboard HTTP endpoints registered")
 
     def _get_fastapi_app(self):
@@ -1446,6 +1449,62 @@ class Run(BaseService):
 
         except Exception as e:
             self.logger.error(f"Error broadcasting new logs: {e}")
+
+    def _register_hash_jobs_api(self, app):
+        """Register Hash Jobs API endpoints"""
+
+        @app.post("/api/hash/create-job")
+        async def create_hash_job(request: Request):
+            """Create new hash computation job"""
+            try:
+                data = await request.json()
+                job_id = data.get('job_id')
+                charset = data.get('charset')
+                length = data.get('length')
+                hash_algo = data.get('hash_algo', 'sha256')
+                target_hash = data.get('target_hash')
+                base_chunk_size = data.get('base_chunk_size', 1000000)
+
+                if not job_id or not charset or not length:
+                    return {"success": False, "error": "job_id, charset, and length are required"}
+
+                # Call hash_coordinator service
+                result = await self.proxy.hash_coordinator.coordinator.create_job(
+                    job_id=job_id,
+                    charset=charset,
+                    length=length,
+                    hash_algo=hash_algo,
+                    target_hash=target_hash,
+                    base_chunk_size=base_chunk_size
+                )
+
+                return result
+
+            except Exception as e:
+                self.logger.error(f"Failed to create hash job: {e}")
+                return {"success": False, "error": str(e)}
+
+        @app.get("/api/hash/jobs")
+        async def get_hash_jobs():
+            """Get all active hash jobs"""
+            try:
+                result = await self.proxy.hash_coordinator.coordinator.get_all_jobs()
+                return result
+
+            except Exception as e:
+                self.logger.error(f"Failed to get hash jobs: {e}")
+                return {"success": False, "jobs": [], "error": str(e)}
+
+        @app.get("/api/hash/job-status")
+        async def get_job_status(job_id: str):
+            """Get status of specific hash job"""
+            try:
+                result = await self.proxy.hash_coordinator.coordinator.get_job_status(job_id)
+                return result
+
+            except Exception as e:
+                self.logger.error(f"Failed to get job status: {e}")
+                return {"success": False, "error": str(e)}
 
     async def cleanup(self):
         """Cleanup resources"""
