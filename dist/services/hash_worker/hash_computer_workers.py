@@ -6,6 +6,7 @@ because multiprocessing.Pool requires picklable functions.
 """
 
 import hashlib
+import hmac
 from typing import List, Tuple, Optional
 
 
@@ -37,11 +38,46 @@ class HashAlgorithms:
     }
 
     @staticmethod
-    def compute_hash(data: bytes, algo: str, output_length: int = None) -> bytes:
-        """Вычисляет хеш с поддержкой различных алгоритмов"""
+    def compute_hash(data: bytes, algo: str, output_length: int = None, **kwargs) -> bytes:
+        """
+        Вычисляет хеш с поддержкой различных алгоритмов
+
+        Args:
+            data: Данные для хеширования
+            algo: Алгоритм хеширования
+            output_length: Длина выходного хеша (для SHAKE)
+            **kwargs: Дополнительные параметры (username, domain для NTLMv2)
+        """
         if algo == "ntlm":
             # NTLM = MD4(UTF-16LE(password))
-            return hashlib.new('md4', data.decode('utf-8').encode('utf-16le')).digest()
+            try:
+                password_str = data.decode('utf-8') if isinstance(data, bytes) else data
+                password_utf16le = password_str.encode('utf-16le')
+                return hashlib.new('md4', password_utf16le).digest()
+            except ValueError:
+                # MD4 не поддерживается в некоторых версиях Python
+                # Используем passlib если доступна
+                try:
+                    from passlib.hash import nthash
+                    password_str = data.decode('utf-8') if isinstance(data, bytes) else data
+                    return bytes.fromhex(nthash.hash(password_str).split('$')[-1])
+                except ImportError:
+                    raise ValueError("MD4 not available. Install passlib: pip install passlib")
+
+        elif algo == "ntlmv2":
+            # NTLMv2 = HMAC-MD5(NTLM_hash, uppercase(username + domain))
+            username = kwargs.get('username', '')
+            domain = kwargs.get('domain', '')
+
+            if not username:
+                raise ValueError("NTLMv2 requires username parameter")
+
+            # Сначала вычисляем NTLM hash
+            ntlm_hash = HashAlgorithms.compute_hash(data, "ntlm")
+
+            # NTLMv2 = HMAC-MD5(ntlm_hash, (username + domain).upper().utf-16le)
+            identity = (username + domain).upper().encode('utf-16le')
+            return hmac.new(ntlm_hash, identity, hashlib.md5).digest()
 
         elif algo.startswith("wpa"):
             # WPA/WPA2 обрабатывается отдельно
