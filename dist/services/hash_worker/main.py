@@ -18,18 +18,34 @@ import time
 import struct
 import multiprocessing as mp
 import psutil
+import importlib.util
+import sys
+from pathlib import Path
 from typing import Dict, List, Optional, Any, Set
 
 from layers.service import BaseService, service_method
 
 # Import worker functions from separate module (required for multiprocessing pickling)
-# Note: Use absolute import (no dot prefix) because service directory is added to sys.path
-from hash_computer_workers import (
-    compute_brute_subchunk,
-    compute_dict_subchunk,
-    HashAlgorithms,
-    MutationEngine
-)
+# Use importlib to dynamically load module from same directory as this file
+_current_dir = Path(__file__).parent
+_worker_module_path = _current_dir / "hash_computer_workers.py"
+_worker_module_name = "hash_computer_workers"
+
+# Add service directory to sys.path if not already there
+if str(_current_dir) not in sys.path:
+    sys.path.insert(0, str(_current_dir))
+
+# Load the worker module
+_spec = importlib.util.spec_from_file_location(_worker_module_name, _worker_module_path)
+_worker_module = importlib.util.module_from_spec(_spec)
+sys.modules[_worker_module_name] = _worker_module
+_spec.loader.exec_module(_worker_module)
+
+# Import from loaded module
+compute_brute_subchunk = _worker_module.compute_brute_subchunk
+compute_dict_subchunk = _worker_module.compute_dict_subchunk
+HashAlgorithms = _worker_module.HashAlgorithms
+MutationEngine = _worker_module.MutationEngine
 
 
 class SystemMonitor:
