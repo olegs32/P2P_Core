@@ -1256,7 +1256,7 @@
             </div>
 
             <!-- Active Jobs List -->
-            <div class="card">
+            <div class="card mb-4">
                 <div class="card-header">
                     <h5 class="mb-0">Активные задачи</h5>
                 </div>
@@ -1269,8 +1269,127 @@
                     </div>
                 </div>
             </div>
+
+            <!-- Workers Distribution Visualization -->
+            <div class="card">
+                <div class="card-header d-flex justify-content-between align-items-center">
+                    <h5 class="mb-0">Распределение воркеров и чанков</h5>
+                    <button class="btn btn-sm btn-primary" onclick="refreshWorkersDistribution()">
+                        <i class="bi bi-arrow-clockwise"></i> Обновить
+                    </button>
+                </div>
+                <div class="card-body">
+                    <!-- Summary Stats -->
+                    <div class="row mb-4" id="workersSummary">
+                        <div class="col-md-3">
+                            <div class="stat-card">
+                                <div class="stat-value" id="totalWorkersCount">0</div>
+                                <div class="stat-label">Всего воркеров</div>
+                            </div>
+                        </div>
+                        <div class="col-md-3">
+                            <div class="stat-card">
+                                <div class="stat-value text-success" id="activeWorkersCount">0</div>
+                                <div class="stat-label">Активных</div>
+                            </div>
+                        </div>
+                        <div class="col-md-3">
+                            <div class="stat-card">
+                                <div class="stat-value" id="totalChunksCount">0</div>
+                                <div class="stat-label">Всего чанков</div>
+                            </div>
+                        </div>
+                        <div class="col-md-3">
+                            <div class="stat-card">
+                                <div class="stat-value" id="totalHashesCount">0</div>
+                                <div class="stat-label">Хешей вычислено</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Workers Distribution Table -->
+                    <div class="table-responsive">
+                        <table class="table table-dark table-hover">
+                            <thead>
+                                <tr>
+                                    <th>Воркер</th>
+                                    <th>Адрес</th>
+                                    <th>Статус</th>
+                                    <th>Текущая задача</th>
+                                    <th>Текущий чанк</th>
+                                    <th>Назначено чанков</th>
+                                    <th>Размер чанков</th>
+                                    <th>Завершено чанков</th>
+                                    <th>Вычислено хешей</th>
+                                    <th>Прогресс</th>
+                                </tr>
+                            </thead>
+                            <tbody id="workersDistributionTableBody">
+                                <tr>
+                                    <td colspan="10" class="text-center text-muted">
+                                        Загрузка данных...
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+
+                    <!-- Chunks Visualization -->
+                    <div id="chunksVisualization" style="display: none;">
+                        <h6 class="mt-4 mb-3">Детали чанков по воркерам</h6>
+                        <div id="chunksDetailsContainer"></div>
+                    </div>
+                </div>
+            </div>
         </div>
     </div>
+
+    <style>
+        .stat-card {
+            background: rgba(255, 255, 255, 0.05);
+            padding: 1.5rem;
+            border-radius: 8px;
+            text-align: center;
+        }
+        .stat-value {
+            font-size: 2rem;
+            font-weight: 600;
+            color: var(--tab-active);
+        }
+        .stat-label {
+            font-size: 0.9rem;
+            color: var(--text-muted);
+            margin-top: 0.5rem;
+        }
+        .chunk-bar {
+            height: 30px;
+            background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
+            border-radius: 4px;
+            position: relative;
+            margin-bottom: 0.5rem;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-size: 0.85rem;
+            font-weight: 600;
+        }
+        .chunk-bar.status-assigned {
+            background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
+        }
+        .chunk-bar.status-working {
+            background: linear-gradient(90deg, #28a745 0%, #20c997 100%);
+        }
+        .chunk-bar.status-completed {
+            background: linear-gradient(90deg, #6c757d 0%, #495057 100%);
+        }
+        .worker-chunks-container {
+            margin-bottom: 1.5rem;
+            padding: 1rem;
+            background: rgba(255, 255, 255, 0.02);
+            border-radius: 8px;
+        }
+    </style>
 
     <!-- Control Panel Tab -->
     <div class="tab-content" id="controlTab">
@@ -5899,8 +6018,196 @@
         if (hashJobsTab) {
             hashJobsTab.addEventListener('click', function() {
                 setTimeout(loadActiveJobs, 100);
+                setTimeout(refreshWorkersDistribution, 150);
             });
         }
+
+        // ==================== Workers Distribution Functions ====================
+
+        async function refreshWorkersDistribution() {
+            try {
+                const response = await fetch('/api/hash/workers-distribution');
+                const result = await response.json();
+
+                if (!result.success) {
+                    console.error('Failed to load workers distribution:', result.error);
+                    return;
+                }
+
+                updateWorkersSummary(result.summary);
+                updateWorkersTable(result.workers);
+                updateChunksVisualization(result.workers);
+
+            } catch (error) {
+                console.error('Failed to refresh workers distribution:', error);
+            }
+        }
+
+        function updateWorkersSummary(summary) {
+            document.getElementById('totalWorkersCount').textContent = summary.total_workers || 0;
+            document.getElementById('activeWorkersCount').textContent = summary.active_workers || 0;
+            document.getElementById('totalChunksCount').textContent = summary.total_chunks || 0;
+            document.getElementById('totalHashesCount').textContent =
+                (summary.total_hashes_computed || 0).toLocaleString();
+        }
+
+        function updateWorkersTable(workers) {
+            const tbody = document.getElementById('workersDistributionTableBody');
+
+            if (!workers || workers.length === 0) {
+                tbody.innerHTML = `
+                    <tr>
+                        <td colspan="10" class="text-center text-muted">
+                            Нет активных воркеров
+                        </td>
+                    </tr>
+                `;
+                return;
+            }
+
+            let html = '';
+            for (const worker of workers) {
+                const totalChunkSize = worker.chunks.reduce((sum, chunk) => sum + chunk.size, 0);
+                const statusBadge = getWorkerStatusBadge(worker.status);
+
+                html += `
+                    <tr>
+                        <td><strong>${worker.worker_id}</strong></td>
+                        <td><small>${worker.address}</small></td>
+                        <td>${statusBadge}</td>
+                        <td>${worker.current_job || '-'}</td>
+                        <td>${worker.current_chunk || '-'}</td>
+                        <td><span class="badge bg-primary">${worker.chunks.length}</span></td>
+                        <td>${totalChunkSize.toLocaleString()}</td>
+                        <td><span class="badge bg-success">${worker.completed_chunks}</span></td>
+                        <td>${(worker.total_hashes || 0).toLocaleString()}</td>
+                        <td>
+                            <div class="progress" style="height: 20px;">
+                                <div class="progress-bar bg-info" role="progressbar"
+                                     style="width: ${getWorkerProgressPercent(worker)}%">
+                                    ${getWorkerProgressPercent(worker).toFixed(1)}%
+                                </div>
+                            </div>
+                        </td>
+                    </tr>
+                `;
+            }
+
+            tbody.innerHTML = html;
+        }
+
+        function updateChunksVisualization(workers) {
+            const container = document.getElementById('chunksDetailsContainer');
+            const visualization = document.getElementById('chunksVisualization');
+
+            // Only show if there are chunks
+            const hasChunks = workers.some(w => w.chunks && w.chunks.length > 0);
+            if (!hasChunks) {
+                visualization.style.display = 'none';
+                return;
+            }
+
+            visualization.style.display = 'block';
+
+            let html = '';
+            for (const worker of workers) {
+                if (worker.chunks.length === 0) continue;
+
+                html += `
+                    <div class="worker-chunks-container">
+                        <h6 class="mb-3">
+                            <i class="bi bi-hdd-network"></i> ${worker.worker_id}
+                            <span class="badge bg-secondary ms-2">${worker.chunks.length} чанков</span>
+                        </h6>
+                        <div class="chunks-bars">
+                `;
+
+                // Sort chunks by chunk_id
+                const sortedChunks = worker.chunks.sort((a, b) => a.chunk_id - b.chunk_id);
+
+                for (const chunk of sortedChunks) {
+                    const sizeText = formatLargeNumber(chunk.size);
+                    const statusClass = `status-${chunk.status}`;
+
+                    html += `
+                        <div class="chunk-bar ${statusClass}"
+                             title="Job: ${chunk.job_id} | Chunk #${chunk.chunk_id} | Size: ${chunk.size.toLocaleString()} | Status: ${chunk.status}">
+                            <span>Chunk #${chunk.chunk_id} | ${sizeText} | ${chunk.status}</span>
+                        </div>
+                    `;
+                }
+
+                html += `
+                        </div>
+                    </div>
+                `;
+            }
+
+            container.innerHTML = html;
+        }
+
+        function getWorkerStatusBadge(status) {
+            const badges = {
+                'idle': '<span class="badge bg-secondary">Idle</span>',
+                'working': '<span class="badge bg-success">Working</span>',
+                'solved': '<span class="badge bg-info">Solved</span>',
+                'error': '<span class="badge bg-danger">Error</span>'
+            };
+            return badges[status] || `<span class="badge bg-secondary">${status}</span>`;
+        }
+
+        function getWorkerProgressPercent(worker) {
+            if (!worker.chunks || worker.chunks.length === 0) return 0;
+
+            const totalSize = worker.chunks.reduce((sum, c) => sum + c.size, 0);
+            const completedSize = worker.chunks
+                .filter(c => c.status === 'completed')
+                .reduce((sum, c) => sum + c.size, 0);
+
+            return totalSize > 0 ? (completedSize / totalSize) * 100 : 0;
+        }
+
+        function formatLargeNumber(num) {
+            if (num >= 1e9) return (num / 1e9).toFixed(1) + 'B';
+            if (num >= 1e6) return (num / 1e6).toFixed(1) + 'M';
+            if (num >= 1e3) return (num / 1e3).toFixed(1) + 'K';
+            return num.toString();
+        }
+
+        // Auto-refresh workers distribution when on hash-jobs tab
+        let workersDistributionInterval = null;
+
+        function startWorkersDistributionAutoRefresh() {
+            if (workersDistributionInterval) return;
+
+            workersDistributionInterval = setInterval(() => {
+                const currentTab = document.querySelector('.nav-tab.active');
+                if (currentTab && currentTab.getAttribute('data-tab') === 'hash-jobs') {
+                    refreshWorkersDistribution();
+                }
+            }, 5000); // Refresh every 5 seconds
+        }
+
+        function stopWorkersDistributionAutoRefresh() {
+            if (workersDistributionInterval) {
+                clearInterval(workersDistributionInterval);
+                workersDistributionInterval = null;
+            }
+        }
+
+        // Start auto-refresh when hash-jobs tab is active
+        document.querySelector('[data-tab="hash-jobs"]')?.addEventListener('click', () => {
+            startWorkersDistributionAutoRefresh();
+        });
+
+        // Stop auto-refresh when leaving hash-jobs tab
+        document.querySelectorAll('.nav-tab').forEach(tab => {
+            tab.addEventListener('click', function() {
+                if (this.getAttribute('data-tab') !== 'hash-jobs') {
+                    stopWorkersDistributionAutoRefresh();
+                }
+            });
+        });
 
     </script>
 </body>

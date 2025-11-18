@@ -1506,6 +1506,96 @@ class Run(BaseService):
                 self.logger.error(f"Failed to get job status: {e}")
                 return {"success": False, "error": str(e)}
 
+        @app.get("/api/hash/workers-distribution")
+        async def get_workers_distribution():
+            """Get hash workers chunk distribution from gossip"""
+            try:
+                # Get network component to access gossip
+                network = self.context.get_shared("network")
+                if not network:
+                    return {"success": False, "error": "Network not available", "workers": []}
+
+                # Collect worker distribution data
+                workers_distribution = []
+                total_chunks = 0
+                total_hashes = 0
+
+                # Get all nodes from gossip
+                node_registry = network.gossip.node_registry
+
+                # Find all workers
+                for node_id, node_info in node_registry.items():
+                    if node_info.role == "worker":
+                        # Get worker status from metadata
+                        worker_status = node_info.metadata.get("hash_worker_status", {})
+
+                        if worker_status:
+                            current_job = worker_status.get("job_id")
+                            current_chunk = worker_status.get("chunk_id")
+                            status = worker_status.get("status", "idle")
+                            progress = worker_status.get("progress", 0)
+                            total_hashes_computed = worker_status.get("total_hashes", 0)
+                            completed_chunks_count = worker_status.get("completed_chunks", 0)
+
+                            worker_data = {
+                                "worker_id": node_id,
+                                "address": f"{node_info.address}:{node_info.port}",
+                                "current_job": current_job,
+                                "current_chunk": current_chunk,
+                                "status": status,
+                                "progress": progress,
+                                "total_hashes": total_hashes_computed,
+                                "completed_chunks": completed_chunks_count,
+                                "chunks": []
+                            }
+
+                            # Collect chunks assigned to this worker
+                            # Look through all job batches in coordinator metadata
+                            coordinator_nodes = [n for n in node_registry.values() if n.role == "coordinator"]
+                            if coordinator_nodes:
+                                coordinator = coordinator_nodes[0]
+
+                                # Find all hash_batches_* keys
+                                for key, value in coordinator.metadata.items():
+                                    if key.startswith("hash_batches_"):
+                                        job_id = key.replace("hash_batches_", "")
+                                        batches_data = value
+
+                                        if isinstance(batches_data, dict) and "chunks" in batches_data:
+                                            for chunk_id, chunk_data in batches_data["chunks"].items():
+                                                if chunk_data.get("assigned_worker") == node_id:
+                                                    chunk_info = {
+                                                        "job_id": job_id,
+                                                        "chunk_id": int(chunk_id),
+                                                        "start_index": chunk_data.get("start_index", 0),
+                                                        "end_index": chunk_data.get("end_index", 0),
+                                                        "size": chunk_data.get("end_index", 0) - chunk_data.get("start_index", 0),
+                                                        "status": chunk_data.get("status", "unknown"),
+                                                        "progress": chunk_data.get("progress", 0)
+                                                    }
+
+                                                    worker_data["chunks"].append(chunk_info)
+                                                    total_chunks += 1
+
+                            total_hashes += total_hashes_computed
+                            workers_distribution.append(worker_data)
+
+                return {
+                    "success": True,
+                    "timestamp": datetime.now().isoformat(),
+                    "workers": workers_distribution,
+                    "summary": {
+                        "total_workers": len(workers_distribution),
+                        "total_chunks": total_chunks,
+                        "total_hashes_computed": total_hashes,
+                        "active_workers": len([w for w in workers_distribution if w["status"] in ["working", "solved"]])
+                    }
+                }
+
+            except Exception as e:
+                self.logger.error(f"Failed to get workers distribution: {e}", exc_info=True)
+                return {"success": False, "error": str(e), "workers": []}
+
     async def cleanup(self):
         """Cleanup resources"""
         self.logger.info("Metrics Dashboard cleaning up...")
