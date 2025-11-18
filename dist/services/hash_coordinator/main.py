@@ -318,10 +318,20 @@ class DynamicChunkGenerator:
             solutions: Найденные решения
         """
         # Находим чанк в батчах
+        found = False
         for batch in self.generated_batches.values():
             for chunk in batch.chunks:
-                if chunk.chunk_id == chunk_id:
+                # Приводим к int для сравнения (может быть строкой из gossip)
+                if int(chunk.chunk_id) == int(chunk_id):
+                    old_status = chunk.status
                     chunk.status = "solved"
+                    found = True
+
+                    # Логирование для отладки
+                    import logging
+                    logger = logging.getLogger("DynamicChunkGenerator")
+                    logger.info(f"Chunk {chunk_id} status: {old_status} → solved")
+
                     # Обновляем производительность
                     if hasattr(chunk, 'assigned_worker'):
                         self.performance.record_chunk_completion(
@@ -330,6 +340,11 @@ class DynamicChunkGenerator:
                             hash_count
                         )
                     return
+
+        if not found:
+            import logging
+            logger = logging.getLogger("DynamicChunkGenerator")
+            logger.warning(f"Chunk {chunk_id} not found in batches! Available chunks: {[c.chunk_id for b in self.generated_batches.values() for c in b.chunks]}")
 
     def chunk_failed(self, chunk_id: int):
         """
