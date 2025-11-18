@@ -1556,23 +1556,30 @@ def get_services_path():
     """Получить путь к папке services с улучшенной логикой"""
     exe_dir = get_exe_dir()
 
+    # Получаем корневую директорию проекта (parent для layers/)
+    project_root = exe_dir.parent if exe_dir.name == "layers" else exe_dir
+
     # Попробуем несколько локаций
     possible_paths = [
-        exe_dir / ".." / "dist" / "services" if 'PycharmProjects' in str(exe_dir) else None,
+        project_root / "dist" / "services",  # Основной путь для репозитория
+        exe_dir / "dist" / "services",
+        exe_dir / ".." / "dist" / "services",
         exe_dir / "services",
+        Path.cwd() / "dist" / "services",  # Добавляем dist/services относительно CWD
         Path.cwd() / "services"
     ]
 
     for services_path in filter(None, possible_paths):
-        if services_path.exists():
-            return services_path
+        resolved = services_path.resolve()
+        if resolved.exists():
+            return resolved
 
     # Создаем в первой доступной НЕ-None локации
     valid_paths = list(filter(None, possible_paths))
     if not valid_paths:
         raise RuntimeError("No valid path available for services directory")
 
-    services_path = valid_paths[0]
+    services_path = valid_paths[0].resolve()
     services_path.mkdir(parents=True, exist_ok=True)
     return services_path
 
