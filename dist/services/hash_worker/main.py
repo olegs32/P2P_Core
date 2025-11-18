@@ -693,31 +693,25 @@ class Run(BaseService):
         batches = metadata[batches_key]
         my_worker_id = self.context.config.node_id
 
-        # Читаем упрощенный формат: {ver: N, chunks: {...}}
-        if not isinstance(batches, dict):
-            return None
-
-        version = batches.get("ver")
-        chunks = batches.get("chunks", {})
-
         # Ищем чанк для меня
-        for chunk_id_str, chunk_data in chunks.items():
-            chunk_id = int(chunk_id_str) if isinstance(chunk_id_str, str) else chunk_id_str
+        for version, batch_data in batches.items():
+            chunks = batch_data.get("chunks", {})
 
-            if chunk_data.get("assigned_worker") == my_worker_id:
-                # Проверяем статус
-                status = chunk_data.get("status", "assigned")
+            for chunk_id, chunk_data in chunks.items():
+                if chunk_data.get("assigned_worker") == my_worker_id:
+                    # Проверяем статус
+                    status = chunk_data.get("status", "assigned")
 
-                if status in ("assigned", "recovery"):
-                    # Это мой чанк, можно брать
-                    return {
-                        "job_id": job_id,
-                        "version": version,
-                        "chunk_id": chunk_id,
-                        "start_index": chunk_data["start_index"],
-                        "end_index": chunk_data["end_index"],
-                        "chunk_size": chunk_data["chunk_size"]
-                    }
+                    if status in ("assigned", "recovery"):
+                        # Это мой чанк, можно брать
+                        return {
+                            "job_id": job_id,
+                            "version": version,
+                            "chunk_id": chunk_id,
+                            "start_index": chunk_data["start_index"],
+                            "end_index": chunk_data["end_index"],
+                            "chunk_size": chunk_data["chunk_size"]
+                        }
 
         return None
 
