@@ -16,6 +16,8 @@ import hashlib
 import logging
 import time
 import struct
+import multiprocessing as mp
+import psutil
 from typing import Dict, List, Optional, Any, Set
 
 from layers.service import BaseService, service_method
@@ -87,6 +89,56 @@ class HashAlgorithms:
         )
 
 
+class SystemMonitor:
+    """Мониторинг загруженности системы"""
+
+    def __init__(self, max_cpu_percent: float = 80.0, max_memory_percent: float = 80.0):
+        self.max_cpu_percent = max_cpu_percent
+        self.max_memory_percent = max_memory_percent
+        self.process = psutil.Process()
+
+    def get_current_load(self) -> Dict[str, float]:
+        """Возвращает текущую загрузку системы"""
+        cpu_percent = psutil.cpu_percent(interval=0.1)
+        memory_percent = psutil.virtual_memory().percent
+
+        return {
+            "cpu_percent": cpu_percent,
+            "memory_percent": memory_percent,
+            "process_cpu": self.process.cpu_percent(),
+            "process_memory": self.process.memory_percent()
+        }
+
+    def is_overloaded(self) -> bool:
+        """Проверяет, перегружена ли система"""
+        load = self.get_current_load()
+        return (load["cpu_percent"] > self.max_cpu_percent or
+                load["memory_percent"] > self.max_memory_percent)
+
+    def calculate_optimal_workers(self, max_workers: int = None) -> int:
+        """
+        Вычисляет оптимальное количество worker процессов
+
+        Формула: workers = cpu_count * (1 - current_load/100) * safety_factor
+        """
+        if max_workers is None:
+            max_workers = mp.cpu_count()
+
+        load = self.get_current_load()
+        cpu_load = load["cpu_percent"] / 100.0
+
+        # Доступная мощность = 1 - текущая загрузка
+        available_capacity = max(0.1, 1.0 - cpu_load)
+
+        # Safety factor для предотвращения overload
+        safety_factor = 0.8
+
+        optimal = int(max_workers * available_capacity * safety_factor)
+
+        # Минимум 1 worker, максимум max_workers
+        return max(1, min(optimal, max_workers))
+
+
 class MutationEngine:
     """Движок мутаций для dictionary attack"""
 
@@ -139,8 +191,114 @@ class MutationEngine:
         return mutations
 
 
+# ==================== Top-level functions for multiprocessing ====================
+# Эти функции должны быть top-level для pickling в multiprocessing
+
+def _compute_brute_subchunk(args):
+    """Worker function для brute force sub-chunk (picklable)"""
+    (start_idx, end_idx, charset_list, length, hash_algo, ssid,
+     target_hash_set_hex) = args
+
+    solutions = []
+    hash_count = 0
+    base = len(charset_list)
+
+    # Преобразуем hex hashes обратно в bytes
+    if target_hash_set_hex:
+        target_hash_set = {bytes.fromhex(h) for h in target_hash_set_hex}
+    else:
+        target_hash_set = None
+
+    # index_to_combination inline
+    def idx_to_comb(idx):
+        result = [None] * length
+        for pos in range(length - 1, -1, -1):
+            result[pos] = charset_list[idx % base]
+            idx //= base
+        return ''.join(result)
+
+    for idx in range(start_idx, end_idx):
+        combination = idx_to_comb(idx)
+
+        # Вычисляем хеш
+        if hash_algo.startswith("wpa"):
+            if not ssid:
+                raise ValueError("SSID required for WPA/WPA2")
+            hash_bytes = HashAlgorithms.compute_wpa_psk(combination, ssid)
+        else:
+            hash_bytes = HashAlgorithms.compute_hash(
+                combination.encode(),
+                hash_algo
+            )
+
+        # Проверка на совпадение
+        if target_hash_set and hash_bytes in target_hash_set:
+            hash_hex = hash_bytes.hex()
+            solutions.append({
+                "combination": combination,
+                "hash": hash_hex,
+                "index": idx,
+                "mode": "brute"
+            })
+
+        hash_count += 1
+
+    return solutions, hash_count
+
+
+def _compute_dict_subchunk(args):
+    """Worker function для dictionary sub-chunk (picklable)"""
+    (words, mutations, hash_algo, ssid, target_hash_set_hex, base_index) = args
+
+    solutions = []
+    hash_count = 0
+
+    # Преобразуем hex hashes обратно в bytes
+    if target_hash_set_hex:
+        target_hash_set = {bytes.fromhex(h) for h in target_hash_set_hex}
+    else:
+        target_hash_set = None
+
+    mutation_engine = MutationEngine()
+
+    for idx, word in enumerate(words):
+        # Генерируем мутации
+        if mutations:
+            candidates = mutation_engine.apply_mutations(word, mutations)
+        else:
+            candidates = [word]
+
+        # Проверяем каждый кандидат
+        for candidate in candidates:
+            # Вычисляем хеш
+            if hash_algo.startswith("wpa"):
+                if not ssid:
+                    raise ValueError("SSID required for WPA/WPA2")
+                hash_bytes = HashAlgorithms.compute_wpa_psk(candidate, ssid)
+            else:
+                hash_bytes = HashAlgorithms.compute_hash(
+                    candidate.encode(),
+                    hash_algo
+                )
+
+            # Проверка на совпадение
+            if target_hash_set and hash_bytes in target_hash_set:
+                hash_hex = hash_bytes.hex()
+                solutions.append({
+                    "combination": candidate,
+                    "hash": hash_hex,
+                    "index": base_index + idx,
+                    "base_word": word,
+                    "mode": "dictionary"
+                })
+
+            hash_count += 1
+
+    return solutions, hash_count
+
+
 class HashComputer:
-    """Оптимизированное вычисление хешей"""
+    """Оптимизированное вычисление хешей с multiprocessing"""
 
     def __init__(
         self,
@@ -150,11 +308,23 @@ class HashComputer:
         mode: str = "brute",  # "brute" or "dictionary"
         wordlist: List[str] = None,
         mutations: List[str] = None,
-        ssid: str = None  # Для WPA/WPA2
+        ssid: str = None,  # Для WPA/WPA2
+        use_multiprocessing: bool = True,
+        max_workers: int = None,
+        max_cpu_percent: float = 80.0,
+        max_memory_percent: float = 80.0
     ):
         self.mode = mode
         self.hash_algo = hash_algo
         self.ssid = ssid
+        self.use_multiprocessing = use_multiprocessing
+        self.max_workers = max_workers or mp.cpu_count()
+
+        # System monitor для dynamic load balancing
+        self.system_monitor = SystemMonitor(max_cpu_percent, max_memory_percent)
+
+        # Pool для multiprocessing (создается lazy)
+        self.pool = None
 
         # Для brute force
         if mode == "brute":
@@ -169,6 +339,31 @@ class HashComputer:
             self.wordlist = wordlist or []
             self.mutations = mutations or []
             self.mutation_engine = MutationEngine()
+
+    def _get_or_create_pool(self) -> mp.Pool:
+        """Получает или создает Pool с оптимальным количеством workers"""
+        if not self.use_multiprocessing:
+            return None
+
+        # Вычисляем оптимальное количество workers на основе текущей загрузки
+        optimal_workers = self.system_monitor.calculate_optimal_workers(self.max_workers)
+
+        # Пересоздаем pool если количество workers изменилось
+        if self.pool is None or self.pool._processes != optimal_workers:
+            if self.pool is not None:
+                self.pool.close()
+                self.pool.join()
+
+            self.pool = mp.Pool(processes=optimal_workers)
+
+        return self.pool
+
+    def cleanup(self):
+        """Очистка ресурсов multiprocessing"""
+        if self.pool is not None:
+            self.pool.close()
+            self.pool.join()
+            self.pool = None
 
     def index_to_combination(self, idx: int) -> str:
         """
@@ -231,7 +426,94 @@ class HashComputer:
         progress_callback,
         progress_interval: int
     ) -> Dict[str, Any]:
-        """Brute force режим"""
+        """Brute force режим с multiprocessing"""
+        start_time = time.time()
+        total_hash_count = 0
+        all_solutions = []
+
+        # Multi-target mode - преобразуем в hex для передачи в worker
+        if target_hashes:
+            target_hash_set_hex = target_hashes
+        elif target_hash:
+            target_hash_set_hex = [target_hash]
+        else:
+            target_hash_set_hex = None
+
+        # Если multiprocessing отключен - используем старый single-threaded код
+        if not self.use_multiprocessing:
+            return self._compute_brute_force_single(
+                start_index, end_index, target_hash, target_hashes,
+                progress_callback, progress_interval
+            )
+
+        # Получаем или создаем pool с optimal количеством workers
+        pool = self._get_or_create_pool()
+        if pool is None:
+            return self._compute_brute_force_single(
+                start_index, end_index, target_hash, target_hashes,
+                progress_callback, progress_interval
+            )
+
+        # Разбиваем chunk на sub-chunks для параллельной обработки
+        num_workers = pool._processes
+        chunk_size = end_index - start_index
+        subchunk_size = max(progress_interval, chunk_size // num_workers)
+
+        tasks = []
+        current = start_index
+
+        while current < end_index:
+            subchunk_end = min(current + subchunk_size, end_index)
+
+            task_args = (
+                current,
+                subchunk_end,
+                self.charset_list,
+                self.length,
+                self.hash_algo,
+                self.ssid,
+                target_hash_set_hex
+            )
+
+            tasks.append(task_args)
+            current = subchunk_end
+
+        # Выполняем параллельно с async результатами
+        results = pool.map(_compute_brute_subchunk, tasks)
+
+        # Собираем результаты
+        for solutions, hash_count in results:
+            all_solutions.extend(solutions)
+            total_hash_count += hash_count
+
+            # Отчет о прогрессе
+            if progress_callback:
+                progress_callback(start_index + total_hash_count, total_hash_count)
+
+        time_taken = time.time() - start_time
+        hash_rate = total_hash_count / time_taken if time_taken > 0 else 0
+
+        return {
+            "hash_count": total_hash_count,
+            "time_taken": time_taken,
+            "hash_rate": hash_rate,
+            "solutions": all_solutions,
+            "start_index": start_index,
+            "end_index": end_index,
+            "mode": "brute",
+            "workers_used": num_workers
+        }
+
+    def _compute_brute_force_single(
+        self,
+        start_index: int,
+        end_index: int,
+        target_hash: Optional[str],
+        target_hashes: Optional[List[str]],
+        progress_callback,
+        progress_interval: int
+    ) -> Dict[str, Any]:
+        """Brute force single-threaded (fallback)"""
         start_time = time.time()
         hash_count = 0
         solutions = []
@@ -293,7 +575,8 @@ class HashComputer:
             "solutions": solutions,
             "start_index": start_index,
             "end_index": end_index,
-            "mode": "brute"
+            "mode": "brute",
+            "workers_used": 1
         }
 
     def _compute_dictionary(
@@ -305,7 +588,96 @@ class HashComputer:
         progress_callback,
         progress_interval: int
     ) -> Dict[str, Any]:
-        """Dictionary attack режим"""
+        """Dictionary attack режим с multiprocessing"""
+        start_time = time.time()
+        total_hash_count = 0
+        all_solutions = []
+
+        # Multi-target mode - преобразуем в hex
+        if target_hashes:
+            target_hash_set_hex = target_hashes
+        elif target_hash:
+            target_hash_set_hex = [target_hash]
+        else:
+            target_hash_set_hex = None
+
+        # Получаем слайс словаря
+        wordlist_slice = self.wordlist[start_index:end_index]
+
+        # Если multiprocessing отключен - single-threaded
+        if not self.use_multiprocessing or len(wordlist_slice) < 100:
+            return self._compute_dictionary_single(
+                start_index, end_index, target_hash, target_hashes,
+                progress_callback, progress_interval
+            )
+
+        # Получаем pool
+        pool = self._get_or_create_pool()
+        if pool is None:
+            return self._compute_dictionary_single(
+                start_index, end_index, target_hash, target_hashes,
+                progress_callback, progress_interval
+            )
+
+        # Разбиваем словарь на sub-chunks
+        num_workers = pool._processes
+        words_per_subchunk = max(100, len(wordlist_slice) // num_workers)
+
+        tasks = []
+        current = 0
+
+        while current < len(wordlist_slice):
+            subchunk_end = min(current + words_per_subchunk, len(wordlist_slice))
+            words_subchunk = wordlist_slice[current:subchunk_end]
+
+            task_args = (
+                words_subchunk,
+                self.mutations,
+                self.hash_algo,
+                self.ssid,
+                target_hash_set_hex,
+                start_index + current  # base index для корректных индексов
+            )
+
+            tasks.append(task_args)
+            current = subchunk_end
+
+        # Параллельное выполнение
+        results = pool.map(_compute_dict_subchunk, tasks)
+
+        # Собираем результаты
+        for solutions, hash_count in results:
+            all_solutions.extend(solutions)
+            total_hash_count += hash_count
+
+            # Отчет о прогрессе
+            if progress_callback:
+                progress_callback(start_index + len(all_solutions), total_hash_count)
+
+        time_taken = time.time() - start_time
+        hash_rate = total_hash_count / time_taken if time_taken > 0 else 0
+
+        return {
+            "hash_count": total_hash_count,
+            "time_taken": time_taken,
+            "hash_rate": hash_rate,
+            "solutions": all_solutions,
+            "start_index": start_index,
+            "end_index": end_index,
+            "mode": "dictionary",
+            "workers_used": num_workers
+        }
+
+    def _compute_dictionary_single(
+        self,
+        start_index: int,
+        end_index: int,
+        target_hash: Optional[str],
+        target_hashes: Optional[List[str]],
+        progress_callback,
+        progress_interval: int
+    ) -> Dict[str, Any]:
+        """Dictionary attack single-threaded (fallback)"""
         start_time = time.time()
         hash_count = 0
         solutions = []
@@ -378,7 +750,8 @@ class HashComputer:
             "solutions": solutions,
             "start_index": start_index,
             "end_index": end_index,
-            "mode": "dictionary"
+            "mode": "dictionary",
+            "workers_used": 1
         }
 
 
@@ -387,8 +760,8 @@ class Run(BaseService):
 
     def __init__(self, service_name: str, proxy_client=None):
         super().__init__(service_name, proxy_client)
-        self.info.version = "1.0.0"
-        self.info.description = "Воркер распределенных вычислений хешей"
+        self.info.version = "2.0.0"  # Updated with multiprocessing support
+        self.info.description = "Воркер распределенных вычислений хешей с multiprocessing"
 
         # Текущая задача
         self.current_job_id: Optional[str] = None
@@ -403,6 +776,15 @@ class Run(BaseService):
 
         # Флаг работы
         self.running = False
+
+        # HashComputer instances (для cleanup)
+        self.active_computers: List[HashComputer] = []
+
+        # Конфигурация multiprocessing
+        self.use_multiprocessing = True  # Можно настроить через config
+        self.max_workers = mp.cpu_count()
+        self.max_cpu_percent = 80.0  # Настраиваемое
+        self.max_memory_percent = 80.0  # Настраиваемое
 
     async def initialize(self):
         """Инициализация сервиса"""
@@ -422,6 +804,15 @@ class Run(BaseService):
         self.running = False
         if self.worker_task:
             self.worker_task.cancel()
+
+        # Cleanup multiprocessing pools
+        for computer in self.active_computers:
+            try:
+                computer.cleanup()
+            except Exception as e:
+                self.logger.error(f"Error cleaning up computer: {e}")
+
+        self.active_computers.clear()
 
     async def _worker_loop(self):
         """Основной цикл воркера"""
@@ -549,7 +940,7 @@ class Run(BaseService):
         target_hash = job_metadata.get("target_hash")
         target_hashes = job_metadata.get("target_hashes")  # Multi-target mode
 
-        # Создаем компьютер в зависимости от режима
+        # Создаем компьютер в зависимости от режима с multiprocessing support
         if mode == "brute":
             charset = job_metadata["charset"]
             length = job_metadata["length"]
@@ -560,7 +951,11 @@ class Run(BaseService):
                 length=length,
                 hash_algo=hash_algo,
                 mode="brute",
-                ssid=ssid
+                ssid=ssid,
+                use_multiprocessing=self.use_multiprocessing,
+                max_workers=self.max_workers,
+                max_cpu_percent=self.max_cpu_percent,
+                max_memory_percent=self.max_memory_percent
             )
 
         elif mode == "dictionary":
@@ -573,12 +968,19 @@ class Run(BaseService):
                 mode="dictionary",
                 wordlist=wordlist,
                 mutations=mutations,
-                ssid=ssid
+                ssid=ssid,
+                use_multiprocessing=self.use_multiprocessing,
+                max_workers=self.max_workers,
+                max_cpu_percent=self.max_cpu_percent,
+                max_memory_percent=self.max_memory_percent
             )
 
         else:
             self.logger.error(f"Unknown mode: {mode}")
             return
+
+        # Добавляем в active computers для cleanup
+        self.active_computers.append(computer)
 
         # Публикуем статус "working" в gossip
         await self._publish_chunk_status(job_id, chunk_id, "working", start_index)
@@ -622,15 +1024,29 @@ class Run(BaseService):
             result["solutions"]
         )
 
+        # Получаем system load для логирования
+        system_load = computer.system_monitor.get_current_load()
+        workers_used = result.get("workers_used", 1)
+
         self.logger.info(
             f"Completed chunk {chunk_id}: {result['hash_count']} hashes in "
-            f"{time_taken:.2f}s ({result['hash_rate']:.0f} h/s)"
+            f"{time_taken:.2f}s ({result['hash_rate']:.0f} h/s) | "
+            f"Workers: {workers_used}/{mp.cpu_count()} | "
+            f"CPU: {system_load['cpu_percent']:.1f}% | "
+            f"Memory: {system_load['memory_percent']:.1f}%"
         )
 
         if result["solutions"]:
             self.logger.warning(f"FOUND {len(result['solutions'])} SOLUTIONS!")
             for sol in result["solutions"]:
                 self.logger.warning(f"Solution: {sol['combination']} → {sol['hash']}")
+
+        # Cleanup computer после завершения chunk
+        try:
+            computer.cleanup()
+            self.active_computers.remove(computer)
+        except Exception as e:
+            self.logger.error(f"Error cleaning up computer: {e}")
 
         self.current_job_id = None
         self.current_chunk_id = None
