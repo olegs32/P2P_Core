@@ -16,6 +16,7 @@ This document provides a comprehensive overview of the P2P_Core codebase archite
 8. [Testing Approach](#testing-approach)
 9. [Development Conventions](#development-conventions)
 10. [Common Patterns](#common-patterns)
+11. [Distributed Hash Worker System](#distributed-hash-worker-system)
 
 ---
 
@@ -2566,6 +2567,886 @@ class MyComponent(P2PComponent):
 
 ---
 
+## Distributed Hash Worker System
+
+### Overview
+
+The P2P_Core includes a sophisticated **distributed hash cracking system** comprising two main services:
+
+- **hash_coordinator**: Centralized job coordination on coordinator nodes
+- **hash_worker**: Distributed computation on worker nodes
+
+The system employs a **gossip-based architecture** with minimal RPC overhead, enabling highly scalable distributed hash computations across the P2P cluster (< 0.1% coordination overhead).
+
+**Location**: `dist/services/hash_coordinator/` and `dist/services/hash_worker/`
+
+### Architecture
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                      Coordinator Node                        │
+│  (Generates batches, monitors workers via gossip)           │
+├─────────────────────────────────────────────────────────────┤
+│                                                               │
+│ 1. DynamicChunkGenerator: Creates work batches              │
+│ 2. PerformanceAnalyzer: Tracks worker speeds                │
+│ 3. Publish job_metadata → gossip                            │
+│ 4. Publish batches → gossip (versioned)                     │
+│ 5. Monitor worker_status from gossip                        │
+│ 6. Detect orphaned chunks (timeout recovery)                │
+│                                                               │
+└──────────────┬──────────────────────────────────────────────┘
+               │ Gossip Protocol (every 10-30 sec)
+               │ Zero RPC for coordination
+               ▼
+┌──────────────────────────────────────────────────────────────┐
+│                   Worker Nodes (Multiple)                     │
+├──────────────────────────────────────────────────────────────┤
+│                                                                │
+│ 1. Read job_metadata from coordinator gossip                 │
+│ 2. Find assigned chunks in hash_batches_{job_id}             │
+│ 3. HashComputer: Multiprocessing pool (adaptive)             │
+│ 4. Compute hashes (99.9% CPU on computation)                 │
+│ 5. Publish progress every 10s to gossip                      │
+│ 6. Publish solutions immediately (RPC + gossip)              │
+│                                                                │
+└──────────────────────────────────────────────────────────────┘
+```
+
+### Key Components
+
+#### Hash Coordinator Service
+
+**Location**: `dist/services/hash_coordinator/main.py` (1,058 lines)
+
+**Classes**:
+1. **PerformanceAnalyzer** (lines 70-145)
+   - Tracks worker hash rates (hashes/sec)
+   - Calculates adaptive chunk sizes based on worker speed
+   - Formula: `chunk_size = base × (worker_speed / avg_speed)`
+   - Bounded between 0.5x and 2.0x base size
+
+2. **DynamicChunkGenerator** (lines 148-407)
+   - Generates chunk batches dynamically
+   - Lookahead mechanism (default: 3 batches ahead)
+   - Orphaned chunk detection (5-minute timeout)
+   - Version control for race condition prevention
+
+3. **Run(BaseService)** (lines 559-1058)
+   - Main coordinator service
+   - Background loops: monitoring, orphaned detection
+   - RPC methods: create_job, get_job_status, report_solution
+
+**RPC Methods**:
+```python
+@service_method(public=True)
+async def create_job(
+    self,
+    job_id: str,
+    mode: str = "brute",           # "brute" or "dictionary"
+    charset: str = None,            # For brute force
+    length: int = None,
+    wordlist: List[str] = None,     # For dictionary attack
+    mutations: List[str] = None,    # Hashcat-style rules
+    hash_algo: str = "sha256",
+    target_hash: str = None,        # Single target
+    target_hashes: List[str] = None,# Multi-target mode
+    ssid: str = None,               # For WPA/WPA2
+    base_chunk_size: int = 1_000_000
+) -> Dict[str, Any]
+
+@service_method(public=True)
+async def report_solution(
+    self,
+    job_id: str,
+    chunk_id: int,
+    worker_id: str,
+    solutions: List[dict]
+) -> Dict[str, Any]
+```
+
+#### Hash Worker Service
+
+**Location**: `dist/services/hash_worker/main.py` (995 lines)
+
+**Classes**:
+1. **SystemMonitor** (lines 51-99)
+   - Real-time CPU/memory monitoring via `psutil`
+   - Calculates optimal worker count for multiprocessing
+   - Formula: `workers = cpu_count × (1 - load/100) × 0.8`
+   - Safety factor prevents 100% CPU saturation
+
+2. **HashComputer** (lines 101-557)
+   - Orchestrates hash computation
+   - Manages multiprocessing.Pool with dynamic sizing
+   - Supports brute force and dictionary modes
+   - Optimized index-to-combination conversion (O(length))
+
+3. **Run(BaseService)** (lines 559-995)
+   - Main worker service
+   - Worker loop: polls gossip every 5 seconds
+   - Local cache of processed chunks (prevents re-processing)
+   - Publishes progress and solutions via gossip
+
+**Worker Loop**:
+```python
+async def _worker_loop(self):
+    while self.running:
+        # Get active jobs from coordinator gossip
+        jobs = await self._get_active_jobs()
+
+        found_work = False
+        for job_id in jobs:
+            # Find available chunk assigned to me
+            chunk = await self._get_available_chunk(job_id)
+
+            if chunk:
+                # Check local cache (prevent re-processing)
+                if chunk_id not in self.processed_chunks[job_id]:
+                    await self._process_chunk(job_id, chunk)
+                    found_work = True
+                    break
+
+        # Pause if no work available
+        if not found_work:
+            await asyncio.sleep(10)
+```
+
+#### Hash Computation Module
+
+**Location**: `dist/services/hash_worker/hash_computer_workers.py` (282 lines)
+
+**Why Separate Module**: Multiprocessing requires picklable functions (must be module-level, not class methods)
+
+**Classes**:
+1. **HashAlgorithms**
+   - 16+ supported algorithms (SHA-2, SHA-3, BLAKE2, MD5, SHA-1, NTLM, NTLMv2, WPA2)
+   - Special handling for NTLM: `MD4(UTF-16LE(password))`
+   - Special handling for NTLMv2: `HMAC-MD5(NTLM_hash, uppercase(username + domain))`
+   - Special handling for WPA2: `PBKDF2-HMAC-SHA1(passphrase, SSID, 4096 iterations)`
+
+2. **MutationEngine**
+   - Hashcat-style mutation rules
+   - 8+ mutation types: `l` (lowercase), `u` (uppercase), `c` (capitalize), `$X` (append), `^X` (prepend), `sab` (substitute), `d` (duplicate), `r` (reverse)
+
+3. **Worker Functions** (picklable):
+   ```python
+   def compute_brute_subchunk(args) -> Tuple[list, int]:
+       """Brute force sub-chunk computation (multiprocessing worker)"""
+       # Optimized inner loop with minimal overhead
+       for idx in range(start_idx, end_idx):
+           combination = index_to_combination(idx)
+           hash_bytes = compute_hash(combination.encode(), hash_algo)
+           if hash_bytes in target_hash_set:
+               solutions.append({...})
+       return solutions, hash_count
+
+   def compute_dict_subchunk(args) -> Tuple[list, int]:
+       """Dictionary attack sub-chunk computation"""
+       # Process wordlist with mutations
+       for word in wordlist_chunk:
+           for mutation in mutations:
+               mutated = apply_mutation(word, mutation)
+               hash_bytes = compute_hash(mutated.encode(), hash_algo)
+               if hash_bytes in target_hash_set:
+                   solutions.append({...})
+       return solutions, hash_count
+   ```
+
+### Communication Patterns
+
+#### Gossip-Based Coordination (Zero RPC Overhead)
+
+**Job Metadata Distribution**:
+```python
+# Coordinator publishes
+Key: hash_job_{job_id}
+Value: {
+    "job_id": "test-job-1",
+    "charset": "abcdefghijklmnopqrstuvwxyz0123456789",
+    "length": 4,
+    "hash_algo": "sha256",
+    "target_hash": "5e88489...",      # Optional
+    "target_hashes": [...],            # Multi-target mode
+    "mode": "brute",                   # "brute" or "dictionary"
+    "wordlist": [...],                 # For dictionary mode
+    "mutations": ["c", "$1", "sa@"],   # Hashcat-style rules
+    "ssid": "MyNetwork",               # For WPA/WPA2
+    "started_at": 1700000000.123
+}
+
+# Workers read (no RPC)
+job_metadata = coordinator.metadata.get("hash_job_test-job-1")
+```
+
+**Batch Announcements** (versioned to prevent race conditions):
+```python
+# Coordinator publishes (updated every ~10s)
+Key: hash_batches_{job_id}
+Value: {
+    version_5: {
+        "chunks": {
+            5000: {
+                "chunk_id": 5000,
+                "assigned_worker": "worker-001",
+                "start_index": 5000000,
+                "end_index": 5001500,
+                "chunk_size": 1500000,        # Adaptive
+                "status": "assigned",         # assigned, working, solved, timeout
+                "priority": 1,
+                "created_at": 1700000010.456
+            },
+            5001: {
+                "assigned_worker": "worker-002",
+                "start_index": 5001500,
+                "end_index": 5002000,
+                "chunk_size": 500000,         # Smaller for slower worker
+                ...
+            }
+        },
+        "created_at": 1700000010.456,
+        "is_recovery": False
+    }
+}
+
+# Workers read assigned chunks
+batches = coordinator.metadata.get("hash_batches_test-job-1")
+for version, batch_data in batches.items():
+    for chunk_id, chunk_data in batch_data["chunks"].items():
+        if chunk_data["assigned_worker"] == my_worker_id:
+            if chunk_data["status"] in ("assigned", "recovery"):
+                # This is my chunk, process it
+                await process_chunk(chunk_id, chunk_data)
+```
+
+**Worker Status Updates**:
+```python
+# Worker publishes (every 10s for progress, immediate for solutions)
+Key: hash_worker_status
+Value: {
+    "job_id": "test-job-1",
+    "chunk_id": 5000,
+    "status": "solved",               # "working" or "solved"
+    "progress": 5000456,              # Current index (for working status)
+    "hash_count": 1000000,
+    "time_taken": 234.5,              # Seconds (for performance tracking)
+    "solutions": [
+        {
+            "combination": "password",
+            "hash": "5e88489...",
+            "index": 5000234,
+            "mode": "brute"
+        }
+    ],
+    "timestamp": time.time(),
+    "total_hashes": 123456789,
+    "completed_chunks": 45
+}
+
+# Coordinator reads (every 10s)
+for node_id, node_info in gossip.node_registry.items():
+    worker_status = node_info.metadata.get("hash_worker_status")
+    if worker_status:
+        await self._process_worker_chunk_status(node_id, worker_status)
+```
+
+#### RPC Methods (Supplementary Only)
+
+**When to use RPC**:
+- **Immediate solution notification**: Worker calls `report_solution()` RPC when hash found
+- **Job creation**: User calls `create_job()` RPC
+- **Status queries**: User calls `get_job_status()` RPC
+
+**When to use Gossip**:
+- **Job metadata**: Published once, read by all workers
+- **Batch assignments**: Updated periodically, read by workers
+- **Progress updates**: Published by workers, read by coordinator
+- **Chunk completion**: Published by workers, read by coordinator
+
+**Key Principle**: Gossip for continuous coordination (99% of traffic), RPC for user interaction and immediate notifications (1% of traffic).
+
+### Supported Hash Algorithms
+
+#### Cryptographic Hashes (✅ Complete)
+
+| Algorithm | Performance (4-char) | Performance (8-char) |
+|-----------|---------------------|---------------------|
+| MD5 | 100K-200K h/s | 10K-30K h/s |
+| SHA-1 | 50K-100K h/s | 5K-15K h/s |
+| SHA-224 | 50K-100K h/s | 5K-10K h/s |
+| SHA-256 | 50K-100K h/s | 5K-10K h/s |
+| SHA-384 | 10K-30K h/s | 1K-3K h/s |
+| SHA-512 | 10K-30K h/s | 1K-3K h/s |
+| SHA-512/224 | 10K-30K h/s | 1K-3K h/s |
+| SHA-512/256 | 10K-30K h/s | 1K-3K h/s |
+| SHA3-224 | 50K-100K h/s | 5K-10K h/s |
+| SHA3-256 | 50K-100K h/s | 5K-10K h/s |
+| SHA3-384 | 10K-30K h/s | 1K-3K h/s |
+| SHA3-512 | 10K-30K h/s | 1K-3K h/s |
+| SHAKE-128 | 50K-100K h/s | 5K-10K h/s |
+| SHAKE-256 | 50K-100K h/s | 5K-10K h/s |
+| BLAKE2b | 50K-100K h/s | 5K-10K h/s |
+| BLAKE2s | 100K-200K h/s | 10K-20K h/s |
+
+#### Windows Authentication (✅ Complete)
+
+| Algorithm | Implementation | Performance |
+|-----------|---------------|-------------|
+| NTLM | `MD4(UTF-16LE(password))` | 100K-200K h/s |
+| NTLMv2 | `HMAC-MD5(NTLM_hash, uppercase(username + domain))` | 50K-100K h/s |
+
+#### WiFi Protocols (⚠️ Partial)
+
+| Algorithm | Status | Performance |
+|-----------|--------|-------------|
+| WPA/WPA2 PSK | ✅ Complete | 1K-5K h/s |
+| PMKID Attack | ❌ Not Implemented | N/A |
+
+**WPA/WPA2 Algorithm**:
+```python
+PMK = PBKDF2-HMAC-SHA1(passphrase, SSID, 4096 iterations, 32 bytes)
+```
+
+*Note: Very slow due to 4096 PBKDF2 iterations (intentional security feature)*
+
+### Attack Modes
+
+#### 1. Brute Force Attack
+
+**Usage**:
+```python
+await proxy.hash_coordinator.coordinator.create_job(
+    job_id="brute-sha256",
+    mode="brute",
+    charset="abcdefghijklmnopqrstuvwxyz0123456789",
+    length=4,
+    hash_algo="sha256",
+    target_hash="5e884898da28047151d0e56f8dc6292773603d0d6aabbdd62a11ef721d1542d8"
+)
+```
+
+**Features**:
+- Exhaustive search through all combinations
+- Lexicographic index-to-combination conversion
+- Parallel processing across multiple workers
+- Adaptive chunk sizing based on worker speed
+
+#### 2. Dictionary Attack
+
+**Usage**:
+```python
+await proxy.hash_coordinator.coordinator.create_job(
+    job_id="dict-attack",
+    mode="dictionary",
+    wordlist=["password", "admin", "letmein", "123456"],
+    hash_algo="sha256",
+    target_hash="..."
+)
+```
+
+**Features**:
+- Wordlist-based attack
+- Supports large wordlists (millions of entries)
+- Can be combined with mutation rules
+
+#### 3. Dictionary + Mutation Rules (Hashcat-style)
+
+**Usage**:
+```python
+await proxy.hash_coordinator.coordinator.create_job(
+    job_id="dict-with-rules",
+    mode="dictionary",
+    wordlist=["password", "admin"],
+    mutations=["c", "$1", "$123", "sa@", "se3", "d", "r"],
+    hash_algo="sha256",
+    target_hash="..."
+)
+```
+
+**Supported Mutation Rules**:
+- `l`: Lowercase all (password → password)
+- `u`: Uppercase all (password → PASSWORD)
+- `c`: Capitalize first letter (password → Password)
+- `$X`: Append character X (password → password1)
+- `^X`: Prepend character X (password → @password)
+- `sab`: Substitute 'a' with 'b' (password → p@ssword)
+- `d`: Duplicate entire word (password → passwordpassword)
+- `r`: Reverse (password → drowssap)
+
+**Example**:
+```python
+# Input: "password"
+# Mutations: ["c", "$1", "sa@"]
+# Output: ["Password", "password1", "p@ssword"]
+```
+
+#### 4. Multi-Target Mode
+
+**Usage**:
+```python
+await proxy.hash_coordinator.coordinator.create_job(
+    job_id="multi-target",
+    mode="brute",
+    charset="0123456789",
+    length=4,
+    hash_algo="sha256",
+    target_hashes=[
+        "5e884898da28047151d0e56f8dc6292773603d0d6aabbdd62a11ef721d1542d8",
+        "e99a18c428cb38d5f260853678922e03aaa6b3e4e4c0f0d6c8f7d7e7d3e1e1e1",
+        "7c4a8d09ca3762af61e59520943dc26494f8941b08e5f07b6a19e76c9f3d2e2e"
+    ]
+)
+```
+
+**Features**:
+- Check multiple hashes in a single pass
+- O(1) set-based hash lookup
+- Maximum efficiency for multi-target scenarios
+- Returns all found solutions
+
+### Multiprocessing Implementation
+
+#### Adaptive Worker Pool
+
+**Location**: `hash_worker/main.py` (SystemMonitor class)
+
+**Dynamic Scaling Formula**:
+```python
+optimal_workers = cpu_count × (1 - current_load/100) × 0.8
+```
+
+**Example**:
+- CPU count: 8 cores
+- Current load: 50%
+- Calculation: 8 × 0.5 × 0.8 = 3.2 → 3 workers
+- System never exceeds 80% CPU (safety factor)
+
+**Features**:
+- Real-time CPU/memory monitoring via `psutil`
+- Pool recreation when load changes significantly
+- Graceful cleanup on service shutdown
+- Per-chunk multiprocessing for hash computation
+
+#### Sub-Chunk Processing
+
+Each chunk is subdivided into sub-chunks for multiprocessing:
+
+```python
+# Split chunk across workers
+sub_chunk_size = chunk_size // num_workers
+sub_chunks = [
+    (start_idx + i * sub_chunk_size,
+     start_idx + (i + 1) * sub_chunk_size)
+    for i in range(num_workers)
+]
+
+# Process in parallel
+results = pool.starmap(compute_brute_subchunk, sub_chunks)
+
+# Aggregate results
+all_solutions = []
+total_hashes = 0
+for solutions, hash_count in results:
+    all_solutions.extend(solutions)
+    total_hashes += hash_count
+```
+
+### Performance Optimizations
+
+#### 1. Batching (Minimal Overhead)
+
+- 10,000 iterations per batch before state updates
+- Reduces context switching overhead
+- Inner loop has no conditionals (pure computation)
+
+#### 2. Index-to-Combination Conversion (O(length))
+
+```python
+def index_to_combination(idx: int) -> str:
+    """
+    Converts index to combination string
+    ~1 microsecond per conversion
+    """
+    result = [None] * length  # Pre-allocated
+    for pos in range(length - 1, -1, -1):
+        result[pos] = charset_list[idx % base]
+        idx //= base
+    return ''.join(result)
+```
+
+#### 3. Hash Comparison Optimization
+
+```python
+# ❌ SLOW: hexdigest() and string comparison
+hash_hex = hashlib.sha256(data).hexdigest()
+if hash_hex == target_hash:
+    ...
+
+# ✅ FAST: digest() and binary comparison (2x faster)
+hash_bytes = hashlib.sha256(data).digest()
+target_bytes = bytes.fromhex(target_hash)
+if hash_bytes == target_bytes:
+    ...
+
+# ✅✅ FASTEST: Set-based O(1) lookup for multi-target
+target_hash_set = {bytes.fromhex(h) for h in target_hashes}
+if hash_bytes in target_hash_set:  # O(1)
+    ...
+```
+
+### Dynamic Chunk Management
+
+#### Adaptive Chunk Sizing
+
+**Algorithm**:
+```python
+base_chunk_size = 1,000,000  # Default
+
+# For each worker
+chunk_size = base_chunk_size × (worker_speed / avg_speed)
+
+# Bounds
+min_chunk_size = base_chunk_size × 0.5
+max_chunk_size = base_chunk_size × 2.0
+```
+
+**Example**:
+- Base: 1M hashes
+- Worker-1 speed: 10,000 h/s (2x average of 5,000 h/s)
+- Worker-2 speed: 2,500 h/s (0.5x average)
+- Calculated:
+  - Worker-1: 2,000,000 hashes (capped at 2x)
+  - Worker-2: 500,000 hashes (capped at 0.5x)
+
+#### Lookahead Batch Generation
+
+**Mechanism**:
+- Generates N batches ahead (default: 3)
+- Ensures workers never run out of work
+- Amortizes batch generation cost
+
+**Pseudocode**:
+```python
+async def ensure_lookahead_batches(active_workers):
+    pending_count = len(generated_batches) - len(completed_batches)
+    needed = LOOKAHEAD_BATCHES - pending_count
+
+    for _ in range(needed):
+        if current_global_index < total_combinations:
+            await _generate_next_batch(active_workers)
+```
+
+#### Orphaned Chunk Detection & Recovery
+
+**Detection Criteria**:
+1. Chunk status = "working" for > 5 minutes
+2. Same worker has newer solved chunks
+3. Indicates stuck/failed computation
+
+**Recovery Actions**:
+```python
+async def recover_orphaned_chunks():
+    for chunk in get_chunks_in_progress():
+        if chunk.created_at < (now - 300):  # 5 min timeout
+            # Mark as orphaned
+            chunk.status = "orphaned"
+
+            # Create recovery batch with high priority
+            recovery_batch = await generate_recovery_batch(
+                chunk, different_worker_id
+            )
+
+            # Republish batches to gossip
+            await publish_batches(generator)
+```
+
+### Version Control for Race Condition Prevention
+
+**Problem**: Gossip updates are eventual, not immediate. Multiple updates could cause race conditions.
+
+**Solution**: Version numbers on batch metadata
+
+```python
+# Coordinator increments version on each update
+self.current_version += 1
+batch_dict = {
+    version_5: {
+        "chunks": {...},
+        "created_at": time.time(),
+        "is_recovery": False
+    }
+}
+
+# Workers compare versions
+if batch_version > last_seen_version:
+    process_chunks(batch)
+    last_seen_version = batch_version
+```
+
+### Local Cache for Preventing Re-Processing
+
+**Problem**: Worker completes chunk, but coordinator hasn't updated gossip yet. Worker might take same chunk again.
+
+**Solution**: Local in-memory cache of processed chunks
+
+```python
+# Worker maintains cache
+self.processed_chunks: Dict[str, set] = {}  # {job_id: set(chunk_ids)}
+
+# Before taking chunk
+if chunk_id in self.processed_chunks[job_id]:
+    continue  # Skip already processed
+
+# After completing chunk
+self.processed_chunks[job_id].add(chunk_id)
+```
+
+### Key Files and Documentation
+
+#### Coordinator Service
+
+| File | Lines | Purpose |
+|------|-------|---------|
+| `main.py` | 1,058 | Main coordinator service, batch generation, job management |
+| `pcap_parser.py` | 330 | PCAP file parsing for WiFi handshake extraction |
+| `README.md` | 247 | Service documentation (Russian) |
+| `ALGORITHMS_AND_FEATURES.md` | 1,106 | Comprehensive algorithm and feature roadmap |
+
+#### Worker Service
+
+| File | Lines | Purpose |
+|------|-------|---------|
+| `main.py` | 995 | Main worker service, chunk processing, gossip monitoring |
+| `hash_computer_workers.py` | 282 | Picklable worker functions, hash algorithms, mutations |
+| `requirements.txt` | 3 | Dependencies (psutil for system monitoring) |
+| `README.md` | 359 | Worker service documentation (Russian) |
+| `IMPLEMENTATION_STATUS.md` | 356 | Phase 1/2 feature completion status |
+
+**Total**: ~2,665 lines of code + comprehensive documentation
+
+### Implementation Status
+
+**Phase 1 Features (High Priority)**: 5/7 Complete (71%)
+- ✅ SHA-2/SHA-3 algorithms
+- ✅ NTLM/NTLMv2 hash algorithms
+- ✅ Dictionary attack mode
+- ✅ Mutation rules engine (Hashcat-style)
+- ✅ Multi-target mode
+- ⏭️ Pause/Resume (skipped for MVP)
+- ⏭️ JSON/CSV export (skipped for MVP)
+
+**Phase 2 Features (WiFi)**: 1/3 Complete (33%)
+- ✅ WPA/WPA2 PSK algorithm
+- ❌ PMKID attack support
+- ❌ PCAP parsing (infrastructure exists, not fully tested)
+
+**Overall Implementation**: 6/10 planned features (60%)
+
+### Design Decisions and Rationale
+
+#### 1. Gossip-Based Coordination (Not RPC)
+
+**Decision**: Use gossip protocol for primary coordination
+
+**Rationale**:
+- **Low Overhead**: < 0.1% coordination overhead (gossip every 10-30s)
+- **Scalability**: No RPC bottlenecks, works with thousands of workers
+- **Resilience**: Works without direct coordinator reachability
+- **Automatic Discovery**: New workers auto-discover jobs
+
+**Trade-off**:
+- ~10-30 second update delay (acceptable for long-running jobs)
+- Eventual consistency instead of immediate
+
+#### 2. Adaptive Multiprocessing Pool
+
+**Decision**: Dynamic worker count based on system load
+
+**Rationale**:
+- **Responsiveness**: System remains interactive during computation
+- **Resource Efficiency**: Uses available capacity without waste
+- **No Overload**: Safety factor prevents 100% CPU saturation
+- **Automatic Scaling**: Adapts to changing system conditions
+
+#### 3. Separate Module for Worker Functions
+
+**Decision**: `hash_computer_workers.py` separate from `main.py`
+
+**Rationale**:
+- **Multiprocessing Requirement**: Functions must be picklable (module-level, not class methods)
+- **Code Organization**: Clear separation of concerns
+- **Reusability**: Can be imported independently
+- **Testing**: Isolated unit testing
+
+#### 4. Versioned Batch Distribution
+
+**Decision**: Version numbers on gossip metadata
+
+**Rationale**:
+- **Race Condition Prevention**: Workers ignore stale versions
+- **Atomic Updates**: Version increment ensures consistency
+- **Network Tolerance**: Handles out-of-order gossip delivery
+
+#### 5. Local Cache for Processed Chunks
+
+**Decision**: Workers maintain in-memory cache of processed chunks
+
+**Rationale**:
+- **Prevents Duplicate Work**: Worker won't re-process chunk even if gossip not updated
+- **Zero Coordination**: No RPC calls needed
+- **Low Memory**: Only stores chunk IDs (integers)
+- **Eventual Consistency**: Works with gossip propagation delay
+
+### Performance Characteristics
+
+#### Coordinator Overhead
+
+| Operation | Time | Frequency |
+|-----------|------|-----------|
+| Gossip sync | <1ms read | every 10-30s |
+| Batch generation | 5-10ms | every 10-30s |
+| Progress analysis | 2-5ms | every 10-30s |
+| Orphaned detection | <10ms | every 10-30s |
+| **Total Overhead** | **< 0.1%** | |
+
+#### Network Efficiency
+
+| Metric | Value |
+|--------|-------|
+| RPC calls (normal operation) | 0 (gossip only) |
+| Gossip updates/min | ~2-6 |
+| Gossip traffic/sec | 100-500 bytes |
+| Compression ratio | 40-60% (LZ4) |
+
+#### Worker Computation Efficiency
+
+- **99.9%+ CPU time on hash computation** (not coordination)
+- **Adaptive multiprocessing**: 80% max CPU utilization by default
+- **Zero blocking**: Workers never wait for coordinator responses
+- **Immediate solution reporting**: RPC used only for critical notifications
+
+### Usage Examples
+
+#### Example 1: Brute Force SHA-256
+
+```python
+# Create job
+await proxy.hash_coordinator.coordinator.create_job(
+    job_id="brute-sha256",
+    mode="brute",
+    charset="abcdefghijklmnopqrstuvwxyz0123456789",
+    length=4,
+    hash_algo="sha256",
+    target_hash="5e884898da28047151d0e56f8dc6292773603d0d6aabbdd62a11ef721d1542d8"
+)
+
+# Check status
+status = await proxy.hash_coordinator.coordinator.get_job_status(job_id="brute-sha256")
+# Returns: {
+#     "job_id": "brute-sha256",
+#     "status": "running",
+#     "progress": 0.45,  # 45% complete
+#     "solutions": [],
+#     "active_workers": 3,
+#     "total_hashes": 456789123,
+#     "elapsed_time": 123.45
+# }
+```
+
+#### Example 2: Dictionary Attack with Mutations
+
+```python
+# Create job with wordlist and Hashcat-style rules
+await proxy.hash_coordinator.coordinator.create_job(
+    job_id="dict-attack",
+    mode="dictionary",
+    wordlist=["password", "admin", "letmein", "123456", "welcome"],
+    mutations=["c", "$1", "$123", "sa@", "se3"],
+    hash_algo="sha256",
+    target_hash="..."
+)
+
+# This will test:
+# - password, Password, password1, password123, p@ssword, p@ssw0rd
+# - admin, Admin, admin1, admin123, @dmin, @dmin
+# - etc.
+```
+
+#### Example 3: WiFi WPA2 Cracking
+
+```python
+# Crack WPA2 password
+await proxy.hash_coordinator.coordinator.create_job(
+    job_id="wifi-crack",
+    mode="dictionary",
+    wordlist=["MyPassword123", "WiFiPass2023", "SecureNetwork456"],
+    hash_algo="wpa",
+    ssid="MyHomeNetwork",  # SSID required for WPA
+    target_hash="..."      # PMK or MIC from handshake
+)
+
+# Note: WPA2 is VERY slow (~1-5K passphrases/sec due to PBKDF2)
+```
+
+#### Example 4: Multi-Target SHA-256
+
+```python
+# Crack multiple hashes in single pass
+await proxy.hash_coordinator.coordinator.create_job(
+    job_id="multi-target",
+    mode="brute",
+    charset="0123456789",
+    length=4,
+    hash_algo="sha256",
+    target_hashes=[
+        "5e884898...",  # hash of "1234"
+        "e99a18c4...",  # hash of "5678"
+        "7c4a8d09..."   # hash of "9999"
+    ]
+)
+
+# System will check all 10,000 combinations against all 3 hashes
+# in a single pass (O(1) set lookup)
+```
+
+### Troubleshooting
+
+#### Issue: Worker not processing chunks
+
+**Check**:
+1. Worker service is running: `curl https://worker:8002/services | grep hash_worker`
+2. Worker sees coordinator gossip: Check coordinator in `node_registry`
+3. Job exists in gossip: Check `hash_job_{job_id}` key in coordinator metadata
+4. Batches published: Check `hash_batches_{job_id}` key in coordinator metadata
+5. Chunks assigned to worker: Check `assigned_worker` field matches worker node_id
+
+**Debug**:
+```bash
+# On worker node
+curl https://coordinator:8001/api/cluster/nodes  # Check coordinator visible
+curl https://worker:8002/hash_worker/get_worker_status  # Check worker status
+```
+
+#### Issue: Worker re-processing same chunk
+
+**Cause**: Local cache not working or gossip delay too long
+
+**Fix**: Check logs for "Marked chunk X as processed" message. If missing, local cache not being updated.
+
+#### Issue: Orphaned chunks not recovered
+
+**Cause**: Timeout detection not running or chunks reassigned to same failed worker
+
+**Fix**: Check coordinator logs for "Detected X orphaned chunks" message. Should run every 10 seconds.
+
+#### Issue: Solutions not reported
+
+**Cause**: RPC call to `report_solution()` failing or gossip update not working
+
+**Fix**: Check worker logs for "Reported X solutions to coordinator". If missing, RPC call failed.
+
+---
+
 ## Architecture Decision Records (ADRs)
 
 ### ADR-001: Why ApplicationContext?
@@ -2793,6 +3674,27 @@ enable_address_probing: false
 This document should be your primary reference when working with the P2P_Core codebase. Follow these patterns, conventions, and architectural decisions to maintain consistency and quality.
 
 ## Recent Updates
+
+**2025-11-18 (Distributed Hash Worker System Documentation)**:
+- **Added comprehensive Distributed Hash Worker System section to CLAUDE.md**
+  - Complete architecture documentation for hash_coordinator and hash_worker services
+  - Detailed communication patterns (gossip-based coordination with < 0.1% overhead)
+  - 16+ supported hash algorithms (SHA-2/SHA-3, BLAKE2, NTLM/NTLMv2, WPA/WPA2)
+  - 4 attack modes: Brute Force, Dictionary, Dictionary + Mutations, Multi-Target
+  - Multiprocessing implementation with adaptive worker pool
+  - Performance optimizations and benchmarks
+- **Fixed critical bugs in distributed hash system**
+  - Fixed PerformanceAnalyzer error blocking batch updates
+  - Added local cache for processed chunks (prevents re-processing)
+  - Fixed worker chunk cycling via gossip monitoring
+- **Implementation status**: 6/10 planned features complete (60%)
+  - Phase 1: 5/7 features (71%) - SHA-2/SHA-3, NTLM/NTLMv2, Dictionary, Mutations, Multi-target
+  - Phase 2 WiFi: 1/3 features (33%) - WPA/WPA2 PSK complete
+- **Key design decisions documented**
+  - Gossip-based coordination (not RPC) for scalability
+  - Adaptive multiprocessing pool based on system load
+  - Version control for race condition prevention
+  - Local cache for preventing duplicate work
 
 **2025-11-17 (Latest Session - Documentation Actualization for v2.2.0)**:
 - **Comprehensive documentation update across all project files**
