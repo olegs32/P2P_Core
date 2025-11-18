@@ -1468,8 +1468,8 @@ class Run(BaseService):
                 if not job_id or not charset or not length:
                     return {"success": False, "error": "job_id, charset, and length are required"}
 
-                # Call hash_coordinator service
-                result = await self.proxy.hash_coordinator.coordinator.create_job(
+                # Call hash_coordinator service (local call, no .coordinator suffix)
+                result = await self.proxy.hash_coordinator.create_job(
                     job_id=job_id,
                     charset=charset,
                     length=length,
@@ -1488,7 +1488,7 @@ class Run(BaseService):
         async def get_hash_jobs():
             """Get all active hash jobs"""
             try:
-                result = await self.proxy.hash_coordinator.coordinator.get_all_jobs()
+                result = await self.proxy.hash_coordinator.get_all_jobs()
                 return result
 
             except Exception as e:
@@ -1499,7 +1499,7 @@ class Run(BaseService):
         async def get_job_status(job_id: str):
             """Get status of specific hash job"""
             try:
-                result = await self.proxy.hash_coordinator.coordinator.get_job_status(job_id)
+                result = await self.proxy.hash_coordinator.get_job_status(job_id)
                 return result
 
             except Exception as e:
