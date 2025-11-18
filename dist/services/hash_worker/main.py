@@ -624,6 +624,7 @@ class Run(BaseService):
                 # Получаем активные задачи из gossip
                 jobs = await self._get_active_jobs()
 
+                found_work = False
                 for job_id in jobs:
                     # Получаем доступные чанки
                     chunk = await self._get_available_chunk(job_id)
@@ -631,6 +632,13 @@ class Run(BaseService):
                     if chunk:
                         # Обрабатываем чанк
                         await self._process_chunk(job_id, chunk)
+                        found_work = True
+                        break  # Обрабатываем по одному чанку за итерацию
+
+                # Если нет доступных чанков - делаем паузу
+                if not found_work:
+                    self.logger.debug("No available chunks, waiting...")
+                    await asyncio.sleep(10)  # Дополнительная пауза если нет работы
 
             except asyncio.CancelledError:
                 break
@@ -841,6 +849,18 @@ class Run(BaseService):
             self.logger.warning(f"FOUND {len(result['solutions'])} SOLUTIONS!")
             for sol in result["solutions"]:
                 self.logger.warning(f"Solution: {sol['combination']} → {sol['hash']}")
+
+            # Немедленно уведомляем координатор о находке через RPC
+            try:
+                await self.proxy.hash_coordinator.report_solution(
+                    job_id=job_id,
+                    chunk_id=chunk_id,
+                    worker_id=self.context.config.node_id,
+                    solutions=result["solutions"]
+                )
+                self.logger.info(f"Reported {len(result['solutions'])} solutions to coordinator")
+            except Exception as e:
+                self.logger.error(f"Failed to report solutions to coordinator: {e}")
 
         # Cleanup computer после завершения chunk
         try:

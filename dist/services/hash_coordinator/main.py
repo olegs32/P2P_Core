@@ -551,6 +551,45 @@ class Run(BaseService):
 
         return {"success": True, "jobs": jobs}
 
+    @service_method(description="Отчет о найденных решениях от воркера", public=True)
+    async def report_solution(
+        self,
+        job_id: str,
+        chunk_id: int,
+        worker_id: str,
+        solutions: List[dict]
+    ) -> Dict[str, Any]:
+        """
+        Принимает уведомление о найденных решениях от воркера
+
+        Args:
+            job_id: ID задачи
+            chunk_id: ID чанка
+            worker_id: ID воркера
+            solutions: Список найденных решений
+
+        Returns:
+            Подтверждение получения
+        """
+        if job_id not in self.active_jobs:
+            return {"success": False, "error": f"Job {job_id} not found"}
+
+        self.logger.warning(f"Worker {worker_id} found {len(solutions)} solutions in job {job_id}, chunk {chunk_id}!")
+        for sol in solutions:
+            self.logger.warning(f"  Solution: {sol.get('combination')} → {sol.get('hash')}")
+
+        # TODO: Можно добавить логику:
+        # - Сохранение решений в БД
+        # - Остановка задачи если найдено решение
+        # - Уведомление пользователя
+
+        return {
+            "success": True,
+            "job_id": job_id,
+            "solutions_count": len(solutions),
+            "acknowledged": True
+        }
+
     @service_method(description="Импорт WPA handshake из PCAP", public=True)
     async def import_pcap(
         self,
