@@ -467,7 +467,8 @@ class Run(BaseService):
         target_hash: Optional[str] = None,
         target_hashes: Optional[List[str]] = None,  # Multi-target mode
         ssid: Optional[str] = None,  # For WPA/WPA2
-        base_chunk_size: int = 1_000_000
+        base_chunk_size: int = 1_000_000,
+        lookahead_batches: int = 10  # Number of batches to generate ahead
     ) -> Dict[str, Any]:
         """
         Создает новую задачу вычисления хешей
@@ -484,6 +485,7 @@ class Run(BaseService):
             target_hashes: Список целевых хешей (multi-target mode)
             ssid: SSID для WPA/WPA2 cracking
             base_chunk_size: Базовый размер чанка
+            lookahead_batches: Количество батчей генерируемых наперед (default: 10)
         """
         if job_id in self.active_jobs:
             return {"success": False, "error": "Job already exists"}
@@ -498,7 +500,7 @@ class Run(BaseService):
                 charset=charset,
                 length=length,
                 base_chunk_size=base_chunk_size,
-                lookahead_batches=3
+                lookahead_batches=lookahead_batches
             )
             total_items = generator.total_combinations
 
@@ -514,7 +516,7 @@ class Run(BaseService):
                 charset="a",  # Dummy
                 length=1,
                 base_chunk_size=base_chunk_size,
-                lookahead_batches=3
+                lookahead_batches=lookahead_batches
             )
             generator.total_combinations = total_items
 
