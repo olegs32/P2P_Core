@@ -207,6 +207,7 @@
         #homeTab,
         #certificatesTab,
         #logsTab,
+        #hash-jobsTab,
         #controlTab {
             display: none;
         }
@@ -216,6 +217,7 @@
         #homeTab.active,
         #certificatesTab.active,
         #logsTab.active,
+        #hash-jobsTab.active,
         #controlTab.active {
             display: block;
         }
@@ -2569,14 +2571,24 @@
 
                     // Show corresponding content
                     if (targetTab === 'home') {
+                        stopWorkersDistributionAutoRefresh();
                         document.getElementById('homeTab').classList.add('active');
                     } else if (targetTab === 'certificates') {
+                        stopWorkersDistributionAutoRefresh();
                         document.getElementById('certificatesTab').classList.add('active');
                         // Load certificates when tab is opened
                         loadCertificates();
                     } else if (targetTab === 'logs') {
+                        stopWorkersDistributionAutoRefresh();
                         document.getElementById('logsTab').classList.add('active');
+                    } else if (targetTab === 'hash-jobs') {
+                        document.getElementById('hash-jobsTab').classList.add('active');
+                        // Load hash jobs when tab is opened
+                        loadActiveJobs();
+                        refreshWorkersDistribution();
+                        startWorkersDistributionAutoRefresh();
                     } else if (targetTab === 'control') {
+                        stopWorkersDistributionAutoRefresh();
                         document.getElementById('controlTab').classList.add('active');
                         // Initialize control panel
                         initializeControlPanel();
@@ -6013,15 +6025,6 @@
         // Attach form handler
         document.getElementById('createJobForm')?.addEventListener('submit', createHashJob);
 
-        // Load jobs when hash-jobs tab is opened
-        const hashJobsTab = document.querySelector('[data-tab="hash-jobs"]');
-        if (hashJobsTab) {
-            hashJobsTab.addEventListener('click', function() {
-                setTimeout(loadActiveJobs, 100);
-                setTimeout(refreshWorkersDistribution, 150);
-            });
-        }
-
         // ==================== Workers Distribution Functions ====================
 
         async function refreshWorkersDistribution() {
@@ -6194,20 +6197,6 @@
                 workersDistributionInterval = null;
             }
         }
-
-        // Start auto-refresh when hash-jobs tab is active
-        document.querySelector('[data-tab="hash-jobs"]')?.addEventListener('click', () => {
-            startWorkersDistributionAutoRefresh();
-        });
-
-        // Stop auto-refresh when leaving hash-jobs tab
-        document.querySelectorAll('.nav-tab').forEach(tab => {
-            tab.addEventListener('click', function() {
-                if (this.getAttribute('data-tab') !== 'hash-jobs') {
-                    stopWorkersDistributionAutoRefresh();
-                }
-            });
-        });
 
     </script>
 </body>
