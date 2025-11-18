@@ -6,35 +6,178 @@ Hash Worker Service - Воркер для распределенных вычи�
 - Высокопроизводительное вычисление хешей
 - Отчетность о прогрессе через gossip
 - Автоматический claim чанков без коллизий
+- Поддержка множества hash алгоритмов (SHA-2/3, NTLM, WPA2, etc.)
+- Dictionary attack с мутациями
+- Multi-target mode
 """
 
 import asyncio
 import hashlib
 import logging
 import time
-from typing import Dict, List, Optional, Any
+import struct
+from typing import Dict, List, Optional, Any, Set
 
 from layers.service import BaseService, service_method
+
+
+class HashAlgorithms:
+    """Поддерживаемые hash алгоритмы"""
+
+    ALGORITHMS = {
+        # SHA-2 family
+        "md5": lambda: hashlib.md5(),
+        "sha1": lambda: hashlib.sha1(),
+        "sha224": lambda: hashlib.sha224(),
+        "sha256": lambda: hashlib.sha256(),
+        "sha384": lambda: hashlib.sha384(),
+        "sha512": lambda: hashlib.sha512(),
+        "sha512_224": lambda: hashlib.new('sha512_224'),
+        "sha512_256": lambda: hashlib.new('sha512_256'),
+
+        # SHA-3 family
+        "sha3_224": lambda: hashlib.sha3_224(),
+        "sha3_256": lambda: hashlib.sha3_256(),
+        "sha3_384": lambda: hashlib.sha3_384(),
+        "sha3_512": lambda: hashlib.sha3_512(),
+        "shake_128": lambda: hashlib.shake_128(),
+        "shake_256": lambda: hashlib.shake_256(),
+
+        # BLAKE2
+        "blake2b": lambda: hashlib.blake2b(),
+        "blake2s": lambda: hashlib.blake2s(),
+    }
+
+    @staticmethod
+    def compute_hash(data: bytes, algo: str, output_length: int = None) -> bytes:
+        """Вычисляет хеш с поддержкой различных алгоритмов"""
+        if algo == "ntlm":
+            # NTLM = MD4(UTF-16LE(password))
+            return hashlib.new('md4', data.decode('utf-8').encode('utf-16le')).digest()
+
+        elif algo.startswith("wpa"):
+            # WPA/WPA2 обрабатывается отдельно
+            raise ValueError("WPA requires SSID parameter, use compute_wpa_psk()")
+
+        elif algo in HashAlgorithms.ALGORITHMS:
+            hasher = HashAlgorithms.ALGORITHMS[algo]()
+            hasher.update(data)
+
+            # SHAKE требует output_length
+            if algo.startswith("shake_"):
+                if output_length is None:
+                    output_length = 32  # default 256 bits
+                return hasher.digest(output_length)
+            else:
+                return hasher.digest()
+        else:
+            raise ValueError(f"Unsupported algorithm: {algo}")
+
+    @staticmethod
+    def compute_wpa_psk(passphrase: str, ssid: str) -> bytes:
+        """
+        WPA/WPA2 PSK = PBKDF2-HMAC-SHA1(passphrase, SSID, 4096 iterations, 32 bytes)
+        """
+        return hashlib.pbkdf2_hmac(
+            'sha1',
+            passphrase.encode('utf-8'),
+            ssid.encode('utf-8'),
+            iterations=4096,
+            dklen=32
+        )
+
+
+class MutationEngine:
+    """Движок мутаций для dictionary attack"""
+
+    @staticmethod
+    def apply_mutations(word: str, rules: List[str]) -> List[str]:
+        """
+        Применяет правила мутации к слову
+
+        Правила:
+        - l: lowercase
+        - u: uppercase
+        - c: capitalize
+        - $X: append character X
+        - ^X: prepend character X
+        - sa@: substitute 'a' with '@'
+        - d: duplicate
+        - r: reverse
+        """
+        mutations = [word]
+
+        for rule in rules:
+            new_mutations = []
+
+            for w in mutations:
+                if rule == "l":
+                    new_mutations.append(w.lower())
+                elif rule == "u":
+                    new_mutations.append(w.upper())
+                elif rule == "c":
+                    new_mutations.append(w.capitalize())
+                elif rule == "d":
+                    new_mutations.append(w + w)
+                elif rule == "r":
+                    new_mutations.append(w[::-1])
+                elif rule.startswith("$"):
+                    # Append
+                    new_mutations.append(w + rule[1:])
+                elif rule.startswith("^"):
+                    # Prepend
+                    new_mutations.append(rule[1:] + w)
+                elif rule.startswith("s"):
+                    # Substitute: sab = replace 'a' with 'b'
+                    if len(rule) == 3:
+                        new_mutations.append(w.replace(rule[1], rule[2]))
+                else:
+                    new_mutations.append(w)
+
+            mutations = new_mutations
+
+        return mutations
 
 
 class HashComputer:
     """Оптимизированное вычисление хешей"""
 
-    def __init__(self, charset: str, length: int, hash_algo: str = "sha256"):
-        self.charset = charset
-        self.charset_list = list(charset)  # Предрасчитанный список
-        self.length = length
-        self.base = len(charset)
+    def __init__(
+        self,
+        charset: str = None,
+        length: int = None,
+        hash_algo: str = "sha256",
+        mode: str = "brute",  # "brute" or "dictionary"
+        wordlist: List[str] = None,
+        mutations: List[str] = None,
+        ssid: str = None  # Для WPA/WPA2
+    ):
+        self.mode = mode
         self.hash_algo = hash_algo
+        self.ssid = ssid
 
-        # Предрасчет для оптимизации
-        self.powers_of_base = [self.base ** i for i in range(length)]
+        # Для brute force
+        if mode == "brute":
+            self.charset = charset
+            self.charset_list = list(charset) if charset else []
+            self.length = length
+            self.base = len(charset) if charset else 0
+            self.powers_of_base = [self.base ** i for i in range(length)] if charset and length else []
+
+        # Для dictionary
+        elif mode == "dictionary":
+            self.wordlist = wordlist or []
+            self.mutations = mutations or []
+            self.mutation_engine = MutationEngine()
 
     def index_to_combination(self, idx: int) -> str:
         """
         Оптимизированное преобразование индекс → комбинация
         Минимум операций, максимум скорость
         """
+        if self.mode != "brute":
+            raise ValueError("index_to_combination only for brute mode")
+
         result = [None] * self.length
 
         for pos in range(self.length - 1, -1, -1):
@@ -48,6 +191,7 @@ class HashComputer:
         start_index: int,
         end_index: int,
         target_hash: Optional[str] = None,
+        target_hashes: Optional[List[str]] = None,  # Multi-target mode
         progress_callback=None,
         progress_interval: int = 10000
     ) -> Dict[str, Any]:
@@ -58,52 +202,84 @@ class HashComputer:
             start_index: Начальный индекс
             end_index: Конечный индекс
             target_hash: Целевой хеш (опционально)
+            target_hashes: Список целевых хешей для multi-target mode
             progress_callback: Функция для отчета о прогрессе
             progress_interval: Интервал отчетов (итераций)
 
         Returns:
             Результаты вычислений
         """
+        if self.mode == "brute":
+            return self._compute_brute_force(
+                start_index, end_index, target_hash, target_hashes,
+                progress_callback, progress_interval
+            )
+        elif self.mode == "dictionary":
+            return self._compute_dictionary(
+                start_index, end_index, target_hash, target_hashes,
+                progress_callback, progress_interval
+            )
+        else:
+            raise ValueError(f"Unknown mode: {self.mode}")
+
+    def _compute_brute_force(
+        self,
+        start_index: int,
+        end_index: int,
+        target_hash: Optional[str],
+        target_hashes: Optional[List[str]],
+        progress_callback,
+        progress_interval: int
+    ) -> Dict[str, Any]:
+        """Brute force режим"""
         start_time = time.time()
         hash_count = 0
         solutions = []
 
-        # Предрасчет для сравнения
-        target_hash_bytes = bytes.fromhex(target_hash) if target_hash else None
+        # Multi-target mode
+        if target_hashes:
+            target_hash_set = {bytes.fromhex(h) for h in target_hashes}
+        elif target_hash:
+            target_hash_set = {bytes.fromhex(target_hash)}
+        else:
+            target_hash_set = None
 
-        # Основной цикл - БЕЗ ПРОВЕРОК для максимальной скорости
         batch_size = progress_interval
         current_idx = start_index
 
         while current_idx < end_index:
             batch_end = min(current_idx + batch_size, end_index)
 
-            # Вычисления БЕЗ проверок
+            # Основной цикл БЕЗ ПРОВЕРОК
             for idx in range(current_idx, batch_end):
                 combination = self.index_to_combination(idx)
 
                 # Вычисляем хеш
-                if target_hash_bytes:
-                    # digest() быстрее hexdigest()
-                    hash_bytes = hashlib.new(self.hash_algo, combination.encode()).digest()
-
-                    if hash_bytes == target_hash_bytes:
-                        # НАЙДЕНО!
-                        hash_hex = hash_bytes.hex()
-                        solutions.append({
-                            "combination": combination,
-                            "hash": hash_hex,
-                            "index": idx
-                        })
+                if self.hash_algo.startswith("wpa"):
+                    if not self.ssid:
+                        raise ValueError("SSID required for WPA/WPA2")
+                    hash_bytes = HashAlgorithms.compute_wpa_psk(combination, self.ssid)
                 else:
-                    # Просто вычисляем (для статистики)
-                    _ = hashlib.new(self.hash_algo, combination.encode()).digest()
+                    hash_bytes = HashAlgorithms.compute_hash(
+                        combination.encode(),
+                        self.hash_algo
+                    )
+
+                # Проверка на совпадение
+                if target_hash_set and hash_bytes in target_hash_set:
+                    hash_hex = hash_bytes.hex()
+                    solutions.append({
+                        "combination": combination,
+                        "hash": hash_hex,
+                        "index": idx,
+                        "mode": "brute"
+                    })
 
                 hash_count += 1
 
             current_idx = batch_end
 
-            # Отчет о прогрессе (только после батча)
+            # Отчет о прогрессе
             if progress_callback:
                 progress_callback(current_idx, hash_count)
 
@@ -116,7 +292,93 @@ class HashComputer:
             "hash_rate": hash_rate,
             "solutions": solutions,
             "start_index": start_index,
-            "end_index": end_index
+            "end_index": end_index,
+            "mode": "brute"
+        }
+
+    def _compute_dictionary(
+        self,
+        start_index: int,
+        end_index: int,
+        target_hash: Optional[str],
+        target_hashes: Optional[List[str]],
+        progress_callback,
+        progress_interval: int
+    ) -> Dict[str, Any]:
+        """Dictionary attack режим"""
+        start_time = time.time()
+        hash_count = 0
+        solutions = []
+
+        # Multi-target mode
+        if target_hashes:
+            target_hash_set = {bytes.fromhex(h) for h in target_hashes}
+        elif target_hash:
+            target_hash_set = {bytes.fromhex(target_hash)}
+        else:
+            target_hash_set = None
+
+        # Получаем слайс словаря
+        wordlist_slice = self.wordlist[start_index:end_index]
+
+        batch_size = progress_interval
+        current_idx = 0
+
+        while current_idx < len(wordlist_slice):
+            batch_end = min(current_idx + batch_size, len(wordlist_slice))
+
+            for idx in range(current_idx, batch_end):
+                word = wordlist_slice[idx]
+
+                # Генерируем мутации
+                if self.mutations:
+                    candidates = self.mutation_engine.apply_mutations(word, self.mutations)
+                else:
+                    candidates = [word]
+
+                # Проверяем каждый кандидат
+                for candidate in candidates:
+                    # Вычисляем хеш
+                    if self.hash_algo.startswith("wpa"):
+                        if not self.ssid:
+                            raise ValueError("SSID required for WPA/WPA2")
+                        hash_bytes = HashAlgorithms.compute_wpa_psk(candidate, self.ssid)
+                    else:
+                        hash_bytes = HashAlgorithms.compute_hash(
+                            candidate.encode(),
+                            self.hash_algo
+                        )
+
+                    # Проверка на совпадение
+                    if target_hash_set and hash_bytes in target_hash_set:
+                        hash_hex = hash_bytes.hex()
+                        solutions.append({
+                            "combination": candidate,
+                            "hash": hash_hex,
+                            "index": start_index + idx,
+                            "base_word": word,
+                            "mode": "dictionary"
+                        })
+
+                    hash_count += 1
+
+            current_idx = batch_end
+
+            # Отчет о прогрессе
+            if progress_callback:
+                progress_callback(start_index + current_idx, hash_count)
+
+        time_taken = time.time() - start_time
+        hash_rate = hash_count / time_taken if time_taken > 0 else 0
+
+        return {
+            "hash_count": hash_count,
+            "time_taken": time_taken,
+            "hash_rate": hash_rate,
+            "solutions": solutions,
+            "start_index": start_index,
+            "end_index": end_index,
+            "mode": "dictionary"
         }
 
 
@@ -281,13 +543,42 @@ class Run(BaseService):
             self.logger.error(f"Job metadata not found for {job_id}")
             return
 
-        charset = job_metadata["charset"]
-        length = job_metadata["length"]
+        # Параметры задачи
+        mode = job_metadata.get("mode", "brute")
         hash_algo = job_metadata.get("hash_algo", "sha256")
         target_hash = job_metadata.get("target_hash")
+        target_hashes = job_metadata.get("target_hashes")  # Multi-target mode
 
-        # Создаем компьютер
-        computer = HashComputer(charset, length, hash_algo)
+        # Создаем компьютер в зависимости от режима
+        if mode == "brute":
+            charset = job_metadata["charset"]
+            length = job_metadata["length"]
+            ssid = job_metadata.get("ssid")  # Для WPA/WPA2
+
+            computer = HashComputer(
+                charset=charset,
+                length=length,
+                hash_algo=hash_algo,
+                mode="brute",
+                ssid=ssid
+            )
+
+        elif mode == "dictionary":
+            wordlist = job_metadata.get("wordlist", [])
+            mutations = job_metadata.get("mutations", [])
+            ssid = job_metadata.get("ssid")
+
+            computer = HashComputer(
+                hash_algo=hash_algo,
+                mode="dictionary",
+                wordlist=wordlist,
+                mutations=mutations,
+                ssid=ssid
+            )
+
+        else:
+            self.logger.error(f"Unknown mode: {mode}")
+            return
 
         # Публикуем статус "working" в gossip
         await self._publish_chunk_status(job_id, chunk_id, "working", start_index)
@@ -311,7 +602,8 @@ class Run(BaseService):
         result = computer.compute_chunk(
             start_index,
             end_index,
-            target_hash,
+            target_hash=target_hash,
+            target_hashes=target_hashes,
             progress_callback=progress_callback,
             progress_interval=10000
         )

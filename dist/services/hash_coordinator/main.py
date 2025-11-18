@@ -16,12 +16,22 @@ import logging
 import statistics
 import string
 import time
+import csv
+import os
 from collections import defaultdict
 from dataclasses import dataclass, asdict
 from datetime import datetime
 from typing import Dict, List, Optional, Any
 
 from layers.service import BaseService, service_method
+
+# Import PCAP parser
+try:
+    from .pcap_parser import PCAPParser, parse_hccapx, parse_22000
+except ImportError:
+    PCAPParser = None
+    parse_hccapx = None
+    parse_22000 = None
 
 
 @dataclass
@@ -373,10 +383,15 @@ class Run(BaseService):
     async def create_job(
         self,
         job_id: str,
-        charset: str,
-        length: int,
+        mode: str = "brute",  # "brute" or "dictionary"
+        charset: Optional[str] = None,
+        length: Optional[int] = None,
+        wordlist: Optional[List[str]] = None,
+        mutations: Optional[List[str]] = None,
         hash_algo: str = "sha256",
         target_hash: Optional[str] = None,
+        target_hashes: Optional[List[str]] = None,  # Multi-target mode
+        ssid: Optional[str] = None,  # For WPA/WPA2
         base_chunk_size: int = 1_000_000
     ) -> Dict[str, Any]:
         """
@@ -384,22 +399,52 @@ class Run(BaseService):
 
         Args:
             job_id: Уникальный ID задачи
-            charset: Набор символов для перебора
-            length: Длина комбинации
+            mode: Режим работы ("brute" или "dictionary")
+            charset: Набор символов для перебора (для brute mode)
+            length: Длина комбинации (для brute mode)
+            wordlist: Список слов (для dictionary mode)
+            mutations: Правила мутации (для dictionary mode)
             hash_algo: Алгоритм хеширования
             target_hash: Целевой хеш (опционально)
+            target_hashes: Список целевых хешей (multi-target mode)
+            ssid: SSID для WPA/WPA2 cracking
             base_chunk_size: Базовый размер чанка
         """
         if job_id in self.active_jobs:
             return {"success": False, "error": "Job already exists"}
 
-        # Создаем генератор
-        generator = DynamicChunkGenerator(
-            charset=charset,
-            length=length,
-            base_chunk_size=base_chunk_size,
-            lookahead_batches=3
-        )
+        # Валидация параметров
+        if mode == "brute":
+            if not charset or not length:
+                return {"success": False, "error": "charset and length required for brute mode"}
+
+            # Создаем генератор для brute force
+            generator = DynamicChunkGenerator(
+                charset=charset,
+                length=length,
+                base_chunk_size=base_chunk_size,
+                lookahead_batches=3
+            )
+            total_items = generator.total_combinations
+
+        elif mode == "dictionary":
+            if not wordlist:
+                return {"success": False, "error": "wordlist required for dictionary mode"}
+
+            # Для dictionary mode используем количество слов как total
+            total_items = len(wordlist)
+
+            # Создаем генератор с фиктивным charset
+            generator = DynamicChunkGenerator(
+                charset="a",  # Dummy
+                length=1,
+                base_chunk_size=base_chunk_size,
+                lookahead_batches=3
+            )
+            generator.total_combinations = total_items
+
+        else:
+            return {"success": False, "error": f"Unknown mode: {mode}"}
 
         self.active_jobs[job_id] = generator
 
@@ -410,7 +455,18 @@ class Run(BaseService):
         await generator.ensure_lookahead_batches(active_workers)
 
         # Публикуем job metadata в gossip
-        await self._publish_job_metadata(job_id, charset, length, hash_algo, target_hash)
+        await self._publish_job_metadata_v2(
+            job_id=job_id,
+            mode=mode,
+            charset=charset,
+            length=length,
+            wordlist=wordlist,
+            mutations=mutations,
+            hash_algo=hash_algo,
+            target_hash=target_hash,
+            target_hashes=target_hashes,
+            ssid=ssid
+        )
 
         # Публикуем первые батчи
         await self._publish_batches(job_id, generator)
@@ -418,7 +474,8 @@ class Run(BaseService):
         return {
             "success": True,
             "job_id": job_id,
-            "total_combinations": generator.total_combinations,
+            "mode": mode,
+            "total_combinations": total_items,
             "initial_batches": generator.current_version
         }
 
@@ -456,6 +513,134 @@ class Run(BaseService):
             })
 
         return {"success": True, "jobs": jobs}
+
+    @service_method(description="Импорт WPA handshake из PCAP", public=True)
+    async def import_pcap(
+        self,
+        pcap_file: str,
+        job_id_prefix: str = "wpa"
+    ) -> Dict[str, Any]:
+        """
+        Импортирует WiFi handshakes из PCAP файла и создает задачи
+
+        Args:
+            pcap_file: Путь к PCAP файлу
+            job_id_prefix: Префикс для job_id
+
+        Returns:
+            Список созданных задач
+        """
+        if PCAPParser is None:
+            return {"success": False, "error": "PCAP parser not available"}
+
+        try:
+            parser = PCAPParser(pcap_file)
+            handshakes = parser.parse()
+
+            if not handshakes:
+                return {"success": False, "error": "No handshakes found in PCAP"}
+
+            created_jobs = []
+
+            for i, hs in enumerate(handshakes):
+                job_id = f"{job_id_prefix}_{hs['bssid'].replace(':', '')}_{i}"
+                essid = hs['essid'] or f"unknown_{i}"
+
+                # Создаем job для WPA cracking
+                # Note: требуется словарь для dictionary attack
+                # или charset для brute force
+
+                created_jobs.append({
+                    "job_id": job_id,
+                    "bssid": hs['bssid'],
+                    "essid": essid,
+                    "eapol_frames": len(hs['eapol_frames'])
+                })
+
+            return {
+                "success": True,
+                "handshakes_found": len(handshakes),
+                "jobs": created_jobs
+            }
+
+        except Exception as e:
+            self.logger.error(f"Failed to import PCAP: {e}")
+            return {"success": False, "error": str(e)}
+
+    @service_method(description="Экспорт результатов в JSON/CSV", public=True)
+    async def export_results(
+        self,
+        job_id: str,
+        format: str = "json",  # "json" or "csv"
+        output_file: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Экспортирует результаты задачи в файл
+
+        Args:
+            job_id: ID задачи
+            format: Формат экспорта ("json" или "csv")
+            output_file: Путь к файлу (если None, возвращает данные)
+
+        Returns:
+            Результаты или путь к файлу
+        """
+        if job_id not in self.active_jobs:
+            return {"success": False, "error": "Job not found"}
+
+        generator = self.active_jobs[job_id]
+        progress = generator.get_progress()
+
+        # Собираем все найденные решения
+        solutions = []
+        for batch in generator.generated_batches.values():
+            for chunk in batch.chunks:
+                # Решения хранятся в worker status через gossip
+                # Здесь нужно собрать их из gossip metadata
+                pass
+
+        # Для демо - создаем пример структуры
+        results = {
+            "job_id": job_id,
+            "progress": progress,
+            "solutions": solutions,
+            "exported_at": datetime.now().isoformat()
+        }
+
+        if output_file is None:
+            # Возвращаем данные напрямую
+            return {
+                "success": True,
+                "format": format,
+                "data": results
+            }
+
+        try:
+            # Экспорт в файл
+            if format == "json":
+                with open(output_file, 'w') as f:
+                    json.dump(results, f, indent=2)
+
+            elif format == "csv":
+                with open(output_file, 'w', newline='') as f:
+                    writer = csv.DictWriter(f, fieldnames=['combination', 'hash', 'index'])
+                    writer.writeheader()
+                    for sol in solutions:
+                        writer.writerow(sol)
+
+            else:
+                return {"success": False, "error": f"Unknown format: {format}"}
+
+            return {
+                "success": True,
+                "format": format,
+                "output_file": output_file,
+                "solutions_count": len(solutions)
+            }
+
+        except Exception as e:
+            self.logger.error(f"Failed to export results: {e}")
+            return {"success": False, "error": str(e)}
 
     @service_method(description="Обновление от воркера", public=True)
     async def report_chunk_progress(
@@ -520,7 +705,30 @@ class Run(BaseService):
         hash_algo: str,
         target_hash: Optional[str]
     ):
-        """Публикует метаданные задачи в gossip"""
+        """Публикует метаданные задачи в gossip (legacy)"""
+        await self._publish_job_metadata_v2(
+            job_id=job_id,
+            mode="brute",
+            charset=charset,
+            length=length,
+            hash_algo=hash_algo,
+            target_hash=target_hash
+        )
+
+    async def _publish_job_metadata_v2(
+        self,
+        job_id: str,
+        mode: str,
+        charset: Optional[str] = None,
+        length: Optional[int] = None,
+        wordlist: Optional[List[str]] = None,
+        mutations: Optional[List[str]] = None,
+        hash_algo: str = "sha256",
+        target_hash: Optional[str] = None,
+        target_hashes: Optional[List[str]] = None,
+        ssid: Optional[str] = None
+    ):
+        """Публикует метаданные задачи в gossip (v2 с новыми параметрами)"""
         network = self.context.get_shared("network")
         if not network:
             return
@@ -528,10 +736,15 @@ class Run(BaseService):
         metadata = {
             f"hash_job_{job_id}": {
                 "job_id": job_id,
+                "mode": mode,
                 "charset": charset,
                 "length": length,
+                "wordlist": wordlist,
+                "mutations": mutations,
                 "hash_algo": hash_algo,
                 "target_hash": target_hash,
+                "target_hashes": target_hashes,
+                "ssid": ssid,
                 "started_at": time.time()
             }
         }

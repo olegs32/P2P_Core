@@ -1119,43 +1119,122 @@
                 <div class="card-body" id="createJobFormContainer" style="display: none;">
                     <form id="createJobForm">
                         <div class="row mb-3">
-                            <div class="col-md-6">
+                            <div class="col-md-4">
                                 <label class="form-label">ID задачи</label>
                                 <input type="text" class="form-control" name="job_id" required
                                        placeholder="my-hash-job">
                             </div>
-                            <div class="col-md-6">
+                            <div class="col-md-4">
+                                <label class="form-label">Режим работы</label>
+                                <select class="form-select" name="mode" onchange="toggleJobMode(this.value)">
+                                    <option value="brute" selected>Brute Force</option>
+                                    <option value="dictionary">Dictionary Attack</option>
+                                </select>
+                            </div>
+                            <div class="col-md-4">
                                 <label class="form-label">Алгоритм хеширования</label>
-                                <select class="form-select" name="hash_algo">
-                                    <option value="sha256" selected>SHA-256</option>
-                                    <option value="md5">MD5</option>
-                                    <option value="sha1">SHA-1</option>
-                                    <option value="sha512">SHA-512</option>
+                                <select class="form-select" name="hash_algo" onchange="toggleWPAFields(this.value)">
+                                    <optgroup label="SHA-2">
+                                        <option value="sha256" selected>SHA-256</option>
+                                        <option value="sha1">SHA-1</option>
+                                        <option value="sha224">SHA-224</option>
+                                        <option value="sha384">SHA-384</option>
+                                        <option value="sha512">SHA-512</option>
+                                        <option value="sha512_224">SHA-512/224</option>
+                                        <option value="sha512_256">SHA-512/256</option>
+                                    </optgroup>
+                                    <optgroup label="SHA-3">
+                                        <option value="sha3_224">SHA3-224</option>
+                                        <option value="sha3_256">SHA3-256</option>
+                                        <option value="sha3_384">SHA3-384</option>
+                                        <option value="sha3_512">SHA3-512</option>
+                                    </optgroup>
+                                    <optgroup label="BLAKE2">
+                                        <option value="blake2b">BLAKE2b</option>
+                                        <option value="blake2s">BLAKE2s</option>
+                                    </optgroup>
+                                    <optgroup label="Others">
+                                        <option value="md5">MD5</option>
+                                        <option value="ntlm">NTLM</option>
+                                    </optgroup>
+                                    <optgroup label="WiFi">
+                                        <option value="wpa2">WPA/WPA2 PSK</option>
+                                    </optgroup>
                                 </select>
                             </div>
                         </div>
-                        <div class="row mb-3">
-                            <div class="col-md-6">
-                                <label class="form-label">Набор символов</label>
-                                <input type="text" class="form-control" name="charset" required
-                                       value="abcdefghijklmnopqrstuvwxyz0123456789"
-                                       placeholder="abc...xyz012...">
-                                <small class="text-muted">Символы для перебора</small>
-                            </div>
-                            <div class="col-md-6">
-                                <label class="form-label">Длина комбинации</label>
-                                <input type="number" class="form-control" name="length" required
-                                       value="4" min="1" max="12">
-                                <small class="text-muted">Количество символов в комбинации</small>
+
+                        <!-- Brute Force Fields -->
+                        <div id="bruteForceFields">
+                            <div class="row mb-3">
+                                <div class="col-md-6">
+                                    <label class="form-label">Набор символов</label>
+                                    <input type="text" class="form-control" name="charset"
+                                           value="abcdefghijklmnopqrstuvwxyz0123456789"
+                                           placeholder="abc...xyz012...">
+                                    <small class="text-muted">Символы для перебора</small>
+                                </div>
+                                <div class="col-md-6">
+                                    <label class="form-label">Длина комбинации</label>
+                                    <input type="number" class="form-control" name="length"
+                                           value="4" min="1" max="12">
+                                    <small class="text-muted">Количество символов в комбинации</small>
+                                </div>
                             </div>
                         </div>
+
+                        <!-- Dictionary Attack Fields -->
+                        <div id="dictionaryFields" style="display: none;">
+                            <div class="row mb-3">
+                                <div class="col-md-12">
+                                    <label class="form-label">Словарь (по одному слову на строку)</label>
+                                    <textarea class="form-control" name="wordlist" rows="5"
+                                              placeholder="password&#10;admin&#10;123456&#10;qwerty"></textarea>
+                                    <small class="text-muted">Введите слова для перебора</small>
+                                </div>
+                            </div>
+                            <div class="row mb-3">
+                                <div class="col-md-12">
+                                    <label class="form-label">Правила мутации (через запятую)</label>
+                                    <input type="text" class="form-control" name="mutations"
+                                           placeholder="l,u,c,$1,$2,$3,sa@,se3">
+                                    <small class="text-muted">l=lowercase, u=uppercase, c=capitalize, $X=append, ^X=prepend, sXY=substitute</small>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- WPA/WPA2 Fields -->
+                        <div id="wpaFields" style="display: none;">
+                            <div class="row mb-3">
+                                <div class="col-md-12">
+                                    <label class="form-label">SSID сети</label>
+                                    <input type="text" class="form-control" name="ssid"
+                                           placeholder="MyWiFiNetwork">
+                                    <small class="text-muted">Имя WiFi сети (обязательно для WPA/WPA2)</small>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Target Hash(es) -->
                         <div class="row mb-3">
-                            <div class="col-md-6">
+                            <div class="col-md-12">
                                 <label class="form-label">Целевой хеш (опционально)</label>
                                 <input type="text" class="form-control" name="target_hash"
                                        placeholder="5e884898da28047151d0e56f8dc6292773603d0d6aabbdd62a11ef721d1542d8">
-                                <small class="text-muted">Оставьте пустым для полного перебора</small>
+                                <small class="text-muted">Один хеш для поиска, или оставьте пустым для полного перебора</small>
                             </div>
+                        </div>
+                        <div class="row mb-3">
+                            <div class="col-md-12">
+                                <label class="form-label">Несколько целевых хешей (multi-target mode)</label>
+                                <textarea class="form-control" name="target_hashes" rows="3"
+                                          placeholder="hash1&#10;hash2&#10;hash3"></textarea>
+                                <small class="text-muted">По одному хешу на строку (опционально)</small>
+                            </div>
+                        </div>
+
+                        <!-- Chunk Size -->
+                        <div class="row mb-3">
                             <div class="col-md-6">
                                 <label class="form-label">Размер чанка</label>
                                 <input type="number" class="form-control" name="base_chunk_size"
@@ -1163,6 +1242,7 @@
                                 <small class="text-muted">Базовый размер чанка (хешей)</small>
                             </div>
                         </div>
+
                         <div class="d-flex gap-2">
                             <button type="submit" class="btn btn-success">
                                 <i class="bi bi-play-circle"></i> Запустить задачу
@@ -5571,22 +5651,67 @@
             container.style.display = container.style.display === 'none' ? 'block' : 'none';
         }
 
+        function toggleJobMode(mode) {
+            const bruteFields = document.getElementById('bruteForceFields');
+            const dictFields = document.getElementById('dictionaryFields');
+
+            if (mode === 'brute') {
+                bruteFields.style.display = 'block';
+                dictFields.style.display = 'none';
+            } else {
+                bruteFields.style.display = 'none';
+                dictFields.style.display = 'block';
+            }
+        }
+
+        function toggleWPAFields(algo) {
+            const wpaFields = document.getElementById('wpaFields');
+            wpaFields.style.display = algo === 'wpa2' ? 'block' : 'none';
+        }
+
         async function createHashJob(event) {
             event.preventDefault();
             const form = event.target;
             const formData = new FormData(form);
 
+            const mode = formData.get('mode');
             const params = {
                 job_id: formData.get('job_id'),
-                charset: formData.get('charset'),
-                length: parseInt(formData.get('length')),
+                mode: mode,
                 hash_algo: formData.get('hash_algo'),
                 base_chunk_size: parseInt(formData.get('base_chunk_size'))
             };
 
+            // Mode-specific parameters
+            if (mode === 'brute') {
+                params.charset = formData.get('charset');
+                params.length = parseInt(formData.get('length'));
+            } else if (mode === 'dictionary') {
+                // Parse wordlist
+                const wordlistText = formData.get('wordlist');
+                params.wordlist = wordlistText ? wordlistText.split('\n').filter(w => w.trim()) : [];
+
+                // Parse mutations
+                const mutationsText = formData.get('mutations');
+                params.mutations = mutationsText ? mutationsText.split(',').map(m => m.trim()).filter(m => m) : [];
+            }
+
+            // WPA/WPA2 SSID
+            if (params.hash_algo === 'wpa2') {
+                params.ssid = formData.get('ssid');
+            }
+
+            // Target hash(es)
             const targetHash = formData.get('target_hash');
             if (targetHash) {
-                params.target_hash = targetHash;
+                params.target_hash = targetHash.trim();
+            }
+
+            const targetHashesText = formData.get('target_hashes');
+            if (targetHashesText) {
+                params.target_hashes = targetHashesText.split('\n')
+                    .map(h => h.trim())
+                    .filter(h => h);
             }
 
             try {
