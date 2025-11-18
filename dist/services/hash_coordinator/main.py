@@ -973,7 +973,7 @@ class Run(BaseService):
         return orphaned
 
     async def _update_worker_states(self):
-        """Обновляет состояния воркеров из gossip"""
+        """Обновляет состояния воркеров из gossip и обрабатывает завершенные чанки"""
         network = self.context.get_shared("network")
         if not network:
             return
@@ -994,3 +994,49 @@ class Run(BaseService):
                     "last_seen": node_info.last_seen,
                     "status": node_info.status
                 }
+
+            # Обрабатываем hash_worker_status из metadata
+            worker_status = node_info.metadata.get("hash_worker_status")
+            if worker_status and isinstance(worker_status, dict):
+                await self._process_worker_chunk_status(node_id, worker_status)
+
+    async def _process_worker_chunk_status(self, worker_id: str, status: dict):
+        """
+        Обрабатывает статус чанка от воркера из gossip
+
+        Args:
+            worker_id: ID воркера
+            status: Данные из hash_worker_status
+        """
+        job_id = status.get("job_id")
+        chunk_id = status.get("chunk_id")
+        chunk_status = status.get("status")
+
+        if not job_id or chunk_id is None:
+            return
+
+        # Проверяем что задача активна
+        if job_id not in self.active_jobs:
+            return
+
+        generator = self.active_jobs[job_id]
+
+        # Обрабатываем статус "solved" - чанк завершен
+        if chunk_status == "solved":
+            hash_count = status.get("hash_count", 0)
+            solutions = status.get("solutions", [])
+
+            # Обновляем статус чанка в generator
+            generator.chunk_completed(chunk_id, hash_count, solutions)
+
+            if solutions:
+                self.logger.warning(f"Worker {worker_id} found {len(solutions)} solutions in chunk {chunk_id}!")
+                for sol in solutions:
+                    self.logger.warning(f"  Solution: {sol.get('combination')} → {sol.get('hash')}")
+
+        # Обрабатываем статус "working" - обновляем прогресс
+        elif chunk_status == "working":
+            progress = status.get("progress")
+            if progress is not None:
+                # Можно обновить прогресс чанка, но пока не критично
+                pass
