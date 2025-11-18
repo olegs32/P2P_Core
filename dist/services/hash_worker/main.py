@@ -23,7 +23,8 @@ from typing import Dict, List, Optional, Any, Set
 from layers.service import BaseService, service_method
 
 # Import worker functions from separate module (required for multiprocessing pickling)
-from .hash_computer_workers import (
+# Note: Use absolute import (no dot prefix) because service directory is added to sys.path
+from hash_computer_workers import (
     compute_brute_subchunk,
     compute_dict_subchunk,
     HashAlgorithms,
