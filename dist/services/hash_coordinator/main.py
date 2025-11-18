@@ -189,7 +189,16 @@ class DynamicChunkGenerator:
 
         needed = self.lookahead_batches - pending_count
 
+        import logging
+        logger = logging.getLogger("DynamicChunkGenerator")
+        logger.debug(
+            f"Lookahead check: generated={len(self.generated_batches)}, "
+            f"completed={len(self.completed_batches)}, pending={pending_count}, "
+            f"needed={needed}, progress={self.current_global_index}/{self.total_combinations}"
+        )
+
         if needed > 0 and self.current_global_index < self.total_combinations:
+            logger.info(f"Generating {needed} new batches for {len(active_workers)} workers")
             for _ in range(needed):
                 if self.current_global_index >= self.total_combinations:
                     break
@@ -319,6 +328,8 @@ class DynamicChunkGenerator:
         """
         # Находим чанк в батчах
         found = False
+        batch_version = None
+
         for batch in self.generated_batches.values():
             for chunk in batch.chunks:
                 # Приводим к int для сравнения (может быть строкой из gossip)
@@ -326,6 +337,7 @@ class DynamicChunkGenerator:
                     old_status = chunk.status
                     chunk.status = "solved"
                     found = True
+                    batch_version = batch.version
 
                     # Логирование для отладки
                     import logging
@@ -334,12 +346,28 @@ class DynamicChunkGenerator:
 
                     # Производительность обновляется в _process_worker_chunk_status
                     # где есть доступ к time_taken из gossip
-                    return
+                    break
+            if found:
+                break
 
         if not found:
             import logging
             logger = logging.getLogger("DynamicChunkGenerator")
             logger.warning(f"Chunk {chunk_id} not found in batches! Available chunks: {[c.chunk_id for b in self.generated_batches.values() for c in b.chunks]}")
+            return
+
+        # Проверяем, все ли чанки батча завершены
+        if batch_version is not None:
+            batch = self.generated_batches[batch_version]
+            all_solved = all(chunk.status == "solved" for chunk in batch.chunks)
+
+            if all_solved:
+                # Помечаем батч как завершенный
+                self.mark_batch_completed(batch_version)
+
+                import logging
+                logger = logging.getLogger("DynamicChunkGenerator")
+                logger.info(f"Batch {batch_version} completed (all {len(batch.chunks)} chunks solved)")
 
     def chunk_failed(self, chunk_id: int):
         """
