@@ -19,6 +19,7 @@ import os
 import io
 import logging
 import asyncio
+import base64
 from pathlib import Path
 from typing import Dict, List, Optional, Any
 from datetime import datetime
@@ -507,9 +508,12 @@ class Run(BaseService):
 
             self.metrics.increment("artifacts_downloaded")
 
+            # Encode binary data as base64 for JSON serialization
+            file_data_b64 = base64.b64encode(file_data).decode('utf-8')
+
             return {
                 "success": True,
-                "file_data": file_data,
+                "file_data": file_data_b64,
                 "sha256": artifact.sha256,
                 "size_bytes": artifact.size_bytes
             }

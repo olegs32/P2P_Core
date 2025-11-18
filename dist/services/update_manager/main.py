@@ -19,6 +19,7 @@ import tarfile
 import shutil
 import subprocess
 import asyncio
+import base64
 from pathlib import Path
 from datetime import datetime
 from typing import Dict, Any, Optional
@@ -301,7 +302,9 @@ class Run(BaseService):
 
             # 2. Verify artifact
             phase = "validating"
-            artifact_data = download_result["file_data"]
+            # Decode base64-encoded file data
+            artifact_data_b64 = download_result["file_data"]
+            artifact_data = base64.b64decode(artifact_data_b64)
             expected_sha256 = download_result["sha256"]
 
             calculated_sha256 = hashlib.sha256(artifact_data).hexdigest()
