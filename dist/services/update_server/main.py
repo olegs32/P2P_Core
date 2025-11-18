@@ -3,14 +3,16 @@ Update Server Service - Manages cluster updates
 
 Coordinates updates across the cluster:
 - Rolling updates
-- Canary deployments  
+- Canary deployments
 - Health checks and rollback
 - Update history and auditing
 """
 import asyncio
 import logging
+import json
 from typing import Dict, List, Optional, Any
 from datetime import datetime
+from pathlib import Path
 
 from layers.service import BaseService, service_method
 
@@ -57,6 +59,10 @@ class Run(BaseService):
         self.update_id_counter = 0
         self.update_history: List[UpdateTask] = []
 
+        # Persistence
+        self.history_file = Path("data/update_server/update_history.json")
+        self.history_file.parent.mkdir(parents=True, exist_ok=True)
+
         # Gossip integration
         self.gossip_publish_task = None
         self.gossip_publish_interval = 45  # seconds
@@ -77,6 +83,9 @@ class Run(BaseService):
         """Initialize update server"""
         self.logger.info("Initializing Update Server service")
 
+        # Load update history from file
+        await self._load_history()
+
         # Start gossip publishing loop
         if hasattr(self, 'context'):
             self.gossip_publish_task = asyncio.create_task(self._gossip_publish_loop())
@@ -84,6 +93,9 @@ class Run(BaseService):
 
     async def cleanup(self):
         """Cleanup update server"""
+        # Save history before shutdown
+        await self._save_history()
+
         # Cancel gossip task
         if self.gossip_publish_task:
             self.gossip_publish_task.cancel()
@@ -700,3 +712,38 @@ class Run(BaseService):
                 break
             except Exception as e:
                 self.logger.error(f"Error in gossip publish loop: {e}", exc_info=True)
+
+    async def _load_history(self):
+        """Load update history from file"""
+        try:
+            if self.history_file.exists():
+                with open(self.history_file, 'r') as f:
+                    history_data = json.load(f)
+
+                # Reconstruct UpdateTask objects from saved data
+                for task_dict in history_data:
+                    try:
+                        task = UpdateTask.from_dict(task_dict)
+                        self.update_history.append(task)
+                        # Update counter to avoid ID conflicts
+                        if task.id >= self.update_id_counter:
+                            self.update_id_counter = task.id + 1
+                    except Exception as e:
+                        self.logger.error(f"Failed to load history entry: {e}")
+
+                self.logger.info(f"Loaded {len(self.update_history)} update records from history")
+        except Exception as e:
+            self.logger.error(f"Failed to load update history: {e}")
+
+    async def _save_history(self):
+        """Save update history to file"""
+        try:
+            # Convert UpdateTask objects to dictionaries
+            history_data = [task.to_dict() for task in self.update_history]
+
+            with open(self.history_file, 'w') as f:
+                json.dump(history_data, f, indent=2)
+
+            self.logger.debug(f"Saved {len(self.update_history)} update records to history")
+        except Exception as e:
+            self.logger.error(f"Failed to save update history: {e}")

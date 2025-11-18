@@ -5220,6 +5220,20 @@
             await loadActiveUpdates();
             await loadUpdateHistory();
             await loadUpdateNodes();
+            await loadArtifactSelector();
+        }
+
+        async function loadArtifactSelector() {
+            try {
+                const response = await fetch('/api/repository/artifacts');
+                const data = await response.json();
+
+                if (data.success && data.artifacts) {
+                    updateArtifactSelector(data.artifacts);
+                }
+            } catch (error) {
+                console.error('Failed to load artifacts for selector:', error);
+            }
         }
 
         async function loadUpdateNodes() {

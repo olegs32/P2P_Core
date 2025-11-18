@@ -59,6 +59,21 @@ class NodeUpdate:
             data['end_time'] = self.end_time.isoformat()
         return data
 
+    @staticmethod
+    def from_dict(data: Dict[str, Any]) -> 'NodeUpdate':
+        """Create from dictionary"""
+        # Convert string to enum
+        if 'status' in data and isinstance(data['status'], str):
+            data['status'] = NodeUpdateStatus(data['status'])
+
+        # Convert ISO strings to datetime
+        if 'start_time' in data and isinstance(data['start_time'], str):
+            data['start_time'] = datetime.fromisoformat(data['start_time'])
+        if 'end_time' in data and isinstance(data['end_time'], str):
+            data['end_time'] = datetime.fromisoformat(data['end_time'])
+
+        return NodeUpdate(**data)
+
 
 @dataclass
 class UpdateTask:
@@ -108,3 +123,29 @@ class UpdateTask:
         if self.completed_at:
             data['completed_at'] = self.completed_at.isoformat()
         return data
+
+    @staticmethod
+    def from_dict(data: Dict[str, Any]) -> 'UpdateTask':
+        """Create from dictionary"""
+        # Convert string to enum
+        if 'strategy' in data and isinstance(data['strategy'], str):
+            data['strategy'] = UpdateStrategy(data['strategy'])
+        if 'status' in data and isinstance(data['status'], str):
+            data['status'] = UpdateStatus(data['status'])
+
+        # Convert ISO strings to datetime
+        if 'created_at' in data and isinstance(data['created_at'], str):
+            data['created_at'] = datetime.fromisoformat(data['created_at'])
+        if 'started_at' in data and isinstance(data['started_at'], str):
+            data['started_at'] = datetime.fromisoformat(data['started_at'])
+        if 'completed_at' in data and isinstance(data['completed_at'], str):
+            data['completed_at'] = datetime.fromisoformat(data['completed_at'])
+
+        # Convert node_updates dicts to NodeUpdate objects
+        if 'node_updates' in data and data['node_updates']:
+            data['node_updates'] = {
+                k: NodeUpdate.from_dict(v) if isinstance(v, dict) else v
+                for k, v in data['node_updates'].items()
+            }
+
+        return UpdateTask(**data)

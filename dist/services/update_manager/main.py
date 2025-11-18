@@ -87,6 +87,25 @@ class Run(BaseService):
             except asyncio.CancelledError:
                 pass
 
+        # Execute pending update scripts (Windows)
+        if hasattr(self, 'pending_update_scripts') and self.pending_update_scripts:
+            import platform
+            import subprocess
+
+            if platform.system() == "Windows":
+                for script_path in self.pending_update_scripts:
+                    if os.path.exists(script_path):
+                        self.logger.info(f"Launching update script: {script_path}")
+                        try:
+                            # Launch script in detached mode (continues after this process exits)
+                            subprocess.Popen(
+                                ['cmd', '/c', 'start', '/min', script_path],
+                                creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
+                                close_fds=True
+                            )
+                        except Exception as e:
+                            self.logger.error(f"Failed to launch update script: {e}")
+
     async def _load_state(self):
         """Load update manager state"""
         if self.state_file.exists():
@@ -614,21 +633,52 @@ class Run(BaseService):
             # Platform-specific installation
             if platform.system() == "Windows":
                 # On Windows, cannot replace running executable directly
-                # Use rename trick: current -> .old, new -> current
+                # Create a batch script that will replace the exe after process exits
                 temp_old = current_exe.with_suffix(".old")
+                update_script = current_exe.parent / "update_and_restart.bat"
 
-                if current_exe.exists():
-                    os.chmod(current_exe, 0o755)
-                    shutil.move(str(current_exe), str(temp_old))
+                # Make binary executable
+                os.chmod(binary_file, 0o755)
 
-                shutil.copy2(binary_file, current_exe)
+                # Create batch script for delayed update
+                script_content = f"""@echo off
+echo Waiting for process to exit...
+timeout /t 2 /nobreak >nul
 
-                # Try to remove old file (may fail if locked)
-                try:
-                    if temp_old.exists():
-                        os.remove(temp_old)
-                except:
-                    self.logger.debug(f"Could not remove {temp_old} (will be cleaned on restart)")
+:retry
+del /f /q "{temp_old}" 2>nul
+if exist "{current_exe}" (
+    move /y "{current_exe}" "{temp_old}" 2>nul
+    if errorlevel 1 (
+        timeout /t 1 /nobreak >nul
+        goto retry
+    )
+)
+
+copy /y "{binary_file}" "{current_exe}"
+if errorlevel 1 (
+    echo Failed to copy new executable
+    move /y "{temp_old}" "{current_exe}" 2>nul
+    goto end
+)
+
+echo Update complete, restarting...
+start "" "{current_exe}"
+
+:end
+del /f /q "{update_script}" 2>nul
+"""
+
+                with open(update_script, 'w') as f:
+                    f.write(script_content)
+
+                self.logger.info(f"Created update script: {update_script}")
+                self.logger.info("Update script will execute on process shutdown")
+
+                # Store script path for execution on shutdown
+                if not hasattr(self, 'pending_update_scripts'):
+                    self.pending_update_scripts = []
+                self.pending_update_scripts.append(str(update_script))
 
             else:
                 # On Unix, can replace directly (old inode continues running)
