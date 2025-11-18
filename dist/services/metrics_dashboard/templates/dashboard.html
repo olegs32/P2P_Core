@@ -5249,19 +5249,9 @@
             section.innerHTML = '<p class="text-muted text-center">Loading...</p>';
 
             try {
-                // Call RPC method via fetch
-                const response = await fetch('/rpc', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        method: 'update_server/list_active_updates',
-                        params: {},
-                        id: Date.now()
-                    })
-                });
-
-                const data = await response.json();
-                const result = data.result;
+                // Call dashboard API
+                const response = await fetch('/api/dashboard/updates/active');
+                const result = await response.json();
 
                 if (result && result.success && result.updates && result.updates.length > 0) {
                     section.innerHTML = '';
@@ -5304,18 +5294,8 @@
             tbody.innerHTML = '<tr><td colspan="8" class="text-center text-muted">Loading history...</td></tr>';
 
             try {
-                const response = await fetch('/rpc', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        method: 'update_server/get_update_history',
-                        params: { limit: 20 },
-                        id: Date.now()
-                    })
-                });
-
-                const data = await response.json();
-                const result = data.result;
+                const response = await fetch('/api/dashboard/updates/history?limit=20');
+                const result = await response.json();
 
                 if (result && result.success && result.history && result.history.length > 0) {
                     tbody.innerHTML = '';
@@ -5356,22 +5336,18 @@
 
         async function pauseUpdate(updateId) {
             try {
-                const response = await fetch('/rpc', {
+                const response = await fetch('/api/dashboard/updates/pause', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        method: 'update_server/pause_update',
-                        params: { update_id: updateId },
-                        id: Date.now()
-                    })
+                    body: JSON.stringify({ update_id: updateId })
                 });
 
-                const data = await response.json();
-                if (data.result && data.result.success) {
+                const result = await response.json();
+                if (result && result.success) {
                     alert('Update paused');
                     loadActiveUpdates();
                 } else {
-                    alert(`Failed to pause: ${data.result.error}`);
+                    alert(`Failed to pause: ${result.error}`);
                 }
             } catch (error) {
                 console.error('Failed to pause update:', error);
@@ -5385,23 +5361,19 @@
             }
 
             try {
-                const response = await fetch('/rpc', {
+                const response = await fetch('/api/dashboard/updates/cancel', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        method: 'update_server/cancel_update',
-                        params: { update_id: updateId },
-                        id: Date.now()
-                    })
+                    body: JSON.stringify({ update_id: updateId })
                 });
 
-                const data = await response.json();
-                if (data.result && data.result.success) {
+                const result = await response.json();
+                if (result && result.success) {
                     alert('Update cancelled');
                     loadActiveUpdates();
                     loadUpdateHistory();
                 } else {
-                    alert(`Failed to cancel: ${data.result.error}`);
+                    alert(`Failed to cancel: ${result.error}`);
                 }
             } catch (error) {
                 console.error('Failed to cancel update:', error);
@@ -5435,31 +5407,22 @@
 
             try {
                 // Start update
-                const response = await fetch('/rpc', {
+                const response = await fetch('/api/dashboard/updates/start', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        method: 'update_server/start_update',
-                        params: params,
-                        id: Date.now()
-                    })
+                    body: JSON.stringify(params)
                 });
 
-                const data = await response.json();
-                const result = data.result;
+                const result = await response.json();
 
                 if (result && result.success) {
                     alert(`Update task created with ID: ${result.update_id}`);
 
                     // Execute update
-                    const execResponse = await fetch('/rpc', {
+                    const execResponse = await fetch('/api/dashboard/updates/execute', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            method: 'update_server/execute_update_task',
-                            params: { update_id: result.update_id },
-                            id: Date.now()
-                        })
+                        body: JSON.stringify({ update_id: result.update_id })
                     });
 
                     e.target.reset();

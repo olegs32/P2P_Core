@@ -1080,6 +1080,157 @@ class Run(BaseService):
                     content={"success": False, "error": str(e)}
                 )
 
+        # ============ Update Server API Endpoints ============
+
+        @app.get("/api/dashboard/updates/active")
+        async def get_active_updates():
+            """Get list of active update tasks"""
+            try:
+                if hasattr(self.proxy, 'update_server'):
+                    result = await self.proxy.update_server.list_active_updates()
+                    return JSONResponse(content=result)
+                else:
+                    return JSONResponse(
+                        status_code=404,
+                        content={"success": False, "error": "update_server service not available"}
+                    )
+            except Exception as e:
+                self.logger.error(f"Error getting active updates: {e}")
+                return JSONResponse(
+                    status_code=500,
+                    content={"success": False, "error": str(e)}
+                )
+
+        @app.get("/api/dashboard/updates/history")
+        async def get_update_history(limit: int = 20):
+            """Get update history"""
+            try:
+                if hasattr(self.proxy, 'update_server'):
+                    result = await self.proxy.update_server.get_update_history(limit=limit)
+                    return JSONResponse(content=result)
+                else:
+                    return JSONResponse(
+                        status_code=404,
+                        content={"success": False, "error": "update_server service not available"}
+                    )
+            except Exception as e:
+                self.logger.error(f"Error getting update history: {e}")
+                return JSONResponse(
+                    status_code=500,
+                    content={"success": False, "error": str(e)}
+                )
+
+        @app.post("/api/dashboard/updates/start")
+        async def start_update(request: Request):
+            """Start a new update task"""
+            try:
+                data = await request.json()
+
+                if hasattr(self.proxy, 'update_server'):
+                    result = await self.proxy.update_server.start_update(
+                        artifact_id=data.get('artifact_id'),
+                        artifact_name=data.get('artifact_name'),
+                        target_version=data.get('target_version'),
+                        target_nodes=data.get('target_nodes', []),
+                        strategy=data.get('strategy', 'rolling')
+                    )
+                    return JSONResponse(content=result)
+                else:
+                    return JSONResponse(
+                        status_code=404,
+                        content={"success": False, "error": "update_server service not available"}
+                    )
+            except Exception as e:
+                self.logger.error(f"Error starting update: {e}")
+                return JSONResponse(
+                    status_code=500,
+                    content={"success": False, "error": str(e)}
+                )
+
+        @app.post("/api/dashboard/updates/execute")
+        async def execute_update(request: Request):
+            """Execute an update task"""
+            try:
+                data = await request.json()
+                update_id = data.get('update_id')
+
+                if not update_id:
+                    return JSONResponse(
+                        status_code=400,
+                        content={"success": False, "error": "update_id is required"}
+                    )
+
+                if hasattr(self.proxy, 'update_server'):
+                    result = await self.proxy.update_server.execute_update_task(update_id=update_id)
+                    return JSONResponse(content=result)
+                else:
+                    return JSONResponse(
+                        status_code=404,
+                        content={"success": False, "error": "update_server service not available"}
+                    )
+            except Exception as e:
+                self.logger.error(f"Error executing update: {e}")
+                return JSONResponse(
+                    status_code=500,
+                    content={"success": False, "error": str(e)}
+                )
+
+        @app.post("/api/dashboard/updates/pause")
+        async def pause_update(request: Request):
+            """Pause an update task"""
+            try:
+                data = await request.json()
+                update_id = data.get('update_id')
+
+                if not update_id:
+                    return JSONResponse(
+                        status_code=400,
+                        content={"success": False, "error": "update_id is required"}
+                    )
+
+                if hasattr(self.proxy, 'update_server'):
+                    result = await self.proxy.update_server.pause_update(update_id=update_id)
+                    return JSONResponse(content=result)
+                else:
+                    return JSONResponse(
+                        status_code=404,
+                        content={"success": False, "error": "update_server service not available"}
+                    )
+            except Exception as e:
+                self.logger.error(f"Error pausing update: {e}")
+                return JSONResponse(
+                    status_code=500,
+                    content={"success": False, "error": str(e)}
+                )
+
+        @app.post("/api/dashboard/updates/cancel")
+        async def cancel_update(request: Request):
+            """Cancel an update task"""
+            try:
+                data = await request.json()
+                update_id = data.get('update_id')
+
+                if not update_id:
+                    return JSONResponse(
+                        status_code=400,
+                        content={"success": False, "error": "update_id is required"}
+                    )
+
+                if hasattr(self.proxy, 'update_server'):
+                    result = await self.proxy.update_server.cancel_update(update_id=update_id)
+                    return JSONResponse(content=result)
+                else:
+                    return JSONResponse(
+                        status_code=404,
+                        content={"success": False, "error": "update_server service not available"}
+                    )
+            except Exception as e:
+                self.logger.error(f"Error cancelling update: {e}")
+                return JSONResponse(
+                    status_code=500,
+                    content={"success": False, "error": str(e)}
+                )
+
         # WebSocket endpoint for real-time updates
         from fastapi import WebSocket, WebSocketDisconnect
         import json
