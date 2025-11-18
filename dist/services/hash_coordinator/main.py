@@ -551,62 +551,6 @@ class Run(BaseService):
 
         return {"success": True, "jobs": jobs}
 
-    @service_method(description="Отчет о завершении чанка от воркера", public=True)
-    async def report_chunk_result(
-        self,
-        job_id: str,
-        chunk_id: int,
-        worker_id: str,
-        status: str,
-        hash_count: int = 0,
-        time_taken: float = 0.0,
-        solutions: List[dict] = None
-    ) -> Dict[str, Any]:
-        """
-        Принимает результат обработки чанка от воркера
-
-        Args:
-            job_id: ID задачи
-            chunk_id: ID чанка
-            worker_id: ID воркера
-            status: Статус ("completed", "failed")
-            hash_count: Количество вычисленных хешей
-            time_taken: Время выполнения в секундах
-            solutions: Найденные решения (если есть)
-        """
-        if job_id not in self.active_jobs:
-            return {"success": False, "error": f"Job {job_id} not found"}
-
-        generator = self.active_jobs[job_id]
-
-        # Обновляем статус чанка в generator
-        if status == "completed":
-            generator.chunk_completed(chunk_id, hash_count, solutions or [])
-            self.logger.info(
-                f"Chunk {chunk_id} completed by {worker_id}: "
-                f"{hash_count} hashes in {time_taken:.2f}s"
-            )
-
-            if solutions:
-                self.logger.warning(f"Worker {worker_id} found {len(solutions)} solutions!")
-                for sol in solutions:
-                    self.logger.warning(f"  Solution: {sol.get('combination')} → {sol.get('hash')}")
-
-        elif status == "failed":
-            # Переназначим чанк другому воркеру
-            generator.chunk_failed(chunk_id)
-            self.logger.warning(f"Chunk {chunk_id} failed on {worker_id}, will reassign")
-
-        # Обновляем gossip с новым состоянием batches
-        await self._publish_batches(job_id, generator)
-
-        return {
-            "success": True,
-            "job_id": job_id,
-            "chunk_id": chunk_id,
-            "acknowledged": True
-        }
-
     @service_method(description="Импорт WPA handshake из PCAP", public=True)
     async def import_pcap(
         self,
@@ -1033,6 +977,9 @@ class Run(BaseService):
                 self.logger.warning(f"Worker {worker_id} found {len(solutions)} solutions in chunk {chunk_id}!")
                 for sol in solutions:
                     self.logger.warning(f"  Solution: {sol.get('combination')} → {sol.get('hash')}")
+
+            # ВАЖНО: Публикуем обновленные batches в gossip
+            await self._publish_batches(job_id, generator)
 
         # Обрабатываем статус "working" - обновляем прогресс
         elif chunk_status == "working":

@@ -939,25 +939,7 @@ class Run(BaseService):
         # Update gossip metadata directly (no update_metadata method exists)
         network.gossip.self_info.metadata.update(metadata)
 
-        # 2. Отправляем результат координатору через RPC
-        try:
-            worker_id = self.context.config.node_id
-            result = await self.proxy.hash_coordinator.report_chunk_result(
-                job_id=job_id,
-                chunk_id=chunk_id,
-                worker_id=worker_id,
-                status="completed",
-                hash_count=hash_count,
-                time_taken=time_taken,
-                solutions=solutions
-            )
-
-            if not result.get("success"):
-                self.logger.error(
-                    f"Failed to report chunk result to coordinator: {result.get('error')}"
-                )
-        except Exception as e:
-            self.logger.error(f"Error reporting chunk result to coordinator: {e}")
+        # Координатор прочитает этот статус из gossip в _update_worker_states()
 
     @service_method(description="Получить статус воркера", public=True)
     async def get_worker_status(self) -> Dict[str, Any]:
