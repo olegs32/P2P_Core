@@ -250,7 +250,7 @@ class Run(BaseService):
                     artifact_name=task.artifact_name,
                     target_version=task.target_version,
                     backup_enabled=task.backup_enabled,
-                    auto_restart=False
+                    auto_restart=True  # Auto-restart after successful update
                 )
 
                 if result.get("success"):
@@ -340,7 +340,7 @@ class Run(BaseService):
                 artifact_name=task.artifact_name,
                 target_version=task.target_version,
                 backup_enabled=task.backup_enabled,
-                auto_restart=False
+                auto_restart=True  # Auto-restart after successful update
             )
 
             if not result.get("success"):
@@ -441,7 +441,7 @@ class Run(BaseService):
                 artifact_name=task.artifact_name,
                 target_version=task.target_version,
                 backup_enabled=task.backup_enabled,
-                auto_restart=False
+                auto_restart=True  # Auto-restart after successful update
             )
             tasks_list.append((node_id, task_coro))
 

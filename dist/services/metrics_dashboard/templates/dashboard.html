@@ -5258,6 +5258,20 @@
                     result.updates.forEach(update => {
                         const card = document.createElement('div');
                         card.className = 'card mb-3';
+
+                        // Show control buttons only for in_progress and paused updates
+                        const showControls = update.status === 'in_progress' || update.status === 'paused';
+                        const controlButtons = showControls ? `
+                            <div class="btn-group btn-group-sm">
+                                <button class="btn btn-outline-warning" onclick="pauseUpdate(${update.id})">
+                                    <i class="bi bi-pause"></i> Pause
+                                </button>
+                                <button class="btn btn-outline-danger" onclick="cancelUpdate(${update.id})">
+                                    <i class="bi bi-x-circle"></i> Cancel
+                                </button>
+                            </div>
+                        ` : '';
+
                         card.innerHTML = `
                             <div class="card-body">
                                 <div class="d-flex justify-content-between align-items-center mb-2">
@@ -5268,14 +5282,7 @@
                                     <strong>Strategy:</strong> ${update.strategy} |
                                     <strong>Nodes:</strong> ${update.success_count}/${update.target_nodes.length} completed
                                 </div>
-                                <div class="btn-group btn-group-sm">
-                                    <button class="btn btn-outline-warning" onclick="pauseUpdate(${update.id})">
-                                        <i class="bi bi-pause"></i> Pause
-                                    </button>
-                                    <button class="btn btn-outline-danger" onclick="cancelUpdate(${update.id})">
-                                        <i class="bi bi-x-circle"></i> Cancel
-                                    </button>
-                                </div>
+                                ${controlButtons}
                             </div>
                         `;
                         section.appendChild(card);
