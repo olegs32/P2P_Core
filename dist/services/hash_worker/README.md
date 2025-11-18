@@ -177,7 +177,7 @@ for chunk_id, chunk_data in batches["chunks"].items():
 
 ```python
 # Ключ: hash_worker_status
-network.gossip.update_metadata({
+network.gossip.self_info.metadata.update({
     "hash_worker_status": {
         "job_id": "test-1",
         "chunk_id": 5000,
@@ -194,7 +194,7 @@ network.gossip.update_metadata({
 
 ```python
 # Когда чанк завершен
-network.gossip.update_metadata({
+network.gossip.self_info.metadata.update({
     "hash_worker_status": {
         "job_id": "test-1",
         "chunk_id": 5000,

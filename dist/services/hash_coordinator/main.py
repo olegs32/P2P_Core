@@ -749,7 +749,8 @@ class Run(BaseService):
             }
         }
 
-        network.gossip.update_metadata(metadata)
+        # Update gossip metadata directly (no update_metadata method exists)
+        network.gossip.self_info.metadata.update(metadata)
 
     async def _publish_batches(self, job_id: str, generator: DynamicChunkGenerator):
         """Публикует batches в gossip"""
@@ -784,7 +785,8 @@ class Run(BaseService):
             f"hash_batches_{job_id}": active_batches
         }
 
-        network.gossip.update_metadata(metadata)
+        # Update gossip metadata directly (no update_metadata method exists)
+        network.gossip.self_info.metadata.update(metadata)
 
     async def _monitor_loop(self):
         """Мониторинг состояния задач"""

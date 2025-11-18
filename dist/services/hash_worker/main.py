@@ -1095,7 +1095,8 @@ class Run(BaseService):
             }
         }
 
-        network.gossip.update_metadata(metadata)
+        # Update gossip metadata directly (no update_metadata method exists)
+        network.gossip.self_info.metadata.update(metadata)
 
     async def _publish_chunk_progress(
         self,
@@ -1133,7 +1134,8 @@ class Run(BaseService):
             }
         }
 
-        network.gossip.update_metadata(metadata)
+        # Update gossip metadata directly (no update_metadata method exists)
+        network.gossip.self_info.metadata.update(metadata)
 
     @service_method(description="Получить статус воркера", public=True)
     async def get_worker_status(self) -> Dict[str, Any]:
