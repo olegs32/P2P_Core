@@ -572,6 +572,9 @@ class Run(BaseService):
         self.total_hashes_computed = 0
         self.completed_chunks = 0
 
+        # Локальный кэш обработанных чанков (для избежания повторной обработки)
+        self.processed_chunks: Dict[str, set] = {}  # {job_id: set(chunk_ids)}
+
         # Background tasks
         self.worker_task = None
 
@@ -701,12 +704,23 @@ class Run(BaseService):
         batches = metadata[batches_key]
         my_worker_id = self.context.config.node_id
 
+        # Инициализируем set для job_id если его нет
+        if job_id not in self.processed_chunks:
+            self.processed_chunks[job_id] = set()
+
         # Ищем чанк для меня
         for version, batch_data in batches.items():
             chunks = batch_data.get("chunks", {})
 
             for chunk_id, chunk_data in chunks.items():
                 if chunk_data.get("assigned_worker") == my_worker_id:
+                    # Приводим chunk_id к int для сравнения
+                    chunk_id_int = int(chunk_id)
+
+                    # ВАЖНО: Пропускаем уже обработанные чанки (локальный кэш)
+                    if chunk_id_int in self.processed_chunks[job_id]:
+                        continue
+
                     # Проверяем статус
                     status = chunk_data.get("status", "assigned")
 
@@ -715,7 +729,7 @@ class Run(BaseService):
                         return {
                             "job_id": job_id,
                             "version": version,
-                            "chunk_id": chunk_id,
+                            "chunk_id": chunk_id_int,
                             "start_index": chunk_data["start_index"],
                             "end_index": chunk_data["end_index"],
                             "chunk_size": chunk_data["chunk_size"]
@@ -958,6 +972,13 @@ class Run(BaseService):
 
         # Update gossip metadata directly (no update_metadata method exists)
         network.gossip.self_info.metadata.update(metadata)
+
+        # Добавляем chunk_id в локальный кэш обработанных чанков
+        if job_id not in self.processed_chunks:
+            self.processed_chunks[job_id] = set()
+        self.processed_chunks[job_id].add(chunk_id)
+
+        self.logger.debug(f"Marked chunk {chunk_id} as processed for job {job_id}")
 
         # Координатор прочитает этот статус из gossip в _update_worker_states()
 
