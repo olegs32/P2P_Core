@@ -846,20 +846,18 @@ class Run(BaseService):
         network.gossip.self_info.metadata.update(metadata)
 
     async def _publish_batches(self, job_id: str, generator: DynamicChunkGenerator):
-        """Публикует batches в gossip"""
+        """Публикует batches в gossip в упрощенном формате"""
         network = self.context.get_shared("network")
         if not network:
             return
 
-        # Публикуем только незавершенные батчи
-        active_batches = {}
+        # Собираем все незавершенные чанки из всех активных батчей
+        all_chunks = {}
 
         for version, batch in generator.generated_batches.items():
             if version not in generator.completed_batches:
-                # Формируем структуру: {chunk_id: {assigned_worker: data}}
-                chunks_dict = {}
                 for chunk in batch.chunks:
-                    chunks_dict[chunk.chunk_id] = {
+                    all_chunks[chunk.chunk_id] = {
                         "assigned_worker": chunk.assigned_worker,
                         "start_index": chunk.start_index,
                         "end_index": chunk.end_index,
@@ -868,14 +866,12 @@ class Run(BaseService):
                         "priority": chunk.priority
                     }
 
-                active_batches[version] = {
-                    "chunks": chunks_dict,
-                    "created_at": batch.created_at,
-                    "is_recovery": batch.is_recovery
-                }
-
+        # Упрощенный формат: {ver: current_version, chunks: {...}}
         metadata = {
-            f"hash_batches_{job_id}": active_batches
+            f"hash_batches_{job_id}": {
+                "ver": generator.current_version,
+                "chunks": all_chunks
+            }
         }
 
         # Update gossip metadata directly (no update_metadata method exists)
