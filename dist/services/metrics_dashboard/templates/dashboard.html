@@ -312,6 +312,142 @@
             color: var(--text-light);
         }
 
+        /* Dark theme for hash jobs tab */
+        #hash-jobsTab {
+            background-color: var(--bg-dark);
+        }
+
+        #hash-jobsTab .dashboard-header {
+            background-color: var(--bg-card);
+            border-bottom: 2px solid var(--border-color);
+            padding: 2rem 0;
+            margin-bottom: 1rem;
+        }
+
+        #hash-jobsTab .dashboard-header h1 {
+            color: var(--text-light);
+        }
+
+        #hash-jobsTab .dashboard-header p {
+            color: var(--text-muted);
+        }
+
+        #hash-jobsTab .card {
+            background-color: var(--bg-card);
+            border-color: var(--border-color);
+            color: var(--text-light);
+        }
+
+        #hash-jobsTab .card-header {
+            background-color: #2d3139;
+            border-bottom: 1px solid var(--border-color);
+            color: var(--text-light);
+        }
+
+        #hash-jobsTab .card-title {
+            color: var(--text-light);
+        }
+
+        #hash-jobsTab .form-label {
+            color: var(--text-light);
+        }
+
+        #hash-jobsTab .text-muted,
+        #hash-jobsTab small.text-muted {
+            color: var(--text-muted) !important;
+        }
+
+        #hash-jobsTab .form-select,
+        #hash-jobsTab .form-control,
+        #hash-jobsTab textarea.form-control {
+            background-color: #2d3139;
+            border-color: var(--border-color);
+            color: var(--text-light);
+        }
+
+        #hash-jobsTab .form-select:focus,
+        #hash-jobsTab .form-control:focus,
+        #hash-jobsTab textarea.form-control:focus {
+            background-color: #2d3139;
+            border-color: var(--tab-active);
+            color: var(--text-light);
+            box-shadow: 0 0 0 0.2rem rgba(102, 126, 234, 0.25);
+        }
+
+        #hash-jobsTab .form-select option,
+        #hash-jobsTab .form-select optgroup {
+            background-color: #2d3139;
+            color: var(--text-light);
+        }
+
+        #hash-jobsTab .table {
+            color: var(--text-light);
+        }
+
+        #hash-jobsTab .table-hover tbody tr:hover {
+            background-color: rgba(255, 255, 255, 0.05);
+        }
+
+        #hash-jobsTab .table thead th {
+            background-color: #2d3139;
+            color: var(--text-light);
+            border-color: var(--border-color);
+        }
+
+        #hash-jobsTab .table tbody td {
+            background-color: rgba(45, 49, 57, 0.3);
+            border-color: var(--border-color);
+            color: var(--text-light);
+        }
+
+        #hash-jobsTab .table tbody tr {
+            border-color: var(--border-color);
+        }
+
+        #hash-jobsTab .badge {
+            color: #fff;
+        }
+
+        #hash-jobsTab .badge.bg-success {
+            background-color: var(--success) !important;
+        }
+
+        #hash-jobsTab .badge.bg-primary {
+            background-color: var(--tab-active) !important;
+        }
+
+        #hash-jobsTab .badge.bg-warning {
+            background-color: var(--warning) !important;
+        }
+
+        #hash-jobsTab .badge.bg-danger {
+            background-color: var(--danger) !important;
+        }
+
+        #hash-jobsTab .progress {
+            background-color: #2d3139;
+        }
+
+        #hash-jobsTab .progress-bar {
+            background-color: var(--tab-active);
+        }
+
+        #hash-jobsTab .alert {
+            background-color: rgba(45, 49, 57, 0.5);
+            border-color: var(--border-color);
+            color: var(--text-light);
+        }
+
+        #hash-jobsTab .btn-primary {
+            background-color: var(--tab-active);
+            border-color: var(--tab-active);
+        }
+
+        #hash-jobsTab .btn-primary:hover {
+            background-color: #5568d3;
+            border-color: #5568d3);
+        }
+
         /* Control Panel tab styles */
         #controlTab {
             background-color: var(--bg-dark);
@@ -2285,6 +2421,14 @@
             if (logsTab && logsTab.classList.contains('active')) {
                 if (data.logs) {
                     updateLogsFromWS(data.logs);
+                }
+            }
+
+            // Update hash jobs if on hash jobs tab
+            const hashJobsTab = document.getElementById('hash-jobsTab');
+            if (hashJobsTab && hashJobsTab.classList.contains('active')) {
+                if (data.hash_jobs) {
+                    updateHashJobsFromWS(data.hash_jobs);
                 }
             }
 
@@ -6175,6 +6319,158 @@
             if (num >= 1e6) return (num / 1e6).toFixed(1) + 'M';
             if (num >= 1e3) return (num / 1e3).toFixed(1) + 'K';
             return num.toString();
+        }
+
+        // WebSocket-based real-time updates for hash jobs
+        function updateHashJobsFromWS(hashJobsData) {
+            try {
+                // Update active jobs list
+                if (hashJobsData.jobs !== undefined) {
+                    updateActiveJobsList(hashJobsData.jobs);
+                }
+
+                // Update workers distribution
+                if (hashJobsData.workers !== undefined) {
+                    updateWorkersDistributionFromWS(hashJobsData.workers);
+                }
+            } catch (error) {
+                console.error('Error updating hash jobs from WebSocket:', error);
+            }
+        }
+
+        function updateActiveJobsList(jobs) {
+            const container = document.getElementById('activeJobsContainer');
+
+            if (!jobs || jobs.length === 0) {
+                container.innerHTML = `
+                    <div class="text-center text-muted py-4">
+                        <i class="bi bi-inbox" style="font-size: 3rem;"></i>
+                        <p class="mt-2">Нет активных задач</p>
+                    </div>
+                `;
+                return;
+            }
+
+            let html = '';
+            for (const job of jobs) {
+                const etaHours = Math.floor((job.eta_seconds || 0) / 3600);
+                const etaMinutes = Math.floor(((job.eta_seconds || 0) % 3600) / 60);
+                const etaText = etaHours > 0
+                    ? `${etaHours}ч ${etaMinutes}м`
+                    : `${etaMinutes}м`;
+
+                const progressPercent = job.progress_percentage || 0;
+                const processed = job.processed || 0;
+                const total = job.total || 0;
+
+                html += `
+                    <div class="card mb-3">
+                        <div class="card-body">
+                            <div class="d-flex justify-content-between align-items-start mb-3">
+                                <div>
+                                    <h5 class="mb-1">${job.job_id}</h5>
+                                    <small class="text-muted">
+                                        Прогресс: ${progressPercent.toFixed(2)}%
+                                    </small>
+                                </div>
+                                <button class="btn btn-sm btn-info" onclick="loadJobDetails('${job.job_id}')">
+                                    <i class="bi bi-info-circle"></i> Детали
+                                </button>
+                            </div>
+
+                            <div class="progress mb-3" style="height: 25px;">
+                                <div class="progress-bar progress-bar-striped progress-bar-animated bg-success"
+                                     role="progressbar"
+                                     style="width: ${progressPercent}%"
+                                     aria-valuenow="${progressPercent}"
+                                     aria-valuemin="0"
+                                     aria-valuemax="100">
+                                    ${progressPercent.toFixed(2)}%
+                                </div>
+                            </div>
+
+                            <div class="row text-center">
+                                <div class="col">
+                                    <small class="text-muted d-block">Обработано</small>
+                                    <strong>${processed.toLocaleString()}</strong>
+                                </div>
+                                <div class="col">
+                                    <small class="text-muted d-block">Всего</small>
+                                    <strong>${total.toLocaleString()}</strong>
+                                </div>
+                                <div class="col">
+                                    <small class="text-muted d-block">ETA</small>
+                                    <strong>${etaText}</strong>
+                                </div>
+                            </div>
+
+                            <div id="jobDetails-${job.job_id}" class="mt-3" style="display: none;">
+                                <!-- Details will be loaded here -->
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }
+
+            container.innerHTML = html;
+        }
+
+        function updateWorkersDistributionFromWS(workers) {
+            // Calculate summary stats
+            const totalWorkers = workers.length;
+            const activeWorkers = workers.filter(w => w.status === 'working').length;
+            const totalChunks = workers.reduce((sum, w) => sum + (w.completed_chunks || 0), 0);
+            const totalHashes = workers.reduce((sum, w) => sum + (w.total_hashes || 0), 0);
+
+            // Update summary
+            document.getElementById('totalWorkersCount').textContent = totalWorkers;
+            document.getElementById('activeWorkersCount').textContent = activeWorkers;
+            document.getElementById('totalChunksCount').textContent = totalChunks;
+            document.getElementById('totalHashesCount').textContent = totalHashes.toLocaleString();
+
+            // Update workers table
+            const tbody = document.getElementById('workersDistributionTableBody');
+
+            if (!workers || workers.length === 0) {
+                tbody.innerHTML = `
+                    <tr>
+                        <td colspan="10" class="text-center text-muted">
+                            Нет активных воркеров
+                        </td>
+                    </tr>
+                `;
+                return;
+            }
+
+            let html = '';
+            for (const worker of workers) {
+                const statusBadge = getWorkerStatusBadge(worker.status);
+                const progressPercent = worker.progress || 0;
+
+                html += `
+                    <tr>
+                        <td><strong>${worker.worker_id}</strong></td>
+                        <td><small>${worker.address}</small></td>
+                        <td>${statusBadge}</td>
+                        <td>${worker.current_job || '-'}</td>
+                        <td>${worker.current_chunk !== null && worker.current_chunk !== undefined ? worker.current_chunk : '-'}</td>
+                        <td><span class="badge bg-primary">-</span></td>
+                        <td>-</td>
+                        <td><span class="badge bg-success">${worker.completed_chunks || 0}</span></td>
+                        <td>${(worker.total_hashes || 0).toLocaleString()}</td>
+                        <td>
+                            <div class="progress" style="height: 20px;">
+                                <div class="progress-bar bg-info" role="progressbar"
+                                     style="width: ${progressPercent}%">
+                                    ${progressPercent.toFixed(1)}%
+                                </div>
+                            </div>
+                        </td>
+                    </tr>
+                `;
+            }
+
+            tbody.innerHTML = html;
         }
 
         // Auto-refresh workers distribution when on hash-jobs tab

@@ -1386,9 +1386,50 @@ class Run(BaseService):
             # NOTE: Logs are now event-driven via WebSocket (not sent in periodic updates)
             # Service data (certificates) removed from periodic updates to avoid spam
 
+            # Collect hash jobs data for real-time updates
+            hash_jobs_data = {}
+            try:
+                if hasattr(self.proxy, 'hash_coordinator'):
+                    # Get all active jobs
+                    jobs_result = await self.proxy.hash_coordinator.get_all_jobs()
+                    hash_jobs_data["jobs"] = jobs_result.get("jobs", [])
+
+                    # Get workers distribution
+                    network = self.context.get_shared("network")
+                    if network:
+                        workers_distribution = []
+                        node_registry = network.gossip.node_registry
+
+                        for node_id, node_info in node_registry.items():
+                            if node_info.role == "worker":
+                                worker_status = node_info.metadata.get("hash_worker_status", {})
+                                if worker_status:
+                                    workers_distribution.append({
+                                        "worker_id": node_id,
+                                        "address": f"{node_info.address}:{node_info.port}",
+                                        "current_job": worker_status.get("job_id"),
+                                        "current_chunk": worker_status.get("chunk_id"),
+                                        "status": worker_status.get("status", "idle"),
+                                        "progress": worker_status.get("progress", 0),
+                                        "total_hashes": worker_status.get("total_hashes", 0),
+                                        "completed_chunks": worker_status.get("completed_chunks", 0)
+                                    })
+
+                        hash_jobs_data["workers"] = workers_distribution
+                    else:
+                        hash_jobs_data["workers"] = []
+                else:
+                    hash_jobs_data["jobs"] = []
+                    hash_jobs_data["workers"] = []
+            except Exception as e:
+                self.logger.debug(f"Failed to get hash jobs data: {e}")
+                hash_jobs_data["jobs"] = []
+                hash_jobs_data["workers"] = []
+
             return {
                 "metrics": metrics_data,
                 "history": history_data,
+                "hash_jobs": hash_jobs_data,
                 "timestamp": datetime.now().isoformat()
             }
 
