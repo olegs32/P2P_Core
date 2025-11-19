@@ -1400,11 +1400,15 @@ class Run(BaseService):
                         workers_distribution = []
                         node_registry = network.gossip.node_registry
 
+                        # Find coordinator for chunk data
+                        coordinator_nodes = [n for n in node_registry.values() if n.role == "coordinator"]
+                        coordinator = coordinator_nodes[0] if coordinator_nodes else None
+
                         for node_id, node_info in node_registry.items():
                             if node_info.role == "worker":
                                 worker_status = node_info.metadata.get("hash_worker_status", {})
                                 if worker_status:
-                                    workers_distribution.append({
+                                    worker_data = {
                                         "worker_id": node_id,
                                         "address": f"{node_info.address}:{node_info.port}",
                                         "current_job": worker_status.get("job_id"),
@@ -1412,8 +1416,34 @@ class Run(BaseService):
                                         "status": worker_status.get("status", "idle"),
                                         "progress": worker_status.get("progress", 0),
                                         "total_hashes": worker_status.get("total_hashes", 0),
-                                        "completed_chunks": worker_status.get("completed_chunks", 0)
-                                    })
+                                        "completed_chunks": worker_status.get("completed_chunks", 0),
+                                        "chunks": []
+                                    }
+
+                                    # Collect chunks assigned to this worker from coordinator metadata
+                                    if coordinator:
+                                        for key, value in coordinator.metadata.items():
+                                            if key.startswith("hash_batches_"):
+                                                job_id = key.replace("hash_batches_", "")
+
+                                                # Parse versioned batches format
+                                                if isinstance(value, dict):
+                                                    for version_key, batch_data in value.items():
+                                                        if isinstance(batch_data, dict) and "chunks" in batch_data:
+                                                            for chunk_id, chunk_data in batch_data["chunks"].items():
+                                                                if chunk_data.get("assigned_worker") == node_id:
+                                                                    chunk_info = {
+                                                                        "job_id": job_id,
+                                                                        "chunk_id": int(chunk_id),
+                                                                        "start_index": chunk_data.get("start_index", 0),
+                                                                        "end_index": chunk_data.get("end_index", 0),
+                                                                        "size": chunk_data.get("end_index", 0) - chunk_data.get("start_index", 0),
+                                                                        "status": chunk_data.get("status", "unknown"),
+                                                                        "progress": chunk_data.get("progress", 0)
+                                                                    }
+                                                                    worker_data["chunks"].append(chunk_info)
+
+                                    workers_distribution.append(worker_data)
 
                         hash_jobs_data["workers"] = workers_distribution
                     else:

@@ -6452,7 +6452,8 @@
             // Calculate summary stats
             const totalWorkers = workers.length;
             const activeWorkers = workers.filter(w => w.status === 'working').length;
-            const totalChunks = workers.reduce((sum, w) => sum + (w.completed_chunks || 0), 0);
+            // Count assigned chunks (not completed chunks)
+            const totalChunks = workers.reduce((sum, w) => sum + ((w.chunks && w.chunks.length) || 0), 0);
             const totalHashes = workers.reduce((sum, w) => sum + (w.total_hashes || 0), 0);
 
             // Update summary
@@ -6480,6 +6481,11 @@
                 const statusBadge = getWorkerStatusBadge(worker.status);
                 const progressPercent = worker.progress || 0;
 
+                const assignedChunks = (worker.chunks && worker.chunks.length) || 0;
+                const totalChunkSize = assignedChunks > 0
+                    ? worker.chunks.reduce((sum, c) => sum + (c.size || 0), 0).toLocaleString()
+                    : '-';
+
                 html += `
                     <tr>
                         <td><strong>${worker.worker_id}</strong></td>
@@ -6487,8 +6493,8 @@
                         <td>${statusBadge}</td>
                         <td>${worker.current_job || '-'}</td>
                         <td>${worker.current_chunk !== null && worker.current_chunk !== undefined ? worker.current_chunk : '-'}</td>
-                        <td><span class="badge bg-primary">-</span></td>
-                        <td>-</td>
+                        <td><span class="badge bg-primary">${assignedChunks}</span></td>
+                        <td>${totalChunkSize}</td>
                         <td><span class="badge bg-success">${worker.completed_chunks || 0}</span></td>
                         <td>${(worker.total_hashes || 0).toLocaleString()}</td>
                         <td>
