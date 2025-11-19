@@ -1500,23 +1500,49 @@ class Run(BaseService):
             try:
                 data = await request.json()
                 job_id = data.get('job_id')
-                charset = data.get('charset')
-                length = data.get('length')
+                mode = data.get('mode', 'brute')
                 hash_algo = data.get('hash_algo', 'sha256')
                 target_hash = data.get('target_hash')
+                target_hashes = data.get('target_hashes')
                 base_chunk_size = data.get('base_chunk_size', 1000000)
+                lookahead_batches = data.get('lookahead_batches', 10)
 
-                if not job_id or not charset or not length:
-                    return {"success": False, "error": "job_id, charset, and length are required"}
+                # Brute force parameters
+                charset = data.get('charset')
+                length = data.get('length')
+
+                # Dictionary attack parameters
+                wordlist = data.get('wordlist')
+                mutations = data.get('mutations')
+
+                # WPA/WPA2 parameters
+                ssid = data.get('ssid')
+
+                # Validation
+                if not job_id:
+                    return {"success": False, "error": "job_id is required"}
+
+                if mode == 'brute':
+                    if not charset or not length:
+                        return {"success": False, "error": "charset and length are required for brute force mode"}
+                elif mode == 'dictionary':
+                    if not wordlist or len(wordlist) == 0:
+                        return {"success": False, "error": "wordlist is required for dictionary mode"}
 
                 # Call hash_coordinator service (local call, no .coordinator suffix)
                 result = await self.proxy.hash_coordinator.create_job(
                     job_id=job_id,
+                    mode=mode,
                     charset=charset,
                     length=length,
+                    wordlist=wordlist,
+                    mutations=mutations,
                     hash_algo=hash_algo,
                     target_hash=target_hash,
-                    base_chunk_size=base_chunk_size
+                    target_hashes=target_hashes,
+                    ssid=ssid,
+                    base_chunk_size=base_chunk_size,
+                    lookahead_batches=lookahead_batches
                 )
 
                 return result

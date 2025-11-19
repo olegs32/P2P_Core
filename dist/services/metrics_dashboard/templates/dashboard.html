@@ -1371,13 +1371,19 @@
                             </div>
                         </div>
 
-                        <!-- Chunk Size -->
+                        <!-- Chunk Size and Lookahead Batches -->
                         <div class="row mb-3">
                             <div class="col-md-6">
                                 <label class="form-label">Размер чанка</label>
                                 <input type="number" class="form-control" name="base_chunk_size"
                                        value="1000000" min="100000" step="100000">
                                 <small class="text-muted">Базовый размер чанка (хешей)</small>
+                            </div>
+                            <div class="col-md-6">
+                                <label class="form-label">Батчи наперед (lookahead)</label>
+                                <input type="number" class="form-control" name="lookahead_batches"
+                                       value="10" min="3" max="50">
+                                <small class="text-muted">Количество батчей, генерируемых заранее</small>
                             </div>
                         </div>
 
@@ -5954,7 +5960,8 @@
                 job_id: formData.get('job_id'),
                 mode: mode,
                 hash_algo: formData.get('hash_algo'),
-                base_chunk_size: parseInt(formData.get('base_chunk_size'))
+                base_chunk_size: parseInt(formData.get('base_chunk_size')),
+                lookahead_batches: parseInt(formData.get('lookahead_batches')) || 10
             };
 
             // Mode-specific parameters
@@ -6092,10 +6099,11 @@
             }
         }
 
-        async function loadJobDetails(jobId) {
+        async function loadJobDetails(jobId, skipToggle = false) {
             const detailsContainer = document.getElementById(`jobDetails-${jobId}`);
 
-            if (detailsContainer.style.display !== 'none') {
+            // Toggle off if clicking button again (not from auto-refresh)
+            if (!skipToggle && detailsContainer.style.display !== 'none') {
                 detailsContainer.style.display = 'none';
                 return;
             }
@@ -6105,7 +6113,9 @@
                 const result = await response.json();
 
                 if (!result.success) {
-                    alert('Failed to load job details');
+                    if (!skipToggle) {
+                        alert('Failed to load job details');
+                    }
                     return;
                 }
 
@@ -6159,10 +6169,15 @@
                     </table>
                 `;
 
-                detailsContainer.style.display = 'block';
+                // Show details (only if not already visible from restore)
+                if (detailsContainer.style.display === 'none') {
+                    detailsContainer.style.display = 'block';
+                }
             } catch (error) {
                 console.error('Failed to load job details:', error);
-                alert('Failed to load job details');
+                if (!skipToggle) {
+                    alert('Failed to load job details');
+                }
             }
         }
 
@@ -6341,6 +6356,16 @@
         function updateActiveJobsList(jobs) {
             const container = document.getElementById('activeJobsContainer');
 
+            // Save state of opened job details BEFORE updating HTML
+            const openedJobDetails = new Set();
+            const existingDetails = container.querySelectorAll('[id^="jobDetails-"]');
+            existingDetails.forEach(detailsDiv => {
+                if (detailsDiv.style.display !== 'none') {
+                    const jobId = detailsDiv.id.replace('jobDetails-', '');
+                    openedJobDetails.add(jobId);
+                }
+            });
+
             if (!jobs || jobs.length === 0) {
                 container.innerHTML = `
                     <div class="text-center text-muted py-4">
@@ -6362,6 +6387,9 @@
                 const progressPercent = job.progress_percentage || 0;
                 const processed = job.processed || 0;
                 const total = job.total || 0;
+
+                // Check if this job's details were open
+                const detailsDisplay = openedJobDetails.has(job.job_id) ? 'block' : 'none';
 
                 html += `
                     <div class="card mb-3">
@@ -6404,7 +6432,7 @@
                                 </div>
                             </div>
 
-                            <div id="jobDetails-${job.job_id}" class="mt-3" style="display: none;">
+                            <div id="jobDetails-${job.job_id}" class="mt-3" style="display: ${detailsDisplay};">
                                 <!-- Details will be loaded here -->
                             </div>
                         </div>
@@ -6413,6 +6441,11 @@
             }
 
             container.innerHTML = html;
+
+            // Restore opened details content (re-fetch if needed)
+            openedJobDetails.forEach(jobId => {
+                loadJobDetails(jobId, true); // true = skip toggle, just load
+            });
         }
 
         function updateWorkersDistributionFromWS(workers) {
