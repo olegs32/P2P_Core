@@ -193,6 +193,18 @@ class DynamicChunkGenerator:
             logger.debug("No active workers - skipping batch generation")
             return
 
+        # Очищаем старые пустые батчи (батчи без чанков) при первой генерации с воркерами
+        if not hasattr(self, '_cleaned_empty_batches'):
+            empty_batches = [
+                version for version, batch in self.generated_batches.items()
+                if not batch.chunks
+            ]
+            if empty_batches:
+                logger.info(f"Cleaning {len(empty_batches)} empty batches from previous runs")
+                for version in empty_batches:
+                    del self.generated_batches[version]
+            self._cleaned_empty_batches = True
+
         # Считаем только батчи с чанками (не пустые)
         pending_count = len(self.generated_batches) - len(self.completed_batches)
 
