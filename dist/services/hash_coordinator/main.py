@@ -458,6 +458,9 @@ class Run(BaseService):
         # Активные задачи
         self.active_jobs: Dict[str, DynamicChunkGenerator] = {}
 
+        # Найденные решения для каждой задачи
+        self.job_solutions: Dict[str, List[dict]] = {}  # {job_id: [solutions]}
+
         # Состояние воркеров из gossip
         self.worker_states: Dict[str, dict] = {}
 
@@ -555,6 +558,7 @@ class Run(BaseService):
             return {"success": False, "error": f"Unknown mode: {mode}"}
 
         self.active_jobs[job_id] = generator
+        self.job_solutions[job_id] = []  # Инициализируем пустой список решений
 
         # Получаем активных воркеров из gossip
         active_workers = await self._get_active_workers()
@@ -596,13 +600,16 @@ class Run(BaseService):
         generator = self.active_jobs[job_id]
         progress = generator.get_progress()
         cluster_stats = generator.performance.calculate_cluster_stats()
+        solutions = self.job_solutions.get(job_id, [])
 
         return {
             "success": True,
             "job_id": job_id,
             "progress": progress,
             "cluster_stats": cluster_stats,
-            "worker_speeds": generator.performance.worker_speeds
+            "worker_speeds": generator.performance.worker_speeds,
+            "solutions": solutions,
+            "solutions_count": len(solutions)
         }
 
     @service_method(description="Получить список всех задач", public=True)
@@ -649,15 +656,22 @@ class Run(BaseService):
         for sol in solutions:
             self.logger.warning(f"  Solution: {sol.get('combination')} → {sol.get('hash')}")
 
-        # TODO: Можно добавить логику:
-        # - Сохранение решений в БД
-        # - Остановка задачи если найдено решение
-        # - Уведомление пользователя
+        # Сохраняем решения
+        if job_id not in self.job_solutions:
+            self.job_solutions[job_id] = []
+
+        # Добавляем новые решения (избегаем дубликатов по hash)
+        existing_hashes = {sol.get('hash') for sol in self.job_solutions[job_id]}
+        for sol in solutions:
+            if sol.get('hash') not in existing_hashes:
+                self.job_solutions[job_id].append(sol)
+                existing_hashes.add(sol.get('hash'))
 
         return {
             "success": True,
             "job_id": job_id,
             "solutions_count": len(solutions),
+            "total_solutions": len(self.job_solutions[job_id]),
             "acknowledged": True
         }
 
@@ -738,19 +752,15 @@ class Run(BaseService):
         generator = self.active_jobs[job_id]
         progress = generator.get_progress()
 
-        # Собираем все найденные решения
-        solutions = []
-        for batch in generator.generated_batches.values():
-            for chunk in batch.chunks:
-                # Решения хранятся в worker status через gossip
-                # Здесь нужно собрать их из gossip metadata
-                pass
+        # Получаем сохраненные решения
+        solutions = self.job_solutions.get(job_id, [])
 
-        # Для демо - создаем пример структуры
+        # Формируем результаты
         results = {
             "job_id": job_id,
             "progress": progress,
             "solutions": solutions,
+            "solutions_count": len(solutions),
             "exported_at": datetime.now().isoformat()
         }
 
@@ -1107,6 +1117,17 @@ class Run(BaseService):
                 self.logger.warning(f"Worker {worker_id} found {len(solutions)} solutions in chunk {chunk_id}!")
                 for sol in solutions:
                     self.logger.warning(f"  Solution: {sol.get('combination')} → {sol.get('hash')}")
+
+                # Сохраняем решения
+                if job_id not in self.job_solutions:
+                    self.job_solutions[job_id] = []
+
+                # Добавляем новые решения (избегаем дубликатов по hash)
+                existing_hashes = {sol.get('hash') for sol in self.job_solutions[job_id]}
+                for sol in solutions:
+                    if sol.get('hash') not in existing_hashes:
+                        self.job_solutions[job_id].append(sol)
+                        existing_hashes.add(sol.get('hash'))
 
             # Генерируем новые батчи если нужно (lookahead)
             active_workers = await self._get_active_workers()

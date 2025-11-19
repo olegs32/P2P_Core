@@ -6122,6 +6122,8 @@
                 const progress = result.progress;
                 const cluster = result.cluster_stats;
                 const workerSpeeds = result.worker_speeds;
+                const solutions = result.solutions || [];
+                const solutionsCount = result.solutions_count || 0;
 
                 let workersHtml = '';
                 for (const [workerId, speed] of Object.entries(workerSpeeds)) {
@@ -6133,9 +6135,47 @@
                     `;
                 }
 
+                let solutionsHtml = '';
+                if (solutionsCount > 0) {
+                    for (const sol of solutions) {
+                        const combination = sol.combination || 'N/A';
+                        const hash = sol.hash || 'N/A';
+                        const index = sol.index !== undefined ? sol.index.toLocaleString() : 'N/A';
+                        const mode = sol.mode || 'N/A';
+
+                        solutionsHtml += `
+                            <tr>
+                                <td><strong style="color: #00ff00;">${combination}</strong></td>
+                                <td><code>${hash}</code></td>
+                                <td>${index}</td>
+                                <td><span class="badge bg-info">${mode}</span></td>
+                            </tr>
+                        `;
+                    }
+                } else {
+                    solutionsHtml = '<tr><td colspan="4" class="text-center text-muted">Решения не найдены</td></tr>';
+                }
+
                 detailsContainer.innerHTML = `
                     <hr>
-                    <h6>Статистика кластера</h6>
+                    <h6>Найденные решения
+                        ${solutionsCount > 0 ? `<span class="badge bg-success ms-2">${solutionsCount}</span>` : ''}
+                    </h6>
+                    <table class="table table-sm table-dark">
+                        <thead>
+                            <tr>
+                                <th>Комбинация</th>
+                                <th>Хеш</th>
+                                <th>Индекс</th>
+                                <th>Режим</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            ${solutionsHtml}
+                        </tbody>
+                    </table>
+
+                    <h6 class="mt-4">Статистика кластера</h6>
                     <div class="row mb-3">
                         <div class="col-md-3">
                             <small class="text-muted">Средняя скорость</small><br>
