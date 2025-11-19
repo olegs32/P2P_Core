@@ -184,7 +184,13 @@ class DynamicChunkGenerator:
         return ''.join(reversed(result))
 
     async def ensure_lookahead_batches(self, active_workers: List[str]):
-        """Гарантирует наличие lookahead батчей"""
+        """
+        Гарантирует наличие lookahead чанков для каждого воркера
+
+        Подсчитывает доступные (незавершенные) чанки для каждого воркера
+        и генерирует новые батчи, пока у самого "голодного" воркера
+        есть меньше lookahead_batches чанков в очереди.
+        """
         import logging
         logger = logging.getLogger("DynamicChunkGenerator")
 
@@ -193,19 +199,34 @@ class DynamicChunkGenerator:
             logger.debug("No active workers - skipping batch generation")
             return
 
-        # Считаем только батчи с чанками (не пустые)
-        pending_count = len(self.generated_batches) - len(self.completed_batches)
+        # Для каждого воркера считаем доступные (незавершенные) чанки
+        min_available_chunks = float('inf')
+        worker_chunk_counts = {}
 
-        needed = self.lookahead_batches - pending_count
+        for worker_id in active_workers:
+            available_chunks = 0
+            for batch in self.generated_batches.values():
+                for chunk in batch.chunks:
+                    if chunk.assigned_worker == worker_id and chunk.status in ("assigned", "working"):
+                        available_chunks += 1
+
+            worker_chunk_counts[worker_id] = available_chunks
+            min_available_chunks = min(min_available_chunks, available_chunks)
+
+        if min_available_chunks == float('inf'):
+            min_available_chunks = 0
+
+        # Генерируем батчи пока у самого "голодного" воркера меньше lookahead_batches чанков
+        needed = self.lookahead_batches - min_available_chunks
 
         logger.debug(
-            f"Lookahead check: generated={len(self.generated_batches)}, "
-            f"completed={len(self.completed_batches)}, pending={pending_count}, "
-            f"needed={needed}, progress={self.current_global_index}/{self.total_combinations}"
+            f"Lookahead check: worker_chunks={worker_chunk_counts}, "
+            f"min_available={min_available_chunks}, needed={needed}, "
+            f"progress={self.current_global_index}/{self.total_combinations}"
         )
 
         if needed > 0 and self.current_global_index < self.total_combinations:
-            logger.info(f"Generating {needed} new batches for {len(active_workers)} workers")
+            logger.info(f"Generating {needed} new batches (min worker chunks: {min_available_chunks}/{self.lookahead_batches})")
             for _ in range(needed):
                 if self.current_global_index >= self.total_combinations:
                     break
