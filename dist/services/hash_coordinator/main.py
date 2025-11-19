@@ -185,12 +185,19 @@ class DynamicChunkGenerator:
 
     async def ensure_lookahead_batches(self, active_workers: List[str]):
         """Гарантирует наличие lookahead батчей"""
+        import logging
+        logger = logging.getLogger("DynamicChunkGenerator")
+
+        # Не генерировать батчи если нет воркеров
+        if not active_workers:
+            logger.debug("No active workers - skipping batch generation")
+            return
+
+        # Считаем только батчи с чанками (не пустые)
         pending_count = len(self.generated_batches) - len(self.completed_batches)
 
         needed = self.lookahead_batches - pending_count
 
-        import logging
-        logger = logging.getLogger("DynamicChunkGenerator")
         logger.debug(
             f"Lookahead check: generated={len(self.generated_batches)}, "
             f"completed={len(self.completed_batches)}, pending={pending_count}, "
@@ -202,7 +209,10 @@ class DynamicChunkGenerator:
             for _ in range(needed):
                 if self.current_global_index >= self.total_combinations:
                     break
-                await self._generate_next_batch(active_workers)
+                batch = await self._generate_next_batch(active_workers)
+                if batch is None:
+                    logger.warning("Failed to generate batch despite having active workers")
+                    break
 
     async def _generate_next_batch(self, active_workers: List[str]) -> Optional[BatchInfo]:
         """Генерирует следующий batch"""
