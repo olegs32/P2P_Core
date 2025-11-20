@@ -1,1 +1,1 @@
-python p2p_admin.py client
+python p2p.py --config config/coordinator.yaml --password some_password --coordinator IP_COORD_OR_127.0.0.1_if_local

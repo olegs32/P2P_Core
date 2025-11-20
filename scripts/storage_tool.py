@@ -89,7 +89,7 @@ def migrate_to_secure_storage(password, storage_path):
         print()
         print("💾 Migrating state files...")
         for state_pattern in ["data/*/*.json", "*.json"]:
-            for state_file in Path(".").glob(state_pattern):
+            for state_file in Path("..").glob(state_pattern):
                 if state_file.is_file() and state_file.name.endswith('.json'):
                     try:
                         with open(state_file, 'r', encoding='utf-8') as f:
