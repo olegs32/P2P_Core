@@ -2614,7 +2614,7 @@
 
                 // Update workers
                 if (metrics.workers) {
-                    updateWorkersFromWS(metrics.workers);
+                    updateWorkers(metrics.workers, history);
                 }
 
             } catch (error) {
@@ -2622,64 +2622,6 @@
             }
         }
 
-        function updateWorkersFromWS(workers) {
-            try {
-                const container = document.getElementById('workersContainer');
-                if (!container) return;
-
-                Object.keys(workers).forEach(workerId => {
-                    const workerData = workers[workerId];
-                    
-                    // Create card if it doesn't exist
-                    let card = document.querySelector(`.worker-card[data-worker-id="${workerId}"]`);
-                    if (!card) {
-                        card = createWorkerCard(workerId);
-                        container.appendChild(card);
-                    }
-
-                    // Update worker metrics
-                    if (workerData.metrics) {
-                        updateWorkerMetrics(workerId, workerData.metrics);
-                    }
-
-                    // Update worker services
-                    if (workerData.services) {
-                        updateWorkerServices(workerId, workerData.services);
-                    }
-                });
-            } catch (error) {
-                console.error('Error updating workers from WebSocket:', error);
-            }
-        }
-
-        function updateWorkerMetrics(workerId, metrics) {
-            const card = document.querySelector(`.worker-card[data-worker-id="${workerId}"]`);
-            if (!card) return;
-
-            const prefix = `worker-${workerId}`;
-            updateNodeMetrics(prefix, metrics);
-        }
-
-        function updateWorkerServices(workerId, services) {
-            const card = document.querySelector(`.worker-card[data-worker-id="${workerId}"]`);
-            if (!card) return;
-
-            const servicesContainer = card.querySelector('.worker-services');
-            if (!servicesContainer) return;
-
-            servicesContainer.innerHTML = '';
-            services.forEach(service => {
-                const serviceDiv = document.createElement('div');
-                serviceDiv.className = 'service-item';
-                serviceDiv.innerHTML = `
-                    <span>${service.name}</span>
-                    <span class="status-badge status-${service.status === 'running' ? 'online' : 'offline'}">
-                        ${service.status}
-                    </span>
-                `;
-                servicesContainer.appendChild(serviceDiv);
-            });
-        }
 
         function updateLogsFromWS(logsData) {
             try {
