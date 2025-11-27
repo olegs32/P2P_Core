@@ -4,6 +4,7 @@ fastapi
 pydantic~=2.10.6
 starlette
 uvicorn
+websockets
 PyJWT~=2.10.1
 psutil~=7.0.0
 pyinstaller
