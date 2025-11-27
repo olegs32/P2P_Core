@@ -1129,6 +1129,36 @@
                                 </tbody>
                             </table>
                         </div>
+
+                        <!-- Available certificates from coordinator (shown when worker is selected) -->
+                        <div id="availableCertsSection" style="display: none;" class="mt-4">
+                            <h5 class="mb-3">Available Certificates from Coordinator</h5>
+                            <div class="mb-3">
+                                <button id="selectAllBtn" class="btn btn-sm btn-secondary" onclick="toggleSelectAll()">Select All</button>
+                                <button id="bulkDeployBtn" class="btn btn-sm btn-primary ms-2" onclick="openBulkDeployModal()" disabled>
+                                    Deploy Selected (<span id="selectedCount">0</span>)
+                                </button>
+                            </div>
+                            <div class="certificates-table">
+                                <table>
+                                    <thead>
+                                        <tr>
+                                            <th style="width: 40px;">
+                                                <input type="checkbox" id="selectAllCheckbox" onchange="toggleSelectAll()">
+                                            </th>
+                                            <th>Subject</th>
+                                            <th>Issuer</th>
+                                            <th>Valid From</th>
+                                            <th>Valid To</th>
+                                            <th>Status</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="availableCertsTableBody">
+                                        <!-- Available certificate rows will be inserted here -->
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
                     </div>
 
                     <div id="certificatesError" style="display: none;">
@@ -2162,6 +2192,47 @@
         </div>
     </div>
 
+    <!-- Bulk Deploy Certificates Modal -->
+    <div id="bulkDeployCertModal" class="modal">
+        <div class="modal-content" style="max-width: 700px;">
+            <div class="modal-header">
+                <h2>Bulk Deploy Certificates to Worker</h2>
+                <span class="close-btn" onclick="closeBulkDeployModal()">&times;</span>
+            </div>
+            <div class="modal-body p-4">
+                <div class="mb-3">
+                    <strong>Target Worker:</strong> <span id="bulkDeployTargetWorker"></span>
+                </div>
+                <div class="mb-3">
+                    <strong>Selected Certificates:</strong> <span id="bulkDeployCount">0</span>
+                </div>
+                <form id="bulkDeployCertForm" onsubmit="bulkDeployCertificates(event)">
+                    <div class="mb-3">
+                        <label for="bulkCurrentPassword" class="form-label">Current Container Password:</label>
+                        <input type="password" id="bulkCurrentPassword" class="form-control"
+                               placeholder="Enter current password for PFX export" required>
+                        <small class="text-muted">Password used to export certificates from coordinator</small>
+                    </div>
+                    <div class="mb-3">
+                        <label for="bulkNewPassword" class="form-label">New Container Password (optional):</label>
+                        <input type="password" id="bulkNewPassword" class="form-control"
+                               placeholder="Leave empty to use current password">
+                        <small class="text-muted">Password for containers on target worker. If empty, current password will be used.</small>
+                    </div>
+                    <div class="mt-4">
+                        <button type="submit" class="btn btn-primary">
+                            <i class="bi bi-send"></i> Deploy Selected Certificates
+                        </button>
+                        <button type="button" class="btn btn-secondary ms-2" onclick="closeBulkDeployModal()">
+                            Cancel
+                        </button>
+                    </div>
+                    <div id="bulkDeployStatus" class="mt-3" style="display: none;"></div>
+                </form>
+            </div>
+        </div>
+    </div>
+
     <!-- View Certificate Details Modal -->
     <div id="viewCertModal" class="modal">
         <div class="modal-content" style="max-width: 800px;">
@@ -2904,9 +2975,12 @@
             const filterValue = nodeFilter.value;
             const tableBody = document.getElementById('certificatesTableBody');
             const certCount = document.getElementById('certCount');
+            const availableCertsSection = document.getElementById('availableCertsSection');
+            const availableCertsTableBody = document.getElementById('availableCertsTableBody');
 
             // Clear table
             tableBody.innerHTML = '';
+            availableCertsTableBody.innerHTML = '';
 
             // Filter certificates
             const filtered = filterValue === 'all'
@@ -2925,14 +2999,96 @@
                         </td>
                     </tr>
                 `;
-                return;
+            } else {
+                // Populate table
+                filtered.forEach(cert => {
+                    const row = createCertificateRow(cert);
+                    tableBody.appendChild(row);
+                });
             }
 
-            // Populate table
-            filtered.forEach(cert => {
-                const row = createCertificateRow(cert);
-                tableBody.appendChild(row);
-            });
+            // Show available certificates section if worker is selected (not 'all' and not 'coordinator')
+            if (filterValue !== 'all' && filterValue !== 'coordinator') {
+                // Get coordinator certificates
+                const coordinatorCerts = allCertificates.filter(cert => cert.worker === 'coordinator');
+
+                // Get worker certificates (by serial number)
+                const workerCertSerials = new Set(
+                    allCertificates
+                        .filter(cert => cert.worker === filterValue)
+                        .map(cert => cert.serial)
+                );
+
+                // Find certificates on coordinator that are NOT on worker
+                const availableCerts = coordinatorCerts.filter(cert =>
+                    cert.serial && !workerCertSerials.has(cert.serial)
+                );
+
+                if (availableCerts.length > 0) {
+                    availableCertsSection.style.display = 'block';
+
+                    // Populate available certificates table
+                    availableCerts.forEach(cert => {
+                        const row = createAvailableCertificateRow(cert);
+                        availableCertsTableBody.appendChild(row);
+                    });
+                } else {
+                    availableCertsSection.style.display = 'none';
+                }
+            } else {
+                availableCertsSection.style.display = 'none';
+            }
+
+            // Reset selection
+            updateSelectedCount();
+        }
+
+        function createAvailableCertificateRow(cert) {
+            const row = document.createElement('tr');
+
+            // Determine certificate status
+            const now = new Date();
+            const validFrom = parseCertDate(cert.valid_from);
+            const validTo = parseCertDate(cert.valid_to);
+
+            let status = 'unknown';
+            let statusClass = 'cert-status-expiring';
+            let statusText = 'Unknown';
+
+            if (validFrom && validTo && !isNaN(validFrom) && !isNaN(validTo)) {
+                status = 'valid';
+                statusClass = 'cert-status-valid';
+                statusText = 'Valid';
+
+                if (now > validTo) {
+                    status = 'expired';
+                    statusClass = 'cert-status-expired';
+                    statusText = 'Expired';
+                } else if (now < validFrom) {
+                    status = 'not-yet-valid';
+                    statusClass = 'cert-status-expiring';
+                    statusText = 'Not Yet Valid';
+                } else {
+                    // Check if expiring soon (within 30 days)
+                    const daysUntilExpiry = Math.floor((validTo - now) / (1000 * 60 * 60 * 24));
+                    if (daysUntilExpiry <= 30) {
+                        status = 'expiring-soon';
+                        statusClass = 'cert-status-expiring';
+                        statusText = `Expiring in ${daysUntilExpiry} days`;
+                    }
+                }
+            }
+
+            row.innerHTML = `
+                <td><input type="checkbox" class="cert-checkbox" data-cert-id="${cert.id}" onchange="updateSelectedCount()"></td>
+                <td><code style="font-size: 0.85em;">${cert.subject_cn || cert.subject || 'N/A'}</code></td>
+                <td><code style="font-size: 0.85em;">${cert.issuer_cn || cert.issuer || 'N/A'}</code></td>
+                <td>${formatDate(cert.valid_from)}</td>
+                <td>${formatDate(cert.valid_to)}</td>
+                <td><span class="${statusClass}">${statusText}</span></td>
+            `;
+
+            return row;
         }
 
         function createCertificateRow(cert) {
@@ -3373,6 +3529,159 @@
                     }, 2000);
                 } else {
                     statusDiv.innerHTML = `<div class="alert alert-danger">Failed to deploy: ${result.error || 'Unknown error'}</div>`;
+                }
+            } catch (error) {
+                statusDiv.innerHTML = `<div class="alert alert-danger">Error: ${error.message}</div>`;
+            }
+        }
+
+        // Bulk deployment functions
+        function toggleSelectAll() {
+            const selectAllCheckbox = document.getElementById('selectAllCheckbox');
+            const checkboxes = document.querySelectorAll('.cert-checkbox');
+
+            checkboxes.forEach(checkbox => {
+                checkbox.checked = selectAllCheckbox.checked;
+            });
+
+            updateSelectedCount();
+        }
+
+        function updateSelectedCount() {
+            const checkboxes = document.querySelectorAll('.cert-checkbox:checked');
+            const count = checkboxes.length;
+
+            document.getElementById('selectedCount').textContent = count;
+
+            // Enable/disable bulk deploy button
+            const bulkDeployBtn = document.getElementById('bulkDeployBtn');
+            if (bulkDeployBtn) {
+                bulkDeployBtn.disabled = count === 0;
+            }
+
+            // Update selectAll checkbox state
+            const allCheckboxes = document.querySelectorAll('.cert-checkbox');
+            const selectAllCheckbox = document.getElementById('selectAllCheckbox');
+            if (selectAllCheckbox && allCheckboxes.length > 0) {
+                selectAllCheckbox.checked = count === allCheckboxes.length;
+            }
+        }
+
+        function openBulkDeployModal() {
+            const selectedCheckboxes = document.querySelectorAll('.cert-checkbox:checked');
+            if (selectedCheckboxes.length === 0) {
+                alert('Please select at least one certificate to deploy');
+                return;
+            }
+
+            // Get target worker from filter
+            const nodeFilter = document.getElementById('nodeFilter');
+            const targetWorker = nodeFilter.value;
+
+            if (targetWorker === 'all' || targetWorker === 'coordinator') {
+                alert('Please select a worker node from the filter');
+                return;
+            }
+
+            // Update modal
+            document.getElementById('bulkDeployTargetWorker').textContent = targetWorker.charAt(0).toUpperCase() + targetWorker.slice(1);
+            document.getElementById('bulkDeployCount').textContent = selectedCheckboxes.length;
+
+            // Reset form
+            document.getElementById('bulkCurrentPassword').value = '';
+            document.getElementById('bulkNewPassword').value = '';
+
+            const statusDiv = document.getElementById('bulkDeployStatus');
+            statusDiv.style.display = 'none';
+            statusDiv.innerHTML = '';
+
+            // Show modal
+            document.getElementById('bulkDeployCertModal').style.display = 'flex';
+        }
+
+        function closeBulkDeployModal() {
+            document.getElementById('bulkDeployCertModal').style.display = 'none';
+        }
+
+        async function bulkDeployCertificates(event) {
+            event.preventDefault();
+
+            const currentPassword = document.getElementById('bulkCurrentPassword').value;
+            const newPassword = document.getElementById('bulkNewPassword').value;
+            const statusDiv = document.getElementById('bulkDeployStatus');
+
+            if (!currentPassword) {
+                statusDiv.innerHTML = '<div class="alert alert-warning">Please enter current password</div>';
+                statusDiv.style.display = 'block';
+                return;
+            }
+
+            // Get target worker from filter
+            const nodeFilter = document.getElementById('nodeFilter');
+            const targetWorker = nodeFilter.value;
+
+            // Get selected certificate IDs
+            const selectedCheckboxes = document.querySelectorAll('.cert-checkbox:checked');
+            const certIds = Array.from(selectedCheckboxes).map(cb => cb.getAttribute('data-cert-id'));
+
+            if (certIds.length === 0) {
+                statusDiv.innerHTML = '<div class="alert alert-warning">No certificates selected</div>';
+                statusDiv.style.display = 'block';
+                return;
+            }
+
+            // Show loading
+            statusDiv.innerHTML = `<div class="alert alert-info">Deploying ${certIds.length} certificate(s)...</div>`;
+            statusDiv.style.display = 'block';
+
+            try {
+                // Call bulk deploy API endpoint
+                const response = await fetch('/api/dashboard/certificates/bulk-deploy', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        cert_ids: certIds,
+                        target_worker: targetWorker,
+                        current_password: currentPassword,
+                        new_password: newPassword || currentPassword
+                    })
+                });
+
+                const result = await response.json();
+
+                if (result.success) {
+                    let message = `<div class="alert alert-success">
+                        <strong>Deployment completed!</strong><br>
+                        Successfully deployed: ${result.success_count}/${result.total}<br>`;
+
+                    if (result.fail_count > 0) {
+                        message += `<br><strong>Failed: ${result.fail_count}</strong><br>`;
+                        result.results.filter(r => !r.success).forEach(r => {
+                            message += `- ${r.filename}: ${r.error}<br>`;
+                        });
+                    }
+
+                    if (result.export_errors && result.export_errors.length > 0) {
+                        message += `<br><strong>Export errors:</strong><br>`;
+                        result.export_errors.forEach(err => {
+                            message += `- ${err}<br>`;
+                        });
+                    }
+
+                    message += `</div>`;
+                    statusDiv.innerHTML = message;
+
+                    setTimeout(() => {
+                        closeBulkDeployModal();
+                        loadCertificates(); // Reload to show new certificates on worker
+                    }, 3000);
+                } else {
+                    statusDiv.innerHTML = `<div class="alert alert-danger">
+                        <strong>Deployment failed:</strong><br>
+                        ${result.error || 'Unknown error'}
+                    </div>`;
                 }
             } catch (error) {
                 statusDiv.innerHTML = `<div class="alert alert-danger">Error: ${error.message}</div>`;

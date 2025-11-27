@@ -953,6 +953,132 @@ class Run(BaseService):
                     content={"success": False, "error": str(e)}
                 )
 
+        @app.post("/api/dashboard/certificates/bulk-deploy")
+        async def bulk_deploy_certificates(request: Request):
+            """Bulk deploy certificates from coordinator to worker"""
+            try:
+                data = await request.json()
+                cert_ids = data.get('cert_ids', [])  # List of cert IDs to deploy
+                target_worker = data.get('target_worker')
+                current_password = data.get('current_password')
+                new_password = data.get('new_password')  # Optional, if empty use current_password
+
+                # Validate inputs
+                if not cert_ids or not target_worker or not current_password:
+                    return JSONResponse(
+                        status_code=400,
+                        content={"success": False, "error": "Missing required fields (cert_ids, target_worker, current_password)"}
+                    )
+
+                if not new_password:
+                    new_password = current_password
+
+                self.logger.info(f"Bulk deploying {len(cert_ids)} certificates to {target_worker}")
+
+                # Get coordinator certificates
+                certificates_data = await self.get_service_data(service_type="certificates")
+                coordinator_certs = {}
+
+                for worker_id, services in certificates_data.get("service_data", {}).items():
+                    if worker_id == "coordinator":
+                        for service_name, service_info in services.items():
+                            for cert in service_info.get("certificates", []):
+                                coordinator_certs[cert.get("id")] = cert
+
+                # Find certificates to deploy
+                certs_to_deploy = []
+                missing_certs = []
+
+                for cert_id in cert_ids:
+                    if cert_id in coordinator_certs:
+                        certs_to_deploy.append(coordinator_certs[cert_id])
+                    else:
+                        missing_certs.append(cert_id)
+                        self.logger.warning(f"Certificate not found: {cert_id}")
+
+                if not certs_to_deploy:
+                    return JSONResponse(
+                        status_code=404,
+                        content={"success": False, "error": "No certificates found to deploy"}
+                    )
+
+                # Export all certificates to PFX bytes on coordinator
+                pfx_list = []
+                export_errors = []
+
+                for cert in certs_to_deploy:
+                    container = cert.get("container")
+                    if not container:
+                        export_errors.append(f"No container for {cert.get('subject_cn', 'unknown')}")
+                        self.logger.error(f"Certificate {cert.get('id')} has no container")
+                        continue
+
+                    try:
+                        # Export PFX to memory (without saving to disk)
+                        if hasattr(self.proxy, 'certs_tool'):
+                            export_result = await self.proxy.certs_tool.export_pfx_to_bytes(
+                                container_name=container,
+                                password=current_password
+                            )
+
+                            if export_result.get("success"):
+                                pfx_list.append({
+                                    "pfx_base64": export_result.get("pfx_base64"),
+                                    "filename": f"{cert.get('subject_cn', 'cert')}.pfx"
+                                })
+                                self.logger.info(f"Exported {cert.get('subject_cn')} successfully")
+                            else:
+                                export_errors.append(f"Failed to export {cert.get('subject_cn')}: {export_result.get('error')}")
+                                self.logger.error(f"Failed to export {cert.get('subject_cn')}: {export_result.get('error')}")
+                        else:
+                            return JSONResponse(
+                                status_code=500,
+                                content={"success": False, "error": "certs_tool not available on coordinator"}
+                            )
+
+                    except Exception as e:
+                        export_errors.append(f"Error exporting {cert.get('subject_cn')}: {str(e)}")
+                        self.logger.error(f"Error exporting {cert.get('subject_cn')}: {e}", exc_info=True)
+
+                if not pfx_list:
+                    return JSONResponse(
+                        status_code=500,
+                        content={
+                            "success": False,
+                            "error": "Failed to export any certificates",
+                            "export_errors": export_errors
+                        }
+                    )
+
+                # Batch install on target worker
+                if hasattr(self.proxy, 'certs_tool'):
+                    install_result = await self.proxy.certs_tool[target_worker].batch_install_pfx_from_bytes(
+                        pfx_list=pfx_list,
+                        current_password=current_password,
+                        new_password=new_password
+                    )
+
+                    # Combine export errors with install results
+                    response = {
+                        **install_result,
+                        "export_errors": export_errors,
+                        "missing_certs": missing_certs
+                    }
+
+                    return JSONResponse(content=response)
+                else:
+                    return JSONResponse(
+                        status_code=500,
+                        content={"success": False, "error": "certs_tool not available on target worker"}
+                    )
+
+            except Exception as e:
+                self.logger.error(f"Error in bulk deploy: {e}", exc_info=True)
+                return JSONResponse(
+                    status_code=500,
+                    content={"success": False, "error": str(e)}
+                )
+
         # Service deployment endpoints
         @app.get("/api/services/list")
         async def list_services():

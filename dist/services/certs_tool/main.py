@@ -755,6 +755,206 @@ class LegacyCertsService(BaseService):
                 "error": str(e)
             }
 
+    @service_method(description="Export certificate to PFX bytes (in memory)", public=True)
+    async def export_pfx_to_bytes(self, container_name: str, password: str = "00000000") -> Dict[str, Any]:
+        """
+        Экспортирует сертификат с закрытым ключом в PFX формат (в памяти, без сохранения на диск)
+
+        Args:
+            container_name: Имя контейнера
+            password: Пароль для PFX файла
+
+        Returns:
+            Dict: {"success": bool, "pfx_base64": str, "error": str}
+        """
+        import tempfile
+        import base64
+
+        try:
+            self.logger.info(f"Exporting PFX to memory: container={container_name}")
+
+            # Create temporary file for export
+            with tempfile.NamedTemporaryFile(mode='wb', suffix='.pfx', delete=False) as tmp_file:
+                tmp_pfx_path = tmp_file.name
+
+            try:
+                # Export to temp file
+                export_cmd = (f'"{self.csp_path / "certmgr.exe"}" -export '
+                              f'-container "{container_name}" -dest "{tmp_pfx_path}" '
+                              f'-pfx -keep_exportable -pin {password}')
+
+                output = await self._run_command_async(export_cmd)
+                error_code = self._extract_error_code(output)
+
+                if error_code != '0x00000000':
+                    self.logger.error(f"PFX export failed: {error_code}")
+                    return {
+                        "success": False,
+                        "error": f"Export failed: {error_code}",
+                        "pfx_base64": ""
+                    }
+
+                # Read PFX file and convert to base64
+                if not Path(tmp_pfx_path).exists():
+                    self.logger.error(f"PFX file was not created: {tmp_pfx_path}")
+                    return {
+                        "success": False,
+                        "error": "PFX file was not created",
+                        "pfx_base64": ""
+                    }
+
+                with open(tmp_pfx_path, 'rb') as f:
+                    pfx_bytes = f.read()
+                    pfx_base64 = base64.b64encode(pfx_bytes).decode('utf-8')
+
+                self.logger.info(f"PFX exported successfully: {len(pfx_bytes)} bytes")
+
+                return {
+                    "success": True,
+                    "pfx_base64": pfx_base64,
+                    "error": ""
+                }
+
+            finally:
+                # Clean up temporary file
+                try:
+                    Path(tmp_pfx_path).unlink()
+                except Exception as e:
+                    self.logger.warning(f"Failed to delete temporary file {tmp_pfx_path}: {e}")
+
+        except Exception as e:
+            self.logger.error(f"Error exporting PFX to bytes: {e}", exc_info=True)
+            return {
+                "success": False,
+                "error": str(e),
+                "pfx_base64": ""
+            }
+
+    @service_method(description="Batch install multiple certificates from PFX bytes", public=True)
+    async def batch_install_pfx_from_bytes(
+        self,
+        pfx_list: List[Dict[str, str]],
+        current_password: str,
+        new_password: str = None
+    ) -> Dict[str, Any]:
+        """
+        Устанавливает несколько сертификатов из base64-кодированных PFX данных
+
+        Args:
+            pfx_list: Список словарей [{"pfx_base64": str, "filename": str}, ...]
+            current_password: Текущий пароль для PFX файлов
+            new_password: Новый пароль для контейнеров (если None, использовать current_password)
+
+        Returns:
+            Dict: Результаты установки всех сертификатов
+        """
+        import base64
+        import tempfile
+
+        if new_password is None:
+            new_password = current_password
+
+        results = []
+        success_count = 0
+        fail_count = 0
+
+        try:
+            self.logger.info(f"Batch installing {len(pfx_list)} certificates")
+
+            for idx, pfx_item in enumerate(pfx_list):
+                pfx_base64 = pfx_item.get("pfx_base64", "")
+                filename = pfx_item.get("filename", f"cert_{idx}.pfx")
+
+                try:
+                    self.logger.info(f"Installing certificate {idx + 1}/{len(pfx_list)}: {filename}")
+
+                    # Decode base64 to bytes
+                    pfx_data = base64.b64decode(pfx_base64)
+
+                    # Create temporary file
+                    with tempfile.NamedTemporaryFile(mode='wb', suffix='.pfx', delete=False) as tmp_file:
+                        tmp_file.write(pfx_data)
+                        tmp_pfx_path = tmp_file.name
+
+                    try:
+                        # Install PFX
+                        install_cmd = (f'"{self.csp_path / "certmgr.exe"}" -install -store uMy '
+                                       f'-file "{tmp_pfx_path}" -pfx -silent -keep_exportable -pin {current_password}')
+
+                        output = await self._run_command_async(install_cmd)
+                        error_code = self._extract_error_code(output)
+                        container = self._extract_container(output)
+
+                        if error_code != '0x00000000' or not container:
+                            self.logger.error(f"Failed to install {filename}: {error_code}")
+                            results.append({
+                                "filename": filename,
+                                "success": False,
+                                "error": f"Install failed: {error_code}",
+                                "container": ""
+                            })
+                            fail_count += 1
+                            continue
+
+                        # Change password if different
+                        if new_password != current_password:
+                            passwd_cmd = (f'"{self.csp_path / "csptest.exe"}" -passwd '
+                                          f'-container "{container}" -change {new_password}')
+
+                            passwd_output = await self._run_command_async(passwd_cmd)
+                            passwd_error = self._extract_error_code(passwd_output)
+
+                            if passwd_error != '0x00000000':
+                                self.logger.warning(f"Failed to change password for {filename}: {passwd_error}")
+                                # Don't fail the installation, just log warning
+
+                        self.logger.info(f"Successfully installed {filename}, container: {container}")
+                        results.append({
+                            "filename": filename,
+                            "success": True,
+                            "error": "",
+                            "container": container
+                        })
+                        success_count += 1
+
+                    finally:
+                        # Clean up temporary file
+                        try:
+                            Path(tmp_pfx_path).unlink()
+                        except Exception as e:
+                            self.logger.warning(f"Failed to delete temporary file {tmp_pfx_path}: {e}")
+
+                except Exception as e:
+                    self.logger.error(f"Error installing {filename}: {e}", exc_info=True)
+                    results.append({
+                        "filename": filename,
+                        "success": False,
+                        "error": str(e),
+                        "container": ""
+                    })
+                    fail_count += 1
+
+            self.logger.info(f"Batch install complete: {success_count} succeeded, {fail_count} failed")
+
+            return {
+                "success": success_count > 0,
+                "total": len(pfx_list),
+                "success_count": success_count,
+                "fail_count": fail_count,
+                "results": results
+            }
+
+        except Exception as e:
+            self.logger.error(f"Error in batch install: {e}", exc_info=True)
+            return {
+                "success": False,
+                "total": len(pfx_list),
+                "success_count": 0,
+                "fail_count": len(pfx_list),
+                "error": str(e),
+                "results": results
+            }
+
 
 # Точка входа для загрузки сервиса
 class Run(LegacyCertsService):
