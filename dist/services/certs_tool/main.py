@@ -919,21 +919,14 @@ class LegacyCertsService(BaseService):
                             fail_count += 1
                             continue
 
-                        # Check if container was found (installation successful but no container)
+                        # If error code is 0x00000000, installation was successful
+                        # Container name may not be present in output due to -silent flag
                         if not container:
-                            self.logger.error(f"Failed to install {filename}: container not found (error code {error_code})")
-                            results.append({
-                                "filename": filename,
-                                "success": False,
-                                "error": "Container not found after installation",
-                                "error_code": error_code,
-                                "container": ""
-                            })
-                            fail_count += 1
-                            continue
+                            self.logger.warning(f"Container name not found in output for {filename} (possibly due to -silent flag)")
+                            self.logger.info(f"Installation successful for {filename} (error code: {error_code})")
 
-                        # Change password if different
-                        if new_password != current_password:
+                        # Change password if different and container was found
+                        if new_password != current_password and container:
                             passwd_cmd = (f'"{self.csp_path / "csptest.exe"}" -passwd '
                                           f'-container "{container}" -change {new_password}')
 
