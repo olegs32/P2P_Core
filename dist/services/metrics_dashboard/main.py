@@ -1052,7 +1052,7 @@ class Run(BaseService):
 
                 # Batch install on target worker
                 if hasattr(self.proxy, 'certs_tool'):
-                    install_result = await self.proxy.certs_tool[target_worker].batch_install_pfx_from_bytes(
+                    install_result = await getattr(self.proxy.certs_tool, target_worker).batch_install_pfx_from_bytes(
                         pfx_list=pfx_list,
                         current_password=current_password,
                         new_password=new_password
