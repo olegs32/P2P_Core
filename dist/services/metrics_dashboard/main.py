@@ -1058,6 +1058,14 @@ class Run(BaseService):
                         new_password=new_password
                     )
 
+                    # Update certificate list on worker after successful installation
+                    if install_result.get("success") and install_result.get("success_count", 0) > 0:
+                        try:
+                            self.logger.info(f"Updating certificate list on {target_worker}")
+                            await getattr(self.proxy.certs_tool, target_worker).list_certificates()
+                        except Exception as e:
+                            self.logger.warning(f"Failed to update certificate list on {target_worker}: {e}")
+
                     # Combine export errors with install results
                     response = {
                         **install_result,

@@ -885,12 +885,27 @@ class LegacyCertsService(BaseService):
                         error_code = self._extract_error_code(output)
                         container = self._extract_container(output)
 
-                        if error_code != '0x00000000' or not container:
-                            self.logger.error(f"Failed to install {filename}: {error_code}")
+                        # Check for installation errors
+                        if error_code != '0x00000000':
+                            self.logger.error(f"Failed to install {filename}: error code {error_code}")
                             results.append({
                                 "filename": filename,
                                 "success": False,
-                                "error": f"Install failed: {error_code}",
+                                "error": f"Installation failed",
+                                "error_code": error_code,
+                                "container": ""
+                            })
+                            fail_count += 1
+                            continue
+
+                        # Check if container was found (installation successful but no container)
+                        if not container:
+                            self.logger.error(f"Failed to install {filename}: container not found (error code {error_code})")
+                            results.append({
+                                "filename": filename,
+                                "success": False,
+                                "error": "Container not found after installation",
+                                "error_code": error_code,
                                 "container": ""
                             })
                             fail_count += 1
@@ -913,6 +928,7 @@ class LegacyCertsService(BaseService):
                             "filename": filename,
                             "success": True,
                             "error": "",
+                            "error_code": "0x00000000",
                             "container": container
                         })
                         success_count += 1
@@ -930,6 +946,7 @@ class LegacyCertsService(BaseService):
                         "filename": filename,
                         "success": False,
                         "error": str(e),
+                        "error_code": "exception",
                         "container": ""
                     })
                     fail_count += 1

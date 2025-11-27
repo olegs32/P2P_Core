@@ -3659,7 +3659,8 @@
                     if (result.fail_count > 0) {
                         message += `<br><strong>Failed: ${result.fail_count}</strong><br>`;
                         result.results.filter(r => !r.success).forEach(r => {
-                            message += `- ${r.filename}: ${r.error}<br>`;
+                            const errorCode = r.error_code ? ` (код: ${r.error_code})` : '';
+                            message += `- ${r.filename}: ${r.error}${errorCode}<br>`;
                         });
                     }
 
