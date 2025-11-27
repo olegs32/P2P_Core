@@ -1155,6 +1155,163 @@ class Run(BaseService):
                     content={"success": False, "error": str(e)}
                 )
 
+        @app.post("/api/dashboard/certificates/bulk-delete")
+        async def bulk_delete_certificates(request: Request):
+            """Bulk delete certificates from a worker or coordinator"""
+            try:
+                data = await request.json()
+                cert_ids = data.get('cert_ids', [])  # List of cert IDs to delete
+                target_node = data.get('target_node')  # Node where certificates are located
+
+                # Validate inputs
+                if not cert_ids or not target_node:
+                    return JSONResponse(
+                        status_code=400,
+                        content={"success": False, "error": "Missing required fields (cert_ids, target_node)"}
+                    )
+
+                self.logger.info(f"Bulk deleting {len(cert_ids)} certificates from {target_node}")
+
+                # Get certificates from target node
+                certificates_data = await self.get_service_data(service_type="certificates")
+                node_certs = {}
+
+                for worker_id, services in certificates_data.get("service_data", {}).items():
+                    if worker_id == target_node:
+                        for service_name, service_info in services.items():
+                            for cert in service_info.get("certificates", []):
+                                node_certs[cert.get("id")] = cert
+
+                # Find certificates to delete
+                certs_to_delete = []
+                missing_certs = []
+
+                for cert_id in cert_ids:
+                    if cert_id in node_certs:
+                        certs_to_delete.append(node_certs[cert_id])
+                    else:
+                        missing_certs.append(cert_id)
+                        self.logger.warning(f"Certificate not found: {cert_id}")
+
+                if not certs_to_delete:
+                    return JSONResponse(
+                        status_code=404,
+                        content={"success": False, "error": "No certificates found to delete"}
+                    )
+
+                # Delete certificates one by one
+                results = []
+                success_count = 0
+                fail_count = 0
+
+                for cert in certs_to_delete:
+                    thumbprint = cert.get("thumbprint")
+                    if not thumbprint:
+                        results.append({
+                            "cert_id": cert.get("id"),
+                            "subject": cert.get("subject", "Unknown"),
+                            "success": False,
+                            "error": "No thumbprint available"
+                        })
+                        fail_count += 1
+                        continue
+
+                    try:
+                        # Delete certificate on target node
+                        if target_node == "coordinator":
+                            if hasattr(self.proxy, 'certs_tool'):
+                                delete_result = await self.proxy.certs_tool.delete_certificate(
+                                    thumbprint=thumbprint
+                                )
+                            else:
+                                results.append({
+                                    "cert_id": cert.get("id"),
+                                    "subject": cert.get("subject", "Unknown"),
+                                    "success": False,
+                                    "error": "certs_tool not available on coordinator"
+                                })
+                                fail_count += 1
+                                continue
+                        else:
+                            if hasattr(self.proxy, 'certs_tool'):
+                                delete_result = await getattr(self.proxy.certs_tool, target_node).delete_certificate(
+                                    thumbprint=thumbprint
+                                )
+                            else:
+                                results.append({
+                                    "cert_id": cert.get("id"),
+                                    "subject": cert.get("subject", "Unknown"),
+                                    "success": False,
+                                    "error": "certs_tool not available on target node"
+                                })
+                                fail_count += 1
+                                continue
+
+                        if delete_result.get("success"):
+                            results.append({
+                                "cert_id": cert.get("id"),
+                                "subject": cert.get("subject", "Unknown"),
+                                "success": True,
+                                "error": ""
+                            })
+                            success_count += 1
+                            self.logger.info(f"Successfully deleted certificate: {cert.get('subject')}")
+                        else:
+                            results.append({
+                                "cert_id": cert.get("id"),
+                                "subject": cert.get("subject", "Unknown"),
+                                "success": False,
+                                "error": delete_result.get("error", "Unknown error")
+                            })
+                            fail_count += 1
+                            self.logger.error(f"Failed to delete certificate: {cert.get('subject')}")
+
+                    except Exception as e:
+                        results.append({
+                            "cert_id": cert.get("id"),
+                            "subject": cert.get("subject", "Unknown"),
+                            "success": False,
+                            "error": str(e)
+                        })
+                        fail_count += 1
+                        self.logger.error(f"Error deleting certificate {cert.get('subject')}: {e}", exc_info=True)
+
+                # Refresh certificate data on target node after deletion
+                if success_count > 0:
+                    try:
+                        self.logger.info(f"Bulk deletion successful on {target_node}, refreshing data")
+                        # Get fresh certificate data from the target node
+                        if target_node == "coordinator":
+                            fresh_data = await self.proxy.certs_tool.get_dashboard_data()
+                        else:
+                            fresh_data = await getattr(self.proxy.certs_tool, target_node).get_dashboard_data()
+
+                        # Update the service_data cache
+                        if target_node not in self.service_data:
+                            self.service_data[target_node] = {}
+                        self.service_data[target_node]["certs_tool"] = fresh_data
+                        self.logger.info(f"Successfully updated certificate cache for {target_node}")
+                    except Exception as e:
+                        self.logger.warning(f"Failed to refresh certificate data: {e}")
+
+                self.logger.info(f"Bulk delete complete: {success_count} succeeded, {fail_count} failed")
+
+                return JSONResponse(content={
+                    "success": success_count > 0,
+                    "total": len(cert_ids),
+                    "success_count": success_count,
+                    "fail_count": fail_count,
+                    "results": results,
+                    "missing_certs": missing_certs
+                })
+
+            except Exception as e:
+                self.logger.error(f"Error in bulk delete: {e}", exc_info=True)
+                return JSONResponse(
+                    status_code=500,
+                    content={"success": False, "error": str(e)}
+                )
+
         # Service deployment endpoints
         @app.get("/api/services/list")
         async def list_services():

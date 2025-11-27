@@ -1111,10 +1111,21 @@
                             </div>
                         </div>
 
+                        <!-- Bulk actions for main certificates table -->
+                        <div id="bulkActionsSection" class="mb-3" style="display: none;">
+                            <button id="selectAllMainBtn" class="btn btn-sm btn-secondary" onclick="toggleSelectAllMain()">Select All</button>
+                            <button id="bulkDeleteBtn" class="btn btn-sm btn-danger ms-2" onclick="openBulkDeleteModal()" disabled>
+                                Delete Selected (<span id="selectedDeleteCount">0</span>)
+                            </button>
+                        </div>
+
                         <div class="certificates-table">
                             <table>
                                 <thead>
                                     <tr>
+                                        <th style="width: 40px;" id="checkboxHeader" style="display: none;">
+                                            <input type="checkbox" id="selectAllMainCheckbox" onchange="toggleSelectAllMain()">
+                                        </th>
                                         <th>Node</th>
                                         <th>Subject</th>
                                         <th>Issuer</th>
@@ -2233,6 +2244,42 @@
         </div>
     </div>
 
+    <!-- Bulk Delete Certificates Modal -->
+    <div id="bulkDeleteCertModal" class="modal">
+        <div class="modal-content" style="max-width: 700px;">
+            <div class="modal-header">
+                <h2>Bulk Delete Certificates</h2>
+                <span class="close-btn" onclick="closeBulkDeleteModal()">&times;</span>
+            </div>
+            <div class="modal-body p-4">
+                <div class="alert alert-warning">
+                    <i class="bi bi-exclamation-triangle"></i>
+                    <strong>Warning!</strong> This action cannot be undone. The following certificates will be permanently deleted:
+                </div>
+                <div class="mb-3">
+                    <strong>Target Node:</strong> <span id="bulkDeleteTargetNode"></span>
+                </div>
+                <div class="mb-3">
+                    <strong>Selected Certificates:</strong> <span id="bulkDeleteCount">0</span>
+                </div>
+                <div class="mb-3" id="bulkDeleteCertList" style="max-height: 300px; overflow-y: auto; border: 1px solid #444; padding: 10px; border-radius: 4px; background-color: #2a2a2a;">
+                    <!-- Certificate list will be inserted here -->
+                </div>
+                <form id="bulkDeleteCertForm" onsubmit="bulkDeleteCertificates(event)">
+                    <div class="mt-4">
+                        <button type="submit" class="btn btn-danger">
+                            <i class="bi bi-trash"></i> Delete Selected Certificates
+                        </button>
+                        <button type="button" class="btn btn-secondary ms-2" onclick="closeBulkDeleteModal()">
+                            Cancel
+                        </button>
+                    </div>
+                    <div id="bulkDeleteStatus" class="mt-3" style="display: none;"></div>
+                </form>
+            </div>
+        </div>
+    </div>
+
     <!-- View Certificate Details Modal -->
     <div id="viewCertModal" class="modal">
         <div class="modal-content" style="max-width: 800px;">
@@ -2977,10 +3024,21 @@
             const certCount = document.getElementById('certCount');
             const availableCertsSection = document.getElementById('availableCertsSection');
             const availableCertsTableBody = document.getElementById('availableCertsTableBody');
+            const bulkActionsSection = document.getElementById('bulkActionsSection');
+            const checkboxHeader = document.getElementById('checkboxHeader');
 
             // Clear table
             tableBody.innerHTML = '';
             availableCertsTableBody.innerHTML = '';
+
+            // Show/hide bulk actions and checkbox header based on filter
+            const showBulkActions = filterValue !== 'all';
+            if (bulkActionsSection) {
+                bulkActionsSection.style.display = showBulkActions ? 'block' : 'none';
+            }
+            if (checkboxHeader) {
+                checkboxHeader.style.display = showBulkActions ? 'table-cell' : 'none';
+            }
 
             // Filter certificates
             const filtered = filterValue === 'all'
@@ -2991,10 +3049,11 @@
             certCount.textContent = filtered.length;
 
             // Check if we have certificates
+            const colspanCount = showBulkActions ? 8 : 7;
             if (filtered.length === 0) {
                 tableBody.innerHTML = `
                     <tr>
-                        <td colspan="7" class="text-center text-muted p-4">
+                        <td colspan="${colspanCount}" class="text-center text-muted p-4">
                             No certificates found
                         </td>
                     </tr>
@@ -3178,7 +3237,16 @@
                     Del
                 </button>`;
 
+            // Check if we should show checkbox (when filtering by specific node)
+            const nodeFilter = document.getElementById('nodeFilter');
+            const showCheckbox = nodeFilter && nodeFilter.value !== 'all';
+
+            const checkboxHTML = showCheckbox
+                ? `<td><input type="checkbox" class="cert-delete-checkbox" data-cert-id="${escapedId}" data-cert-subject="${escapedSubject}" onchange="updateDeleteSelection()"></td>`
+                : '';
+
             row.innerHTML = `
+                ${checkboxHTML}
                 <td>${cert.worker || 'Unknown'}</td>
                 <td><code style="font-size: 0.85em;">${cert.subject_cn || cert.subject || 'N/A'}</code></td>
                 <td><code style="font-size: 0.85em;">${cert.issuer_cn || cert.issuer || 'N/A'}</code></td>
@@ -3732,6 +3800,179 @@
         // Close modal and reload certificates after user confirms
         function closeBulkDeployModalAndReload() {
             closeBulkDeployModal();
+            loadCertificates(); // Reload to show updated certificates
+        }
+
+        // Bulk delete functions
+        let selectedDeleteCerts = new Set();
+
+        function updateDeleteSelection() {
+            const checkboxes = document.querySelectorAll('.cert-delete-checkbox:checked');
+            const count = checkboxes.length;
+
+            document.getElementById('selectedDeleteCount').textContent = count;
+            document.getElementById('bulkDeleteBtn').disabled = count === 0;
+        }
+
+        function toggleSelectAllMain() {
+            const selectAllCheckbox = document.getElementById('selectAllMainCheckbox');
+            const checkboxes = document.querySelectorAll('.cert-delete-checkbox');
+
+            checkboxes.forEach(checkbox => {
+                checkbox.checked = selectAllCheckbox.checked;
+            });
+
+            updateDeleteSelection();
+        }
+
+        function openBulkDeleteModal() {
+            const nodeFilter = document.getElementById('nodeFilter');
+            const targetNode = nodeFilter.value;
+
+            if (targetNode === 'all') {
+                alert('Please select a specific node to delete certificates from');
+                return;
+            }
+
+            const selectedCheckboxes = document.querySelectorAll('.cert-delete-checkbox:checked');
+            if (selectedCheckboxes.length === 0) {
+                alert('Please select certificates to delete');
+                return;
+            }
+
+            // Get selected certificate info
+            selectedDeleteCerts.clear();
+            const certList = document.getElementById('bulkDeleteCertList');
+            certList.innerHTML = '';
+
+            selectedCheckboxes.forEach(checkbox => {
+                const certId = checkbox.getAttribute('data-cert-id');
+                const certSubject = checkbox.getAttribute('data-cert-subject');
+                selectedDeleteCerts.add(certId);
+
+                certList.innerHTML += `<div style="padding: 5px; border-bottom: 1px solid #555;">
+                    <i class="bi bi-file-earmark-text"></i> ${certSubject}
+                </div>`;
+            });
+
+            document.getElementById('bulkDeleteTargetNode').textContent = targetNode.charAt(0).toUpperCase() + targetNode.slice(1);
+            document.getElementById('bulkDeleteCount').textContent = selectedCheckboxes.length;
+
+            // Clear status
+            const statusDiv = document.getElementById('bulkDeleteStatus');
+            statusDiv.innerHTML = '';
+            statusDiv.style.display = 'none';
+
+            document.getElementById('bulkDeleteCertModal').style.display = 'flex';
+        }
+
+        function closeBulkDeleteModal() {
+            document.getElementById('bulkDeleteCertModal').style.display = 'none';
+        }
+
+        async function bulkDeleteCertificates(event) {
+            event.preventDefault();
+
+            const statusDiv = document.getElementById('bulkDeleteStatus');
+            const nodeFilter = document.getElementById('nodeFilter');
+            const targetNode = nodeFilter.value;
+
+            const certIds = Array.from(selectedDeleteCerts);
+
+            if (certIds.length === 0) {
+                statusDiv.innerHTML = '<div class="alert alert-warning">No certificates selected</div>';
+                statusDiv.style.display = 'block';
+                return;
+            }
+
+            // Show loading
+            statusDiv.innerHTML = `<div class="alert alert-info">Deleting ${certIds.length} certificate(s)...</div>`;
+            statusDiv.style.display = 'block';
+
+            try {
+                const response = await fetch('/api/dashboard/certificates/bulk-delete', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        cert_ids: certIds,
+                        target_node: targetNode
+                    })
+                });
+
+                const result = await response.json();
+
+                if (result.success) {
+                    let message = `<div class="alert alert-success">
+                        <strong>Deletion completed!</strong><br>
+                        Successfully deleted: ${result.success_count}/${result.total}<br>`;
+
+                    const hasErrors = result.fail_count > 0;
+
+                    if (result.fail_count > 0) {
+                        message += `<br><strong>Failed: ${result.fail_count}</strong><br>`;
+                        result.results.filter(r => !r.success).forEach(r => {
+                            message += `- ${r.subject}: ${r.error}<br>`;
+                        });
+                    }
+
+                    if (result.missing_certs && result.missing_certs.length > 0) {
+                        message += `<br><strong>Missing certificates:</strong><br>`;
+                        result.missing_certs.forEach(certId => {
+                            message += `- ${certId}<br>`;
+                        });
+                    }
+
+                    message += `</div>`;
+
+                    // If there are errors, add OK button and don't auto-close
+                    if (hasErrors) {
+                        message += `<div class="text-center mt-3">
+                            <button type="button" class="btn btn-primary" onclick="closeBulkDeleteModalAndReload()">OK</button>
+                        </div>`;
+                        statusDiv.innerHTML = message;
+                    } else {
+                        // No errors - auto-close after 2 seconds
+                        statusDiv.innerHTML = message;
+                        setTimeout(() => {
+                            closeBulkDeleteModal();
+                            loadCertificates(); // Reload to show updated certificates
+                        }, 2000);
+                    }
+                } else {
+                    let message = `<div class="alert alert-danger">
+                        <strong>Deletion failed:</strong><br>
+                        ${result.error || 'Unknown error'}`;
+
+                    if (result.missing_certs && result.missing_certs.length > 0) {
+                        message += `<br><br><strong>Missing certificates:</strong><br>`;
+                        result.missing_certs.forEach(certId => {
+                            message += `- ${certId}<br>`;
+                        });
+                    }
+
+                    message += `</div>`;
+
+                    // Add OK button for errors - don't auto-close
+                    message += `<div class="text-center mt-3">
+                        <button type="button" class="btn btn-primary" onclick="closeBulkDeleteModalAndReload()">OK</button>
+                    </div>`;
+
+                    statusDiv.innerHTML = message;
+                }
+            } catch (error) {
+                statusDiv.innerHTML = `
+                    <div class="alert alert-danger">Error: ${error.message}</div>
+                    <div class="text-center mt-3">
+                        <button type="button" class="btn btn-primary" onclick="closeBulkDeleteModalAndReload()">OK</button>
+                    </div>
+                `;
+            }
+        }
+
+        function closeBulkDeleteModalAndReload() {
+            closeBulkDeleteModal();
             loadCertificates(); // Reload to show updated certificates
         }
 
