@@ -636,7 +636,7 @@ class Run(BaseService):
                 else:
                     # Call worker's certs_tool via proxy
                     if hasattr(self.proxy, 'certs_tool'):
-                        result = await self.proxy.certs_tool[worker].install_pfx_from_base64(
+                        result = await getattr(self.proxy.certs_tool, worker).install_pfx_from_base64(
                             pfx_base64=pfx_data,
                             password=password,
                             filename=filename
@@ -694,7 +694,7 @@ class Run(BaseService):
                         )
                 else:
                     if hasattr(self.proxy, 'certs_tool'):
-                        await self.proxy.certs_tool[worker].export_certificate_cer(
+                        await getattr(self.proxy.certs_tool, worker).export_certificate_cer(
                             container_name=cert_info.get("container"),
                             thumbprint=cert_info.get("thumbprint"),
                             output_path=tmp_path
@@ -753,7 +753,7 @@ class Run(BaseService):
                         )
                 else:
                     if hasattr(self.proxy, 'certs_tool'):
-                        await self.proxy.certs_tool[worker].export_certificate_pfx(
+                        await getattr(self.proxy.certs_tool, worker).export_certificate_pfx(
                             container_name=cert_info.get("container"),
                             output_path=tmp_path,
                             password=password
@@ -825,7 +825,7 @@ class Run(BaseService):
                         return JSONResponse(content=result)
                 else:
                     if hasattr(self.proxy, 'certs_tool'):
-                        result = await self.proxy.certs_tool[worker].delete_certificate(
+                        result = await getattr(self.proxy.certs_tool, worker).delete_certificate(
                             thumbprint=thumbprint
                         )
                         return JSONResponse(content=result)
@@ -919,7 +919,7 @@ class Run(BaseService):
 
                         # Step 3: Install on target worker
                         if hasattr(self.proxy, 'certs_tool'):
-                            install_result = await self.proxy.certs_tool[target_worker].install_pfx_from_base64(
+                            install_result = await getattr(self.proxy.certs_tool, target_worker).install_pfx_from_base64(
                                 pfx_base64=pfx_base64,
                                 password=password,
                                 filename=f"{cert_info.get('subject_cn', 'cert')}.pfx"
