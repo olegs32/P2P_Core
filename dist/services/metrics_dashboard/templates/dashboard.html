@@ -3656,6 +3656,8 @@
                         <strong>Deployment completed!</strong><br>
                         Successfully deployed: ${result.success_count}/${result.total}<br>`;
 
+                    const hasErrors = result.fail_count > 0 || (result.export_errors && result.export_errors.length > 0);
+
                     if (result.fail_count > 0) {
                         message += `<br><strong>Failed: ${result.fail_count}</strong><br>`;
                         result.results.filter(r => !r.success).forEach(r => {
@@ -3672,12 +3674,21 @@
                     }
 
                     message += `</div>`;
-                    statusDiv.innerHTML = message;
 
-                    setTimeout(() => {
-                        closeBulkDeployModal();
-                        loadCertificates(); // Reload to show new certificates on worker
-                    }, 3000);
+                    // If there are errors, add OK button and don't auto-close
+                    if (hasErrors) {
+                        message += `<div class="text-center mt-3">
+                            <button type="button" class="btn btn-primary" onclick="closeBulkDeployModalAndReload()">OK</button>
+                        </div>`;
+                        statusDiv.innerHTML = message;
+                    } else {
+                        // No errors - auto-close after 2 seconds
+                        statusDiv.innerHTML = message;
+                        setTimeout(() => {
+                            closeBulkDeployModal();
+                            loadCertificates(); // Reload to show new certificates on worker
+                        }, 2000);
+                    }
                 } else {
                     let message = `<div class="alert alert-danger">
                         <strong>Deployment failed:</strong><br>
@@ -3700,11 +3711,28 @@
                     }
 
                     message += `</div>`;
+
+                    // Add OK button for errors - don't auto-close
+                    message += `<div class="text-center mt-3">
+                        <button type="button" class="btn btn-primary" onclick="closeBulkDeployModalAndReload()">OK</button>
+                    </div>`;
+
                     statusDiv.innerHTML = message;
                 }
             } catch (error) {
-                statusDiv.innerHTML = `<div class="alert alert-danger">Error: ${error.message}</div>`;
+                statusDiv.innerHTML = `
+                    <div class="alert alert-danger">Error: ${error.message}</div>
+                    <div class="text-center mt-3">
+                        <button type="button" class="btn btn-primary" onclick="closeBulkDeployModalAndReload()">OK</button>
+                    </div>
+                `;
             }
+        }
+
+        // Close modal and reload certificates after user confirms
+        function closeBulkDeployModalAndReload() {
+            closeBulkDeployModal();
+            loadCertificates(); // Reload to show updated certificates
         }
 
         // Charts storage
