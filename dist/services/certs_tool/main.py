@@ -147,17 +147,31 @@ class LegacyCertsService(BaseService):
             return ""
 
     def _extract_error_code(self, output: str) -> str:
-        """Извлекает код ошибки из вывода команды"""
+        """Извлекает код ошибки из вывода команды (поддерживает русскую и английскую локаль)"""
         for line in output.split('\n'):
-            if "ErrorCode" in line:
-                return line.split(':')[1].strip().replace(']', '')
+            # Support both English and Russian output
+            if "ErrorCode" in line or "КодОшибки" in line or "[0x" in line:
+                # Extract hex code (format: "ErrorCode: 0x00000000" or "[ErrorCode:0x00000000]")
+                parts = line.split(':')
+                if len(parts) >= 2:
+                    code = parts[-1].strip().replace(']', '').strip()
+                    if code.startswith('0x'):
+                        return code
         return '0x00000000'
 
     def _extract_container(self, output: str) -> str:
-        """Извлекает имя контейнера из вывода команды"""
+        """Извлекает имя контейнера из вывода команды (поддерживает русскую и английскую локаль)"""
         for line in output.split('\n'):
-            if "Container" in line:
-                return line.split(':')[1].strip()
+            # Support both English and Russian output
+            if "Container" in line or "Контейнер" in line:
+                # Extract container name after colon
+                parts = line.split(':', 1)
+                if len(parts) >= 2:
+                    container = parts[1].strip()
+                    # Remove any trailing brackets or quotes
+                    container = container.replace('[', '').replace(']', '').replace('"', '').strip()
+                    if container:
+                        return container
         return ""
 
     @service_method(description="Deploy certificate and key from PFX and CER files", public=True)
@@ -882,8 +896,15 @@ class LegacyCertsService(BaseService):
                                        f'-file "{tmp_pfx_path}" -pfx -silent -keep_exportable -pin {current_password}')
 
                         output = await self._run_command_async(install_cmd)
+
+                        # Debug logging for diagnostics
+                        self.logger.debug(f"certmgr.exe output for {filename}:")
+                        self.logger.debug(output)
+
                         error_code = self._extract_error_code(output)
                         container = self._extract_container(output)
+
+                        self.logger.debug(f"Extracted error_code: {error_code}, container: {container}")
 
                         # Check for installation errors
                         if error_code != '0x00000000':
