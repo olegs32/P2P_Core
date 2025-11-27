@@ -3679,10 +3679,28 @@
                         loadCertificates(); // Reload to show new certificates on worker
                     }, 3000);
                 } else {
-                    statusDiv.innerHTML = `<div class="alert alert-danger">
+                    let message = `<div class="alert alert-danger">
                         <strong>Deployment failed:</strong><br>
-                        ${result.error || 'Unknown error'}
-                    </div>`;
+                        ${result.error || 'Unknown error'}`;
+
+                    // Show export errors if available
+                    if (result.export_errors && result.export_errors.length > 0) {
+                        message += `<br><br><strong>Export errors:</strong><br>`;
+                        result.export_errors.forEach(err => {
+                            message += `- ${err}<br>`;
+                        });
+                    }
+
+                    // Show missing certificates if available
+                    if (result.missing_certs && result.missing_certs.length > 0) {
+                        message += `<br><br><strong>Missing certificates:</strong><br>`;
+                        result.missing_certs.forEach(certId => {
+                            message += `- ${certId}<br>`;
+                        });
+                    }
+
+                    message += `</div>`;
+                    statusDiv.innerHTML = message;
                 }
             } catch (error) {
                 statusDiv.innerHTML = `<div class="alert alert-danger">Error: ${error.message}</div>`;
