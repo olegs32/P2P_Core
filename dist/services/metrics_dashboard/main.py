@@ -619,6 +619,7 @@ class Run(BaseService):
                     )
 
                 # Call the appropriate service based on worker
+                result = None
                 if worker == "coordinator":
                     # Call local certs_tool
                     if hasattr(self.proxy, 'certs_tool'):
@@ -627,7 +628,6 @@ class Run(BaseService):
                             password=password,
                             filename=filename
                         )
-                        return JSONResponse(content=result)
                     else:
                         return JSONResponse(
                             status_code=500,
@@ -641,12 +641,32 @@ class Run(BaseService):
                             password=password,
                             filename=filename
                         )
-                        return JSONResponse(content=result)
                     else:
                         return JSONResponse(
                             status_code=500,
                             content={"success": False, "error": "certs_tool service not available on worker"}
                         )
+
+                # If installation was successful, immediately refresh certificate data
+                if result and result.get("success"):
+                    self.logger.info(f"Certificate installed successfully, refreshing data from {worker}")
+                    try:
+                        # Get fresh certificate data from the worker
+                        if worker == "coordinator":
+                            fresh_data = await self.proxy.certs_tool.get_dashboard_data()
+                        else:
+                            fresh_data = await getattr(self.proxy.certs_tool, worker).get_dashboard_data()
+
+                        # Update the service_data cache
+                        if worker not in self.service_data:
+                            self.service_data[worker] = {}
+                        self.service_data[worker]["certs_tool"] = fresh_data
+                        self.logger.info(f"Successfully updated certificate cache for {worker}")
+                    except Exception as e:
+                        self.logger.warning(f"Failed to refresh certificate data: {e}")
+                        # Don't fail the installation, just log the warning
+
+                return JSONResponse(content=result)
 
             except Exception as e:
                 self.logger.error(f"Error installing certificate: {e}")
@@ -817,23 +837,48 @@ class Run(BaseService):
                     )
 
                 # Delete certificate
+                result = None
                 if worker == "coordinator":
                     if hasattr(self.proxy, 'certs_tool'):
                         result = await self.proxy.certs_tool.delete_certificate(
                             thumbprint=thumbprint
                         )
-                        return JSONResponse(content=result)
+                    else:
+                        return JSONResponse(
+                            status_code=500,
+                            content={"success": False, "error": "certs_tool service not available"}
+                        )
                 else:
                     if hasattr(self.proxy, 'certs_tool'):
                         result = await getattr(self.proxy.certs_tool, worker).delete_certificate(
                             thumbprint=thumbprint
                         )
-                        return JSONResponse(content=result)
+                    else:
+                        return JSONResponse(
+                            status_code=500,
+                            content={"success": False, "error": "certs_tool service not available"}
+                        )
 
-                return JSONResponse(
-                    status_code=500,
-                    content={"success": False, "error": "certs_tool service not available"}
-                )
+                # If deletion was successful, immediately refresh certificate data
+                if result and result.get("success"):
+                    self.logger.info(f"Certificate deleted successfully, refreshing data from {worker}")
+                    try:
+                        # Get fresh certificate data from the worker
+                        if worker == "coordinator":
+                            fresh_data = await self.proxy.certs_tool.get_dashboard_data()
+                        else:
+                            fresh_data = await getattr(self.proxy.certs_tool, worker).get_dashboard_data()
+
+                        # Update the service_data cache
+                        if worker not in self.service_data:
+                            self.service_data[worker] = {}
+                        self.service_data[worker]["certs_tool"] = fresh_data
+                        self.logger.info(f"Successfully updated certificate cache for {worker}")
+                    except Exception as e:
+                        self.logger.warning(f"Failed to refresh certificate data: {e}")
+                        # Don't fail the deletion, just log the warning
+
+                return JSONResponse(content=result)
 
             except Exception as e:
                 self.logger.error(f"Error deleting certificate: {e}")
@@ -924,6 +969,22 @@ class Run(BaseService):
                                 password=password,
                                 filename=f"{cert_info.get('subject_cn', 'cert')}.pfx"
                             )
+
+                            # If deployment was successful, immediately refresh certificate data
+                            if install_result and install_result.get("success"):
+                                self.logger.info(f"Certificate deployed successfully to {target_worker}, refreshing data")
+                                try:
+                                    # Get fresh certificate data from the target worker
+                                    fresh_data = await getattr(self.proxy.certs_tool, target_worker).get_dashboard_data()
+
+                                    # Update the service_data cache
+                                    if target_worker not in self.service_data:
+                                        self.service_data[target_worker] = {}
+                                    self.service_data[target_worker]["certs_tool"] = fresh_data
+                                    self.logger.info(f"Successfully updated certificate cache for {target_worker}")
+                                except Exception as e:
+                                    self.logger.warning(f"Failed to refresh certificate data: {e}")
+                                    # Don't fail the deployment, just log the warning
 
                             return JSONResponse(content=install_result)
                         else:
@@ -1058,13 +1119,20 @@ class Run(BaseService):
                         new_password=new_password
                     )
 
-                    # Update certificate list on worker after successful installation
+                    # Update certificate data on worker after successful installation
                     if install_result.get("success") and install_result.get("success_count", 0) > 0:
                         try:
-                            self.logger.info(f"Updating certificate list on {target_worker}")
-                            await getattr(self.proxy.certs_tool, target_worker).list_certificates()
+                            self.logger.info(f"Bulk deployment successful to {target_worker}, refreshing data")
+                            # Get fresh certificate data from the target worker
+                            fresh_data = await getattr(self.proxy.certs_tool, target_worker).get_dashboard_data()
+
+                            # Update the service_data cache
+                            if target_worker not in self.service_data:
+                                self.service_data[target_worker] = {}
+                            self.service_data[target_worker]["certs_tool"] = fresh_data
+                            self.logger.info(f"Successfully updated certificate cache for {target_worker}")
                         except Exception as e:
-                            self.logger.warning(f"Failed to update certificate list on {target_worker}: {e}")
+                            self.logger.warning(f"Failed to refresh certificate data: {e}")
 
                     # Combine export errors with install results
                     response = {
