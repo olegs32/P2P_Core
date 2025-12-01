@@ -263,12 +263,32 @@ class SystemService(BaseService):
             start_time = time.time()
             self.metrics.increment("get_system_metrics_calls")
 
+            # Используем interval=1.0 для точного измерения CPU за последнюю секунду
+            # Это блокирующий вызов, но дает точные результаты
+            cpu_percent = psutil.cpu_percent(interval=1.0)
+
+            # Получаем информацию о диске
+            disk_usage = psutil.disk_usage('/')
+
+            # Получаем информацию о процессе
+            process = psutil.Process()
+            process_memory = process.memory_info()
+
             metrics = {
-                "cpu_percent": psutil.cpu_percent(interval=0.001),
+                "cpu_percent": cpu_percent,
+                "cpu_count": psutil.cpu_count(),
                 "memory": {
                     "percent": psutil.virtual_memory().percent,
                     "available": psutil.virtual_memory().available,
-                    "used": psutil.virtual_memory().used
+                    "used": psutil.virtual_memory().used,
+                    "total": psutil.virtual_memory().total
+                },
+                "memory_usage_mb": process_memory.rss / 1024 / 1024,  # RSS in MB
+                "disk": {
+                    "percent": disk_usage.percent,
+                    "free": disk_usage.free,
+                    "used": disk_usage.used,
+                    "total": disk_usage.total
                 },
                 "disk_io": psutil.disk_io_counters()._asdict() if psutil.disk_io_counters() else {},
                 "network_io": psutil.net_io_counters()._asdict() if psutil.net_io_counters() else {},
@@ -802,6 +822,842 @@ class SystemService(BaseService):
             "success": result.get("success", False)
         }
 
+    @service_method(description="Get node configuration", public=True)
+    async def get_config(self) -> Dict[str, Any]:
+        """
+        Get current node configuration as JSON
+
+        Returns:
+            Dictionary with configuration data
+        """
+        try:
+            if not hasattr(self, 'context') or not self.context:
+                return {"error": "Context not available", "config": {}}
+
+            # Get config as dict
+            config = self.context.config
+            config_dict = {
+                "node_id": config.node_id,
+                "port": config.port,
+                "bind_address": config.bind_address,
+                "coordinator_mode": config.coordinator_mode,
+                "coordinator_addresses": getattr(config, 'coordinator_addresses', []),
+                "redis_url": config.redis_url,
+                "redis_enabled": config.redis_enabled,
+                "gossip_interval_min": config.gossip_interval_min,
+                "gossip_interval_max": config.gossip_interval_max,
+                "gossip_compression_enabled": config.gossip_compression_enabled,
+                "https_enabled": config.https_enabled,
+                "ssl_cert_file": config.ssl_cert_file,
+                "ssl_key_file": config.ssl_key_file,
+                "ssl_ca_cert_file": config.ssl_ca_cert_file,
+                "ssl_verify": config.ssl_verify,
+                "rate_limit_enabled": config.rate_limit_enabled,
+                "rate_limit_rpc_requests": config.rate_limit_rpc_requests,
+                "state_directory": config.state_directory,
+                "max_log_entries": config.max_log_entries,
+            }
+
+            return {
+                "success": True,
+                "config": config_dict,
+                "node_id": self.context.config.node_id
+            }
+        except Exception as e:
+            self.logger.error(f"Failed to get config: {e}")
+            return {"error": str(e), "success": False}
+
+    @service_method(description="Update node configuration", public=True)
+    async def update_config(self, config_updates: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Update node configuration and save to storage
+
+        Args:
+            config_updates: Dictionary with configuration fields to update
+
+        Returns:
+            Success status and updated configuration
+        """
+        try:
+            if not hasattr(self, 'context') or not self.context:
+                return {"error": "Context not available", "success": False}
+
+            # Get current config
+            config = self.context.config
+            storage = self.context.get_shared("storage_manager")
+
+            if not storage:
+                return {"error": "Storage manager not available", "success": False}
+
+            # Update config fields (only safe fields)
+            safe_fields = {
+                'port', 'bind_address', 'redis_url', 'redis_enabled',
+                'gossip_interval_min', 'gossip_interval_max', 'gossip_compression_enabled',
+                'rate_limit_enabled', 'rate_limit_rpc_requests', 'max_log_entries',
+                'coordinator_addresses'
+            }
+
+            updated_fields = []
+            for field, value in config_updates.items():
+                if field in safe_fields and hasattr(config, field):
+                    setattr(config, field, value)
+                    updated_fields.append(field)
+                    self.logger.info(f"Updated config field: {field} = {value}")
+
+            # Save config to storage
+            # Use original config filename based on node mode
+            if config.coordinator_mode:
+                config_filename = "coordinator.yaml"
+            else:
+                config_filename = "worker.yaml"
+
+            # Convert config to YAML format
+            import yaml
+            config_dict = {
+                "node_id": config.node_id,
+                "port": config.port,
+                "bind_address": config.bind_address,
+                "coordinator_mode": config.coordinator_mode,
+                "coordinator_addresses": getattr(config, 'coordinator_addresses', []),
+                "redis_url": config.redis_url,
+                "redis_enabled": config.redis_enabled,
+                "gossip_interval_min": config.gossip_interval_min,
+                "gossip_interval_max": config.gossip_interval_max,
+                "gossip_compression_enabled": config.gossip_compression_enabled,
+                "https_enabled": config.https_enabled,
+                "ssl_cert_file": config.ssl_cert_file,
+                "ssl_key_file": config.ssl_key_file,
+                "ssl_ca_cert_file": config.ssl_ca_cert_file,
+                "ssl_verify": config.ssl_verify,
+                "rate_limit_enabled": config.rate_limit_enabled,
+                "rate_limit_rpc_requests": config.rate_limit_rpc_requests,
+                "state_directory": config.state_directory,
+                "max_log_entries": config.max_log_entries,
+            }
+
+            config_yaml = yaml.dump(config_dict, default_flow_style=False)
+            storage.write_config(config_filename, config_yaml.encode('utf-8'))
+            storage.save()
+
+            return {
+                "success": True,
+                "updated_fields": updated_fields,
+                "message": f"Configuration updated and saved ({len(updated_fields)} fields)"
+            }
+
+        except Exception as e:
+            self.logger.error(f"Failed to update config: {e}")
+            return {"error": str(e), "success": False}
+
+    @service_method(description="List files in secure storage", public=True)
+    async def list_storage_files(self) -> Dict[str, Any]:
+        """
+        List all files in secure storage
+
+        Returns:
+            Dictionary with file list categorized by type
+        """
+        try:
+            if not hasattr(self, 'context') or not self.context:
+                return {"error": "Context not available", "files": {}}
+
+            storage = self.context.get_shared("storage_manager")
+            if not storage:
+                return {"error": "Storage manager not available", "files": {}}
+
+            # Get file lists from storage
+            files = {
+                "configs": storage.list_configs(),
+                "certs": storage.list_certs(),
+                "data": storage.list_data_files()
+            }
+
+            return {
+                "success": True,
+                "files": files,
+                "total_files": sum(len(f) for f in files.values())
+            }
+
+        except Exception as e:
+            self.logger.error(f"Failed to list storage files: {e}")
+            return {"error": str(e), "success": False}
+
+    @service_method(description="Get file content from storage", public=True)
+    async def get_storage_file(self, filename: str, file_type: str = "data") -> Dict[str, Any]:
+        """
+        Get content of a file from secure storage
+
+        Args:
+            filename: Name of file to read
+            file_type: Type of file (config, cert, data)
+
+        Returns:
+            File content (base64 encoded for binary files)
+        """
+        try:
+            if not hasattr(self, 'context') or not self.context:
+                return {"error": "Context not available", "success": False}
+
+            storage = self.context.get_shared("storage_manager")
+            if not storage:
+                return {"error": "Storage manager not available", "success": False}
+
+            # Read file based on type
+            import base64
+
+            # Remove directory prefix if present (list_files returns full paths like "config/coordinator.yaml")
+            # but read methods expect just filenames
+            if '/' in filename:
+                filename_only = filename.split('/')[-1]
+            else:
+                filename_only = filename
+
+            if file_type == "config":
+                # read_config returns str, not bytes
+                content_str = storage.read_config(filename_only)
+                is_binary = False
+                content_size = len(content_str)
+            elif file_type == "cert":
+                # read_cert returns bytes
+                content = storage.read_cert(filename_only)
+                content_size = len(content)
+                # Certs are usually binary, encode to base64
+                try:
+                    content_str = content.decode('utf-8')
+                    is_binary = False
+                except (UnicodeDecodeError, AttributeError):
+                    content_str = base64.b64encode(content).decode('utf-8')
+                    is_binary = True
+            elif file_type == "data":
+                # read returns bytes
+                content = storage.read(filename_only)
+                content_size = len(content)
+                # Try to decode as text, otherwise base64 encode
+                try:
+                    content_str = content.decode('utf-8')
+                    is_binary = False
+                except (UnicodeDecodeError, AttributeError):
+                    content_str = base64.b64encode(content).decode('utf-8')
+                    is_binary = True
+            else:
+                return {"error": f"Invalid file type: {file_type}", "success": False}
+
+            return {
+                "success": True,
+                "filename": filename,
+                "file_type": file_type,
+                "content": content_str,
+                "is_binary": is_binary,
+                "size": content_size
+            }
+
+        except Exception as e:
+            self.logger.error(f"Failed to get storage file: {e}")
+            return {"error": str(e), "success": False}
+
+    @service_method(description="Add file to secure storage", public=True)
+    async def add_storage_file(
+        self,
+        filename: str,
+        content: str,
+        file_type: str = "data",
+        is_binary: bool = False
+    ) -> Dict[str, Any]:
+        """
+        Add or update file in secure storage
+
+        Args:
+            filename: Name of file
+            content: File content (base64 if binary)
+            file_type: Type of file (config, cert, data)
+            is_binary: Whether content is base64 encoded binary
+
+        Returns:
+            Success status
+        """
+        try:
+            if not hasattr(self, 'context') or not self.context:
+                return {"error": "Context not available", "success": False}
+
+            storage = self.context.get_shared("storage_manager")
+            if not storage:
+                return {"error": "Storage manager not available", "success": False}
+
+            # Decode content
+            import base64
+            if is_binary:
+                content_bytes = base64.b64decode(content)
+            else:
+                content_bytes = content.encode('utf-8')
+
+            # Remove directory prefix if present
+            if '/' in filename:
+                filename_only = filename.split('/')[-1]
+            else:
+                filename_only = filename
+
+            # Write file based on type
+            if file_type == "config":
+                storage.write_config(filename_only, content_bytes)
+            elif file_type == "cert":
+                storage.write_cert(filename_only, content_bytes)
+            elif file_type == "data":
+                storage.write(filename_only, content_bytes)
+            else:
+                return {"error": f"Invalid file type: {file_type}", "success": False}
+
+            # Save storage
+            storage.save()
+
+            return {
+                "success": True,
+                "filename": filename,
+                "file_type": file_type,
+                "size": len(content_bytes),
+                "message": f"File {filename} saved to {file_type} storage"
+            }
+
+        except Exception as e:
+            self.logger.error(f"Failed to add storage file: {e}")
+            return {"error": str(e), "success": False}
+
+    @service_method(description="Delete file from secure storage", public=True)
+    async def delete_storage_file(self, filename: str, file_type: str = "data") -> Dict[str, Any]:
+        """
+        Delete file from secure storage
+
+        Args:
+            filename: Name of file to delete
+            file_type: Type of file (config, cert, data)
+
+        Returns:
+            Success status
+        """
+        try:
+            if not hasattr(self, 'context') or not self.context:
+                return {"error": "Context not available", "success": False}
+
+            storage = self.context.get_shared("storage_manager")
+            if not storage:
+                return {"error": "Storage manager not available", "success": False}
+
+            # Remove directory prefix if present
+            if '/' in filename:
+                filename_only = filename.split('/')[-1]
+            else:
+                filename_only = filename
+
+            # Delete file based on type
+            # Note: P2PStorageManager doesn't have delete methods, need to use archive directly
+            archive = storage.get_archive()
+
+            if file_type == "config":
+                file_path = f"config/{filename_only}"
+            elif file_type == "cert":
+                file_path = f"certs/{filename_only}"
+            elif file_type == "data":
+                file_path = f"data/{filename_only}"
+            else:
+                return {"error": f"Invalid file type: {file_type}", "success": False}
+
+            # Try to delete from archive's virtual_fs
+            try:
+                if file_path in archive.virtual_fs:
+                    del archive.virtual_fs[file_path]
+                    success = True
+                else:
+                    success = False
+            except Exception as e:
+                self.logger.error(f"Failed to delete file: {e}")
+                success = False
+
+            if not success:
+                return {"error": f"File not found or could not be deleted: {filename}", "success": False}
+
+            # Save storage
+            storage.save()
+
+            return {
+                "success": True,
+                "filename": filename,
+                "file_type": file_type,
+                "message": f"File {filename} deleted from {file_type} storage"
+            }
+
+        except Exception as e:
+            self.logger.error(f"Failed to delete storage file: {e}")
+            return {"error": str(e), "success": False}
+
+    # ========== Service Editor Methods ==========
+
+    @service_method(description="List all available services", public=True)
+    async def list_p2p_services(self) -> Dict[str, Any]:
+        """
+        Get list of all services in dist/services/
+        
+        Returns:
+            Dictionary with services list
+        """
+        try:
+            from pathlib import Path
+            
+            services_dir = Path("dist/services")
+            if not services_dir.exists():
+                return {"success": False, "error": "Services directory not found"}
+            
+            services = []
+            for service_path in services_dir.iterdir():
+                if service_path.is_dir() and not service_path.name.startswith('.'):
+                    # Check if has main.py
+                    main_file = service_path / "main.py"
+                    manifest_file = service_path / "manifest.json"
+                    
+                    service_info = {
+                        "name": service_path.name,
+                        "path": str(service_path),
+                        "has_main": main_file.exists(),
+                        "has_manifest": manifest_file.exists(),
+                        "version": "unknown",
+                        "description": ""
+                    }
+
+                    # Read manifest if exists
+                    if manifest_file.exists():
+                        try:
+                            import json
+                            with open(manifest_file, 'r', encoding='utf-8') as f:
+                                manifest = json.load(f)
+                                service_info["version"] = manifest.get("version", "unknown")
+                                service_info["description"] = manifest.get("description", "")
+                        except Exception:
+                            pass
+                    
+                    services.append(service_info)
+            
+            return {
+                "success": True,
+                "services": sorted(services, key=lambda x: x['name']),
+                "count": len(services)
+            }
+        except Exception as e:
+            self.logger.error(f"Failed to list services: {e}")
+            return {"success": False, "error": str(e)}
+
+    @service_method(description="List files in service directory", public=True)
+    async def list_service_files(self, service_name: str) -> Dict[str, Any]:
+        """
+        Get file tree for a service
+        
+        Args:
+            service_name: Name of the service
+            
+        Returns:
+            File tree structure
+        """
+        try:
+            from pathlib import Path
+            
+            service_dir = Path(f"dist/services/{service_name}")
+            if not service_dir.exists():
+                return {"success": False, "error": f"Service {service_name} not found"}
+            
+            def build_tree(path: Path, base_path: Path) -> Dict[str, Any]:
+                """Recursively build file tree"""
+                relative = path.relative_to(base_path)
+                
+                if path.is_file():
+                    return {
+                        "name": path.name,
+                        "path": str(relative),
+                        "type": "file",
+                        "size": path.stat().st_size,
+                        "modified": path.stat().st_mtime
+                    }
+                else:
+                    children = []
+                    for child in sorted(path.iterdir()):
+                        if not child.name.startswith('.') and child.name != '__pycache__':
+                            children.append(build_tree(child, base_path))
+                    
+                    return {
+                        "name": path.name if path != base_path else service_name,
+                        "path": str(relative) if path != base_path else "",
+                        "type": "directory",
+                        "children": children
+                    }
+            
+            tree = build_tree(service_dir, service_dir)
+            
+            return {
+                "success": True,
+                "service": service_name,
+                "tree": tree
+            }
+        except Exception as e:
+            self.logger.error(f"Failed to list service files: {e}")
+            return {"success": False, "error": str(e)}
+
+    @service_method(description="Get service file content", public=True)
+    async def get_service_file(self, service_name: str, file_path: str) -> Dict[str, Any]:
+        """
+        Get content of a service file
+        
+        Args:
+            service_name: Name of the service
+            file_path: Relative path to file within service directory
+            
+        Returns:
+            File content
+        """
+        try:
+            from pathlib import Path
+            import base64
+            
+            service_dir = Path(f"dist/services/{service_name}")
+            full_path = service_dir / file_path
+            
+            # Security check: prevent directory traversal
+            if not str(full_path.resolve()).startswith(str(service_dir.resolve())):
+                return {"success": False, "error": "Invalid file path"}
+            
+            if not full_path.exists():
+                return {"success": False, "error": "File not found"}
+            
+            if not full_path.is_file():
+                return {"success": False, "error": "Path is not a file"}
+            
+            # Read file
+            try:
+                with open(full_path, 'r', encoding='utf-8') as f:
+                    content = f.read()
+                is_binary = False
+            except UnicodeDecodeError:
+                # Binary file
+                with open(full_path, 'rb') as f:
+                    content = base64.b64encode(f.read()).decode('utf-8')
+                is_binary = True
+            
+            return {
+                "success": True,
+                "service": service_name,
+                "file_path": file_path,
+                "content": content,
+                "is_binary": is_binary,
+                "size": full_path.stat().st_size
+            }
+        except Exception as e:
+            self.logger.error(f"Failed to get service file: {e}")
+            return {"success": False, "error": str(e)}
+
+    @service_method(description="Update service file content", public=True)
+    async def update_service_file(
+        self,
+        service_name: str,
+        file_path: str,
+        content: str,
+        is_binary: bool = False
+    ) -> Dict[str, Any]:
+        """
+        Update content of a service file
+        
+        Args:
+            service_name: Name of the service
+            file_path: Relative path to file within service directory
+            content: New file content (base64 if binary)
+            is_binary: Whether content is base64 encoded binary
+            
+        Returns:
+            Success status
+        """
+        try:
+            from pathlib import Path
+            import base64
+            
+            service_dir = Path(f"dist/services/{service_name}")
+            full_path = service_dir / file_path
+            
+            # Security check: prevent directory traversal
+            if not str(full_path.resolve()).startswith(str(service_dir.resolve())):
+                return {"success": False, "error": "Invalid file path"}
+            
+            # Create parent directories if needed
+            full_path.parent.mkdir(parents=True, exist_ok=True)
+            
+            # Write file
+            if is_binary:
+                content_bytes = base64.b64decode(content)
+                with open(full_path, 'wb') as f:
+                    f.write(content_bytes)
+            else:
+                with open(full_path, 'w', encoding='utf-8') as f:
+                    f.write(content)
+            
+            return {
+                "success": True,
+                "service": service_name,
+                "file_path": file_path,
+                "size": full_path.stat().st_size,
+                "message": f"File {file_path} updated successfully"
+            }
+        except Exception as e:
+            self.logger.error(f"Failed to update service file: {e}")
+            return {"success": False, "error": str(e)}
+
+    @service_method(description="Delete service file", public=True)
+    async def delete_service_file(self, service_name: str, file_path: str) -> Dict[str, Any]:
+        """
+        Delete a service file
+        
+        Args:
+            service_name: Name of the service
+            file_path: Relative path to file within service directory
+            
+        Returns:
+            Success status
+        """
+        try:
+            from pathlib import Path
+            
+            service_dir = Path(f"dist/services/{service_name}")
+            full_path = service_dir / file_path
+            
+            # Security check: prevent directory traversal
+            if not str(full_path.resolve()).startswith(str(service_dir.resolve())):
+                return {"success": False, "error": "Invalid file path"}
+            
+            if not full_path.exists():
+                return {"success": False, "error": "File not found"}
+            
+            # Don't allow deleting main.py
+            if full_path.name == "main.py" and full_path.parent == service_dir:
+                return {"success": False, "error": "Cannot delete main.py"}
+            
+            # Delete file or directory
+            if full_path.is_file():
+                full_path.unlink()
+            elif full_path.is_dir():
+                import shutil
+                shutil.rmtree(full_path)
+            
+            return {
+                "success": True,
+                "service": service_name,
+                "file_path": file_path,
+                "message": f"File {file_path} deleted successfully"
+            }
+        except Exception as e:
+            self.logger.error(f"Failed to delete service file: {e}")
+            return {"success": False, "error": str(e)}
+
+    @service_method(description="Rename service file", public=True)
+    async def rename_service_file(
+        self,
+        service_name: str,
+        old_path: str,
+        new_name: str
+    ) -> Dict[str, Any]:
+        """
+        Rename a service file
+        
+        Args:
+            service_name: Name of the service
+            old_path: Current relative path to file
+            new_name: New file name (not full path, just name)
+            
+        Returns:
+            Success status
+        """
+        try:
+            from pathlib import Path
+            
+            service_dir = Path(f"dist/services/{service_name}")
+            old_full_path = service_dir / old_path
+            
+            # Security check
+            if not str(old_full_path.resolve()).startswith(str(service_dir.resolve())):
+                return {"success": False, "error": "Invalid file path"}
+            
+            if not old_full_path.exists():
+                return {"success": False, "error": "File not found"}
+            
+            # Don't allow renaming main.py
+            if old_full_path.name == "main.py" and old_full_path.parent == service_dir:
+                return {"success": False, "error": "Cannot rename main.py"}
+            
+            # New path is in same directory
+            new_full_path = old_full_path.parent / new_name
+            
+            if new_full_path.exists():
+                return {"success": False, "error": "File with new name already exists"}
+            
+            old_full_path.rename(new_full_path)
+            
+            # Calculate new relative path
+            new_relative = new_full_path.relative_to(service_dir)
+            
+            return {
+                "success": True,
+                "service": service_name,
+                "old_path": old_path,
+                "new_path": str(new_relative),
+                "message": f"File renamed to {new_name}"
+            }
+        except Exception as e:
+            self.logger.error(f"Failed to rename service file: {e}")
+            return {"success": False, "error": str(e)}
+
+    @service_method(description="Get service manifest", public=True)
+    async def get_service_manifest(self, service_name: str) -> Dict[str, Any]:
+        """
+        Get manifest.json for a service
+        
+        Args:
+            service_name: Name of the service
+            
+        Returns:
+            Manifest data
+        """
+        try:
+            from pathlib import Path
+            import json
+            
+            service_dir = Path(f"dist/services/{service_name}")
+            manifest_file = service_dir / "manifest.json"
+            
+            if not manifest_file.exists():
+                # Return default manifest
+                return {
+                    "success": True,
+                    "service": service_name,
+                    "manifest": {
+                        "name": service_name,
+                        "version": "1.0.0",
+                        "description": ""
+                    },
+                    "exists": False
+                }
+            
+            with open(manifest_file, 'r', encoding='utf-8') as f:
+                manifest = json.load(f)
+            
+            return {
+                "success": True,
+                "service": service_name,
+                "manifest": manifest,
+                "exists": True
+            }
+        except Exception as e:
+            self.logger.error(f"Failed to get service manifest: {e}")
+            return {"success": False, "error": str(e)}
+
+    @service_method(description="Update service version in manifest", public=True)
+    async def update_service_version(self, service_name: str, version: str) -> Dict[str, Any]:
+        """
+        Update version in manifest.json
+
+        Args:
+            service_name: Name of the service
+            version: New version string (e.g., "1.2.3")
+
+        Returns:
+            Version update info
+        """
+        try:
+            from pathlib import Path
+            import json
+
+            service_dir = Path(f"dist/services/{service_name}")
+            if not service_dir.exists():
+                return {"success": False, "error": f"Service {service_name} not found"}
+
+            manifest_file = service_dir / "manifest.json"
+
+            # Read or create manifest
+            if manifest_file.exists():
+                with open(manifest_file, 'r', encoding='utf-8') as f:
+                    manifest = json.load(f)
+            else:
+                manifest = {
+                    "name": service_name,
+                    "version": "1.0.0",
+                    "description": ""
+                }
+
+            old_version = manifest.get("version", "1.0.0")
+            manifest["version"] = version
+
+            # Save manifest
+            with open(manifest_file, 'w', encoding='utf-8') as f:
+                json.dump(manifest, f, indent=2, ensure_ascii=False)
+
+            return {
+                "success": True,
+                "service": service_name,
+                "old_version": old_version,
+                "new_version": version,
+                "message": f"Version updated from {old_version} to {version}"
+            }
+        except Exception as e:
+            self.logger.error(f"Failed to update service version: {e}")
+            return {"success": False, "error": str(e)}
+
+    @service_method(description="Increment service version", public=True)
+    async def increment_service_version(self, service_name: str) -> Dict[str, Any]:
+        """
+        Increment patch version in manifest.json (e.g., 1.0.0 -> 1.0.1)
+        
+        Args:
+            service_name: Name of the service
+            
+        Returns:
+            New version info
+        """
+        try:
+            from pathlib import Path
+            import json
+            
+            service_dir = Path(f"dist/services/{service_name}")
+            manifest_file = service_dir / "manifest.json"
+            
+            # Read or create manifest
+            if manifest_file.exists():
+                with open(manifest_file, 'r', encoding='utf-8') as f:
+                    manifest = json.load(f)
+            else:
+                manifest = {
+                    "name": service_name,
+                    "version": "1.0.0",
+                    "description": ""
+                }
+            
+            # Parse version
+            current_version = manifest.get("version", "1.0.0")
+            parts = current_version.split('.')
+            
+            # Increment patch version
+            if len(parts) >= 3:
+                parts[2] = str(int(parts[2]) + 1)
+            else:
+                parts = ["1", "0", "1"]
+            
+            new_version = '.'.join(parts)
+            manifest["version"] = new_version
+            
+            # Save manifest
+            with open(manifest_file, 'w', encoding='utf-8') as f:
+                json.dump(manifest, f, indent=2, ensure_ascii=False)
+            
+            return {
+                "success": True,
+                "service": service_name,
+                "old_version": current_version,
+                "new_version": new_version,
+                "message": f"Version incremented from {current_version} to {new_version}"
+            }
+        except Exception as e:
+            self.logger.error(f"Failed to increment service version: {e}")
+            return {"success": False, "error": str(e)}
+
 
 # Для backward compatibility со старым кодом
 class SystemMethods(SystemService):
@@ -941,3 +1797,4 @@ class ServiceMethods:
                 "error": str(e),
                 "success": False
             }
+

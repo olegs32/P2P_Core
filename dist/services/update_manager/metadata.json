@@ -1,0 +1,8 @@
+{
+  "name": "update_manager",
+  "version": "1.0.0",
+  "description": "Update Manager - handles system updates for P2P nodes",
+  "author": "P2P Core Team",
+  "main_class": "Run",
+  "dependencies": []
+}

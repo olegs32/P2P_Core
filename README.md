@@ -9,6 +9,10 @@ Enterprise распределенная система для управлени
 - **Service Discovery** - автоматическое обнаружение узлов и сервисов
 - **ACME-подобная CA инфраструктура** - автоматическая генерация и обновление SSL сертификатов
 - **Mutual TLS** - безопасная коммуникация с CA верификацией между узлами
+- **Secure Storage** - шифрованное хранилище (AES-256-GCM) для сертификатов и конфигураций
+- **WebSocket Real-Time Updates** - мгновенные обновления метрик и логов (< 100ms)
+- **Event-Driven Log Collection** - централизованный сбор логов с немедленной доставкой
+- **Multi-Homed Node Support** - автоматическое определение лучшего IP для сложных сетевых топологий (VPN, multi-NIC)
 - **Rate Limiting** - защита от перегрузки с Token Bucket алгоритмом
 - **Многоуровневое кеширование** - Redis + in-memory с автоинвалидацией
 - **Плагинная архитектура** - автоматическое обнаружение и загрузка сервисов
@@ -54,34 +58,17 @@ pip install -r requirements.txt
 - pyyaml (для конфигурации)
 - redis (опционально)
 
-### Генерация CA и сертификатов
 
-```bash
-# Автоматическая генерация CA и сертификатов для всех узлов
-./scripts/generate_ca_certs.sh
-```
-
-**Создаваемые файлы:**
-```
-certs/
-├── ca_cert.cer           # CA сертификат (10 лет)
-├── ca_key.key            # CA приватный ключ
-├── coordinator_cert.cer  # Сертификат координатора (1 год)
-├── coordinator_key.key
-├── worker_cert.cer       # Сертификат воркера (1 год)
-└── worker_key.key
-```
-
-### Запуск кластера
+### Запуск
 
 #### Координатор
 ```bash
-python p2p.py --config config/coordinator.yaml
+python p2p.py --config config/coordinator.yaml --password some_password
 ```
 
 #### Воркер
 ```bash
-python p2p.py --config config/worker.yaml
+python p2p.py --config config/coordinator.yaml --password some_password --coordinator IP_COORD_OR_127.0.0.1_if_local
 ```
 
 ### Автоматическое получение сертификата
@@ -100,185 +87,20 @@ python p2p.py --config config/worker.yaml
 5. Воркер получает и сохраняет сертификат
 6. Запускает HTTPS сервер на основном порту
 
-## Конфигурация (YAML)
 
-### Пример: coordinator.yaml
 
-```yaml
-node_id: "coordinator-1"
-port: 8001
-bind_address: "0.0.0.0"
-coordinator_mode: true
-coordinator_addresses: []
-
-# Adaptive Gossip
-gossip_interval_min: 5
-gossip_interval_max: 30
-gossip_compression_enabled: true
-gossip_compression_threshold: 1024
-
-# Rate Limiting
-rate_limit_enabled: true
-rate_limit_rpc_requests: 100
-rate_limit_rpc_burst: 20
-rate_limit_health_requests: 300
-rate_limit_health_burst: 50
-
-# HTTPS с CA
-https_enabled: true
-ssl_cert_file: "certs/coordinator_cert.cer"
-ssl_key_file: "certs/coordinator_key.key"
-ssl_ca_cert_file: "certs/ca_cert.cer"
-ssl_ca_key_file: "certs/ca_key.key"
-ssl_verify: true
-
-# Persistence
-state_directory: "data/coordinator"
-jwt_blacklist_file: "jwt_blacklist.json"
-gossip_state_file: "gossip_state.json"
-service_state_file: "service_state.json"
-
-# Redis Cache
-redis_enabled: false
-redis_url: "redis://localhost:6379"
+### Web Dashboard с real-time updates
+```
+https://coordinator:8001/dashboard
 ```
 
-### Пример: worker.yaml
+**Возможности:**
+- Real-time метрики координатора и воркеров (WebSocket push, < 100ms)
+- Графики с историей (последние 100 точек)
+- Централизованный просмотр логов с фильтрацией
+- Event-driven логи - обновления мгновенно
+- Управление сервисами (start/stop/restart)
 
-```yaml
-node_id: "worker-1"
-port: 8002
-coordinator_mode: false
-coordinator_addresses:
-  - "192.168.1.100:8001"  # Адрес координатора для запроса сертификата
-
-# SSL (воркеру НЕ нужен CA key)
-https_enabled: true
-ssl_cert_file: "certs/worker_cert.cer"
-ssl_key_file: "certs/worker_key.key"
-ssl_ca_cert_file: "certs/ca_cert.cer"
-ssl_ca_key_file: ""  # Пусто - будет запрошен от координатора
-ssl_verify: true
-
-state_directory: "data/worker"
-```
-
-## API Endpoints
-
-### Аутентификация
-```bash
-curl -X POST https://localhost:8001/auth/token \
-  -H "Content-Type: application/json" \
-  -d '{"node_id": "client-1"}'
-```
-
-### Основные endpoints
-
-| Endpoint | Метод | Описание |
-|----------|-------|----------|
-| `/health` | GET | Статус узла |
-| `/cluster/status` | GET | Статус кластера |
-| `/cluster/nodes` | GET | Список узлов |
-| `/services` | GET | Список сервисов |
-| `/rpc/{service}/{method}` | POST | RPC вызов метода |
-| `/admin/broadcast` | POST | Broadcast RPC |
-
-### RPC вызов
-```bash
-curl -X POST https://localhost:8001/rpc/system/get_system_info \
-  -H "Authorization: Bearer YOUR_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "method": "get_system_info",
-    "params": {},
-    "id": "req-1"
-  }'
-```
-
-## Разработка сервисов
-
-### Структура сервиса
-```
-services/my_service/
-├── main.py          # Класс Run(BaseService)
-└── requirements.txt # Опционально
-```
-
-### Базовый шаблон
-
-```python
-from layers.service import BaseService, service_method
-from datetime import datetime
-
-class Run(BaseService):
-    SERVICE_NAME = "my_service"
-
-    def __init__(self, service_name: str, proxy_client=None):
-        super().__init__(service_name, proxy_client)
-        self.info.version = "1.0.0"
-        self.info.description = "My custom service"
-
-    async def initialize(self):
-        self.logger.info("Service initialized")
-
-    async def cleanup(self):
-        self.logger.info("Service cleanup")
-
-    @service_method(description="Hello world", public=True)
-    async def hello(self, name: str = "World") -> dict:
-        # Вызов другого сервиса через прокси
-        system_info = await self.proxy.system.get_system_info()
-
-        return {
-            "message": f"Hello, {name}!",
-            "service": self.service_name,
-            "node": system_info.get("hostname"),
-            "timestamp": datetime.now().isoformat()
-        }
-```
-
-**Автообнаружение:** Сервисы автоматически загружаются из `services/` каждые 60 секунд.
-
-## Мониторинг
-
-### Health check
-```bash
-curl https://localhost:8001/health
-```
-
-### Метрики кластера
-```bash
-curl https://localhost:8001/cluster/status \
-  -H "Authorization: Bearer TOKEN"
-```
-
-### Список узлов
-```bash
-curl https://localhost:8001/cluster/nodes \
-  -H "Authorization: Bearer TOKEN"
-```
-
-## Production рекомендации
-
-### Безопасность
-- ✅ Используйте сильные JWT секреты (`P2P_JWT_SECRET`)
-- ✅ Распространите CA сертификат на все узлы
-- ✅ Храните CA приватный ключ в безопасности
-- ✅ Включите `ssl_verify: true` для mutual TLS
-- ✅ Настройте firewall правила
-
-### Высокая доступность
-- Несколько координаторов для failover
-- Redis кластер для распределенного кеша
-- Мониторинг узлов через gossip health checks
-
-### Производительность
-- **Gossip:** адаптивный интервал 5-30 сек (снижение нагрузки при high load)
-- **Компрессия:** LZ4 для gossip (экономия трафика 40-60%)
-- **Rate Limiting:** защита от DDoS (настраиваемые лимиты)
-- **Локальные вызовы:** прямой доступ через method_registry (<1ms vs 10-50ms RPC)
-
-## Troubleshooting
 
 ### Проблема: Воркер не получает сертификат
 
@@ -296,18 +118,6 @@ INFO | Certificate successfully updated from coordinator
 INFO | Temporary HTTP server stopped successfully
 ```
 
-### Проблема: SSL verification failed
-
-**Решение:**
-```bash
-# Проверить срок действия
-openssl x509 -in certs/ca_cert.cer -noout -dates
-openssl x509 -in certs/worker_cert.cer -noout -dates
-
-# Перегенерировать если истек
-rm -rf certs/
-./scripts/generate_ca_certs.sh
-```
 
 ### Проблема: IP address mismatch
 
@@ -348,6 +158,15 @@ P2P_Core/
 
 ## Changelog
 
+### v2.2.0 - Real-Time Updates & Enhanced Security (2025-11-17)
+- ✅ **WebSocket Real-Time Updates** - мгновенные обновления dashboard (< 100ms вместо 5s polling)
+- ✅ **Event-Driven Log Streaming** - немедленная доставка логов через publish-subscribe
+- ✅ **Secure Encrypted Storage** - AES-256-GCM для сертификатов и конфигураций
+- ✅ **Multi-Homed Node Support** - автоматический выбор оптимального IP (VPN-aware, subnet detection)
+- ✅ **Centralized Log Collection** - встроенный syslog-подобный функционал с фильтрацией
+- ✅ **Enhanced Dashboard** - вкладка Logs с real-time обновлениями и поиском
+- ✅ **Metrics History via WebSocket** - графики обновляются в реальном времени
+
 ### v2.1.0 - ACME-like Certificate Automation
 - ✅ Автоматическая генерация сертификатов через координатор
 - ✅ ACME-подобная challenge валидация
@@ -366,6 +185,6 @@ P2P_Core/
 
 ---
 
-**Built with Python 3.7+ • FastAPI • Redis • asyncio • cryptography**
+**Built with _Love_ Python 3.7+ • FastAPI • Redis • asyncio • cryptography**
 
 Документация: `docs/` | Вопросы: GitHub Issues

@@ -1,1 +1,1 @@
-python p2p.py coordinator
+python p2p.py --config config/coordinator.yaml --password some_password

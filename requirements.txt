@@ -1,9 +1,10 @@
 cachetools~=5.5.2
 httpx~=0.28.1
-fastapi~=0.115.14
+fastapi
 pydantic~=2.10.6
-starlette~=0.46.0
-uvicorn~=0.31.1
+starlette
+uvicorn
+websockets
 PyJWT~=2.10.1
 psutil~=7.0.0
 pyinstaller

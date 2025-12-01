@@ -2,6 +2,7 @@ import argparse
 import asyncio
 import logging
 import os
+import signal
 import socket
 import sys
 import time
@@ -33,13 +34,55 @@ from layers.service import (
 from layers.storage_manager import init_storage
 
 
-def prepare_certificates_after_storage(config: 'P2PConfig', context):
+# Глобальные флаги для обработки сигналов
+_shutdown_requested = False
+_force_shutdown = False
+_shutdown_in_progress = False
+
+
+def signal_handler(signum, frame):
+    """
+    Глобальный обработчик сигналов для немедленного завершения.
+    Первый Ctrl+C: graceful shutdown
+    Второй Ctrl+C: принудительный выход
+    """
+    global _shutdown_requested, _force_shutdown, _shutdown_in_progress
+
+    # Используем print вместо logger для гарантированного вывода
+    # так как logger может быть не инициализирован или заглушен
+    import sys
+    print(f"\n[SIGNAL] Received signal {signum}", file=sys.stderr, flush=True)
+    print(f"[SIGNAL] _shutdown_requested={_shutdown_requested}, _force_shutdown={_force_shutdown}, _shutdown_in_progress={_shutdown_in_progress}", file=sys.stderr, flush=True)
+
+    logger = logging.getLogger("SignalHandler")
+
+    if _force_shutdown or (_shutdown_requested and _shutdown_in_progress):
+        # Второй Ctrl+C или shutdown уже идет - немедленный выход
+        print("[SIGNAL] Force shutdown! Exiting immediately...", file=sys.stderr, flush=True)
+        logger.warning("Force shutdown requested! Exiting immediately...")
+        sys.exit(1)
+
+    if _shutdown_requested:
+        # Shutdown уже запрошен, но еще не начался - форсируем
+        print("[SIGNAL] Second Ctrl+C detected, preparing for force exit", file=sys.stderr, flush=True)
+        logger.warning("Shutdown already requested. Press Ctrl+C again to force exit.")
+        _force_shutdown = True
+        return
+
+    # Первый Ctrl+C - устанавливаем флаг graceful shutdown
+    _shutdown_requested = True
+    print(f"[SIGNAL] First Ctrl+C detected, starting graceful shutdown...", file=sys.stderr, flush=True)
+    logger.info(f"Shutdown signal received (signal {signum}). Starting graceful shutdown...")
+    logger.info("Press Ctrl+C again to force immediate exit.")
+
+
+async def prepare_certificates_after_storage(config: 'P2PConfig', context):
     """
     Подготовка сертификатов после инициализации хранилища
 
     Выполняется после init_storage, но до инициализации network компонентов.
     Для координаторов - проверяет и генерирует CA и сертификаты.
-    Для воркеров - только проверяет наличие CA (сертификаты запросят позже).
+    Для воркеров - получает CA с координатора если нужно, сертификаты запросят позже.
 
     Args:
         config: конфигурация P2P узла
@@ -105,17 +148,60 @@ def prepare_certificates_after_storage(config: 'P2PConfig', context):
         logger.info("Coordinator certificate ready")
 
     else:
-        # Воркер: только проверяем что CA существует для валидации
+        # Воркер: проверяем CA сертификат и получаем его с координатора если нужно
         logger.info("Worker mode: verifying CA certificate availability...")
 
         if ca_cert_file:
-            # Просто проверяем что CA доступен
-            from layers.ssl_helper import _cert_exists
+            from layers.ssl_helper import _cert_exists, _write_cert_bytes, request_ca_cert_from_coordinator
+
+            # Проверяем что CA доступен
             if not _cert_exists(ca_cert_file, context):
                 logger.warning(f"CA certificate not found: {ca_cert_file}")
-                logger.warning("Worker will need to request certificate from coordinator")
+                logger.info("Attempting to fetch CA certificate from coordinator (ACME-like)...")
+
+                # Получаем адреса координаторов из конфигурации
+                coordinator_addresses = getattr(config, 'coordinator_addresses', None)
+
+                if not coordinator_addresses or len(coordinator_addresses) == 0:
+                    logger.error("No coordinator addresses configured, cannot fetch CA certificate")
+                    raise RuntimeError("Worker requires CA certificate but no coordinators configured")
+
+                # Пробуем получить CA сертификат с каждого координатора
+                ca_cert_pem = None
+                for coordinator_addr in coordinator_addresses:
+                    logger.info(f"Trying to fetch CA certificate from {coordinator_addr}...")
+
+                    try:
+                        # Используем await для вызова async функции
+                        ca_cert_pem = await request_ca_cert_from_coordinator(
+                            coordinator_url=coordinator_addr,
+                            context=context
+                        )
+
+                        if ca_cert_pem:
+                            logger.info(f"Successfully fetched CA certificate from {coordinator_addr}")
+                            break
+                        else:
+                            logger.warning(f"Failed to fetch CA certificate from {coordinator_addr}")
+                    except Exception as e:
+                        logger.error(f"Error fetching CA certificate from {coordinator_addr}: {e}")
+                        continue
+
+                if not ca_cert_pem:
+                    logger.error("Failed to fetch CA certificate from any coordinator")
+                    raise RuntimeError("Could not obtain CA certificate from coordinators")
+
+                # Сохраняем CA сертификат в защищенное хранилище
+                logger.info(f"Saving CA certificate to secure storage: {ca_cert_file}")
+                success, msg = _write_cert_bytes(ca_cert_file, ca_cert_pem.encode('utf-8'), context)
+
+                if not success:
+                    logger.error(f"Failed to save CA certificate: {msg}")
+                    raise RuntimeError(f"Could not save CA certificate: {msg}")
+
+                logger.info("CA certificate successfully saved to secure storage")
             else:
-                logger.info("CA certificate found")
+                logger.info("CA certificate found in secure storage")
         else:
             logger.warning("CA certificate path not configured")
 
@@ -164,17 +250,15 @@ def setup_logging(verbose: bool = False):
 # === Factory функции для создания приложения ===
 # Примечание: Все компоненты теперь импортируются из layers.application_context
 
-@asynccontextmanager
-async def create_coordinator_application(config: P2PConfig, password: str, storage_path: str):
+async def create_coordinator_application(config: P2PConfig, storage_manager):
     """
-    Создание координатора с инициализацией хранилища и SSL
+    Создание координатора с использованием уже инициализированного хранилища
 
     Args:
         config: конфигурация P2P узла
-        password: пароль для защищенного хранилища
-        storage_path: путь к файлу хранилища
+        storage_manager: уже инициализированный менеджер хранилища
 
-    Yields:
+    Returns:
         P2PApplicationContext: полностью инициализированный контекст приложения
     """
     logger = logging.getLogger("AppFactory")
@@ -183,53 +267,47 @@ async def create_coordinator_application(config: P2PConfig, password: str, stora
     context = P2PApplicationContext(config)
     logger.info("Application context created")
 
-    # 2. Инициализируем защищенное хранилище
-    logger.info(f"Initializing secure storage: {storage_path}")
-    with init_storage(password, storage_path, context):
-        logger.info("Secure storage initialized successfully")
+    # 2. Копируем storage_manager в context
+    context.set_shared("storage_manager", storage_manager)
+    logger.info("Storage manager registered in context")
 
-        # 3. Настраиваем SSL сертификаты
-        logger.info("Setting up SSL certificates")
-        prepare_certificates_after_storage(config, context)
-        logger.info("SSL certificates ready")
+    # 3. Настраиваем SSL сертификаты
+    logger.info("Setting up SSL certificates")
+    await prepare_certificates_after_storage(config, context)
+    logger.info("SSL certificates ready")
 
-        # 4. Регистрируем компоненты
-        logger.info("Registering application components")
-        context.register_component(TransportComponent(context))
-        context.register_component(CacheComponent(context))
-        context.register_component(NetworkComponent(context))
-        context.register_component(ServiceComponent(context))
-        context.register_component(WebServerComponent(context))
+    # 4. Регистрируем компоненты
+    logger.info("Registering application components")
+    context.register_component(TransportComponent(context))
+    context.register_component(CacheComponent(context))
+    context.register_component(NetworkComponent(context))
+    context.register_component(ServiceComponent(context))
+    context.register_component(WebServerComponent(context))
 
-        # 5. Устанавливаем порядок запуска
-        context.set_startup_order([
-            "transport",
-            "cache",
-            "network",
-            "service",
-            "webserver"
-        ])
-        logger.info("All components registered successfully")
+    # 5. Устанавливаем порядок запуска
+    context.set_startup_order([
+        "transport",
+        "cache",
+        "network",
+        "service",
+        "webserver"
+    ])
+    logger.info("All components registered successfully")
 
-        try:
-            yield context
-        finally:
-            logger.info("Cleaning up coordinator application")
+    return context
 
 
-@asynccontextmanager
 async def create_worker_application(config: P2PConfig, coordinator_addresses: List[str],
-                                   password: str, storage_path: str):
+                                   storage_manager):
     """
-    Создание рабочего узла с инициализацией хранилища и SSL
+    Создание рабочего узла с использованием уже инициализированного хранилища
 
     Args:
         config: конфигурация P2P узла
         coordinator_addresses: список адресов координаторов
-        password: пароль для защищенного хранилища
-        storage_path: путь к файлу хранилища
+        storage_manager: уже инициализированный менеджер хранилища
 
-    Yields:
+    Returns:
         P2PApplicationContext: полностью инициализированный контекст приложения
     """
     logger = logging.getLogger("AppFactory")
@@ -241,38 +319,34 @@ async def create_worker_application(config: P2PConfig, coordinator_addresses: Li
     # Сохраняем адреса координаторов в контексте
     context.set_shared("join_addresses", coordinator_addresses)
 
-    # 2. Инициализируем защищенное хранилище
-    logger.info(f"Initializing secure storage: {storage_path}")
-    with init_storage(password, storage_path, context):
-        logger.info("Secure storage initialized successfully")
+    # 2. Копируем storage_manager в context
+    context.set_shared("storage_manager", storage_manager)
+    logger.info("Storage manager registered in context")
 
-        # 3. Настраиваем SSL сертификаты
-        logger.info("Setting up SSL certificates")
-        prepare_certificates_after_storage(config, context)
-        logger.info("SSL certificates ready")
+    # 3. Настраиваем SSL сертификаты
+    logger.info("Setting up SSL certificates")
+    await prepare_certificates_after_storage(config, context)
+    logger.info("SSL certificates ready")
 
-        # 4. Регистрируем компоненты (те же что и для координатора)
-        logger.info("Registering application components")
-        context.register_component(TransportComponent(context))
-        context.register_component(CacheComponent(context))
-        context.register_component(NetworkComponent(context))
-        context.register_component(ServiceComponent(context))
-        context.register_component(WebServerComponent(context))
+    # 4. Регистрируем компоненты (те же что и для координатора)
+    logger.info("Registering application components")
+    context.register_component(TransportComponent(context))
+    context.register_component(CacheComponent(context))
+    context.register_component(NetworkComponent(context))
+    context.register_component(ServiceComponent(context))
+    context.register_component(WebServerComponent(context))
 
-        # 5. Устанавливаем порядок запуска
-        context.set_startup_order([
-            "transport",
-            "cache",
-            "network",
-            "service",
-            "webserver"
-        ])
-        logger.info("All components registered successfully")
+    # 5. Устанавливаем порядок запуска
+    context.set_startup_order([
+        "transport",
+        "cache",
+        "network",
+        "service",
+        "webserver"
+    ])
+    logger.info("All components registered successfully")
 
-        try:
-            yield context
-        finally:
-            logger.info("Cleaning up worker application")
+    return context
 
 
 # === Основная логика запуска ===
@@ -413,12 +487,38 @@ async def create_worker_application(config: P2PConfig, coordinator_addresses: Li
 
 async def run_coordinator_from_context(app_context: P2PApplicationContext):
     """Запуск координатора из готового контекста приложения"""
+    global _shutdown_requested, _shutdown_in_progress
+
     logger = logging.getLogger("Coordinator")
     config = app_context.config
+
+    # Фоновая задача для мониторинга флага shutdown
+    async def monitor_shutdown_flag():
+        """Проверяет глобальный флаг shutdown и инициирует завершение"""
+        while not _shutdown_requested:
+            await asyncio.sleep(0.1)
+        logger.info("Shutdown flag detected, initiating graceful shutdown...")
+        app_context._shutdown_event.set()
+
+    # Запускаем монитор флага shutdown
+    shutdown_monitor_task = asyncio.create_task(monitor_shutdown_flag())
 
     try:
         # Инициализируем все компоненты
         await app_context.initialize_all()
+
+        # КРИТИЧЕСКИ ВАЖНО: Переустанавливаем обработчики сигналов ПОСЛЕ инициализации
+        # потому что uvicorn мог переопределить их во время initialize_all()
+        logger.info("Re-installing signal handlers after component initialization...")
+        signal.signal(signal.SIGINT, signal_handler)
+        signal.signal(signal.SIGTERM, signal_handler)
+        logger.info("Signal handlers re-installed successfully")
+
+        # Запускаем автосохранение защищенного хранилища
+        storage_manager = app_context.get_shared("storage_manager")
+        if storage_manager:
+            logger.info("Starting storage autosave (60s interval)...")
+            storage_manager.start_autosave(interval=60)
 
         # Проверяем здоровье системы
         health = app_context.health_check()
@@ -446,8 +546,14 @@ async def run_coordinator_from_context(app_context: P2PApplicationContext):
         logger.info(f"  Service Info: {protocol}://{display_address}:{config.port}/services/{{service_name}}")
 
         # Метрики и мониторинг
+        logger.info(f"  Dashboard (Web UI): {protocol}://{display_address}:{config.port}/dashboard")
         logger.info(f"  System Metrics: {protocol}://{display_address}:{config.port}/metrics")
         logger.info(f"  Service Metrics: {protocol}://{display_address}:{config.port}/metrics/{{service_name}}")
+        logger.info(f"  Cluster Metrics: {protocol}://{display_address}:{config.port}/api/dashboard/metrics")
+
+        # Логи
+        logger.info(f"  Logs API: {protocol}://{display_address}:{config.port}/api/logs")
+        logger.info(f"  Log Sources: {protocol}://{display_address}:{config.port}/api/logs/sources")
 
         # Кластер и сеть
         logger.info(f"  Cluster Nodes: {protocol}://{display_address}:{config.port}/cluster/nodes")
@@ -463,6 +569,7 @@ async def run_coordinator_from_context(app_context: P2PApplicationContext):
         logger.info(f"  Gossip Compression: {'enabled' if config.gossip_compression_enabled else 'disabled'}")
         logger.info(f"  Adaptive Gossip: {config.gossip_interval_min}-{config.gossip_interval_max}s")
 
+
         # Ждем сигнал shutdown
         await app_context.wait_for_shutdown()
 
@@ -470,21 +577,67 @@ async def run_coordinator_from_context(app_context: P2PApplicationContext):
         logger.error(f"Coordinator error: {e}")
         raise
     finally:
-        # Graceful shutdown
-        await app_context.shutdown_all()
+        # Отменяем задачу мониторинга
+        shutdown_monitor_task.cancel()
+        try:
+            await shutdown_monitor_task
+        except asyncio.CancelledError:
+            pass
+
+        # Устанавливаем флаг что shutdown начался
+        _shutdown_in_progress = True
+
+        # Graceful shutdown with timeout and forced exit
+        try:
+            logger.info("Initiating graceful shutdown...")
+            await asyncio.wait_for(app_context.shutdown_all(), timeout=5.0)
+            logger.info("Graceful shutdown completed successfully")
+        except asyncio.TimeoutError:
+            logger.error("Shutdown timeout exceeded (5s), forcing exit...")
+            sys.exit(1)
+        except Exception as e:
+            logger.error(f"Error during shutdown: {e}")
+            logger.error("Forcing exit due to shutdown error...")
+            sys.exit(1)
 
 
 async def run_worker_from_context(app_context: P2PApplicationContext):
     """Запуск worker узла из готового контекста приложения"""
+    global _shutdown_requested, _shutdown_in_progress
+
     logger = logging.getLogger("Worker")
     config = app_context.config
 
     # Для worker нужен coordinator_addresses - берем из конфига
     coordinator_addresses = config.coordinator_addresses or []
 
+    # Фоновая задача для мониторинга флага shutdown
+    async def monitor_shutdown_flag():
+        """Проверяет глобальный флаг shutdown и инициирует завершение"""
+        while not _shutdown_requested:
+            await asyncio.sleep(0.1)
+        logger.info("Shutdown flag detected, initiating graceful shutdown...")
+        app_context._shutdown_event.set()
+
+    # Запускаем монитор флага shutdown
+    shutdown_monitor_task = asyncio.create_task(monitor_shutdown_flag())
+
     try:
         # Инициализируем все компоненты
         await app_context.initialize_all()
+
+        # КРИТИЧЕСКИ ВАЖНО: Переустанавливаем обработчики сигналов ПОСЛЕ инициализации
+        # потому что uvicorn мог переопределить их во время initialize_all()
+        logger.info("Re-installing signal handlers after component initialization...")
+        signal.signal(signal.SIGINT, signal_handler)
+        signal.signal(signal.SIGTERM, signal_handler)
+        logger.info("Signal handlers re-installed successfully")
+
+        # Запускаем автосохранение защищенного хранилища
+        storage_manager = app_context.get_shared("storage_manager")
+        if storage_manager:
+            logger.info("Starting storage autosave (60s interval)...")
+            storage_manager.start_autosave(interval=60)
 
         # Проверяем здоровье системы
         health = app_context.health_check()
@@ -534,8 +687,28 @@ async def run_worker_from_context(app_context: P2PApplicationContext):
         logger.error(f"Worker error: {e}")
         raise
     finally:
-        # Graceful shutdown
-        await app_context.shutdown_all()
+        # Отменяем задачу мониторинга
+        shutdown_monitor_task.cancel()
+        try:
+            await shutdown_monitor_task
+        except asyncio.CancelledError:
+            pass
+
+        # Устанавливаем флаг что shutdown начался
+        _shutdown_in_progress = True
+
+        # Graceful shutdown with timeout and forced exit
+        try:
+            logger.info("Initiating graceful shutdown...")
+            await asyncio.wait_for(app_context.shutdown_all(), timeout=5.0)
+            logger.info("Graceful shutdown completed successfully")
+        except asyncio.TimeoutError:
+            logger.error("Shutdown timeout exceeded (5s), forcing exit...")
+            sys.exit(1)
+        except Exception as e:
+            logger.error(f"Error during shutdown: {e}")
+            logger.error("Forcing exit due to shutdown error...")
+            sys.exit(1)
 
 
 def create_argument_parser():
@@ -570,6 +743,8 @@ def create_argument_parser():
     parser.add_argument('--port', type=int, default=None)
     parser.add_argument('--address', default=None,
                         help=f'Адрес привязки (по умолчанию из .env: {env_config["bind_address"]})')
+    parser.add_argument('--advertise-address', default=None,
+                        help='IP адрес для анонсирования другим узлам (если не указан, определяется автоматически по маршруту к координатору)')
     parser.add_argument('--coord', '--coordinator', default=None,
                         help=f'Адрес координатора (по умолчанию из .env: {env_config["coordinator_address"]})')
     parser.add_argument('--redis-url', default=None,
@@ -641,21 +816,66 @@ async def main():
                         return 1
 
                 try:
-                    # Загружаем конфигурацию
-                    logger.info(f"Loading configuration from: {args.config}")
-                    config = P2PConfig.from_yaml(args.config)
+                    # Создаем минимальный контекст для инициализации storage
+                    class MinimalContext:
+                        def __init__(self):
+                            self._shared_state = {}
+                        def set_shared(self, key, value):
+                            self._shared_state[key] = value
+                        def get_shared(self, key, default=None):
+                            return self._shared_state.get(key, default)
 
-                    logger.info(f"Starting {config.node_id} ({'coordinator' if config.coordinator_mode else 'worker'})")
-                    logger.info(f"Binding to: {config.bind_address}:{config.port}")
+                    temp_context = MinimalContext()
 
-                    # Создаем приложение с полной инициализацией (хранилище + SSL + компоненты)
-                    if config.coordinator_mode:
-                        async with create_coordinator_application(config, password, storage_path) as app_context:
+                    # Инициализируем storage
+                    run_type = True if 'coordinator' in args.config else False
+                    logger.info(f"Initializing secure storage: {storage_path}")
+                    with init_storage(password, storage_path, temp_context, run_type):
+                        logger.info("Secure storage initialized successfully")
+
+                        # Загружаем конфигурацию из storage
+                        logger.info(f"Loading configuration from: {args.config}")
+                        config = P2PConfig.from_yaml(args.config, context=temp_context)
+
+                        # Применяем override из аргументов командной строки (приоритет выше чем YAML)
+                        if args.coord:
+                            # Разбиваем на список если через запятую, иначе один адрес
+                            if ',' in args.coord:
+                                config.coordinator_addresses = [addr.strip() for addr in args.coord.split(',')]
+                            else:
+                                config.coordinator_addresses = [args.coord]
+                            logger.info(f"Coordinator addresses overridden from CLI: {config.coordinator_addresses}")
+
+                        if args.port:
+                            config.port = args.port
+                            logger.info(f"Port overridden from CLI: {config.port}")
+
+                        if args.address:
+                            config.bind_address = args.address
+                            logger.info(f"Bind address overridden from CLI: {config.bind_address}")
+
+                        if args.advertise_address:
+                            config.advertise_address = args.advertise_address
+                            logger.info(f"Advertise address overridden from CLI: {config.advertise_address}")
+
+                        if args.node_id:
+                            config.node_id = args.node_id
+                            logger.info(f"Node ID overridden from CLI: {config.node_id}")
+
+                        logger.info(f"Starting {config.node_id} ({'coordinator' if config.coordinator_mode else 'worker'})")
+                        logger.info(f"Binding to: {config.bind_address}:{config.port}")
+
+                        # Получаем storage_manager из temp_context
+                        storage_manager = temp_context.get_shared("storage_manager")
+
+                        # Создаем приложение с полной инициализацией (SSL + компоненты)
+                        if config.coordinator_mode:
+                            app_context = await create_coordinator_application(config, storage_manager)
                             await run_coordinator_from_context(app_context)
-                    else:
-                        coordinator_addresses = config.coordinator_addresses or []
-                        async with create_worker_application(config, coordinator_addresses,
-                                                            password, storage_path) as app_context:
+                        else:
+                            coordinator_addresses = config.coordinator_addresses or []
+                            app_context = await create_worker_application(config, coordinator_addresses,
+                                                                storage_manager)
                             await run_worker_from_context(app_context)
 
                 except ValueError as e:
@@ -663,10 +883,9 @@ async def main():
                     logger.error("Invalid password or corrupted storage")
                     return 1
                 except Exception as e:
+                    import traceback
                     logger.error(f"Failed to initialize application: {e}")
-                    if verbose:
-                        import traceback
-                        logger.error(traceback.format_exc())
+                    logger.error(traceback.format_exc())
                     return 1
 
             else:
@@ -734,15 +953,43 @@ if __name__ == "__main__":
     if not check_dependencies():
         sys.exit(1)
 
+    # Устанавливаем глобальный обработчик сигналов ДО запуска asyncio
+    # Это позволяет перехватывать Ctrl+C раньше uvicorn
+    print("[MAIN] Installing global signal handlers...", file=sys.stderr, flush=True)
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+    print("[MAIN] Signal handlers installed successfully", file=sys.stderr, flush=True)
+
     # Запуск главной функции
+    # Используем свой event loop вместо asyncio.run() для контроля над сигналами
     try:
-        exit_code = asyncio.run(main())
-        import traceback
-        traceback.print_exc()
-        sys.exit(exit_code)
+        # Создаем новый event loop
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+
+        try:
+            # Запускаем main() в нашем event loop
+            exit_code = loop.run_until_complete(main())
+            sys.exit(exit_code if exit_code else 0)
+        finally:
+            # Закрываем event loop
+            try:
+                # Отменяем все оставшиеся задачи
+                pending = asyncio.all_tasks(loop)
+                for task in pending:
+                    task.cancel()
+                # Даем задачам время завершиться
+                loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+            except Exception:
+                pass
+            finally:
+                loop.close()
     except KeyboardInterrupt:
-        print("\nStopped")
+        # Этот блок не должен выполняться, так как сигналы обрабатываются в signal_handler
+        print("\nStopped by KeyboardInterrupt")
         sys.exit(0)
     except Exception as e:
         print(f"Fatal error: {e}")
+        import traceback
+        traceback.print_exc()
         sys.exit(1)

@@ -10,7 +10,6 @@ from typing import Optional, Tuple
 from datetime import datetime, timedelta
 import io
 
-
 logger = logging.getLogger("SSL")
 
 
@@ -36,7 +35,7 @@ def _get_storage_manager(context=None):
         return None
 
 
-def _read_cert_bytes(cert_file: str, context=None) -> Optional[bytes]:
+def read_cert_bytes(cert_file: str, context=None) -> Optional[bytes]:
     """
     Читать сертификат ТОЛЬКО из защищенного хранилища
 
@@ -53,8 +52,6 @@ def _read_cert_bytes(cert_file: str, context=None) -> Optional[bytes]:
     storage = _get_storage_manager(context)
 
     if not storage:
-        import traceback
-        print(traceback.format_exc())
         raise RuntimeError("Secure storage is not available - cannot read certificates")
 
     try:
@@ -113,7 +110,6 @@ def _cert_exists(cert_file: str, context=None) -> bool:
     """
     storage = _get_storage_manager(context)
 
-
     if not storage:
         return False
 
@@ -125,11 +121,11 @@ def _cert_exists(cert_file: str, context=None) -> bool:
 
 
 def generate_ca_certificate(
-    ca_cert_file: str,
-    ca_key_file: str,
-    common_name: str = "P2P Network CA",
-    days_valid: int = 3650,
-    context=None
+        ca_cert_file: str,
+        ca_key_file: str,
+        common_name: str = "P2P Network CA",
+        days_valid: int = 3650,
+        context=None
 ) -> bool:
     """
     Генерация Certificate Authority (CA)
@@ -234,16 +230,16 @@ def generate_ca_certificate(
 
 
 def generate_signed_certificate(
-    cert_file,
-    key_file,
-    ca_cert_file: str,
-    ca_key_file: str,
-    common_name: str,
-    san_dns: list = None,
-    san_ips: list = None,
-    days_valid: int = 365,
-    temp: bool = False,
-    context=None
+        cert_file,
+        key_file,
+        ca_cert_file: str,
+        ca_key_file: str,
+        common_name: str,
+        san_dns: list = None,
+        san_ips: list = None,
+        days_valid: int = 365,
+        temp: bool = False,
+        context=None
 ) -> bool:
     """
     Генерация сертификата подписанного CA
@@ -271,14 +267,14 @@ def generate_signed_certificate(
         from cryptography.hazmat.primitives import serialization
         from cryptography.hazmat.backends import default_backend
         import ipaddress
-        print('context', context)
+
         # Загрузка CA сертификата и ключа
-        ca_cert_data = _read_cert_bytes(ca_cert_file, context)
+        ca_cert_data = read_cert_bytes(ca_cert_file, context)
         if not ca_cert_data:
             raise FileNotFoundError(f"CA certificate not found: {ca_cert_file}")
         ca_cert = x509.load_pem_x509_certificate(ca_cert_data, default_backend())
 
-        ca_key_data = _read_cert_bytes(ca_key_file, context)
+        ca_key_data = read_cert_bytes(ca_key_file, context)
         if not ca_key_data:
             raise FileNotFoundError(f"CA private key not found: {ca_key_file}")
         ca_private_key = serialization.load_pem_private_key(
@@ -305,21 +301,37 @@ def generate_signed_certificate(
         # Подготовка SubjectAlternativeName
         san_list = []
 
+        # Filter and deduplicate DNS names
+        dns_names = set()
         if san_dns:
             for dns in san_dns:
-                san_list.append(x509.DNSName(dns))
-                san_list.append(x509.DNSName("localhost"))
-        else:
-            san_list.append(x509.DNSName("localhost"))
-            san_list.append(x509.DNSName("*.local"))
+                dns_names.add(dns)
+        # Always add localhost if not present
+        if "localhost" not in dns_names:
+            dns_names.add("localhost")
+        if not san_dns:  # If no DNS names provided, add *.local
+            dns_names.add("*.local")
 
+        # Add all DNS names to SAN
+        for dns in sorted(dns_names):
+            san_list.append(x509.DNSName(dns))
+
+        # Filter and deduplicate IP addresses
+        ip_addresses = set()
         if san_ips:
             for ip in san_ips:
-                san_list.append(x509.IPAddress(ipaddress.IPv4Address("127.0.0.1")))
-                san_list.append(x509.IPAddress(ipaddress.ip_address(ip)))
+                ip_str = str(ip)
+                # Filter out link-local addresses (169.254.x.x)
+                if not ip_str.startswith("169.254."):
+                    ip_addresses.add(ip_str)
 
-        else:
-            san_list.append(x509.IPAddress(ipaddress.IPv4Address("127.0.0.1")))
+        # Always add 127.0.0.1 if not present
+        if "127.0.0.1" not in ip_addresses:
+            ip_addresses.add("127.0.0.1")
+
+        # Add all IP addresses to SAN
+        for ip_str in sorted(ip_addresses):
+            san_list.append(x509.IPAddress(ipaddress.ip_address(ip_str)))
 
         # Создание сертификата
         cert = x509.CertificateBuilder().subject_name(
@@ -400,7 +412,7 @@ def generate_signed_certificate(
         import traceback
 
         logger.error(f"Failed to generate signed certificate: {e}")
-        print(traceback.format_exc())
+        logger.debug(traceback.format_exc())
         return False
 
 
@@ -425,12 +437,12 @@ def ensure_ca_exists(ca_cert_file: str, ca_key_file: str, context=None) -> bool:
 
 
 def ensure_certificates_exist(
-    cert_file: str,
-    key_file: str,
-    common_name: str = "P2P Node",
-    ca_cert_file: str = None,
-    ca_key_file: str = None,
-    context=None
+        cert_file: str,
+        key_file: str,
+        common_name: str = "P2P Node",
+        ca_cert_file: str = None,
+        ca_key_file: str = None,
+        context=None
 ) -> bool:
     """
     Проверить наличие сертификатов и создать если отсутствуют
@@ -485,13 +497,16 @@ def ensure_certificates_exist(
         logger.error("Failed to ensure CA exists")
         raise RuntimeError("CA certificate does not exist and could not be created")
 
-    import platform, socket
-    my_name = platform.node()
-    my_ip = socket.gethostbyname(my_name)
+    # Получаем ВСЕ сетевые адреса и hostname машины
+    my_ips, my_hostname = get_current_network_info()
+    logger.info(f"Generating certificate for all network addresses: {my_ips}")
+    logger.info(f"Hostname: {my_hostname}")
 
     success = generate_signed_certificate(
         cert_file, key_file, ca_cert_file, ca_key_file, common_name,
-        san_ips=[my_ip], san_dns=[my_name], context=context
+        san_ips=my_ips,  # Все IP адреса
+        san_dns=[my_hostname],  # Hostname
+        context=context
     )
 
     if not success:
@@ -523,7 +538,7 @@ class ServerSSLContext:
         self.cert_temp_path: Optional[str] = None
         self.key_temp_path: Optional[str] = None
         self.cert_path: Optional[str] = None  # Путь для uvicorn
-        self.key_path: Optional[str] = None   # Путь для uvicorn
+        self.key_path: Optional[str] = None  # Путь для uvicorn
         self._initialized = False
         self._use_memfd = hasattr(os, 'memfd_create')  # Доступно только на Linux 3.17+
 
@@ -553,8 +568,8 @@ class ServerSSLContext:
                 raise RuntimeError(f"Certificate files not found in secure storage: {cert_file}, {key_file}")
 
             # Загружаем сертификаты из защищенного хранилища в память
-            cert_data = _read_cert_bytes(cert_file, self.context)
-            key_data = _read_cert_bytes(key_file, self.context)
+            cert_data = read_cert_bytes(cert_file, self.context)
+            key_data = read_cert_bytes(key_file, self.context)
 
             if not cert_data or not key_data:
                 raise RuntimeError(f"Failed to read certificates from secure storage")
@@ -565,7 +580,7 @@ class ServerSSLContext:
                 logger.debug("Certificate chain loaded from memory (via memfd)")
             else:
                 # Windows/другие ОС: используем безопасные временные файлы
-                self.cert_path, self.key_path = self._create_temp_files(cert_data, key_data)
+                self.cert_path, self.key_path = self.create_temp_files(cert_data, key_data)
                 logger.debug("Certificate chain loaded from secure temporary files")
 
             # Создаем SSL контекст
@@ -576,7 +591,7 @@ class ServerSSLContext:
                 self.ssl_context.verify_mode = ssl.CERT_REQUIRED
 
                 # Загружаем CA сертификат из памяти (cadata работает везде)
-                ca_data = _read_cert_bytes(ca_cert_file, self.context)
+                ca_data = read_cert_bytes(ca_cert_file, self.context)
                 if ca_data:
                     self.ssl_context.load_verify_locations(cadata=ca_data.decode('utf-8'))
                     logger.info(f"Client certificate verification enabled with CA from secure storage")
@@ -610,7 +625,7 @@ class ServerSSLContext:
 
         return cert_path, key_path
 
-    def _create_temp_files(self, cert_data: bytes, key_data: bytes) -> tuple:
+    def create_temp_files(self, cert_data: bytes, key_data: bytes = None) -> tuple | str:
         """Создать безопасные временные файлы (Windows/кросс-платформенно)"""
         import tempfile
         import stat
@@ -624,19 +639,22 @@ class ServerSSLContext:
         finally:
             os.close(cert_fd)
 
-        # Создаем временный файл для ключа
-        key_fd, self.key_temp_path = tempfile.mkstemp(prefix='ssl_key_', suffix='.pem')
-        try:
-            # Ограничиваем права доступа (только текущий пользователь)
-            os.chmod(self.key_temp_path, stat.S_IRUSR | stat.S_IWUSR)
-            os.write(key_fd, key_data)
-        finally:
-            os.close(key_fd)
+        if key_data:
+            # Создаем временный файл для ключа
+            key_fd, self.key_temp_path = tempfile.mkstemp(prefix='ssl_key_', suffix='.pem')
+            try:
+                # Ограничиваем права доступа (только текущий пользователь)
+                os.chmod(self.key_temp_path, stat.S_IRUSR | stat.S_IWUSR)
+                os.write(key_fd, key_data)
+            finally:
+                os.close(key_fd)
 
         logger.debug(f"Temporary cert files created: {self.cert_temp_path}, {self.key_temp_path}")
         logger.warning("Using temporary files for SSL (Windows mode) - files will be deleted on shutdown")
-
-        return self.cert_temp_path, self.key_temp_path
+        if key_data:
+            return self.cert_temp_path, self.key_temp_path
+        else:
+            return self.cert_temp_path
 
     def get_cert_path(self) -> str:
         """
@@ -715,10 +733,10 @@ class ServerSSLContext:
 
 
 def create_ssl_context(
-    cert_file: str,
-    key_file: str,
-    verify_mode: bool = False,
-    ca_cert_file: str = None
+        cert_file: str,
+        key_file: str,
+        verify_mode: bool = False,
+        ca_cert_file: str = None
 ) -> Optional[ssl.SSLContext]:
     """
     Создать SSL контекст для HTTPS сервера из защищенного хранилища (без записи на диск)
@@ -759,7 +777,7 @@ def create_client_ssl_context(verify: bool = True, ca_cert_file: str = None, con
 
     if verify and ca_cert_file:
         # Загружаем CA сертификат из защищенного хранилища в память
-        ca_data = _read_cert_bytes(ca_cert_file, context)
+        ca_data = read_cert_bytes(ca_cert_file, context)
         if ca_data:
             # load_verify_locations поддерживает cadata для загрузки CA из памяти
             ssl_context.load_verify_locations(cadata=ca_data.decode('utf-8'))
@@ -796,7 +814,7 @@ def get_certificate_info(cert_file: str, context) -> Optional[dict]:
         from cryptography import x509
         from cryptography.hazmat.backends import default_backend
 
-        cert_data = _read_cert_bytes(cert_file, context)
+        cert_data = read_cert_bytes(cert_file, context)
         if not cert_data:
             return None
 
@@ -847,7 +865,7 @@ def get_certificate_fingerprint(cert_file: str, context) -> Optional[str]:
         from cryptography.hazmat.backends import default_backend
         from cryptography.hazmat.primitives import hashes
 
-        cert_data = _read_cert_bytes(cert_file, context)
+        cert_data = read_cert_bytes(cert_file, context)
         if not cert_data:
             return None
 
@@ -877,7 +895,7 @@ def get_certificate_san(cert_file: str, context) -> Tuple[list, list]:
         from cryptography.hazmat.backends import default_backend
         from cryptography.x509.oid import ExtensionOID
 
-        cert_data = _read_cert_bytes(cert_file, context)
+        cert_data = read_cert_bytes(cert_file, context)
         if not cert_data:
             return [], []
 
@@ -903,6 +921,7 @@ def get_certificate_san(cert_file: str, context) -> Tuple[list, list]:
 def get_current_network_info() -> Tuple[list, str]:
     """
     Получить текущие IP адреса и hostname машины
+    Возвращает ВСЕ IPv4 и IPv6 адреса со всех интерфейсов
 
     Returns:
         Tuple из (список IP адресов, hostname)
@@ -914,52 +933,109 @@ def get_current_network_info() -> Tuple[list, str]:
         # Получаем hostname
         hostname = platform.node()
 
-        # Получаем все IP адреса (исключая loopback)
+        # Получаем все IP адреса
         ip_addresses = []
+        seen = set()  # Для исключения дубликатов
 
-        # Получаем IP адреса через socket
-        try:
-            # Получаем IP адрес по hostname
-            primary_ip = socket.gethostbyname(hostname)
-            if primary_ip and primary_ip != '127.0.0.1':
-                ip_addresses.append(primary_ip)
-        except:
-            pass
-
-        # Пробуем получить все сетевые интерфейсы
+        # Метод 1: Пробуем netifaces (самый полный)
         try:
             import netifaces
+
             for interface in netifaces.interfaces():
                 addrs = netifaces.ifaddresses(interface)
+
+                # IPv4 адреса
                 if netifaces.AF_INET in addrs:
                     for addr_info in addrs[netifaces.AF_INET]:
                         ip = addr_info.get('addr')
-                        if ip and ip != '127.0.0.1' and not ip.startswith('169.254'):
-                            if ip not in ip_addresses:
+                        if ip and ip not in seen:
+                            ip_addresses.append(ip)
+                            seen.add(ip)
+                            logger.debug(f"Found IPv4 on {interface}: {ip}")
+
+                # IPv6 адреса
+                if netifaces.AF_INET6 in addrs:
+                    for addr_info in addrs[netifaces.AF_INET6]:
+                        ip = addr_info.get('addr')
+                        if ip:
+                            # Убираем zone index из IPv6 (например %eth0)
+                            ip = ip.split('%')[0]
+                            if ip not in seen:
                                 ip_addresses.append(ip)
+                                seen.add(ip)
+                                logger.debug(f"Found IPv6 on {interface}: {ip}")
+
+            logger.info(f"netifaces found {len(ip_addresses)} addresses")
+
         except ImportError:
-            # netifaces не установлен, используем альтернативный метод
+            logger.warning("netifaces not available, trying psutil")
+
+            # Метод 2: Пробуем psutil
             try:
-                # Создаем временный сокет для получения IP
-                s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                s.connect(("8.8.8.8", 80))
-                local_ip = s.getsockname()[0]
-                s.close()
+                import psutil
 
-                if local_ip and local_ip != '127.0.0.1' and local_ip not in ip_addresses:
-                    ip_addresses.append(local_ip)
-            except:
-                pass
+                for interface, addrs in psutil.net_if_addrs().items():
+                    for addr in addrs:
+                        # IPv4
+                        if addr.family == socket.AF_INET:
+                            ip = addr.address
+                            if ip and ip not in seen:
+                                ip_addresses.append(ip)
+                                seen.add(ip)
+                                logger.debug(f"Found IPv4 on {interface}: {ip}")
 
-        # Всегда добавляем localhost в конец
-        if '127.0.0.1' not in ip_addresses:
-            ip_addresses.append('127.0.0.1')
+                        # IPv6
+                        elif addr.family == socket.AF_INET6:
+                            ip = addr.address
+                            if ip:
+                                ip = ip.split('%')[0]
+                                if ip not in seen:
+                                    ip_addresses.append(ip)
+                                    seen.add(ip)
+                                    logger.debug(f"Found IPv6 on {interface}: {ip}")
 
-        logger.debug(f"Current network info - hostname: {hostname}, IPs: {ip_addresses}")
+                logger.info(f"psutil found {len(ip_addresses)} addresses")
+
+            except ImportError:
+                logger.warning("psutil not available, using fallback methods")
+
+                # Метод 3: Fallback - socket methods
+                # 3a: IP по hostname
+                try:
+                    primary_ip = socket.gethostbyname(hostname)
+                    if primary_ip and primary_ip not in seen:
+                        ip_addresses.append(primary_ip)
+                        seen.add(primary_ip)
+                        logger.debug(f"Found IP by hostname: {primary_ip}")
+                except:
+                    pass
+
+                # 3b: IP через временный сокет
+                try:
+                    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                    s.connect(("8.8.8.8", 80))
+                    local_ip = s.getsockname()[0]
+                    s.close()
+
+                    if local_ip and local_ip not in seen:
+                        ip_addresses.append(local_ip)
+                        seen.add(local_ip)
+                        logger.debug(f"Found IP via socket: {local_ip}")
+                except:
+                    pass
+
+                # 3c: Добавляем 127.0.0.1 если ничего не нашли
+                if not ip_addresses:
+                    ip_addresses.append('127.0.0.1')
+                    logger.debug("Using fallback 127.0.0.1")
+
+        logger.info(f"Network info - hostname: {hostname}, total IPs: {len(ip_addresses)}, addresses: {ip_addresses}")
         return ip_addresses, hostname
 
     except Exception as e:
         logger.error(f"Failed to get current network info: {e}")
+        import traceback
+        logger.error(f"Traceback: {traceback.format_exc()}")
         return ['127.0.0.1'], 'localhost'
 
 
@@ -989,7 +1065,7 @@ def needs_certificate_renewal(cert_file: str, ca_cert_file: str = None, context=
         from cryptography.hazmat.backends import default_backend
 
         # Загружаем сертификат
-        cert_data = _read_cert_bytes(cert_file, context)
+        cert_data = read_cert_bytes(cert_file, context)
         if not cert_data:
             return True, "certificate_not_found"
 
@@ -1038,15 +1114,88 @@ def generate_challenge() -> str:
     return secrets.token_hex(32)
 
 
+async def request_ca_cert_from_coordinator(
+        coordinator_url: str,
+        context=None
+) -> Optional[str]:
+    """
+    Запросить CA сертификат от координатора (ACME-like)
+
+    Эта функция используется воркером при первом запуске для получения
+    CA сертификата, необходимого для верификации HTTPS соединений.
+
+    Args:
+        coordinator_url: URL координатора (например, "https://coord:8001" или "coord:8001")
+        context: контекст приложения для доступа к storage_manager
+
+    Returns:
+        CA certificate в PEM формате или None при ошибке
+    """
+    import httpx
+
+    try:
+        # Формируем HTTPS URL для координатора
+        if '://' not in coordinator_url:
+            # Если не указан протокол, пробуем сначала HTTPS
+            https_url = f"https://{coordinator_url}"
+        else:
+            # Заменяем http на https если нужно
+            https_url = coordinator_url.replace("http://", "https://")
+
+        timeout = httpx.Timeout(15.0)
+
+        logger.info(f"Requesting CA certificate from coordinator: {https_url}/internal/ca-cert")
+
+        # Используем HTTPS БЕЗ верификации, т.к. у нас еще нет CA сертификата
+        # Это безопасно для получения публичного CA сертификата
+        async with httpx.AsyncClient(timeout=timeout, verify=False) as client:
+            response = await client.get(f"{https_url}/internal/ca-cert")
+
+            logger.info(f"CA certificate request response: {response.status_code}")
+
+            if response.status_code == 200:
+                result = response.json()
+                ca_cert_pem = result.get("ca_certificate")
+
+                if ca_cert_pem:
+                    logger.info("Successfully received CA certificate from coordinator")
+                    return ca_cert_pem
+                else:
+                    logger.error("Invalid response from coordinator: missing ca_certificate")
+                    return None
+            else:
+                logger.error(f"CA certificate request failed: {response.status_code}")
+                try:
+                    error_detail = response.json()
+                    logger.error(f"Error details: {error_detail}")
+                except:
+                    logger.error(f"Response text: {response.text[:500]}")
+                return None
+
+    except httpx.ConnectError as e:
+        logger.error(f"Failed to connect to coordinator: {e}")
+        logger.error(f"  URL: {https_url}/internal/ca-cert")
+        logger.error(f"  Make sure coordinator is running and accessible")
+        return None
+    except httpx.TimeoutException as e:
+        logger.error(f"Request timeout while contacting coordinator: {e}")
+        return None
+    except Exception as e:
+        logger.error(f"Failed to request CA certificate from coordinator: {e}")
+        import traceback
+        logger.error(f"Traceback: {traceback.format_exc()}")
+        return None
+
+
 async def request_certificate_from_coordinator(
-    node_id: str,
-    coordinator_url: str,
-    challenge: str,
-    ip_addresses: list,
-    dns_names: list,
-    old_cert_fingerprint: str = None,
-    ca_cert_file: str = None,
-    challenge_port: int = None
+        node_id: str,
+        coordinator_url: str,
+        challenge: str,
+        ip_addresses: list,
+        dns_names: list,
+        old_cert_fingerprint: str = None,
+        ca_cert_file: str = None,
+        challenge_port: int = None
 ) -> Tuple[Optional[str], Optional[str]]:
     """
     Запросить новый сертификат от координатора
@@ -1093,7 +1242,6 @@ async def request_certificate_from_coordinator(
 
         # Используем HTTPS с CA верификацией
         verify_param = False  # По умолчанию без верификации
-
         if ca_cert_file and Path(ca_cert_file).exists():
             # Используем CA сертификат для верификации
             verify_param = str(Path(ca_cert_file).resolve())
@@ -1114,7 +1262,6 @@ async def request_certificate_from_coordinator(
 
             if response.status_code == 200:
                 result = response.json()
-                print(result)
                 certificate_pem = result.get("certificate")
                 private_key_pem = result.get("private_key")
 
@@ -1148,7 +1295,7 @@ async def request_certificate_from_coordinator(
         return None, None
 
 
-def save_certificate_and_key(cert_pem: str, key_pem: str, cert_file: str, key_file: str) -> bool:
+def save_certificate_and_key(cert_pem: str, key_pem: str, cert_file: str, key_file: str, context=None) -> bool:
     """
     Сохранить сертификат и ключ ТОЛЬКО в защищенное хранилище
 
@@ -1157,6 +1304,7 @@ def save_certificate_and_key(cert_pem: str, key_pem: str, cert_file: str, key_fi
         key_pem: PEM-форматированный приватный ключ
         cert_file: путь для сохранения сертификата
         key_file: путь для сохранения ключа
+        context: контекст приложения для доступа к storage_manager
 
     Returns:
         True если успешно сохранено
@@ -1170,10 +1318,10 @@ def save_certificate_and_key(cert_pem: str, key_pem: str, cert_file: str, key_fi
         key_data = key_pem.encode('utf-8') if isinstance(key_pem, str) else key_pem
 
         # Сохраняем сертификат ТОЛЬКО в защищенное хранилище
-        _write_cert_bytes(cert_file, cert_data)
+        _write_cert_bytes(cert_file, cert_data, context)
 
         # Сохраняем ключ ТОЛЬКО в защищенное хранилище
-        _write_cert_bytes(key_file, key_data)
+        _write_cert_bytes(key_file, key_data, context)
 
         logger.info(f"Certificate and key saved to secure storage: {cert_file}, {key_file}")
         return True
@@ -1181,4 +1329,3 @@ def save_certificate_and_key(cert_pem: str, key_pem: str, cert_file: str, key_fi
     except Exception as e:
         logger.error(f"Failed to save certificate and key: {e}")
         raise
-

@@ -1,9 +1,64 @@
+import timeit
+
+
+def index_to_combination(index: int, charset: str, length: int) -> str:
+    """
+    Пример: index=5, charset="abc", length=2
+
+    Шаг 1: index=5, pos=1 (справа)
+           5 % 3 = 2 → charset[2] = 'c'
+           5 // 3 = 1
+
+    Шаг 2: index=1, pos=0 (слева)
+           1 % 3 = 1 → charset[1] = 'b'
+           1 // 3 = 0
+
+    Результат: "bc"
+    """
+    base = len(charset)
+    result = []
+
+    for _ in range(length):
+        result.append(charset[index % base])
+        index //= base
+
+    return ''.join(reversed(result))
+
+
+# Тест
+print(index_to_combination(5, "abc", 2))  # "bc"
+print(index_to_combination(7, "abc", 2))  # "cb"
+
+
+charset = 'zxcvbnmasdfghjklqwertyuiop12344567890!@#$%^&*()'
+# Тест на реальном алфавите
+length = 8
+
+# Прыжок на позицию 1,000,000
+t = timeit.timeit(
+    lambda: index_to_combination(1_000_000, charset, length),
+    number=10_000
+)
+print(f"Время на 10k преобразований: {t:.4f}s")
+# Ожидаемо: ~0.01s (около 1 микросекунды на преобразование)
+
+
+
+exit(0)
+
+
+
+
+
+
+
+
+exit(0)
 import base64
 import hashlib
 import os
 import random
 from pathlib import Path
-from typing import List
 
 root = Path('test_root')
 os.makedirs(root, exist_ok=True)
@@ -25,19 +80,11 @@ def gen_set(data: list, index):
             if step_index == data_len:
                 step_index = 1
         # print(step, step_index, data_len)
-        res += l[step_index]
+        res += l[step_index ]
     return res
 
-def get_index(data: List[str,], char):
-    index = None
-    for step, l in enumerate(data):
-        if char in l:
-            index = l.index(char)
-    return index
 
-
-
-def create_data(count: int, block: int = 10, gap: int = 2):
+def create_data(count:int, block: int = 10, gap:int = 2):
     """
     Create plot with specified characteristics
     length: summary length
@@ -47,44 +94,31 @@ def create_data(count: int, block: int = 10, gap: int = 2):
     wordset = "qwertyuiopasdfghjklzxcvbnmQWERTYUIOPASDFGHJKLZXCVBNM"
     symset = "1234567890!@#$%^&*()_+-=/?;:'[{]}"
     dataset = [wordset, symset]
-    chunk = []
-    vector = int(random.random() * 10 ** 3)
+    vector = int(random.random() * 10 ** 3 )
     print(vector)
     temp = vector
-    iters = int(count * (block + gap) // 2)
-    raw = ''  # create empty dataset
+    iters = count * (block + gap)
+    raw = '' # create empty dataset
     for i in range(iters):
-        raw += gen_set(dataset, temp + random.randrange(1, vector + i))
-    # print(raw)
-
-    for i in range(1, count):
-        fragment = raw[i * (block + gap) - (block + gap):i * (block + gap)]
-        chunk.append([fragment[:block], fragment[-gap:]])
-        difference = len(raw) / i * (block + gap)
-        # print(i, i * (block + gap), len(raw), difference, chunk[-1])
-    # print(chunk)
-
-    for l0 in chunk:
-        print(l0)
-        print(l0[0])
-        for c1 in l0[0]:
-            print(c1, get_index(dataset, c1))
-    print(c1, get_index(dataset, 'M'))
-    print(c1, get_index(dataset, '}'))
+        raw += gen_set(dataset, temp + random.randrange(2, vector + i))
+    print(raw)
+    # create control points
+    for index, i in enumerate(range(iters)):
+        service = 4
+        skip = index * iters + service
+        raw = raw[:index + block] + '__' + raw[index + block + gap:]
+        print(raw)
+    print(raw)
 
 
-
-
-create_data(3)
-
+create_data(4)
 
 def dependency():
     pass
 
-
 def plot():
-    pass
 
+    pass
 
 def calc_pass(direction, vector):
     direction = str(int(hashlib.md5(direction.name.encode('utf-8')).hexdigest(), 16))

@@ -24,7 +24,7 @@ except ImportError:
 class NodeInfo:
     """Информация об узле P2P сети"""
     node_id: str
-    address: str
+    address: str  # Primary address (for backwards compatibility and display)
     port: int
     role: str
     capabilities: List[str]
@@ -32,6 +32,15 @@ class NodeInfo:
     metadata: Dict[str, Any]
     status: str = "alive"  # alive, suspected, dead
     services: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    addresses: List[str] = field(default_factory=list)  # All available addresses (multi-homed support)
+
+    def __post_init__(self):
+        """Ensure addresses list contains at least the primary address"""
+        if not self.addresses:
+            self.addresses = [self.address]
+        elif self.address not in self.addresses:
+            # Primary address should always be first in the list
+            self.addresses.insert(0, self.address)
 
     def to_dict(self) -> Dict[str, Any]:
         data = asdict(self)
@@ -40,13 +49,20 @@ class NodeInfo:
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'NodeInfo':
-        data['last_seen'] = datetime.fromisoformat(data['last_seen'])
+        # Handle last_seen - it might already be a datetime object
+        if isinstance(data['last_seen'], str):
+            data['last_seen'] = datetime.fromisoformat(data['last_seen'])
         return cls(**data)
 
     def get_url(self, https: bool = True) -> str:
-        """Получение URL узла"""
+        """Получение URL узла (primary address)"""
         protocol = "https" if https else "http"
         return f"{protocol}://{self.address}:{self.port}"
+
+    def get_all_urls(self, https: bool = True) -> List[str]:
+        """Получение всех URL узла (all addresses)"""
+        protocol = "https" if https else "http"
+        return [f"{protocol}://{addr}:{self.port}" for addr in self.addresses]
 
     def is_alive(self, timeout_seconds: int = 60) -> bool:
         """Проверка, жив ли узел"""
@@ -112,8 +128,17 @@ class SimpleGossipProtocol:
     """Упрощенная реализация gossip протокола без внешних зависимостей"""
 
     def __init__(self, node_id: str, bind_address: str, bind_port: int, coordinator_mode: bool = False,
-                 ssl_verify: bool = True, ca_cert_file: str = None, context=None):
+                 ssl_verify: bool = True, ca_cert_file: str = None, context=None, all_addresses: List[str] = None):
 
+        self.cleanup_interval = None
+        self.failure_timeout = None
+        self.gossip_interval_max = None
+        self.gossip_interval_min = None
+        self.adjust_interval_period = None
+        self.message_count = None
+        self.compression_threshold = None
+        self.compression_enabled = None
+        self.max_gossip_targets = None
         self.ca_cert_file = ca_cert_file
         self.ssl_verify = ssl_verify
         self.context = context  # Для доступа к storage_manager
@@ -128,18 +153,22 @@ class SimpleGossipProtocol:
         self.running = False
         self.service_info_callback = None
 
+        # Кеш успешных адресов для каждого узла (для multi-homed nodes)
+        self.successful_addresses: Dict[str, str] = {}  # node_id -> successful_address
+
         # Информация о собственном узле
         self.self_info = NodeInfo(
             node_id=node_id,
             address=bind_address,
             port=bind_port,
             role='coordinator' if coordinator_mode else 'worker',
-            capabilities=['admin', 'rpc'],
+            capabilities=self.context.config.capabilities,
             last_seen=datetime.now(),
             metadata={
                 'started_at': datetime.now().isoformat(),
-                'version': '1.0.0'
-            }
+                'version': self.context.config.version
+            },
+            addresses=all_addresses if all_addresses else [bind_address]
         )
 
         # HTTP клиент для общения с другими узлами
@@ -206,8 +235,51 @@ class SimpleGossipProtocol:
         asyncio.create_task(self._failure_detection_loop())
         asyncio.create_task(self._cleanup_loop())
 
-        self.log.info(f"Gossip node started: {self.node_id} on {self.bind_address}:{self.bind_port}")
-        self.log.info(f"Role: {'Coordinator' if self.coordinator_mode else 'Worker'}")
+        self.log.info(f"Gossip node started: {self.node_id}")
+        self.log.info(f"  Bind address: {self.bind_address}:{self.bind_port}")
+        self.log.info(f"  Advertise address: {self.self_info.address}:{self.bind_port} (address other nodes will use)")
+        self.log.info(f"  Role: {'Coordinator' if self.coordinator_mode else 'Worker'}")
+
+    async def _probe_node_addresses(self, node_info: NodeInfo, timeout: float = 3.0) -> Optional[str]:
+        """
+        Проверка доступности адресов узла и нахождение рабочего
+
+        Args:
+            node_info: Информация об узле с несколькими адресами
+            timeout: Timeout для проверки каждого адреса
+
+        Returns:
+            Первый успешно проверенный адрес или None
+        """
+        if not node_info.addresses or len(node_info.addresses) == 1:
+            # Только один адрес - проверять нечего
+            return node_info.address
+
+        self.log.info(f"Probing {len(node_info.addresses)} addresses for node {node_info.node_id}")
+
+        protocol = "https" if self.ssl_verify else "http"
+
+        for addr in node_info.addresses:
+            try:
+                url = f"{protocol}://{addr}:{node_info.port}/health"
+                self.log.debug(f"  Trying {url}...")
+
+                response = await self.http_client.get(url, timeout=timeout)
+
+                if response.status_code == 200:
+                    self.log.info(f"  ✓ Successfully connected to {addr}:{node_info.port}")
+                    # Кешируем успешный адрес
+                    self.successful_addresses[node_info.node_id] = addr
+                    return addr
+                else:
+                    self.log.debug(f"  ✗ {addr} returned status {response.status_code}")
+
+            except Exception as e:
+                self.log.debug(f"  ✗ {addr} failed: {e}")
+                continue
+
+        self.log.warning(f"Could not reach node {node_info.node_id} on any address")
+        return None
 
     async def _join_cluster(self):
         """Присоединение к существующему кластеру"""
@@ -233,14 +305,45 @@ class SimpleGossipProtocol:
                 if response.status_code == 200:
                     # Получение списка известных узлов
                     cluster_info = response.json()
-                    for node_data in cluster_info.get('nodes', []):
+                    discovered_nodes = cluster_info.get('nodes', [])
+
+                    for node_data in discovered_nodes:
                         node_info = NodeInfo.from_dict(node_data)
                         if node_info.node_id != self.node_id:
                             self.node_registry[node_info.node_id] = node_info
                             await self._notify_listeners(node_info.node_id, 'alive', node_info)
 
                     self.log.info(f"✅ Successfully joined cluster via {bootstrap_addr}")
-                    self.log.info(f"   Discovered {len(cluster_info.get('nodes', []))} nodes")
+                    self.log.info(f"   My advertise address: {self.self_info.address}:{self.bind_port}")
+                    self.log.info(f"   Discovered {len(discovered_nodes)} nodes in cluster:")
+
+                    for node_data in discovered_nodes:
+                        node_id = node_data.get('node_id', 'unknown')
+                        node_addr = node_data.get('address', 'unknown')
+                        node_port = node_data.get('port', 'unknown')
+                        node_role = node_data.get('role', 'unknown')
+                        services_count = len(node_data.get('services', {}))
+                        addresses = node_data.get('addresses', [node_addr])
+
+                        if node_id == self.node_id:
+                            self.log.info(f"     - {node_id} (self) at {node_addr}:{node_port} [{node_role}] - {services_count} services")
+                        else:
+                            addr_info = f"{len(addresses)} addresses" if len(addresses) > 1 else f"{node_addr}"
+                            self.log.info(f"     - {node_id} at {addr_info}:{node_port} [{node_role}] - {services_count} services")
+
+                    # Проверяем доступность адресов для multi-homed узлов
+                    self.log.info("Probing node addresses for reachability...")
+                    for node_data in discovered_nodes:
+                        node_info = NodeInfo.from_dict(node_data)
+                        if node_info.node_id != self.node_id and len(node_info.addresses) > 1:
+                            # Проверяем доступность адресов узла
+                            reachable_addr = await self._probe_node_addresses(node_info)
+                            if reachable_addr:
+                                # Обновляем primary address в node_info
+                                node_info.address = reachable_addr
+                                self.node_registry[node_info.node_id] = node_info
+                                self.log.info(f"Node {node_info.node_id}: using {reachable_addr} as primary address")
+
                     break
 
             except Exception as e:
@@ -396,7 +499,20 @@ class SimpleGossipProtocol:
                 'message_type': 'gossip'
             }
 
-            url = f"{target_node.get_url(https=self.ssl_verify)}/internal/gossip/exchange"
+            # Диагностика: сколько services в нашем self_info
+            my_services_count = len(self.self_info.services) if self.self_info.services else 0
+            if my_services_count > 0:
+                self.log.debug(f"🔍 Отправка gossip на {target_node.node_id}: наши services = {my_services_count}")
+            else:
+                self.log.debug(f"⚠️  Отправка gossip на {target_node.node_id}: services пусто!")
+
+            # Используем кешированный адрес если он есть
+            target_address = target_node.address
+            if target_node.node_id in self.successful_addresses:
+                target_address = self.successful_addresses[target_node.node_id]
+
+            protocol = "https" if self.ssl_verify else "http"
+            url = f"{protocol}://{target_address}:{target_node.port}/internal/gossip/exchange"
             response = await self.http_client.post(url, json=gossip_data, timeout=5.0)
 
             if response.status_code == 200:
@@ -404,26 +520,34 @@ class SimpleGossipProtocol:
                 response_data = response.json()
                 await self._process_gossip_response(response_data)
 
-                # Обновление времени последнего контакта
-                target_node.last_seen = datetime.now()
-                if target_node.status != 'alive':
-                    target_node.status = 'alive'
-                    await self._notify_listeners(target_node.node_id, 'alive', target_node)
+                # Обновление времени последнего контакта в node_registry
+                # ВАЖНО: используем node_id чтобы найти актуальный объект в registry
+                if target_node.node_id in self.node_registry:
+                    self.node_registry[target_node.node_id].last_seen = datetime.now()
+                    if self.node_registry[target_node.node_id].status != 'alive':
+                        self.node_registry[target_node.node_id].status = 'alive'
+                        await self._notify_listeners(target_node.node_id, 'alive', self.node_registry[target_node.node_id])
             else:
                 self.log.info(f"⚠️  Gossip failed to {target_node.node_id}: HTTP {response.status_code}")
-                target_node.status = 'suspected'
+                if target_node.node_id in self.node_registry:
+                    self.node_registry[target_node.node_id].status = 'suspected'
 
         except Exception as e:
             self.log.info(f"❌ Failed to send gossip to {target_node.node_id}: {e}")
             # Пометка узла как подозрительного
-            if target_node.status == 'alive':
-                target_node.status = 'suspected'
+            if target_node.node_id in self.node_registry and self.node_registry[target_node.node_id].status == 'alive':
+                self.node_registry[target_node.node_id].status = 'suspected'
 
     async def _process_gossip_response(self, gossip_data: Dict):
         """Обработка ответа на gossip сообщение"""
         try:
+            sender_id = gossip_data.get('sender', 'unknown')
+            nodes_received = gossip_data.get('nodes', [])
+
+            self.log.debug(f"📨 Received gossip from {sender_id} with {len(nodes_received)} nodes")
+
             # Обновление информации об узлах
-            for node_data in gossip_data.get('nodes', []):
+            for node_data in nodes_received:
                 node_info = NodeInfo.from_dict(node_data)
 
                 if node_info.node_id == self.node_id:
@@ -433,20 +557,29 @@ class SimpleGossipProtocol:
 
                 if not existing_node:
                     # Новый узел
+                    services_count = len(node_info.services) if node_info.services else 0
                     self.node_registry[node_info.node_id] = node_info
                     await self._notify_listeners(node_info.node_id, 'alive', node_info)
-                    self.log.info(f"🆕 Discovered new node: {node_info.node_id} ({node_info.role})")
+                    self.log.info(f"🆕 Discovered new node via gossip: {node_info.node_id} at {node_info.address}:{node_info.port} [{node_info.role}] - {services_count} services")
 
                 elif existing_node.last_seen < node_info.last_seen:
                     # Обновление информации об узле
                     old_status = existing_node.status
+                    old_services_count = len(existing_node.services) if existing_node.services else 0
+                    new_services_count = len(node_info.services) if node_info.services else 0
+
                     self.node_registry[node_info.node_id] = node_info
+
+                    # Логируем если изменилось количество сервисов
+                    if old_services_count != new_services_count:
+                        self.log.debug(f"🔄 Node {node_info.node_id} services updated: {old_services_count} -> {new_services_count}")
 
                     if old_status != node_info.status:
                         await self._notify_listeners(node_info.node_id, node_info.status, node_info)
+                        self.log.info(f"🔄 Node {node_info.node_id} status changed: {old_status} -> {node_info.status}")
 
         except Exception as e:
-            self.log.info(f"❌ Error processing gossip response: {e}")
+            self.log.error(f"❌ Error processing gossip response: {e}")
 
     async def _failure_detection_loop(self):
         """Цикл обнаружения отказов узлов"""
@@ -636,15 +769,32 @@ class SimpleGossipProtocol:
     def set_service_info_provider(self, callback):
         """Установить callback для получения информации о сервисах"""
         self.service_info_callback = callback
+        self.log.info(f"✓ Service info provider callback установлен: {callback is not None}")
 
     async def _update_self_services_info(self):
         """Обновить информацию о сервисах на текущем узле"""
         if self.service_info_callback:
             try:
                 services_info = await self.service_info_callback()
+                old_count = len(self.self_info.services) if self.self_info.services else 0
+                new_count = len(services_info) if services_info else 0
+
                 self.self_info.services = services_info
+
+                # Логируем только если изменилось количество сервисов
+                if old_count != new_count:
+                    self.log.info(f"📦 Services info updated: {old_count} -> {new_count} services")
+                    if services_info:
+                        self.log.debug(f"   Services: {list(services_info.keys())}")
             except Exception as e:
-                print(f"Error updating services info: {e}")
+                self.log.error(f"❌ Error updating services info: {e}")
+                import traceback
+                self.log.error(traceback.format_exc())
+        else:
+            # Callback не установлен - это проблема!
+            if not hasattr(self, '_callback_warning_shown'):
+                self.log.warning(f"⚠️  Service info callback НЕ УСТАНОВЛЕН! Сервисы не будут передаваться через gossip.")
+                self._callback_warning_shown = True
 
 
 class P2PNetworkLayer:
@@ -653,17 +803,40 @@ class P2PNetworkLayer:
     def __init__(self, transport_layer,
                  node_id: str, bind_address: str = "127.0.0.1", bind_port: int = 8000,
                  coordinator_mode: bool = False, ssl_verify: bool = True, ca_cert_file: str = None,
+                 advertise_address: str = None, coordinator_addresses: list = None,
                  context=None):
         self.log = logging.getLogger('Network')
         self.context = context  # Сохраняем context для доступа к storage_manager
 
-        if bind_address == '0.0.0.0':
-            self.advertise_address = self._get_local_ip()
+        # Determine advertise address with priority:
+        # 1. Explicit advertise_address parameter (highest priority)
+        # 2. Smart detection using coordinator address (if available)
+        # 3. bind_address if not 0.0.0.0
+        # 4. Auto-detect using default route (fallback)
+        if advertise_address:
+            self.advertise_address = advertise_address
+            self.log.info(f"Using explicit advertise address: {advertise_address}")
+        elif bind_address == '0.0.0.0':
+            # Smart detection - use coordinator address if available
+            target_host = None
+            if coordinator_addresses and len(coordinator_addresses) > 0:
+                # Extract host from first coordinator address (format: "host:port")
+                coord_addr = coordinator_addresses[0]
+                target_host = coord_addr.split(':')[0] if ':' in coord_addr else coord_addr
+                self.log.info(f"Using coordinator address for smart IP detection: {target_host}")
+
+            self.advertise_address = self._get_local_ip(target_host=target_host)
         else:
             self.advertise_address = bind_address
+
+        # Collect all local IP addresses for multi-homed support
+        # This allows other nodes to try all addresses and find the reachable one
+        all_addresses = self._get_all_local_ips()
+
         self.transport = transport_layer
         self.gossip = SimpleGossipProtocol(node_id, self.advertise_address, bind_port, coordinator_mode,
-                                          ssl_verify=ssl_verify, ca_cert_file=ca_cert_file, context=context)
+                                          ssl_verify=ssl_verify, ca_cert_file=ca_cert_file, context=context,
+                                          all_addresses=all_addresses)
         self.load_balancer_index = 0
 
         # SSL параметры для HTTPS клиента
@@ -684,21 +857,154 @@ class P2PNetworkLayer:
         self.request_history = []
         self.max_history_size = 1000
 
-    def _get_local_ip(self):
-        """Получить локальный IP для рекламы при bind 0.0.0.0"""
+    def _get_local_ip(self, target_host: str = None):
+        """
+        Получить локальный IP для рекламы при bind 0.0.0.0
+
+        Args:
+            target_host: Целевой хост для определения правильного интерфейса (например, coordinator IP)
+                        Если None, используется 8.8.8.8 (может выбрать VPN интерфейс)
+
+        Returns:
+            Локальный IP адрес который будет использоваться для подключения к target_host
+        """
         import socket
-        try:
-            # Создаем временное соединение чтобы определить локальный IP
-            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
-                s.connect(("8.8.8.8", 80))  # Не отправляет данные, просто определяет маршрут
-                local_ip = s.getsockname()[0]
-            return local_ip
-        except Exception:
-            # Fallback на получение IP через hostname
+        import ipaddress
+        import psutil
+
+        # Если target_host указан, пытаемся найти интерфейс в той же подсети
+        if target_host:
             try:
-                return socket.gethostbyname(socket.gethostname())
-            except Exception:
-                return '127.0.0.1'  # Последний fallback
+                # Получаем IP адрес координатора
+                target_ip = socket.gethostbyname(target_host)
+                self.log.info(f"Searching for interface in same subnet as coordinator {target_ip}")
+
+                # Получаем все сетевые интерфейсы
+                interfaces = psutil.net_if_addrs()
+
+                # Собираем все IPv4 адреса (кроме loopback и автоконфигурации)
+                candidate_ips = []
+
+                for iface_name, addresses in interfaces.items():
+                    for addr in addresses:
+                        if addr.family == socket.AF_INET:  # IPv4 only
+                            ip = addr.address
+                            netmask = addr.netmask
+
+                            # Пропускаем loopback
+                            if ip.startswith('127.'):
+                                continue
+
+                            # Пропускаем автоконфигурацию (APIPA)
+                            if ip.startswith('169.254.'):
+                                continue
+
+                            # Вычисляем подсеть
+                            try:
+                                network = ipaddress.IPv4Network(f"{ip}/{netmask}", strict=False)
+                                target_addr = ipaddress.IPv4Address(target_ip)
+
+                                # Проверяем, находится ли coordinator в этой подсети
+                                if target_addr in network:
+                                    self.log.info(f"✓ Found matching subnet: {iface_name} - {ip}/{netmask} (contains {target_ip})")
+                                    return ip
+                                else:
+                                    # Сохраняем как кандидата на случай, если не найдем точное совпадение
+                                    candidate_ips.append((ip, iface_name, str(network)))
+                                    self.log.debug(f"  Interface {iface_name}: {ip} (subnet: {network}) - does not contain {target_ip}")
+                            except Exception as e:
+                                self.log.debug(f"  Could not check subnet for {iface_name} {ip}: {e}")
+
+                # Если не нашли в той же подсети, выводим все кандидаты и используем первый не-VPN
+                if candidate_ips:
+                    self.log.warning(f"Coordinator {target_ip} not in same subnet as any interface")
+                    self.log.warning(f"Available interfaces:")
+                    for ip, iface, subnet in candidate_ips:
+                        # Простая эвристика: VPN адаптеры часто имеют маску /32 или /24 в диапазонах 10.x, 172.16-31.x
+                        is_vpn = ('/32' in subnet or
+                                 ip.startswith('10.') or
+                                 any(ip.startswith(f'172.{i}.') for i in range(16, 32)))
+                        marker = '(possibly VPN)' if is_vpn else ''
+                        self.log.warning(f"  - {iface}: {ip} (subnet: {subnet}) {marker}")
+
+                    # Выбираем первый не-VPN адрес
+                    for ip, iface, subnet in candidate_ips:
+                        is_vpn = ('/32' in subnet or
+                                 ip.startswith('10.') or
+                                 any(ip.startswith(f'172.{i}.') for i in range(16, 32)))
+                        if not is_vpn:
+                            self.log.info(f"Using non-VPN interface: {iface} - {ip}")
+                            return ip
+
+                    # Если все похожи на VPN, берем первый
+                    ip, iface, subnet = candidate_ips[0]
+                    self.log.warning(f"All interfaces appear to be VPN, using first: {iface} - {ip}")
+                    return ip
+
+            except Exception as e:
+                self.log.warning(f"Failed to detect IP via subnet matching: {e}")
+
+        # Fallback: старый метод через socket routing
+        target = target_host if target_host else "8.8.8.8"
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+                s.connect((target, 80))
+                local_ip = s.getsockname()[0]
+            self.log.info(f"Detected local IP via routing: {local_ip} (route to {target})")
+            return local_ip
+        except Exception as e:
+            self.log.warning(f"Failed to detect IP via route to {target}: {e}")
+            # Последний fallback - hostname
+            try:
+                local_ip = socket.gethostbyname(socket.gethostname())
+                self.log.info(f"Using hostname IP: {local_ip}")
+                return local_ip
+            except Exception as e2:
+                self.log.error(f"Failed to get IP via hostname: {e2}, using 127.0.0.1")
+                return '127.0.0.1'
+
+    def _get_all_local_ips(self) -> List[str]:
+        """
+        Получить все локальные IP адреса для multi-homed узлов
+
+        Returns:
+            Список всех IPv4 адресов узла (кроме loopback и auto-config)
+        """
+        import socket
+        import psutil
+
+        addresses = []
+
+        try:
+            interfaces = psutil.net_if_addrs()
+
+            for iface_name, addrs in interfaces.items():
+                for addr in addrs:
+                    if addr.family == socket.AF_INET:  # IPv4 only
+                        ip = addr.address
+
+                        # Пропускаем loopback
+                        if ip.startswith('127.'):
+                            continue
+
+                        # Пропускаем автоконфигурацию (APIPA)
+                        if ip.startswith('169.254.'):
+                            continue
+
+                        addresses.append(ip)
+                        self.log.debug(f"Found interface {iface_name}: {ip}")
+
+            if addresses:
+                self.log.info(f"Node has {len(addresses)} network addresses: {', '.join(addresses)}")
+            else:
+                self.log.warning("No valid network addresses found, using 127.0.0.1")
+                addresses = ['127.0.0.1']
+
+        except Exception as e:
+            self.log.error(f"Failed to enumerate network interfaces: {e}")
+            addresses = ['127.0.0.1']
+
+        return addresses
 
     async def start(self, join_addresses: List[str] = None):
         """Запуск сетевого уровня"""

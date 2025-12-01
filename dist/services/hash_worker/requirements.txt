@@ -1,0 +1,3 @@
+# Requirements for hash_worker service
+# System monitoring for dynamic load balancing
+psutil>=5.9.0

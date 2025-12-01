@@ -192,8 +192,12 @@ class RPCRequest(BaseModel):
 
 class RPCResponse(BaseModel):
     result: Any = None
-    error: str = None
+    error: Optional[str] = None
     id: str
+
+    class Config:
+        # Exclude None values from JSON serialization
+        exclude_none = True
 
 
 class GossipJoinRequest(BaseModel):
@@ -696,7 +700,7 @@ class BaseService(ABC):
 
     async def _update_system_metrics(self):
         """Background задача для обновления системных метрик - оптимизированная"""
-        self.logger.info(f"Starting heartbeat monitoring for {self.service_name}")
+        self.logger.debug(f"Starting heartbeat monitoring for {self.service_name}")
 
         # РАЗНОСИМ запуск по времени для разных сервисов
         service_delay = hash(self.service_name) % 20  # 0-20 сек задержка
@@ -889,8 +893,20 @@ class BaseService(ABC):
             return time.time() - self._start_time
         return 0
 
+    @service_method(description="Get detailed service information", public=True)
     async def get_service_info(self) -> Dict[str, Any]:
         """Получение информации о сервисе с расширенными данными"""
+        # Агрегировать данные таймеров
+        timers_aggregated = {}
+        for name, values in self.metrics.timers.items():
+            if values:
+                timers_aggregated[name] = {
+                    "count": len(values),
+                    "avg_ms": sum(values) / len(values),
+                    "min_ms": min(values),
+                    "max_ms": max(values)
+                }
+
         return {
             "name": self.service_name,
             "status": self.status.value,
@@ -904,7 +920,10 @@ class BaseService(ABC):
                 "counters": len(self.metrics.counters),
                 "gauges": len(self.metrics.gauges),
                 "timers": len(self.metrics.timers)
-            }
+            },
+            "counters": dict(self.metrics.counters),
+            "gauges": dict(self.metrics.gauges),
+            "timers": timers_aggregated
         }
 
     @service_method(description="Health check ping", public=True, requires_auth=False)
@@ -1068,17 +1087,17 @@ class ServiceManager:
     def set_proxy_client(self, proxy_client):
         """Установка proxy клиента для всех сервисов"""
         self.proxy_client = proxy_client
-        self.logger.info("Setting proxy client for all services...")
+        self.logger.debug("Setting proxy client for all services...")
 
         # Инжектируем proxy во все уже созданные сервисы
         for service_name, service_instance in self.services.items():
             try:
                 if hasattr(service_instance, 'set_proxy'):
                     service_instance.set_proxy(proxy_client)
-                    self.logger.info(f"Proxy injected into service: {service_name}")
+                    self.logger.debug(f"Proxy injected into service: {service_name}")
                 elif hasattr(service_instance, 'proxy'):
                     service_instance.proxy = proxy_client
-                    self.logger.info(f"Proxy set directly for service: {service_name}")
+                    self.logger.debug(f"Proxy set directly for service: {service_name}")
             except Exception as e:
                 self.logger.error(f"Failed to inject proxy into {service_name}: {e}")
 
@@ -1087,7 +1106,7 @@ class ServiceManager:
         service_name = service_path.name
         main_file = service_path / "main.py"
 
-        self.logger.info(f"Loading service {service_name} from {main_file}")
+        self.logger.debug(f"Loading service {service_name} from {main_file}")
 
         try:
             # Создание уникального имени модуля
@@ -1111,7 +1130,7 @@ class ServiceManager:
             RunClass = module.Run
             service_instance = RunClass(service_name, self.proxy_client)
 
-            self.logger.info(f"Service instance created for {service_name}")
+            self.logger.debug(f"Service instance created for {service_name}")
             return service_instance
 
         except Exception as e:
@@ -1125,9 +1144,14 @@ class ServiceManager:
             if self.proxy_client:
                 if hasattr(service_instance, 'set_proxy'):
                     service_instance.set_proxy(self.proxy_client)
-                    self.logger.info(f"Proxy successfully set for service: {service_instance.service_name}")
+                    self.logger.debug(f"Proxy successfully set for service: {service_instance.service_name}")
                 else:
                     service_instance.proxy = self.proxy_client
+
+            # Передаем service_manager и context в сервис
+            service_instance._service_manager = self
+            if hasattr(self.rpc, 'context'):
+                service_instance.context = self.rpc.context
 
             # КРИТИЧЕСКИ ВАЖНО: ЗАПУСКАЕМ СЕРВИС
             await service_instance.start()  # <-- ЭТО ОТСУТСТВОВАЛО!
@@ -1165,15 +1189,15 @@ class ServiceManager:
                 # Регистрируем в method_registry напрямую
                 if hasattr(self.rpc, 'method_registry'):
                     self.rpc.method_registry[rpc_path] = method
-                    self.logger.info(f"Registered method: {rpc_path}")
+                    self.logger.debug(f"Registered method: {rpc_path}")
                 # Или через метод register_method если есть
                 elif hasattr(self.rpc, 'register_method'):
                     await self.rpc.register_method(rpc_path, method)
-                    self.logger.info(f"Registered method: {rpc_path}")
+                    self.logger.debug(f"Registered method: {rpc_path}")
                 # Если есть context, регистрируем там
                 elif hasattr(self.rpc, 'context') and self.rpc.context:
                     self.rpc.context.register_method(rpc_path, method)
-                    self.logger.info(f"Registered method in context: {rpc_path}")
+                    self.logger.debug(f"Registered method in context: {rpc_path}")
                 else:
                     self.logger.warning(f"Cannot register method {rpc_path}: no registry available")
 
@@ -1182,20 +1206,20 @@ class ServiceManager:
         services_dir = get_services_path()
 
         if not services_dir.exists():
-            self.logger.info("Services directory not found, skipping service initialization")
+            self.logger.debug("Services directory not found, skipping service initialization")
             return
 
-        self.logger.info(f"Scanning services directory: {services_dir.absolute()}")
+        self.logger.debug(f"Scanning services directory: {services_dir.absolute()}")
 
         for service_path in services_dir.iterdir():
             if service_path.is_dir():
                 main_file = service_path / "main.py"
                 if main_file.exists():
-                    self.logger.info(f"Attempting to load service: {service_path.name}")
+                    self.logger.debug(f"Attempting to load service: {service_path.name}")
                     service_instance = await self.load_service(service_path)
 
                     if service_instance:
-                        self.logger.info(f"Service {service_path.name} loaded successfully")
+                        self.logger.debug(f"Service {service_path.name} loaded successfully")
                         await self.initialize_service(service_instance)
 
         self.logger.info(f"Initialized {len(self.services)} services")
@@ -1415,7 +1439,7 @@ class ServiceManager:
             except Exception as e:
                 self.logger.error(f"Error getting info for service {service_name}: {e}")
                 import traceback
-                print(traceback.format_exc())
+                self.logger.debug(traceback.format_exc())
                 # Fallback информация при ошибке
                 services_info[service_name] = {
                     "version": "unknown",
@@ -1532,20 +1556,31 @@ def get_services_path():
     """Получить путь к папке services с улучшенной логикой"""
     exe_dir = get_exe_dir()
 
+    # Получаем корневую директорию проекта (parent для layers/)
+    project_root = exe_dir.parent if exe_dir.name == "layers" else exe_dir
+
     # Попробуем несколько локаций
     possible_paths = [
-        exe_dir / ".." / "dist" / "services" if 'PycharmProjects' in str(exe_dir) else None,
+        project_root / "dist" / "services",  # Основной путь для репозитория
+        exe_dir / "dist" / "services",
+        exe_dir / ".." / "dist" / "services",
         exe_dir / "services",
+        Path.cwd() / "dist" / "services",  # Добавляем dist/services относительно CWD
         Path.cwd() / "services"
     ]
 
     for services_path in filter(None, possible_paths):
-        if services_path.exists():
-            return services_path
+        resolved = services_path.resolve()
+        if resolved.exists():
+            return resolved
 
-    # Создаем в первой возможной локации
-    services_path = possible_paths[0]
-    services_path.mkdir(exist_ok=True)
+    # Создаем в первой доступной НЕ-None локации
+    valid_paths = list(filter(None, possible_paths))
+    if not valid_paths:
+        raise RuntimeError("No valid path available for services directory")
+
+    services_path = valid_paths[0].resolve()
+    services_path.mkdir(parents=True, exist_ok=True)
     return services_path
 
 
@@ -1914,9 +1949,6 @@ class P2PServiceHandler:
                         ca_cert_file = self.context.config.ssl_ca_cert_file
                         ca_key_file = self.context.config.ssl_ca_key_file
 
-                        print(cert_tmp_path)
-                        print(key_tmp_path)
-
                         success = generate_signed_certificate(
                             cert_file=cert_tmp_path,
                             key_file=key_tmp_path,
@@ -1942,14 +1974,9 @@ class P2PServiceHandler:
                 # Читаем сгенерированные файлы
                 with open(cert_tmp_path.name, 'r') as f:
                     certificate_pem = f.read()
-                    print(certificate_pem)
 
                 with open(key_tmp_path.name, 'r') as f:
                     private_key_pem = f.read()
-                    print(private_key_pem)
-
-                print(certificate_pem)
-                print(private_key_pem)
 
                 # Удаляем временные файлы
                 # os.unlink(cert_tmp_path)
@@ -1981,6 +2008,57 @@ class P2PServiceHandler:
                 raise HTTPException(
                     status_code=500,
                     detail=f"Certificate generation error: {str(e)}"
+                )
+
+        @self.app.get("/internal/ca-cert")
+        async def get_ca_certificate():
+            """
+            Эндпоинт для получения CA сертификата (координатор)
+            Воркер может запросить CA сертификат для верификации HTTPS соединений
+            Возвращает только публичный сертификат CA (без ключа)
+            """
+            # Проверяем что это координатор
+            if not self.context.config.coordinator_mode:
+                raise HTTPException(
+                    status_code=403,
+                    detail="CA certificate is only available on coordinator nodes"
+                )
+
+            try:
+                # Читаем CA сертификат из защищенного хранилища
+                from layers.ssl_helper import read_cert_bytes
+
+                ca_cert_file = self.context.config.ssl_ca_cert_file
+
+                if not ca_cert_file:
+                    raise HTTPException(
+                        status_code=500,
+                        detail="CA certificate not configured on coordinator"
+                    )
+
+                ca_cert_data = read_cert_bytes(ca_cert_file, context=self.context)
+
+                if not ca_cert_data:
+                    raise HTTPException(
+                        status_code=500,
+                        detail="CA certificate not found in secure storage"
+                    )
+
+                # Преобразуем байты в строку PEM
+                ca_cert_pem = ca_cert_data.decode('utf-8')
+
+                self.logger.info("CA certificate requested and sent to worker")
+
+                return {
+                    "ca_certificate": ca_cert_pem,
+                    "message": "CA certificate retrieved successfully"
+                }
+
+            except Exception as e:
+                self.logger.error(f"Failed to retrieve CA certificate: {e}")
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Failed to retrieve CA certificate: {str(e)}"
                 )
 
         # =====================================================

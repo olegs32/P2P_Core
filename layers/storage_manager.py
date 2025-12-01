@@ -35,6 +35,8 @@ class P2PStorageManager:
         self.storage_path = storage_path
         self.archive: Optional[SecureArchive] = None
         self._is_initialized = False
+        self._modified = False  # Флаг изменений для автосохранения
+        self._autosave_task = None  # Задача автосохранения
 
         logger.info(f"P2PStorageManager initialized (storage: {storage_path})")
 
@@ -119,6 +121,7 @@ class P2PStorageManager:
 
         config_path = f"config/{config_name}"
         self.archive.write_file(config_path, content)
+        self._modified = True  # Помечаем что есть изменения
 
         logger.debug(f"Config written: {config_name}")
 
@@ -153,8 +156,43 @@ class P2PStorageManager:
 
         cert_path = f"certs/{cert_name}"
         self.archive.write_file(cert_path, cert_data)
+        self._modified = True  # Помечаем что есть изменения
 
         logger.debug(f"Certificate written: {cert_name}")
+
+    def read(self, file_name: str) -> bytes:
+        """
+        Чтение файла
+        Args:
+            file_name: Имя файла
+
+        Returns:
+            Байты файла
+        """
+        self._ensure_initialized()
+
+        file_path = f"{file_name}"
+
+        if not self.archive.exists(file_path):
+            raise FileNotFoundError(f"File not found: {file_name}")
+
+        return self.archive.read_file(file_path)
+
+    def write(self, file_name: str, file_data: bytes):
+        """
+        Запись файла
+
+        Args:
+            file_name: Имя файла
+            file_data: Байты файла
+        """
+        self._ensure_initialized()
+
+        file_path = f"{file_name}"
+        self.archive.write_file(file_path, file_data)
+        self._modified = True  # Помечаем что есть изменения
+
+        logger.debug(f"File written: {file_name}")
 
     def read_state(self, state_name: str) -> str:
         """
@@ -189,6 +227,7 @@ class P2PStorageManager:
 
         state_path = f"state/{state_name}"
         self.archive.write_file(state_path, content)
+        self._modified = True  # Помечаем что есть изменения
 
         logger.debug(f"State written: {state_name}")
 
@@ -204,6 +243,33 @@ class P2PStorageManager:
         """
         self._ensure_initialized()
         return self.archive.list_files(directory)
+
+    def list_configs(self) -> list:
+        """
+        Список конфигурационных файлов
+
+        Returns:
+            Список файлов в директории config
+        """
+        return self.list_files("config")
+
+    def list_certs(self) -> list:
+        """
+        Список файлов сертификатов
+
+        Returns:
+            Список файлов в директории certs
+        """
+        return self.list_files("certs")
+
+    def list_data_files(self) -> list:
+        """
+        Список файлов данных
+
+        Returns:
+            Список файлов в корневой директории data
+        """
+        return self.list_files("data")
 
     def exists(self, path: str) -> bool:
         """Проверка существования файла"""
@@ -238,6 +304,94 @@ class P2PStorageManager:
         self._ensure_initialized()
         return self.archive
 
+    def save(self):
+        """
+        Явное сохранение хранилища на диск
+
+        Используется для:
+        - Периодического автосохранения
+        - Сохранения перед shutdown
+        - Ручного сохранения после важных изменений
+        """
+        self._ensure_initialized()
+
+        if not self._modified:
+            logger.debug("Storage not modified, skipping save")
+            return
+
+        try:
+            # Создание директории если не существует
+            Path(self.storage_path).parent.mkdir(parents=True, exist_ok=True)
+
+            # Сохранение архива
+            self.archive.save(self.storage_path)
+            self._modified = False  # Сбрасываем флаг изменений
+            logger.info(f"Storage saved successfully to {self.storage_path}")
+
+        except Exception as e:
+            logger.error(f"Failed to save storage: {e}")
+            raise
+
+    async def _autosave_loop(self, interval: int = 60):
+        """
+        Фоновая задача для периодического автосохранения
+
+        Args:
+            interval: Интервал сохранения в секундах (по умолчанию 60)
+        """
+        import asyncio
+
+        logger.info(f"Storage autosave started (interval: {interval}s)")
+
+        while True:
+            try:
+                await asyncio.sleep(interval)
+
+                if self._modified:
+                    logger.debug("Autosave: detecting changes, saving...")
+                    self.save()
+                else:
+                    logger.debug("Autosave: no changes detected")
+
+            except asyncio.CancelledError:
+                # Последнее сохранение перед завершением
+                if self._modified:
+                    logger.info("Autosave task cancelled, performing final save...")
+                    self.save()
+                logger.info("Storage autosave stopped")
+                break
+            except Exception as e:
+                logger.error(f"Error in autosave loop: {e}")
+
+    def start_autosave(self, interval: int = 60):
+        """
+        Запустить фоновое автосохранение
+
+        Args:
+            interval: Интервал сохранения в секундах (по умолчанию 60)
+        """
+        import asyncio
+
+        if self._autosave_task is not None:
+            logger.warning("Autosave task already running")
+            return
+
+        try:
+            loop = asyncio.get_running_loop()
+            self._autosave_task = loop.create_task(self._autosave_loop(interval))
+            logger.info(f"Storage autosave task started (interval: {interval}s)")
+        except RuntimeError:
+            logger.warning("No running event loop, autosave not started")
+
+    def stop_autosave(self):
+        """
+        Остановить фоновое автосохранение
+        """
+        if self._autosave_task is not None:
+            self._autosave_task.cancel()
+            self._autosave_task = None
+            logger.info("Storage autosave task stopped")
+
 
 def get_storage_manager(context=None) -> Optional[P2PStorageManager]:
     """
@@ -255,26 +409,36 @@ def get_storage_manager(context=None) -> Optional[P2PStorageManager]:
 
 
 @contextmanager
-def init_storage(password: str, storage_path=None, context=None):
+def init_storage(password: str, storage_path=None, context=None, run_type=None):
     """
     Инициализация хранилища с регистрацией в контексте
 
     Args:
         password: Пароль для хранилища
-        storage_path: Путь к файлу хранилища
+        storage_path: Путь к файлу хранилища (если None, используется дефолтный)
         context: P2PApplicationContext для регистрации storage_manager
 
     Example:
         context = P2PApplicationContext(config)
-        with init_storage(password="my_secure_password", context=context):
+        with init_storage(password="my_secure_password", storage_path="data/p2p.bin", context=context):
             # Весь код приложения здесь
             # storage_manager доступен через context.get_shared("storage_manager")
     """
+    if run_type is not None:
+        coordinator_mode = run_type
+    else:
+        coordinator_mode = context.config.coordinator_mode
     if not storage_path or storage_path == '':
-        if context.config.coordinator_mode:
-            storage_path = "data/p2p_coordinator.bin"
-        else:
-            storage_path = "data/p2p_worker.bin"
+        # Дефолтный путь без обращения к context.config
+        storage_path = "data/p2p_worker.bin"
+        try:
+            if coordinator_mode:
+                storage_path = "data/p2p_coordinator.bin"
+            else:
+                storage_path = "data/p2p_worker.bin"
+        except Exception:
+            pass
+
     manager = P2PStorageManager(password=password, storage_path=storage_path)
 
     with manager.initialize():
