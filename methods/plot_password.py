@@ -9,6 +9,7 @@ deterministic password through multiple layers of hashing and derivation.
 import hashlib
 import multiprocessing
 import os
+import platform
 import random
 import re
 from pathlib import Path
@@ -120,6 +121,16 @@ def generate_plot_file(plot_file: Path, num_processes: int = 10) -> bool:
         True if plot was successfully generated, False otherwise
     """
     print(f"Generating plot file at: {plot_file}")
+    print("=" * 70)
+
+    # Display CPU information
+    cpu_info = platform.processor() or "Unknown"
+    cpu_count = multiprocessing.cpu_count()
+
+    print(f"CPU Model: {cpu_info}")
+    print(f"CPU Cores: {cpu_count}")
+    print(f"Parallel processes: {num_processes}")
+    print("=" * 70)
 
     # Ensure parent directory exists
     plot_file.parent.mkdir(parents=True, exist_ok=True)

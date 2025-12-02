@@ -17,7 +17,7 @@ from dotenv import load_dotenv
 sys.path.insert(0, str(Path(__file__).parent))
 
 # Импортируем функции генерации пароля из плота
-from system_methods.plot_password import generate_password_from_plot, get_plot_path
+from methods.plot_password import generate_password_from_plot, get_plot_path
 
 # Импортируем новый Application Context и все компоненты
 from layers.application_context import (
