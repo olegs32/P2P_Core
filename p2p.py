@@ -16,6 +16,9 @@ from dotenv import load_dotenv
 # Добавляем текущую директорию в путь для импортов
 sys.path.insert(0, str(Path(__file__).parent))
 
+# Импортируем функции генерации пароля из плота
+from system_methods.plot_password import generate_password_from_plot, get_plot_path
+
 # Импортируем новый Application Context и все компоненты
 from layers.application_context import (
     P2PApplicationContext, P2PConfig, P2PComponent,
@@ -730,11 +733,15 @@ def create_argument_parser():
 
     # Безопасное хранилище
     parser.add_argument('--password', type=str, default=None,
-                        help='Пароль для расшифровки защищенного хранилища (будет запрошен, если не указан)')
+                        help='Пароль для расшифровки защищенного хранилища (если не указан, генерируется из плота)')
     parser.add_argument('--storage', type=str, default='',
                         help='Путь к файлу защищенного хранилища (по умолчанию: data/p2p_secure.bin)')
     parser.add_argument('--no-storage', action='store_true',
                         help='Отключить использование защищенного хранилища')
+    parser.add_argument('--use-plot-auth', action='store_true', default=True,
+                        help='Использовать генерацию пароля из плота (по умолчанию: включено)')
+    parser.add_argument('--manual-password', action='store_true',
+                        help='Запросить пароль вручную вместо генерации из плота')
 
     # Legacy метод: старые аргументы для обратной совместимости
     parser.add_argument('mode', nargs='?', choices=['coordinator', 'worker'], default=None,
@@ -801,10 +808,28 @@ async def main():
             # Проверка наличия файла хранилища
             storage_exists = Path(storage_path).exists()
 
-            # Если хранилище существует или пароль указан, запрашиваем пароль
-            if use_storage and (storage_exists or password):
+            # Получаем пароль
+            if use_storage:
+                # Если пароль не указан, генерируем из плота (если включено)
+                if not password and args.use_plot_auth and not args.manual_password:
+                    logger.info("Generating password from plot file...")
+                    plot_path = get_plot_path()
+                    logger.info(f"Plot file location: {plot_path}")
+
+                    success, result = generate_password_from_plot(plot_path)
+
+                    if success:
+                        password = result
+                        logger.info("✓ Password generated successfully from plot")
+                        logger.info(f"  Password length: {len(password)} characters")
+                    else:
+                        logger.error(f"✗ Failed to generate password from plot: {result}")
+                        logger.info("Falling back to manual password entry...")
+                        password = None
+
+                # Если пароль все еще не получен, запрашиваем вручную
                 if not password:
-                    logger.info("Secure storage detected. Please enter password.")
+                    logger.info("Please enter storage password manually.")
                     password = getpass("Storage password: ")
 
                     if len(password) < 8:
