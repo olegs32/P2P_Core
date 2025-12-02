@@ -884,6 +884,142 @@ with open("certs/ca_cert.cer", "rb") as f:  # NEVER DO THIS
     cert_data = f.read()
 ```
 
+### Plot-Based Password Generation
+
+**Location**: `methods/plot_password.py`
+
+**NEW FEATURE**: Automatic password generation from cryptographic plot file for secure storage encryption.
+
+**Overview**:
+The system uses a plot-based password generation mechanism to derive deterministic passwords from a cryptographic plot file. This eliminates the need for manual password entry while maintaining high security.
+
+**Plot File Location**: `dist/services/plot` (relative to p2p.py root)
+
+**Key Features**:
+- **Deterministic**: Same plot file always generates the same password
+- **Multi-layered hashing**: 7 layers of cryptographic processing
+- **High entropy**: 100-character password with full charset
+- **PBKDF2 derivation**: 500,000+ iterations for key stretching
+- **Auto-generation**: Creates plot file on first run if missing
+- **CPU-aware**: Displays CPU model and core count during generation
+
+**Password Generation Algorithm**:
+1. **Layer 1**: Full SHA-512 hash of entire plot file
+2. **Layer 2**: SHA3-256 hash of all pattern character positions
+3. **Layer 3**: SHA-256 hash of 100 file blocks (MD5 per block)
+4. **Layer 4**: BLAKE2b cascading extraction by pattern indices
+5. **Layer 5**: XOR of three file segments (beginning, middle, end)
+6. **Layer 6**: SHA-256 hash of character frequency statistics
+7. **Layer 7**: SHA-256 hash of file metadata (size, name, length)
+8. **Final**: PBKDF2-HMAC-SHA512 with salt (500,000+ iterations)
+
+**Plot Generation Process**:
+```
+Plot Generation:
+1. Multiprocessing (10 parallel workers by default)
+2. Generate random data (3,347 bytes)
+3. Extract repeating pattern (length > 13 characters)
+4. Select best pattern (longest found)
+5. Save to dist/services/plot
+
+CPU Info Display:
+======================================================================
+CPU Model: x86_64
+CPU Cores: 16
+Parallel processes: 10
+======================================================================
+```
+
+**Usage in p2p.py**:
+```python
+from methods.plot_password import generate_password_from_plot, get_plot_path
+
+# Automatic password generation (default behavior)
+plot_path = get_plot_path()
+success, password = generate_password_from_plot(plot_path)
+
+if success:
+    # Use password for secure storage initialization
+    storage = init_storage(password, storage_path, context)
+```
+
+**Command-Line Arguments**:
+```bash
+# Use plot-based authentication (default)
+python3 p2p.py --config config/coordinator.yaml
+
+# Force manual password entry
+python3 p2p.py --config config/coordinator.yaml --manual-password
+
+# Provide password directly
+python3 p2p.py --config config/coordinator.yaml --password "mypassword"
+```
+
+**Configuration Flags**:
+- `--use-plot-auth`: Enable plot-based authentication (default: True)
+- `--manual-password`: Force manual password prompt
+- `--password <pass>`: Provide password directly
+
+**Security Considerations**:
+- ✅ Plot file is in `.gitignore` (not committed to repository)
+- ✅ Each node generates its own plot by default
+- ✅ For cluster setup, distribute plot via secure channel (SCP, etc.)
+- ✅ Changing plot requires re-encryption of secure storage
+- ⚠️ Plot file backup is critical - losing it = losing access to encrypted data
+
+**Key Functions**:
+```python
+# Get standard plot file path
+def get_plot_path() -> Path:
+    # Returns: dist/services/plot
+
+# Generate new plot file
+def generate_plot_file(plot_file: Path, num_processes: int = 10) -> bool:
+    # Creates plot with CPU-optimized multiprocessing
+
+# Generate password from plot
+def generate_password_from_plot(
+    plot_file: Optional[Path] = None,
+    password_length: int = 100
+) -> Tuple[bool, str]:
+    # Returns: (success, password or error_message)
+
+# Generate secure password with 7-layer hashing
+def generate_secure_password(
+    data_file: Path,
+    pattern: str,
+    length: int = 100
+) -> str:
+    # Multi-layered cryptographic derivation
+```
+
+**Example Output**:
+```
+Generating password from plot file...
+Plot file location: /home/user/P2P_Core/dist/services/plot
+Generating plot file at: /home/user/P2P_Core/dist/services/plot
+======================================================================
+CPU Model: x86_64
+CPU Cores: 16
+Parallel processes: 10
+======================================================================
+Plot pattern found: attempt 1, pattern length 22
+...
+Best pattern selected: length 22
+Plot file created successfully
+✓ Password generated successfully from plot
+  Password length: 100 characters
+```
+
+**Cluster Deployment**:
+For multi-node clusters sharing secure storage:
+1. Generate plot on coordinator node
+2. Distribute `dist/services/plot` to all workers via secure channel
+3. All nodes will derive the same password from identical plot
+4. Alternatively, each node can have unique plot with separate storage
+
+**CRITICAL**: Never commit plot file to version control. It's already in `.gitignore`.
+
 ### Rate Limiting
 
 **Location**: `layers/rate_limiter.py`, middleware in `layers/service.py`
@@ -1717,7 +1853,8 @@ P2P_Core/
 │   └── local_service_bridge.py  # Local/remote proxy
 ├── methods/                     # Built-in core services
 │   ├── system.py                # System information service
-│   └── log_collector.py         # Centralized log collection
+│   ├── log_collector.py         # Centralized log collection
+│   └── plot_password.py         # Plot-based password generation
 ├── dist/services/               # Pluggable services
 │   ├── orchestrator/            # Service orchestration & deployment
 │   ├── metrics_dashboard/       # Web UI for monitoring & logs
@@ -3667,6 +3804,93 @@ enable_address_probing: false
 - **HTTP POST**: Control actions (start/stop services, certificate management)
 - **HTTP GET**: One-time queries, static resources
 
+### ADR-010: Why Plot-Based Password Generation?
+
+**Decision**: Implement automatic password generation from cryptographic plot files instead of requiring manual password entry for secure storage.
+
+**Rationale**:
+- **User Experience**: Eliminates need for password memorization and manual entry
+- **Security**: High-entropy passwords (100 characters, full charset) generated deterministically
+- **Automation**: Enables fully automated node deployment without human intervention
+- **Consistency**: Same plot file always generates same password (deterministic)
+- **Cryptographic Strength**: 7-layer hashing + PBKDF2 with 500,000+ iterations
+
+**Implementation Details**:
+- Plot file stored at `dist/services/plot` (relative to p2p.py)
+- Multiprocessing generation (10 parallel workers)
+- 7-layer cryptographic processing:
+  1. SHA-512 full file hash
+  2. SHA3-256 pattern position hash
+  3. SHA-256 block hashing (100 blocks)
+  4. BLAKE2b cascading extraction
+  5. XOR of file segments
+  6. SHA-256 frequency statistics
+  7. SHA-256 metadata hash
+- Final PBKDF2-HMAC-SHA512 with salt (500,000+ iterations)
+- CPU-aware: Displays CPU model and core count during generation
+
+**Consequences**:
+- ✅ No password memorization required
+- ✅ Fully automated deployment possible
+- ✅ High security (100-character passwords)
+- ✅ Deterministic (same plot = same password)
+- ✅ Fallback to manual entry if plot fails
+- ⚠️ Plot file must be backed up (losing it = losing encrypted data access)
+- ⚠️ Plot distribution required for cluster setup
+- ❌ Plot file is sensitive (must not be committed to repo)
+
+**Security Considerations**:
+- Plot file added to `.gitignore` automatically
+- Each node generates unique plot by default (separate storage)
+- For clusters: distribute plot via secure channel (SCP, rsync over SSH)
+- Changing plot requires re-encryption of secure storage
+- Plot backup is critical for disaster recovery
+
+**Alternative Approaches Considered**:
+
+1. **Manual Password Entry** (traditional):
+   - ✅ Simple, well-understood
+   - ❌ Requires human intervention
+   - ❌ Weak passwords common
+   - ❌ Password forgotten = data loss
+
+2. **Hardware Security Module (HSM)**:
+   - ✅ Very high security
+   - ❌ Expensive hardware required
+   - ❌ Not suitable for distributed systems
+   - ❌ Complex setup
+
+3. **Key Management Service (KMS)**:
+   - ✅ Centralized key management
+   - ❌ External dependency
+   - ❌ Network connectivity required
+   - ❌ Single point of failure
+
+4. **Plot-Based Generation** (chosen):
+   - ✅ No external dependencies
+   - ✅ High security
+   - ✅ Fully automated
+   - ✅ Works offline
+   - ⚠️ Plot file is critical asset
+
+**Configuration Options**:
+```bash
+# Default: plot-based authentication
+python3 p2p.py --config config/coordinator.yaml
+
+# Manual password entry
+python3 p2p.py --config config/coordinator.yaml --manual-password
+
+# Direct password provision
+python3 p2p.py --config config/coordinator.yaml --password "mypassword"
+```
+
+**Cluster Deployment Workflow**:
+1. Generate plot on coordinator: `python3 -m methods.plot_password`
+2. Copy to workers: `scp dist/services/plot worker:/path/to/P2P_Core/dist/services/`
+3. Start all nodes: password auto-generated from identical plot
+4. Backup plot file to secure location
+
 ---
 
 **End of CLAUDE.md**
@@ -3674,6 +3898,31 @@ enable_address_probing: false
 This document should be your primary reference when working with the P2P_Core codebase. Follow these patterns, conventions, and architectural decisions to maintain consistency and quality.
 
 ## Recent Updates
+
+**2025-12-02 (Plot-Based Password Generation Integration)**:
+- **Integrated plot-based password generation system**
+  - Moved plot_password.py from scripts/ to methods/ (built-in core service)
+  - Automatic password generation from cryptographic plot file
+  - Eliminates manual password entry for secure storage
+  - 7-layer cryptographic hashing with PBKDF2 (500,000+ iterations)
+  - Deterministic: same plot = same password
+- **Enhanced plot generation with CPU information**
+  - Displays CPU model and core count during generation
+  - Multiprocessing-based generation (10 parallel workers)
+  - Example output shows hardware being used
+- **New CLI arguments for password management**
+  - `--use-plot-auth` (default: True) - use plot-based authentication
+  - `--manual-password` - force manual password prompt
+  - `--password <pass>` - provide password directly
+- **Security improvements**
+  - Plot file added to .gitignore (never commit to repo)
+  - Plot stored at dist/services/plot (relative to p2p.py)
+  - Each node generates unique plot by default
+  - For clusters: distribute plot via secure channel
+- **Updated CLAUDE.md documentation**
+  - Added comprehensive Plot-Based Password Generation section
+  - Updated Code Organization to include plot_password.py
+  - Added security considerations and usage examples
 
 **2025-11-18 (Distributed Hash Worker System Documentation)**:
 - **Added comprehensive Distributed Hash Worker System section to CLAUDE.md**
