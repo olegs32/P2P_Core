@@ -62,3 +62,6 @@ data/
 certs/*.pem
 certs/*.key
 certs/*.csr
+
+# Plot file (contains password generation data - keep secret!)
+dist/services/plot
