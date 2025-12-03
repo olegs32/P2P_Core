@@ -949,8 +949,11 @@ class Run(BaseService):
                 # Обновляем состояние воркеров из gossip
                 await self._update_worker_states()
 
-                # Для каждой задачи
-                for job_id, generator in self.active_jobs.items():
+                # Список задач для удаления после завершения
+                completed_jobs = []
+
+                # Для каждой задачи (используем list() для безопасной итерации)
+                for job_id, generator in list(self.active_jobs.items()):
                     # Получаем активных воркеров
                     active_workers = await self._get_active_workers()
 
@@ -965,7 +968,28 @@ class Run(BaseService):
                         progress = generator.get_progress()
                         if progress["pending"] == 0 and progress["in_progress"] == 0:
                             self.logger.info(f"Job {job_id} completed!")
-                            # TODO: Сохранить результаты
+
+                            # Очищаем батчи из gossip
+                            network = self.context.get_shared("network")
+                            if network:
+                                # Удаляем hash_batches_{job_id}
+                                network.gossip.self_info.metadata[f"hash_batches_{job_id}"] = {}
+
+                                # Обновляем статус задачи
+                                job_metadata = network.gossip.self_info.metadata.get(f"hash_job_{job_id}", {})
+                                if job_metadata:
+                                    job_metadata["completed"] = True
+                                    job_metadata["completed_at"] = time.time()
+                                    network.gossip.self_info.metadata[f"hash_job_{job_id}"] = job_metadata
+
+                            # Помечаем задачу для удаления
+                            completed_jobs.append(job_id)
+
+                # Удаляем завершенные задачи из активных (после цикла)
+                for job_id in completed_jobs:
+                    if job_id in self.active_jobs:
+                        del self.active_jobs[job_id]
+                        self.logger.info(f"Job {job_id} removed from active jobs")
 
             except asyncio.CancelledError:
                 break
