@@ -337,15 +337,24 @@ class DynamicChunkGenerator:
             return batch
 
     def mark_batch_completed(self, version: int):
-        """Помечает batch как завершенный"""
+        """Помечает batch как завершенный и НЕМЕДЛЕННО удаляет его"""
+        import logging
+        logger = logging.getLogger("DynamicChunkGenerator")
+
+        # ИСПРАВЛЕНО: Немедленно удаляем решенный батч из памяти
+        if version in self.generated_batches:
+            batch = self.generated_batches[version]
+            chunk_count = len(batch.chunks)
+            del self.generated_batches[version]
+            logger.info(f"Batch {version} deleted immediately (freed {chunk_count} solved chunks from memory)")
+
+        # Отслеживаем завершенные батчи для статистики (но не храним сами батчи)
         self.completed_batches.add(version)
 
-        # Очищаем старые батчи
-        if len(self.completed_batches) > 20:
-            old_versions = sorted(self.completed_batches)[:-20]
+        # Очищаем старую статистику (оставляем только последние 100 записей)
+        if len(self.completed_batches) > 100:
+            old_versions = sorted(self.completed_batches)[:-100]
             for v in old_versions:
-                if v in self.generated_batches:
-                    del self.generated_batches[v]
                 self.completed_batches.discard(v)
 
     def chunk_completed(self, chunk_id: int, hash_count: int, solutions: List[dict]):
@@ -431,6 +440,10 @@ class DynamicChunkGenerator:
         cluster_stats = self.performance.calculate_cluster_stats()
         total_hash_rate = cluster_stats["total_speed"]
 
+        # ИСПРАВЛЕНО: pending = только нераспределенные комбинации (не включает in_progress)
+        pending = self.total_combinations - processed - in_progress
+
+        # Remaining для ETA включает все незавершенные (in_progress + pending)
         remaining = self.total_combinations - processed
         eta_seconds = (remaining / total_hash_rate) if total_hash_rate > 0 else 0
 
@@ -438,7 +451,7 @@ class DynamicChunkGenerator:
             "total_combinations": self.total_combinations,
             "processed": processed,
             "in_progress": in_progress,
-            "pending": remaining,
+            "pending": pending,  # Только нераспределенные
             "progress_percentage": progress_pct,
             "eta_seconds": eta_seconds,
             "current_version": self.current_version,
@@ -965,12 +978,31 @@ class Run(BaseService):
                     # Публикуем обновленные батчи
                     await self._publish_batches(job_id, generator)
 
-                    # Проверяем завершение
-                    if generator.current_global_index >= generator.total_combinations:
-                        progress = generator.get_progress()
-                        if progress["pending"] == 0 and progress["in_progress"] == 0:
-                            self.logger.info(f"Job {job_id} completed!")
-                            # TODO: Сохранить результаты
+                    # ИСПРАВЛЕНО: Проверяем завершение через прогресс
+                    # Задача завершена когда:
+                    # 1. pending == 0 (все комбинации распределены)
+                    # 2. in_progress == 0 (все чанки решены, ничего не в работе)
+                    progress = generator.get_progress()
+                    if progress["pending"] == 0 and progress["in_progress"] == 0:
+                        self.logger.info(
+                            f"Job {job_id} completed! "
+                            f"Processed: {progress['processed']}/{progress['total_combinations']} "
+                            f"({progress['progress_percentage']:.2f}%)"
+                        )
+
+                        # Очищаем батчи из gossip
+                        network = self.context.get_shared("network")
+                        if network:
+                            # Удаляем hash_batches_{job_id}
+                            network.gossip.self_info.metadata[f"hash_batches_{job_id}"] = {}
+                            self.logger.info(f"Cleared batches for job {job_id} from gossip")
+
+                            # Обновляем статус задачи
+                            job_metadata = network.gossip.self_info.metadata.get(f"hash_job_{job_id}", {})
+                            if job_metadata:
+                                job_metadata["completed"] = True
+                                job_metadata["completed_at"] = time.time()
+                                network.gossip.self_info.metadata[f"hash_job_{job_id}"] = job_metadata
 
             except asyncio.CancelledError:
                 break
