@@ -1499,19 +1499,17 @@
                                 <tr>
                                     <th>Воркер</th>
                                     <th>Адрес</th>
-                                    <th>Статус</th>
                                     <th>Текущая задача</th>
                                     <th>Текущий чанк</th>
                                     <th>Назначено чанков</th>
                                     <th>Размер чанков</th>
                                     <th>Завершено чанков</th>
                                     <th>Вычислено хешей</th>
-                                    <th>Прогресс</th>
                                 </tr>
                             </thead>
                             <tbody id="workersDistributionTableBody">
                                 <tr>
-                                    <td colspan="10" class="text-center text-muted">
+                                    <td colspan="8" class="text-center text-muted">
                                         Загрузка данных...
                                     </td>
                                 </tr>
@@ -6821,13 +6819,13 @@
         function updateActiveJobsList(jobs) {
             const container = document.getElementById('activeJobsContainer');
 
-            // Save state of opened job details BEFORE updating HTML
-            const openedJobDetails = new Set();
+            // Save state AND content of opened job details BEFORE updating HTML
+            const openedJobDetails = new Map(); // jobId -> innerHTML
             const existingDetails = container.querySelectorAll('[id^="jobDetails-"]');
             existingDetails.forEach(detailsDiv => {
                 if (detailsDiv.style.display !== 'none') {
                     const jobId = detailsDiv.id.replace('jobDetails-', '');
-                    openedJobDetails.add(jobId);
+                    openedJobDetails.set(jobId, detailsDiv.innerHTML); // Save content
                 }
             });
 
@@ -6853,7 +6851,7 @@
                 const processed = job.processed || 0;
                 const total = job.total || 0;
 
-                // Check if this job's details were open
+                // Check if this job's details were open (using Map instead of Set)
                 const detailsDisplay = openedJobDetails.has(job.job_id) ? 'block' : 'none';
 
                 html += `
@@ -6871,6 +6869,7 @@
                                 </button>
                             </div>
 
+                            ${progressPercent < 100 ? `
                             <div class="progress mb-3" style="height: 25px;">
                                 <div class="progress-bar progress-bar-striped progress-bar-animated bg-success"
                                      role="progressbar"
@@ -6881,6 +6880,7 @@
                                     ${progressPercent.toFixed(2)}%
                                 </div>
                             </div>
+                            ` : ''}
 
                             <div class="row text-center">
                                 <div class="col">
@@ -6907,9 +6907,12 @@
 
             container.innerHTML = html;
 
-            // Restore opened details content (re-fetch if needed)
-            openedJobDetails.forEach(jobId => {
-                loadJobDetails(jobId, true); // true = skip toggle, just load
+            // Restore opened details content WITHOUT re-fetching
+            openedJobDetails.forEach((savedContent, jobId) => {
+                const detailsContainer = document.getElementById(`jobDetails-${jobId}`);
+                if (detailsContainer && savedContent) {
+                    detailsContainer.innerHTML = savedContent; // Restore saved content
+                }
             });
         }
 
@@ -6926,7 +6929,7 @@
             if (!workers || workers.length === 0) {
                 tbody.innerHTML = `
                     <tr>
-                        <td colspan="10" class="text-center text-muted">
+                        <td colspan="8" class="text-center text-muted">
                             Нет активных воркеров
                         </td>
                     </tr>
@@ -6936,9 +6939,6 @@
 
             let html = '';
             for (const worker of workers) {
-                const statusBadge = getWorkerStatusBadge(worker.status);
-                const progressPercent = worker.progress || 0;
-
                 const assignedChunks = (worker.chunks && worker.chunks.length) || 0;
                 const totalChunkSize = assignedChunks > 0
                     ? worker.chunks.reduce((sum, c) => sum + (c.size || 0), 0).toLocaleString()
@@ -6948,21 +6948,12 @@
                     <tr>
                         <td><strong>${worker.worker_id}</strong></td>
                         <td><small>${worker.address}</small></td>
-                        <td>${statusBadge}</td>
                         <td>${worker.current_job || '-'}</td>
                         <td>${worker.current_chunk !== null && worker.current_chunk !== undefined ? worker.current_chunk : '-'}</td>
                         <td><span class="badge bg-primary">${assignedChunks}</span></td>
                         <td>${totalChunkSize}</td>
                         <td><span class="badge bg-success">${worker.completed_chunks || 0}</span></td>
                         <td>${(worker.total_hashes || 0).toLocaleString()}</td>
-                        <td>
-                            <div class="progress" style="height: 20px;">
-                                <div class="progress-bar bg-info" role="progressbar"
-                                     style="width: ${progressPercent}%">
-                                    ${progressPercent.toFixed(1)}%
-                                </div>
-                            </div>
-                        </td>
                     </tr>
                 `;
             }
