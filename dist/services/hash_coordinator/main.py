@@ -153,7 +153,7 @@ class DynamicChunkGenerator:
         charset: str,
         length: int,
         base_chunk_size: int = 1_000_000,
-        lookahead_batches: int = 3
+        lookahead_batches: int = 10
     ):
         self.charset = charset
         self.length = length
@@ -174,6 +174,9 @@ class DynamicChunkGenerator:
 
         # Lock для генерации
         self._generation_lock = asyncio.Lock()
+
+        # Логирование для отладки
+        self.logger = logging.getLogger("DynamicChunkGenerator")
 
     def index_to_combination(self, idx: int) -> str:
         """Преобразует индекс в комбинацию символов"""
@@ -370,10 +373,7 @@ class DynamicChunkGenerator:
                     found = True
                     batch_version = batch.version
 
-                    # Логирование для отладки
-                    import logging
-                    logger = logging.getLogger("DynamicChunkGenerator")
-                    logger.info(f"Chunk {chunk_id} status: {old_status} → solved")
+                    self.logger.info(f"Chunk {chunk_id} status: {old_status} → solved")
 
                     # Производительность обновляется в _process_worker_chunk_status
                     # где есть доступ к time_taken из gossip
@@ -382,9 +382,7 @@ class DynamicChunkGenerator:
                 break
 
         if not found:
-            import logging
-            logger = logging.getLogger("DynamicChunkGenerator")
-            logger.warning(f"Chunk {chunk_id} not found in batches! Available chunks: {[c.chunk_id for b in self.generated_batches.values() for c in b.chunks]}")
+            self.logger.warning(f"Chunk {chunk_id} not found in batches! Available chunks: {[c.chunk_id for b in self.generated_batches.values() for c in b.chunks]}")
             return
 
         # Проверяем, все ли чанки батча завершены
@@ -395,10 +393,7 @@ class DynamicChunkGenerator:
             if all_solved:
                 # Помечаем батч как завершенный
                 self.mark_batch_completed(batch_version)
-
-                import logging
-                logger = logging.getLogger("DynamicChunkGenerator")
-                logger.info(f"Batch {batch_version} completed (all {len(batch.chunks)} chunks solved)")
+                self.logger.info(f"Batch {batch_version} completed (all {len(batch.chunks)} chunks solved)")
 
     def chunk_failed(self, chunk_id: int):
         """
@@ -452,7 +447,7 @@ class Run(BaseService):
 
     def __init__(self, service_name: str, proxy_client=None):
         super().__init__(service_name, proxy_client)
-        self.info.version = "1.0.0"
+        self.info.version = "1.1.0"
         self.info.description = "Координатор распределенных вычислений хешей"
 
         # Активные задачи

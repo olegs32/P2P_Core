@@ -622,7 +622,7 @@ class Run(BaseService):
         """Основной цикл воркера"""
         while self.running:
             try:
-                await asyncio.sleep(5)  # Проверяем каждые 5 секунд
+                await asyncio.sleep(0.1)  # Проверяем каждые 5 секунд
 
                 # Получаем активные задачи из gossip
                 jobs = await self._get_active_jobs()
@@ -684,7 +684,7 @@ class Run(BaseService):
         network = self.context.get_shared("network")
         if not network:
             return None
-
+        print()
         # Получаем батчи из gossip
         coordinator_nodes = [
             node for node in network.gossip.node_registry.values()
@@ -696,6 +696,7 @@ class Run(BaseService):
 
         coordinator = coordinator_nodes[0]
         metadata = coordinator.metadata
+        print(metadata)
 
         batches_key = f"hash_batches_{job_id}"
         if batches_key not in metadata:
