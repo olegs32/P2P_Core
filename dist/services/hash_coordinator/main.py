@@ -168,6 +168,7 @@ class DynamicChunkGenerator:
         self.current_global_index = 0
         self.generated_batches: Dict[int, BatchInfo] = {}
         self.completed_batches = set()
+        self.batch_completion_times: Dict[int, float] = {}  # version -> completion timestamp
 
         # Производительность
         self.performance = PerformanceAnalyzer(base_chunk_size)
@@ -341,7 +342,9 @@ class DynamicChunkGenerator:
 
     def mark_batch_completed(self, version: int):
         """Помечает batch как завершенный"""
+        import time
         self.completed_batches.add(version)
+        self.batch_completion_times[version] = time.time()
 
         # Очищаем старые батчи
         if len(self.completed_batches) > 20:
@@ -350,6 +353,7 @@ class DynamicChunkGenerator:
                 if v in self.generated_batches:
                     del self.generated_batches[v]
                 self.completed_batches.discard(v)
+                self.batch_completion_times.pop(v, None)
 
     def chunk_completed(self, chunk_id: int, hash_count: int, solutions: List[dict]):
         """
@@ -910,14 +914,24 @@ class Run(BaseService):
         if not network:
             return
 
-        # Публикуем активные батчи + недавно завершенные (последние 5)
-        # Это позволяет воркерам видеть статус "solved" для недавних чанков
+        # Публикуем активные батчи + недавно завершенные (в течение 60 секунд)
+        # Это дает воркерам время увидеть статус "solved" перед удалением батча
+        import time
         active_batches = {}
-        recently_completed = sorted(generator.completed_batches)[-5:]  # Последние 5 завершенных
+        grace_period = 60  # секунд
+        now = time.time()
 
         for version, batch in generator.generated_batches.items():
-            # Публикуем незавершенные батчи + последние 5 завершенных
-            if version not in generator.completed_batches or version in recently_completed:
+            # Проверяем: незавершенный батч или завершенный в пределах grace period
+            is_active = version not in generator.completed_batches
+            is_recently_completed = False
+
+            if version in generator.completed_batches:
+                completion_time = generator.batch_completion_times.get(version, 0)
+                is_recently_completed = (now - completion_time) < grace_period
+
+            # Публикуем незавершенные батчи + недавно завершенные (в пределах grace period)
+            if is_active or is_recently_completed:
                 # Формируем структуру: {chunk_id: {assigned_worker: data}}
                 chunks_dict = {}
                 for chunk in batch.chunks:
@@ -926,7 +940,7 @@ class Run(BaseService):
                         "start_index": chunk.start_index,
                         "end_index": chunk.end_index,
                         "chunk_size": chunk.chunk_size,
-                        "status": chunk.status,
+                        "status": chunk.status,  # "solved" для завершенных чанков
                         "priority": chunk.priority
                     }
 
