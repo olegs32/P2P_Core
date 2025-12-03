@@ -50,63 +50,6 @@ pip install -r requirements.txt
 python p2p.py --help
 ```
 
-## Configuration
-
-### Coordinator Configuration
-
-Create `config/coordinator.yaml`:
-
-```yaml
-node_id: "coordinator-1"
-port: 8001
-bind_address: "0.0.0.0"
-coordinator_mode: true
-
-# SSL/TLS
-https_enabled: true
-ssl_cert_file: "certs/coordinator_cert.cer"
-ssl_key_file: "certs/coordinator_key.key"
-ssl_ca_cert_file: "certs/ca_cert.cer"
-ssl_ca_key_file: "certs/ca_key.key"
-
-# Gossip protocol
-gossip_interval_min: 5
-gossip_interval_max: 30
-gossip_compression_enabled: true
-
-# Rate limiting
-rate_limit_enabled: true
-rate_limit_rpc_requests: 100
-rate_limit_rpc_burst: 20
-
-# Storage
-state_directory: "data/coordinator"
-```
-
-### Worker Configuration
-
-Create `config/worker.yaml`:
-
-```yaml
-node_id: "worker-1"
-port: 8002
-bind_address: "0.0.0.0"
-coordinator_mode: false
-
-# Coordinator addresses
-coordinator_addresses:
-  - "192.168.1.100:8001"
-
-# SSL/TLS
-https_enabled: true
-ssl_cert_file: "certs/worker_cert.cer"
-ssl_key_file: "certs/worker_key.key"
-ssl_ca_cert_file: "certs/ca_cert.cer"
-
-# Storage
-state_directory: "data/worker"
-```
-
 ## Starting the System
 
 ### Coordinator Node
@@ -119,15 +62,10 @@ python3 p2p.py --config config/coordinator.yaml
 
 The system will automatically:
 1. Generate a cryptographic plot file at `dist/services/plot`
-2. Derive a secure password from the plot (100 characters, 7-layer hashing)
+2. Derive a secure password from the plot (100 characters)
 3. Initialize encrypted storage with the generated password
 4. Start the coordinator with HTTPS enabled
 
-**Manual password entry:**
-
-```bash
-python3 p2p.py --config config/coordinator.yaml --manual-password
-```
 
 **Provide password directly:**
 
@@ -394,18 +332,6 @@ curl https://<coordinator>:8001/api/dashboard/metrics
 4. Check firewall rules allow port 8001 (HTTPS)
 5. Verify CA certificate exists on worker
 
-### Certificate validation fails
-
-**Symptoms:**
-- SSL handshake errors
-- Certificate verification failed
-- IP address mismatch
-
-**Solutions:**
-1. Check certificate validity: `openssl x509 -in cert.cer -text -noout`
-2. Verify CA certificate matches on all nodes
-3. For IP changes: restart node (auto-renewal will trigger)
-4. Check certificate SAN includes current IP/hostname
 
 ### High memory usage on coordinator
 
@@ -416,9 +342,8 @@ curl https://<coordinator>:8001/api/dashboard/metrics
 
 **Solutions:**
 1. Reduce `max_log_entries` in config
-2. Clear old logs: `curl -X DELETE https://<coordinator>:8001/api/logs`
-3. Reduce metrics history retention
-4. Monitor WebSocket connections
+2. Reduce metrics history retention
+3. Monitor WebSocket connections
 
 ### Plot file lost or corrupted
 
@@ -635,6 +560,6 @@ Internal enterprise use only. All rights reserved.
 ## Support
 
 For issues and questions:
-- GitHub Issues: https://github.com/your-org/P2P_Core/issues
+- GitHub Issues: https://github.com/olegs32/P2P_Core/issues
 - Documentation: See `docs/` directory
 - Architecture guide: `CLAUDE.md`
