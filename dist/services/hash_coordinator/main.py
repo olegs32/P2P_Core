@@ -910,11 +910,14 @@ class Run(BaseService):
         if not network:
             return
 
-        # Публикуем только незавершенные батчи
+        # Публикуем активные батчи + недавно завершенные (последние 5)
+        # Это позволяет воркерам видеть статус "solved" для недавних чанков
         active_batches = {}
+        recently_completed = sorted(generator.completed_batches)[-5:]  # Последние 5 завершенных
 
         for version, batch in generator.generated_batches.items():
-            if version not in generator.completed_batches:
+            # Публикуем незавершенные батчи + последние 5 завершенных
+            if version not in generator.completed_batches or version in recently_completed:
                 # Формируем структуру: {chunk_id: {assigned_worker: data}}
                 chunks_dict = {}
                 for chunk in batch.chunks:
@@ -1152,7 +1155,7 @@ class Run(BaseService):
             active_workers = await self._get_active_workers()
             await generator.ensure_lookahead_batches(active_workers)
 
-            # ВАЖНО: Публикуем обновленные batches в gossip
+            # ВАЖНО: Публикуем обновленные батчи в gossip (чтобы статус чанка обновился)
             await self._publish_batches(job_id, generator)
 
         # Обрабатываем статус "working" - обновляем прогресс
