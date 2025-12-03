@@ -1804,16 +1804,47 @@ class Run(BaseService):
 
                                     workers_distribution.append(worker_data)
 
+                        # Calculate summary statistics
+                        total_chunks = 0
+                        total_hashes = 0
+                        for worker in workers_distribution:
+                            total_chunks += len(worker["chunks"])
+                            total_hashes += worker["total_hashes"]
+
                         hash_jobs_data["workers"] = workers_distribution
+                        hash_jobs_data["summary"] = {
+                            "total_workers": len(workers_distribution),
+                            "active_workers": len([w for w in workers_distribution if w["status"] in ["working", "solved"]]),
+                            "total_chunks": total_chunks,
+                            "total_hashes_computed": total_hashes
+                        }
                     else:
                         hash_jobs_data["workers"] = []
+                        hash_jobs_data["summary"] = {
+                            "total_workers": 0,
+                            "active_workers": 0,
+                            "total_chunks": 0,
+                            "total_hashes_computed": 0
+                        }
                 else:
                     hash_jobs_data["jobs"] = []
                     hash_jobs_data["workers"] = []
+                    hash_jobs_data["summary"] = {
+                        "total_workers": 0,
+                        "active_workers": 0,
+                        "total_chunks": 0,
+                        "total_hashes_computed": 0
+                    }
             except Exception as e:
                 self.logger.debug(f"Failed to get hash jobs data: {e}")
                 hash_jobs_data["jobs"] = []
                 hash_jobs_data["workers"] = []
+                hash_jobs_data["summary"] = {
+                    "total_workers": 0,
+                    "active_workers": 0,
+                    "total_chunks": 0,
+                    "total_hashes_computed": 0
+                }
 
             return {
                 "metrics": metrics_data,
