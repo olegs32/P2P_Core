@@ -6819,13 +6819,13 @@
         function updateActiveJobsList(jobs) {
             const container = document.getElementById('activeJobsContainer');
 
-            // Save state AND content of opened job details BEFORE updating HTML
-            const openedJobDetails = new Map(); // jobId -> innerHTML
+            // Save state of opened job details (need to update content)
+            const openedJobDetails = new Set();
             const existingDetails = container.querySelectorAll('[id^="jobDetails-"]');
             existingDetails.forEach(detailsDiv => {
                 if (detailsDiv.style.display !== 'none') {
                     const jobId = detailsDiv.id.replace('jobDetails-', '');
-                    openedJobDetails.set(jobId, detailsDiv.innerHTML); // Save content
+                    openedJobDetails.add(jobId);
                 }
             });
 
@@ -6851,7 +6851,7 @@
                 const processed = job.processed || 0;
                 const total = job.total || 0;
 
-                // Check if this job's details were open (using Map instead of Set)
+                // Check if this job's details were open
                 const detailsDisplay = openedJobDetails.has(job.job_id) ? 'block' : 'none';
 
                 html += `
@@ -6907,11 +6907,14 @@
 
             container.innerHTML = html;
 
-            // Restore opened details content WITHOUT re-fetching
-            openedJobDetails.forEach((savedContent, jobId) => {
+            // Update opened details with fresh data (with placeholder to prevent flicker)
+            openedJobDetails.forEach(jobId => {
                 const detailsContainer = document.getElementById(`jobDetails-${jobId}`);
-                if (detailsContainer && savedContent) {
-                    detailsContainer.innerHTML = savedContent; // Restore saved content
+                if (detailsContainer) {
+                    // Show loading placeholder immediately to prevent blank space
+                    detailsContainer.innerHTML = '<div class="text-center text-muted py-2"><i class="spinner-border spinner-border-sm"></i> Обновление...</div>';
+                    // Load fresh data
+                    loadJobDetails(jobId, true); // true = skip toggle
                 }
             });
         }
