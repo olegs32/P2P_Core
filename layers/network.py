@@ -546,7 +546,7 @@ class SimpleGossipProtocol:
     async def _process_gossip_response(self, gossip_data: Dict):
         """Обработка ответа на gossip сообщение"""
         try:
-            sender_id = gossip_data.get('sender', 'unknown')
+            sender_id = gossip_data.get('sender_id', gossip_data.get('sender', 'unknown'))
             nodes_received = gossip_data.get('nodes', [])
             received_version = gossip_data.get('version', 0)
 
@@ -812,17 +812,25 @@ class SimpleGossipProtocol:
                 old_count = len(self.self_info.services) if self.self_info.services else 0
                 new_count = len(services_info) if services_info else 0
 
-                # Проверяем изменились ли сервисы
-                services_changed = (old_count != new_count) or (self.self_info.services != services_info)
+                # Проверяем изменились ли сервисы (только список имён, не метрики)
+                old_service_names = set(self.self_info.services.keys()) if self.self_info.services else set()
+                new_service_names = set(services_info.keys()) if services_info else set()
+                services_changed = old_service_names != new_service_names
 
+                # Обновляем данные (метрики обновятся, но версия не изменится)
                 self.self_info.services = services_info
 
-                # Инкрементируем версию при изменении сервисов
+                # Инкрементируем версию только при изменении списка сервисов
                 if services_changed:
                     self._increment_version()
-                    self.log.info(f"📦 Services info updated: {old_count} -> {new_count} services (version: {self.gossip_version})")
+                    self.log.info(f"📦 Services changed: {old_count} -> {new_count} services (version: {self.gossip_version})")
                     if services_info:
-                        self.log.debug(f"   Services: {list(services_info.keys())}")
+                        added = new_service_names - old_service_names
+                        removed = old_service_names - new_service_names
+                        if added:
+                            self.log.info(f"   Added: {list(added)}")
+                        if removed:
+                            self.log.info(f"   Removed: {list(removed)}")
             except Exception as e:
                 self.log.error(f"❌ Error updating services info: {e}")
                 import traceback
