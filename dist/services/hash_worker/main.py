@@ -918,20 +918,18 @@ class Run(BaseService):
         if not network:
             return
 
-        metadata = {
-            f"hash_worker_status": {
-                "job_id": job_id,
-                "chunk_id": chunk_id,
-                "status": status,
-                "progress": progress,
-                "timestamp": time.time(),
-                "total_hashes": self.total_hashes_computed,
-                "completed_chunks": self.completed_chunks
-            }
+        worker_status = {
+            "job_id": job_id,
+            "chunk_id": chunk_id,
+            "status": status,
+            "progress": progress,
+            "timestamp": time.time(),
+            "total_hashes": self.total_hashes_computed,
+            "completed_chunks": self.completed_chunks
         }
 
-        # Update gossip metadata directly (no update_metadata method exists)
-        network.gossip.self_info.metadata.update(metadata)
+        # Use new versioned update_metadata API
+        network.gossip.update_metadata("hash_worker_status", worker_status)
 
     async def _publish_chunk_progress(
         self,
@@ -956,22 +954,20 @@ class Run(BaseService):
             return
 
         # 1. Публикуем в gossip (для dashboard отображения)
-        metadata = {
-            f"hash_worker_status": {
-                "job_id": job_id,
-                "chunk_id": chunk_id,
-                "status": "solved",
-                "hash_count": hash_count,
-                "time_taken": time_taken,
-                "solutions": solutions,
-                "timestamp": time.time(),
-                "total_hashes": self.total_hashes_computed,
-                "completed_chunks": self.completed_chunks
-            }
+        worker_status = {
+            "job_id": job_id,
+            "chunk_id": chunk_id,
+            "status": "solved",
+            "hash_count": hash_count,
+            "time_taken": time_taken,
+            "solutions": solutions,
+            "timestamp": time.time(),
+            "total_hashes": self.total_hashes_computed,
+            "completed_chunks": self.completed_chunks
         }
 
-        # Update gossip metadata directly (no update_metadata method exists)
-        network.gossip.self_info.metadata.update(metadata)
+        # Use new versioned update_metadata API
+        network.gossip.update_metadata("hash_worker_status", worker_status)
 
         # Добавляем chunk_id в локальный кэш обработанных чанков
         if job_id not in self.processed_chunks:

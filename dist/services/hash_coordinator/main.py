@@ -890,24 +890,22 @@ class Run(BaseService):
         if not network:
             return
 
-        metadata = {
-            f"hash_job_{job_id}": {
-                "job_id": job_id,
-                "mode": mode,
-                "charset": charset,
-                "length": length,
-                "wordlist": wordlist,
-                "mutations": mutations,
-                "hash_algo": hash_algo,
-                "target_hash": target_hash,
-                "target_hashes": target_hashes,
-                "ssid": ssid,
-                "started_at": time.time()
-            }
+        job_metadata = {
+            "job_id": job_id,
+            "mode": mode,
+            "charset": charset,
+            "length": length,
+            "wordlist": wordlist,
+            "mutations": mutations,
+            "hash_algo": hash_algo,
+            "target_hash": target_hash,
+            "target_hashes": target_hashes,
+            "ssid": ssid,
+            "started_at": time.time()
         }
 
-        # Update gossip metadata directly (no update_metadata method exists)
-        network.gossip.self_info.metadata.update(metadata)
+        # Use new versioned update_metadata API
+        network.gossip.update_metadata(f"hash_job_{job_id}", job_metadata)
 
     async def _publish_batches(self, job_id: str, generator: DynamicChunkGenerator):
         """Публикует batches в gossip"""
@@ -938,12 +936,8 @@ class Run(BaseService):
                     "is_recovery": batch.is_recovery
                 }
 
-        metadata = {
-            f"hash_batches_{job_id}": active_batches
-        }
-
-        # Update gossip metadata directly (no update_metadata method exists)
-        network.gossip.self_info.metadata.update(metadata)
+        # Use new versioned update_metadata API
+        network.gossip.update_metadata(f"hash_batches_{job_id}", active_batches)
 
     async def _monitor_loop(self):
         """Мониторинг состояния задач"""
