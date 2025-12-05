@@ -442,6 +442,126 @@ compression_threshold: 1024 # bytes
 max_gossip_targets: 5       # nodes to gossip with per round
 ```
 
+### Gossip Message Versioning
+
+**NEW FEATURE**: Global versioning system for gossip messages to ensure consistency and prevent stale data propagation.
+
+**Location**: `layers/network.py` (`SimpleGossipProtocol` class)
+
+**Key Features**:
+- **Global version counter**: Each gossip node maintains a monotonically increasing version number
+- **Version-aware updates**: Only applies gossip data with version ≥ current version
+- **Automatic version propagation**: Nodes adopt the highest version seen from peers
+- **Stale data rejection**: Old versions are automatically discarded
+- **Per-peer version tracking**: Tracks the last known version from each peer
+
+**How it works**:
+
+1. **Version initialization**: Each node starts with `gossip_version = 0`
+2. **Version increment**: Version increments when:
+   - Metadata is updated via `update_metadata(key, value)`
+   - Services information changes
+   - Any local state changes that should be propagated
+3. **Gossip exchange**: Each gossip message includes `version` field
+4. **Version comparison on receive**:
+   ```python
+   if received_version < self.gossip_version:
+       # Discard old data, but respond with current version
+       return
+
+   if received_version > self.gossip_version:
+       # Apply newer data and update local version
+       self.gossip_version = received_version
+   ```
+5. **Response includes current version**: Always respond with the latest version
+
+**Example Scenario**:
+```
+Coordinator (version 10) → Worker-1 (version 5)
+  1. Coordinator sends gossip with version=10
+  2. Worker-1 receives, sees version 10 > 5
+  3. Worker-1 applies data, updates to version 10
+  4. Worker-1 responds with version=10
+
+Worker-2 (version 15) → Coordinator (version 10)
+  1. Worker-2 sends gossip with version=15
+  2. Coordinator receives, sees version 15 > 10
+  3. Coordinator applies data, updates to version 15
+  4. Coordinator responds with version=15
+  5. Next gossip cycle, Coordinator announces version 15 to all peers
+```
+
+**API Methods**:
+```python
+# Update metadata with automatic version increment
+gossip.update_metadata("custom_key", "custom_value")
+# Increments version and updates node registry
+
+# Get current version
+current_version = gossip.get_gossip_version()
+
+# Get versions from all peers
+peer_versions = gossip.get_peer_versions()
+# Returns: {"worker-1": 15, "worker-2": 20, ...}
+
+# Manual version increment (rare, prefer update_metadata)
+gossip._increment_version()
+```
+
+**Usage in Services**:
+```python
+# In a service that needs to propagate state changes
+class Run(BaseService):
+    async def update_job_status(self, job_id: str, status: str):
+        # Update metadata via gossip
+        network = self.context.get_shared("network")
+        gossip = network.gossip
+
+        # This will increment version and propagate via gossip
+        gossip.update_metadata(f"job_{job_id}_status", status)
+
+        self.logger.info(f"Job {job_id} status updated to {status} "
+                        f"(gossip version: {gossip.get_gossip_version()})")
+```
+
+**Benefits**:
+- ✅ Prevents stale data propagation
+- ✅ Ensures eventual consistency across cluster
+- ✅ Automatic conflict resolution (highest version wins)
+- ✅ No explicit synchronization needed
+- ✅ Works with network partitions (reunification uses highest version)
+
+**Trade-offs**:
+- Version is global per node (not per-key)
+- No rollback support (version only increases)
+- Concurrent updates on different nodes: last-write-wins based on gossip timing
+- No vector clocks (simpler but less precise conflict detection)
+
+**Implementation Details**:
+```python
+# Gossip message structure with version
+{
+    "sender_id": "worker-1",
+    "nodes": [...],  # All known nodes
+    "timestamp": "2025-12-05T10:30:00",
+    "message_type": "gossip",
+    "version": 42  # Global version
+}
+
+# Version tracking per peer
+gossip.peer_versions = {
+    "coordinator-1": 50,  # Last known version from coordinator
+    "worker-1": 42,       # Last known version from worker-1
+    "worker-2": 38        # Last known version from worker-2
+}
+```
+
+**Logging**:
+- Version increments: `📈 Gossip version incremented: 42`
+- Version updates: `🔄 Applied newer gossip version from worker-1: 10 → 42`
+- Stale data: `⏪ Ignoring old gossip version from worker-2: 30 < 42`
+- Metadata changes: `📝 Metadata updated: job_123_status = completed (version: 43)`
+
 ### Multi-Homed Node Support
 
 **NEW FEATURE**: Automatic detection and handling of nodes with multiple network interfaces.

@@ -147,6 +147,10 @@ class SimpleGossipProtocol:
         self.bind_port = bind_port
         self.coordinator_mode = coordinator_mode
 
+        # Глобальное версионирование gossip-сообщений
+        self.gossip_version = 0  # Текущая версия данных
+        self.peer_versions: Dict[str, int] = {}  # node_id -> последняя известная версия от пира
+
         # Состояние узла
         self.node_registry: Dict[str, NodeInfo] = {}
         self.listeners = []
@@ -496,7 +500,8 @@ class SimpleGossipProtocol:
                 'sender_id': self.node_id,
                 'nodes': [node.to_dict() for node in self.node_registry.values()],
                 'timestamp': datetime.now().isoformat(),
-                'message_type': 'gossip'
+                'message_type': 'gossip',
+                'version': self.gossip_version  # Глобальная версия данных
             }
 
             # Диагностика: сколько services в нашем self_info
@@ -543,8 +548,34 @@ class SimpleGossipProtocol:
         try:
             sender_id = gossip_data.get('sender', 'unknown')
             nodes_received = gossip_data.get('nodes', [])
+            received_version = gossip_data.get('version', 0)
 
-            self.log.debug(f"📨 Received gossip from {sender_id} with {len(nodes_received)} nodes")
+            self.log.debug(f"📨 Received gossip from {sender_id} with {len(nodes_received)} nodes (version: {received_version}, our version: {self.gossip_version})")
+
+            # Проверка версии: применяем только данные с версией >= текущей
+            peer_last_version = self.peer_versions.get(sender_id, -1)
+
+            if received_version < self.gossip_version:
+                # Получена старая версия - не применяем данные
+                self.log.debug(f"⏪ Ignoring old gossip version from {sender_id}: {received_version} < {self.gossip_version}")
+                # Обновляем версию пира для статистики
+                if received_version > peer_last_version:
+                    self.peer_versions[sender_id] = received_version
+                return
+
+            if received_version < peer_last_version:
+                # Получена версия старше последней известной от этого пира
+                self.log.debug(f"⏪ Ignoring regressed gossip version from {sender_id}: {received_version} < {peer_last_version}")
+                return
+
+            # Применяем данные и обновляем версию
+            if received_version > self.gossip_version:
+                old_version = self.gossip_version
+                self.gossip_version = received_version
+                self.log.info(f"🔄 Applied newer gossip version from {sender_id}: {old_version} → {received_version}")
+
+            # Обновляем версию пира
+            self.peer_versions[sender_id] = received_version
 
             # Обновление информации об узлах
             for node_data in nodes_received:
@@ -727,14 +758,16 @@ class SimpleGossipProtocol:
     async def handle_gossip_exchange(self, gossip_data: Dict) -> Dict:
         """Обработка gossip обмена"""
         try:
+            # Обработка полученных данных (с проверкой версии)
             await self._process_gossip_response(gossip_data)
 
-            # Возврат собственной информации об узлах
+            # Возврат собственной информации об узлах с актуальной версией
             return {
                 'status': 'success',
                 'nodes': [node.to_dict() for node in self.node_registry.values()],
                 'timestamp': datetime.now().isoformat(),
-                'sender': self.node_id
+                'sender': self.node_id,
+                'version': self.gossip_version  # Всегда отправляем актуальную версию
             }
 
         except Exception as e:
@@ -779,11 +812,15 @@ class SimpleGossipProtocol:
                 old_count = len(self.self_info.services) if self.self_info.services else 0
                 new_count = len(services_info) if services_info else 0
 
+                # Проверяем изменились ли сервисы
+                services_changed = (old_count != new_count) or (self.self_info.services != services_info)
+
                 self.self_info.services = services_info
 
-                # Логируем только если изменилось количество сервисов
-                if old_count != new_count:
-                    self.log.info(f"📦 Services info updated: {old_count} -> {new_count} services")
+                # Инкрементируем версию при изменении сервисов
+                if services_changed:
+                    self._increment_version()
+                    self.log.info(f"📦 Services info updated: {old_count} -> {new_count} services (version: {self.gossip_version})")
                     if services_info:
                         self.log.debug(f"   Services: {list(services_info.keys())}")
             except Exception as e:
@@ -795,6 +832,50 @@ class SimpleGossipProtocol:
             if not hasattr(self, '_callback_warning_shown'):
                 self.log.warning(f"⚠️  Service info callback НЕ УСТАНОВЛЕН! Сервисы не будут передаваться через gossip.")
                 self._callback_warning_shown = True
+
+    def _increment_version(self):
+        """Инкремент глобальной версии gossip-данных"""
+        self.gossip_version += 1
+        self.log.debug(f"📈 Gossip version incremented: {self.gossip_version}")
+
+    def update_metadata(self, key: str, value: Any):
+        """
+        Обновить метаданные с инкрементом версии
+
+        Args:
+            key: Ключ метаданных
+            value: Значение метаданных
+        """
+        old_value = self.self_info.metadata.get(key)
+
+        # Обновляем метаданные
+        self.self_info.metadata[key] = value
+
+        # Инкрементируем версию при изменении
+        if old_value != value:
+            self._increment_version()
+            self.log.info(f"📝 Metadata updated: {key} = {value} (version: {self.gossip_version})")
+
+        # Обновляем узел в реестре
+        self.node_registry[self.node_id] = self.self_info
+
+    def get_gossip_version(self) -> int:
+        """
+        Получить текущую версию gossip-данных
+
+        Returns:
+            Текущая версия
+        """
+        return self.gossip_version
+
+    def get_peer_versions(self) -> Dict[str, int]:
+        """
+        Получить версии данных от всех пиров
+
+        Returns:
+            Словарь {node_id: version}
+        """
+        return dict(self.peer_versions)
 
 
 class P2PNetworkLayer:
