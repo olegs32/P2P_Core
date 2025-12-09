@@ -910,6 +910,9 @@ class Run(BaseService):
         """
         Мержит статусы чанков в batches с приоритетом solved > working > recovery > assigned
 
+        Учитывает удаление completed батчей: если min(new_versions) > old_solved_versions,
+        значит старые батчи уже обработаны и должны быть удалены из мержа.
+
         Args:
             current_batches: Текущие batches из gossip
             new_batches: Новые batches для публикации
@@ -926,10 +929,34 @@ class Run(BaseService):
             "assigned": 0
         }
 
+        # ВАЖНО: Определяем минимальную версию в новых batches
+        # Если старые solved батчи имеют версию < min_new_version, они устарели (были удалены)
+        min_new_version = min((int(v) for v in new_batches.keys()), default=float('inf'))
+
+        # Находим fully solved батчи в current (все чанки solved)
+        fully_solved_versions = set()
+        for version, batch_data in current_batches.items():
+            chunks = batch_data.get("chunks", {})
+            if chunks and all(
+                chunk.get("status") == "solved"
+                for chunk in chunks.values()
+            ):
+                fully_solved_versions.add(int(version))
+
+        # Удаляем устаревшие fully solved батчи (версия < min_new_version)
+        # Это батчи, которые координатор уже обработал и удалил
+        obsolete_versions = {v for v in fully_solved_versions if v < min_new_version}
+
+        if obsolete_versions:
+            self.logger.debug(
+                f"🗑️ [DIAG] Removing obsolete solved batches: {sorted(obsolete_versions)} "
+                f"(older than min_new_version={min_new_version})"
+            )
+
         merged = {}
 
-        # Объединяем все версии из обоих источников
-        all_versions = set(current_batches.keys()) | set(new_batches.keys())
+        # Объединяем все версии из обоих источников, исключая obsolete
+        all_versions = (set(current_batches.keys()) | set(new_batches.keys())) - {str(v) for v in obsolete_versions}
 
         for version in all_versions:
             current_batch = current_batches.get(version, {})
