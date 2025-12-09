@@ -280,7 +280,7 @@ class Run(BaseService):
                 if node_id == 'coordinator':
                     system_proxy = self.proxy.system
                 else:
-                    system_proxy = getattr(self.proxy.system, node_id)
+                    system_proxy = self.proxy.system.__getattr__(node_id)
 
                 result = await system_proxy.get_config()
                 return result
@@ -299,7 +299,7 @@ class Run(BaseService):
                 if node_id == 'coordinator':
                     system_proxy = self.proxy.system
                 else:
-                    system_proxy = getattr(self.proxy.system, node_id)
+                    system_proxy = self.proxy.system.__getattr__(node_id)
 
                 result = await system_proxy.update_config(config_updates=config_updates)
                 return result
@@ -317,7 +317,7 @@ class Run(BaseService):
                 if node_id == 'coordinator':
                     system_proxy = self.proxy.system
                 else:
-                    system_proxy = getattr(self.proxy.system, node_id)
+                    system_proxy = self.proxy.system.__getattr__(node_id)
 
                 result = await system_proxy.list_storage_files()
                 return result
@@ -337,7 +337,7 @@ class Run(BaseService):
                 if node_id == 'coordinator':
                     system_proxy = self.proxy.system
                 else:
-                    system_proxy = getattr(self.proxy.system, node_id)
+                    system_proxy = self.proxy.system.__getattr__(node_id)
 
                 result = await system_proxy.get_storage_file(filename=filename, file_type=file_type)
                 return result
@@ -359,7 +359,7 @@ class Run(BaseService):
                 if node_id == 'coordinator':
                     system_proxy = self.proxy.system
                 else:
-                    system_proxy = getattr(self.proxy.system, node_id)
+                    system_proxy = self.proxy.system.__getattr__(node_id)
 
                 result = await system_proxy.add_storage_file(
                     filename=filename,
@@ -384,7 +384,7 @@ class Run(BaseService):
                 if node_id == 'coordinator':
                     system_proxy = self.proxy.system
                 else:
-                    system_proxy = getattr(self.proxy.system, node_id)
+                    system_proxy = self.proxy.system.__getattr__(node_id)
 
                 result = await system_proxy.delete_storage_file(filename=filename, file_type=file_type)
                 return result
@@ -403,7 +403,7 @@ class Run(BaseService):
                 if node_id == 'coordinator':
                     system_proxy = self.proxy.system
                 else:
-                    system_proxy = getattr(self.proxy.system, node_id)
+                    system_proxy = self.proxy.system.__getattr__(node_id)
 
                 result = await system_proxy.list_p2p_services()
                 return result
@@ -425,7 +425,7 @@ class Run(BaseService):
                 if node_id == 'coordinator':
                     system_proxy = self.proxy.system
                 else:
-                    system_proxy = getattr(self.proxy.system, node_id)
+                    system_proxy = self.proxy.system.__getattr__(node_id)
 
                 result = await system_proxy.list_service_files(service_name=service_name)
                 return result
@@ -448,7 +448,7 @@ class Run(BaseService):
                 if node_id == 'coordinator':
                     system_proxy = self.proxy.system
                 else:
-                    system_proxy = getattr(self.proxy.system, node_id)
+                    system_proxy = self.proxy.system.__getattr__(node_id)
 
                 result = await system_proxy.get_service_file(
                     service_name=service_name,
@@ -476,7 +476,7 @@ class Run(BaseService):
                 if node_id == 'coordinator':
                     system_proxy = self.proxy.system
                 else:
-                    system_proxy = getattr(self.proxy.system, node_id)
+                    system_proxy = self.proxy.system.__getattr__(node_id)
 
                 result = await system_proxy.update_service_file(
                     service_name=service_name,
@@ -504,7 +504,7 @@ class Run(BaseService):
                 if node_id == 'coordinator':
                     system_proxy = self.proxy.system
                 else:
-                    system_proxy = getattr(self.proxy.system, node_id)
+                    system_proxy = self.proxy.system.__getattr__(node_id)
 
                 result = await system_proxy.delete_service_file(
                     service_name=service_name,
@@ -531,7 +531,7 @@ class Run(BaseService):
                 if node_id == 'coordinator':
                     system_proxy = self.proxy.system
                 else:
-                    system_proxy = getattr(self.proxy.system, node_id)
+                    system_proxy = self.proxy.system.__getattr__(node_id)
 
                 result = await system_proxy.rename_service_file(
                     service_name=service_name,
@@ -557,7 +557,7 @@ class Run(BaseService):
                 if node_id == 'coordinator':
                     system_proxy = self.proxy.system
                 else:
-                    system_proxy = getattr(self.proxy.system, node_id)
+                    system_proxy = self.proxy.system.__getattr__(node_id)
 
                 result = await system_proxy.get_service_manifest(service_name=service_name)
                 return result
@@ -580,7 +580,7 @@ class Run(BaseService):
                 if node_id == 'coordinator':
                     system_proxy = self.proxy.system
                 else:
-                    system_proxy = getattr(self.proxy.system, node_id)
+                    system_proxy = self.proxy.system.__getattr__(node_id)
 
                 result = await system_proxy.update_service_version(
                     service_name=service_name,
@@ -605,7 +605,7 @@ class Run(BaseService):
                 if node_id == 'coordinator':
                     system_proxy = self.proxy.system
                 else:
-                    system_proxy = getattr(self.proxy.system, node_id)
+                    system_proxy = self.proxy.system.__getattr__(node_id)
 
                 result = await system_proxy.increment_service_version(service_name=service_name)
                 return result
@@ -678,7 +678,7 @@ class Run(BaseService):
                 else:
                     # Call worker's certs_tool via proxy
                     if hasattr(self.proxy, 'certs_tool'):
-                        result = await getattr(self.proxy.certs_tool, worker).install_pfx_from_base64(
+                        result = await self.proxy.certs_tool.__getattr__(worker).install_pfx_from_base64(
                             pfx_base64=pfx_data,
                             password=password,
                             filename=filename
@@ -697,7 +697,7 @@ class Run(BaseService):
                         if worker == "coordinator":
                             fresh_data = await self.proxy.certs_tool.get_dashboard_data()
                         else:
-                            fresh_data = await getattr(self.proxy.certs_tool, worker).get_dashboard_data()
+                            fresh_data = await self.proxy.certs_tool.__getattr__(worker).get_dashboard_data()
 
                         # Update the service_data cache
                         if worker not in self.service_data:
@@ -756,7 +756,7 @@ class Run(BaseService):
                         )
                 else:
                     if hasattr(self.proxy, 'certs_tool'):
-                        await getattr(self.proxy.certs_tool, worker).export_certificate_cer(
+                        await self.proxy.certs_tool.__getattr__(worker).export_certificate_cer(
                             container_name=cert_info.get("container"),
                             thumbprint=cert_info.get("thumbprint"),
                             output_path=tmp_path
@@ -815,7 +815,7 @@ class Run(BaseService):
                         )
                 else:
                     if hasattr(self.proxy, 'certs_tool'):
-                        await getattr(self.proxy.certs_tool, worker).export_certificate_pfx(
+                        await self.proxy.certs_tool.__getattr__(worker).export_certificate_pfx(
                             container_name=cert_info.get("container"),
                             output_path=tmp_path,
                             password=password
@@ -892,7 +892,7 @@ class Run(BaseService):
                         )
                 else:
                     if hasattr(self.proxy, 'certs_tool'):
-                        result = await getattr(self.proxy.certs_tool, worker).delete_certificate(
+                        result = await self.proxy.certs_tool.__getattr__(worker).delete_certificate(
                             thumbprint=thumbprint
                         )
                     else:
@@ -909,7 +909,7 @@ class Run(BaseService):
                         if worker == "coordinator":
                             fresh_data = await self.proxy.certs_tool.get_dashboard_data()
                         else:
-                            fresh_data = await getattr(self.proxy.certs_tool, worker).get_dashboard_data()
+                            fresh_data = await self.proxy.certs_tool.__getattr__(worker).get_dashboard_data()
 
                         # Update the service_data cache
                         if worker not in self.service_data:
@@ -1006,7 +1006,7 @@ class Run(BaseService):
 
                         # Step 3: Install on target worker
                         if hasattr(self.proxy, 'certs_tool'):
-                            install_result = await getattr(self.proxy.certs_tool, target_worker).install_pfx_from_base64(
+                            install_result = await self.proxy.certs_tool.__getattr__(target_worker).install_pfx_from_base64(
                                 pfx_base64=pfx_base64,
                                 password=password,
                                 filename=f"{cert_info.get('subject_cn', 'cert')}.pfx"
@@ -1017,7 +1017,7 @@ class Run(BaseService):
                                 self.logger.info(f"Certificate deployed successfully to {target_worker}, refreshing data")
                                 try:
                                     # Get fresh certificate data from the target worker
-                                    fresh_data = await getattr(self.proxy.certs_tool, target_worker).get_dashboard_data()
+                                    fresh_data = await self.proxy.certs_tool.__getattr__(target_worker).get_dashboard_data()
 
                                     # Update the service_data cache
                                     if target_worker not in self.service_data:
@@ -1155,7 +1155,7 @@ class Run(BaseService):
 
                 # Batch install on target worker
                 if hasattr(self.proxy, 'certs_tool'):
-                    install_result = await getattr(self.proxy.certs_tool, target_worker).batch_install_pfx_from_bytes(
+                    install_result = await self.proxy.certs_tool.__getattr__(target_worker).batch_install_pfx_from_bytes(
                         pfx_list=pfx_list,
                         current_password=current_password,
                         new_password=new_password
@@ -1166,7 +1166,7 @@ class Run(BaseService):
                         try:
                             self.logger.info(f"Bulk deployment successful to {target_worker}, refreshing data")
                             # Get fresh certificate data from the target worker
-                            fresh_data = await getattr(self.proxy.certs_tool, target_worker).get_dashboard_data()
+                            fresh_data = await self.proxy.certs_tool.__getattr__(target_worker).get_dashboard_data()
 
                             # Update the service_data cache
                             if target_worker not in self.service_data:
@@ -1276,7 +1276,7 @@ class Run(BaseService):
                                 continue
                         else:
                             if hasattr(self.proxy, 'certs_tool'):
-                                delete_result = await getattr(self.proxy.certs_tool, target_node).delete_certificate(
+                                delete_result = await self.proxy.certs_tool.__getattr__(target_node).delete_certificate(
                                     thumbprint=thumbprint
                                 )
                             else:
@@ -1326,7 +1326,7 @@ class Run(BaseService):
                         if target_node == "coordinator":
                             fresh_data = await self.proxy.certs_tool.get_dashboard_data()
                         else:
-                            fresh_data = await getattr(self.proxy.certs_tool, target_node).get_dashboard_data()
+                            fresh_data = await self.proxy.certs_tool.__getattr__(target_node).get_dashboard_data()
 
                         # Update the service_data cache
                         if target_node not in self.service_data:
@@ -2571,7 +2571,7 @@ class Run(BaseService):
                 self.logger.debug(f"Using local orchestrator for {worker_id}")
             else:
                 # Call remote orchestrator via P2P RPC
-                orchestrator_proxy = getattr(self.proxy.orchestrator, worker_id)
+                orchestrator_proxy = self.proxy.orchestrator.__getattr__(worker_id)
                 self.logger.debug(f"Using remote orchestrator for {worker_id}")
 
             # Call the appropriate orchestrator method based on action
@@ -2691,7 +2691,7 @@ class Run(BaseService):
                 service_info = await service_proxy.get_service_info()
             else:
                 # Remote call to worker - get target node proxy
-                remote_service = getattr(service_proxy, node_id)
+                remote_service = service_proxy.__getattr__(node_id)
                 service_info = await remote_service.get_service_info()
 
             # Ensure service_info is a dict (convert if needed)
