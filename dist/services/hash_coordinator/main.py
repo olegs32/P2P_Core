@@ -364,6 +364,9 @@ class DynamicChunkGenerator:
         found = False
         batch_version = None
 
+        # ДИАГНОСТИКА: Логируем попытку обновления
+        self.logger.info(f"🔍 [DIAG] chunk_completed called for chunk_id={chunk_id}, hash_count={hash_count}, solutions={len(solutions)}")
+
         for batch in self.generated_batches.values():
             for chunk in batch.chunks:
                 # Приводим к int для сравнения (может быть строкой из gossip)
@@ -373,7 +376,7 @@ class DynamicChunkGenerator:
                     found = True
                     batch_version = batch.version
 
-                    self.logger.info(f"Chunk {chunk_id} status: {old_status} → solved")
+                    self.logger.info(f"✅ [DIAG] Chunk {chunk_id} status: {old_status} → solved (batch_version={batch_version})")
 
                     # Производительность обновляется в _process_worker_chunk_status
                     # где есть доступ к time_taken из gossip
@@ -382,7 +385,8 @@ class DynamicChunkGenerator:
                 break
 
         if not found:
-            self.logger.warning(f"Chunk {chunk_id} not found in batches! Available chunks: {[c.chunk_id for b in self.generated_batches.values() for c in b.chunks]}")
+            available_chunks = [(b.version, c.chunk_id, c.status) for b in self.generated_batches.values() for c in b.chunks]
+            self.logger.warning(f"❌ [DIAG] Chunk {chunk_id} NOT FOUND in batches! Available: {available_chunks}")
             return
 
         # Проверяем, все ли чанки батча завершены
@@ -458,6 +462,10 @@ class Run(BaseService):
 
         # Состояние воркеров из gossip
         self.worker_states: Dict[str, dict] = {}
+
+        # Отслеживание последних обработанных статусов (дедупликация)
+        # {worker_id: {job_id: {chunk_id: timestamp}}}
+        self.processed_worker_statuses: Dict[str, Dict[str, Dict[int, float]]] = {}
 
         # Background tasks
         self.monitor_task = None
@@ -902,14 +910,121 @@ class Run(BaseService):
         # Use new versioned update_metadata API
         network.gossip.update_metadata(f"hash_job_{job_id}", job_metadata)
 
+    def _merge_batch_statuses(self, current_batches: dict, new_batches: dict) -> dict:
+        """
+        Мержит статусы чанков в batches с приоритетом solved > working > recovery > assigned
+
+        Учитывает удаление completed батчей: если min(new_versions) > old_solved_versions,
+        значит старые батчи уже обработаны и должны быть удалены из мержа.
+
+        Args:
+            current_batches: Текущие batches из gossip
+            new_batches: Новые batches для публикации
+
+        Returns:
+            Замерженные batches
+        """
+        # Приоритеты статусов (выше = важнее)
+        status_priority = {
+            "solved": 4,
+            "working": 3,
+            "recovery": 2,
+            "timeout": 1,
+            "assigned": 0
+        }
+
+        # ВАЖНО: Определяем минимальную версию в новых batches
+        # Если старые solved батчи имеют версию < min_new_version, они устарели (были удалены)
+        min_new_version = min((int(v) for v in new_batches.keys()), default=float('inf'))
+
+        # Находим fully solved батчи в current (все чанки solved)
+        fully_solved_versions = set()
+        for version, batch_data in current_batches.items():
+            chunks = batch_data.get("chunks", {})
+            if chunks and all(
+                chunk.get("status") == "solved"
+                for chunk in chunks.values()
+            ):
+                fully_solved_versions.add(int(version))
+
+        # Удаляем устаревшие fully solved батчи (версия < min_new_version)
+        # Это батчи, которые координатор уже обработал и удалил
+        obsolete_versions = {v for v in fully_solved_versions if v < min_new_version}
+
+        if obsolete_versions:
+            self.logger.debug(
+                f"🗑️ [DIAG] Removing obsolete solved batches: {sorted(obsolete_versions)} "
+                f"(older than min_new_version={min_new_version})"
+            )
+
+        merged = {}
+
+        # Объединяем все версии из обоих источников, исключая obsolete
+        all_versions = (set(current_batches.keys()) | set(new_batches.keys())) - {str(v) for v in obsolete_versions}
+
+        for version in all_versions:
+            current_batch = current_batches.get(version, {})
+            new_batch = new_batches.get(version, {})
+
+            # Если версия только в одном источнике - берем как есть
+            if not current_batch:
+                merged[version] = new_batch
+                continue
+            if not new_batch:
+                merged[version] = current_batch
+                continue
+
+            # Мержим chunks
+            current_chunks = current_batch.get("chunks", {})
+            new_chunks = new_batch.get("chunks", {})
+
+            merged_chunks = {}
+            all_chunk_ids = set(current_chunks.keys()) | set(new_chunks.keys())
+
+            for chunk_id in all_chunk_ids:
+                current_chunk = current_chunks.get(chunk_id)
+                new_chunk = new_chunks.get(chunk_id)
+
+                # Если chunk только в одном источнике
+                if not current_chunk:
+                    merged_chunks[chunk_id] = new_chunk
+                    continue
+                if not new_chunk:
+                    merged_chunks[chunk_id] = current_chunk
+                    continue
+
+                # Оба chunk есть - выбираем по приоритету статуса
+                current_status = current_chunk.get("status", "assigned")
+                new_status = new_chunk.get("status", "assigned")
+
+                current_priority = status_priority.get(current_status, 0)
+                new_priority = status_priority.get(new_status, 0)
+
+                if new_priority >= current_priority:
+                    merged_chunks[chunk_id] = new_chunk
+                else:
+                    merged_chunks[chunk_id] = current_chunk
+
+            # Формируем замерженный batch
+            merged[version] = {
+                "chunks": merged_chunks,
+                "created_at": new_batch.get("created_at", current_batch.get("created_at")),
+                "is_recovery": new_batch.get("is_recovery", current_batch.get("is_recovery", False))
+            }
+
+        return merged
+
     async def _publish_batches(self, job_id: str, generator: DynamicChunkGenerator):
-        """Публикует batches в gossip"""
+        """Публикует batches в gossip с мержем текущего состояния"""
         network = self.context.get_shared("network")
         if not network:
             return
 
         # Публикуем только незавершенные батчи
-        active_batches = {}
+        new_batches = {}
+
+        # ДИАГНОСТИКА: Счетчики статусов ДО мержа
+        new_status_counts = {"assigned": 0, "working": 0, "solved": 0, "recovery": 0, "timeout": 0}
 
         for version, batch in generator.generated_batches.items():
             if version not in generator.completed_batches:
@@ -925,14 +1040,41 @@ class Run(BaseService):
                         "priority": chunk.priority
                     }
 
-                active_batches[version] = {
+                    # ДИАГНОСТИКА: Считаем статусы
+                    new_status_counts[chunk.status] = new_status_counts.get(chunk.status, 0) + 1
+
+                new_batches[version] = {
                     "chunks": chunks_dict,
                     "created_at": batch.created_at,
                     "is_recovery": batch.is_recovery
                 }
 
+        # Читаем текущее состояние из gossip
+        batches_key = f"hash_batches_{job_id}"
+        current_batches = network.gossip.node_registry[network.gossip.node_id].metadata.get(batches_key, {})
+
+        # МЕРЖИМ с текущим состоянием (solved имеет приоритет!)
+        merged_batches = self._merge_batch_statuses(current_batches, new_batches)
+
+        # ДИАГНОСТИКА: Считаем статусы ПОСЛЕ мержа
+        merged_status_counts = {"assigned": 0, "working": 0, "solved": 0, "recovery": 0, "timeout": 0}
+        for batch_data in merged_batches.values():
+            for chunk_data in batch_data.get("chunks", {}).values():
+                status = chunk_data.get("status", "assigned")
+                merged_status_counts[status] = merged_status_counts.get(status, 0) + 1
+
+        # ДИАГНОСТИКА: Логируем мерж
+        if new_status_counts != merged_status_counts:
+            self.logger.info(
+                f"🔀 [DIAG] Merged batches for {job_id}: "
+                f"new={new_status_counts} + current={len(current_batches)} versions → "
+                f"merged={merged_status_counts}"
+            )
+        else:
+            self.logger.info(f"📤 [DIAG] Publishing batches for {job_id}: {len(merged_batches)} batches, statuses: {merged_status_counts}")
+
         # Use new versioned update_metadata API
-        network.gossip.update_metadata(f"hash_batches_{job_id}", active_batches)
+        network.gossip.update_metadata(batches_key, merged_batches)
 
     async def _monitor_loop(self):
         """Мониторинг состояния задач"""
@@ -1032,6 +1174,7 @@ class Run(BaseService):
             return
 
         nodes = network.gossip.node_registry
+        jobs_to_publish = set()  # Какие job_id требуют публикации batches
 
         for node_id, node_info in nodes.items():
             if node_id in self.worker_states:
@@ -1051,7 +1194,16 @@ class Run(BaseService):
             # Обрабатываем hash_worker_status из metadata
             worker_status = node_info.metadata.get("hash_worker_status")
             if worker_status and isinstance(worker_status, dict):
+                job_id = worker_status.get("job_id")
+                if job_id and job_id in self.active_jobs:
+                    jobs_to_publish.add(job_id)
+
                 await self._process_worker_chunk_status(node_id, worker_status)
+
+        # Публикуем batches ОДИН РАЗ для каждой задачи после обработки всех воркеров
+        for job_id in jobs_to_publish:
+            if job_id in self.active_jobs:
+                await self._publish_batches(job_id, self.active_jobs[job_id])
 
     async def _process_worker_chunk_status(self, worker_id: str, status: dict):
         """
@@ -1064,6 +1216,7 @@ class Run(BaseService):
         job_id = status.get("job_id")
         chunk_id = status.get("chunk_id")
         chunk_status = status.get("status")
+        status_timestamp = status.get("timestamp", 0)
 
         if not job_id or chunk_id is None:
             return
@@ -1072,7 +1225,29 @@ class Run(BaseService):
         if job_id not in self.active_jobs:
             return
 
+        # ДЕДУПЛИКАЦИЯ: Проверяем, не обрабатывали ли мы уже этот статус
+        if worker_id not in self.processed_worker_statuses:
+            self.processed_worker_statuses[worker_id] = {}
+        if job_id not in self.processed_worker_statuses[worker_id]:
+            self.processed_worker_statuses[worker_id][job_id] = {}
+
+        last_processed_ts = self.processed_worker_statuses[worker_id][job_id].get(chunk_id, 0)
+
+        if status_timestamp <= last_processed_ts:
+            # Уже обрабатывали этот или более новый статус
+            self.logger.debug(
+                f"⏭️ [DIAG] Skipping duplicate status from {worker_id}: "
+                f"chunk {chunk_id}, timestamp {status_timestamp} <= {last_processed_ts}"
+            )
+            return
+
+        # Обновляем timestamp последней обработки
+        self.processed_worker_statuses[worker_id][job_id][chunk_id] = status_timestamp
+
         generator = self.active_jobs[job_id]
+
+        # ДИАГНОСТИКА: Логируем все статусы от воркеров
+        self.logger.info(f"🔍 [DIAG] Worker {worker_id} reported chunk {chunk_id} status: {chunk_status}")
 
         # Обрабатываем статус "solved" - чанк завершен
         if chunk_status == "solved":
@@ -1122,8 +1297,7 @@ class Run(BaseService):
             active_workers = await self._get_active_workers()
             await generator.ensure_lookahead_batches(active_workers)
 
-            # ВАЖНО: Публикуем обновленные batches в gossip
-            await self._publish_batches(job_id, generator)
+            # НЕ публикуем здесь - будет опубликовано один раз в конце _update_worker_states()
 
         # Обрабатываем статус "working" - обновляем прогресс
         elif chunk_status == "working":
