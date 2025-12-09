@@ -1622,6 +1622,11 @@
                         Репозиторий
                     </button>
                 </li>
+                <li class="nav-item" role="presentation">
+                    <button class="nav-link" id="gossip-tab" data-bs-toggle="tab" data-bs-target="#gossipPanel" type="button">
+                        Gossip
+                    </button>
+                </li>
             </ul>
 
             <!-- Sub-tabs Content -->
@@ -2129,6 +2134,119 @@
                         </div>
                     </div>
                 </div>
+
+                <!-- Gossip Panel -->
+                <div class="tab-pane fade" id="gossipPanel" role="tabpanel">
+                    <!-- Gossip Stats -->
+                    <div class="row g-4 mb-4">
+                        <div class="col-md-3">
+                            <div class="card h-100">
+                                <div class="card-body">
+                                    <div class="d-flex justify-content-between align-items-center mb-2">
+                                        <h6 class="mb-0">Gossip Version</h6>
+                                        <i class="bi bi-gear-fill text-primary"></i>
+                                    </div>
+                                    <h3 class="mb-0" id="gossipVersion">-</h3>
+                                    <small class="text-muted">Global version</small>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-md-3">
+                            <div class="card h-100">
+                                <div class="card-body">
+                                    <div class="d-flex justify-content-between align-items-center mb-2">
+                                        <h6 class="mb-0">Total Nodes</h6>
+                                        <i class="bi bi-diagram-3-fill text-info"></i>
+                                    </div>
+                                    <h3 class="mb-0" id="gossipTotalNodes">-</h3>
+                                    <small class="text-muted">In registry</small>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-md-3">
+                            <div class="card h-100">
+                                <div class="card-body">
+                                    <div class="d-flex justify-content-between align-items-center mb-2">
+                                        <h6 class="mb-0">Live Nodes</h6>
+                                        <i class="bi bi-circle-fill text-success"></i>
+                                    </div>
+                                    <h3 class="mb-0" id="gossipLiveNodes">-</h3>
+                                    <small class="text-muted">Status: alive</small>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-md-3">
+                            <div class="card h-100">
+                                <div class="card-body">
+                                    <div class="d-flex justify-content-between align-items-center mb-2">
+                                        <h6 class="mb-0">Peer Versions</h6>
+                                        <i class="bi bi-diagram-2-fill text-warning"></i>
+                                    </div>
+                                    <h3 class="mb-0" id="gossipPeerCount">-</h3>
+                                    <small class="text-muted">Known peers</small>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Nodes Table -->
+                    <div class="card mb-4">
+                        <div class="card-header d-flex justify-content-between align-items-center">
+                            <h5 class="mb-0">Nodes Registry</h5>
+                            <button class="btn btn-primary btn-sm" onclick="refreshGossipData()">
+                                <i class="bi bi-arrow-clockwise"></i> Refresh
+                            </button>
+                        </div>
+                        <div class="card-body">
+                            <div class="table-responsive">
+                                <table class="table table-dark table-hover">
+                                    <thead>
+                                        <tr>
+                                            <th>Node ID</th>
+                                            <th>Role</th>
+                                            <th>Address</th>
+                                            <th>Status</th>
+                                            <th>Version</th>
+                                            <th>Services</th>
+                                            <th>Last Seen</th>
+                                            <th>Metadata Keys</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="gossipNodesTableBody">
+                                        <tr>
+                                            <td colspan="8" class="text-center text-muted">Loading gossip data...</td>
+                                        </tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Peer Versions Table -->
+                    <div class="card">
+                        <div class="card-header">
+                            <h5 class="mb-0">Peer Versions Tracking</h5>
+                        </div>
+                        <div class="card-body">
+                            <div class="table-responsive">
+                                <table class="table table-dark table-hover">
+                                    <thead>
+                                        <tr>
+                                            <th>Peer Node ID</th>
+                                            <th>Last Known Version</th>
+                                            <th>Version Difference</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="gossipPeerVersionsTableBody">
+                                        <tr>
+                                            <td colspan="3" class="text-center text-muted">Loading peer versions...</td>
+                                        </tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                </div>
             </div>
         </div>
     </div>
@@ -2553,6 +2671,16 @@
             if (hashJobsTab && hashJobsTab.classList.contains('active')) {
                 if (data.hash_jobs) {
                     updateHashJobsFromWS(data.hash_jobs);
+                }
+            }
+
+            // Update gossip if on control panel > gossip tab
+            const controlTab = document.getElementById('controlTab');
+            const gossipPanel = document.getElementById('gossipPanel');
+            if (controlTab && controlTab.classList.contains('active') &&
+                gossipPanel && gossipPanel.classList.contains('active')) {
+                if (data.gossip) {
+                    updateGossipFromWS(data.gossip);
                 }
             }
 
@@ -7111,6 +7239,175 @@
                 workersDistributionInterval = null;
             }
         }
+
+        // ============================================
+        // Gossip Panel Functions
+        // ============================================
+
+        function updateGossipFromWS(gossipData) {
+            // Update stats cards
+            if (gossipData.gossip_version !== undefined) {
+                document.getElementById('gossipVersion').textContent = gossipData.gossip_version;
+            }
+
+            if (gossipData.cluster_stats) {
+                document.getElementById('gossipTotalNodes').textContent = gossipData.cluster_stats.total_nodes || 0;
+                document.getElementById('gossipLiveNodes').textContent = gossipData.cluster_stats.live_nodes || 0;
+            }
+
+            if (gossipData.peer_versions) {
+                document.getElementById('gossipPeerCount').textContent = Object.keys(gossipData.peer_versions).length;
+            }
+        }
+
+        async function refreshGossipData() {
+            try {
+                const response = await fetch('/api/gossip/data');
+                const data = await response.json();
+
+                if (data.error) {
+                    console.error('Error loading gossip data:', data.error);
+                    return;
+                }
+
+                // Update stats
+                document.getElementById('gossipVersion').textContent = data.gossip_version || '-';
+                document.getElementById('gossipTotalNodes').textContent = data.cluster_stats?.total_nodes || 0;
+                document.getElementById('gossipLiveNodes').textContent = data.cluster_stats?.live_nodes || 0;
+                document.getElementById('gossipPeerCount').textContent = Object.keys(data.peer_versions || {}).length;
+
+                // Update nodes table
+                updateGossipNodesTable(data.nodes || [], data.current_node_id, data.peer_versions || {});
+
+                // Update peer versions table
+                updateGossipPeerVersionsTable(data.peer_versions || {}, data.gossip_version);
+
+            } catch (error) {
+                console.error('Error fetching gossip data:', error);
+            }
+        }
+
+        function updateGossipNodesTable(nodes, currentNodeId, peerVersions) {
+            const tbody = document.getElementById('gossipNodesTableBody');
+
+            if (!nodes || nodes.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="8" class="text-center text-muted">No nodes found</td></tr>';
+                return;
+            }
+
+            let html = '';
+            for (const node of nodes) {
+                const isCurrent = node.node_id === currentNodeId;
+                const statusBadge = getNodeStatusBadge(node.status);
+                const peerVersion = peerVersions[node.node_id] || '-';
+                const services = Array.isArray(node.services) ? node.services : [];
+                const metadataKeys = Object.keys(node.metadata || {});
+
+                // Format last_seen
+                let lastSeenText = '-';
+                if (node.last_seen) {
+                    try {
+                        const lastSeenDate = new Date(node.last_seen);
+                        const now = new Date();
+                        const diffMs = now - lastSeenDate;
+                        const diffSec = Math.floor(diffMs / 1000);
+
+                        if (diffSec < 60) {
+                            lastSeenText = `${diffSec}s ago`;
+                        } else if (diffSec < 3600) {
+                            lastSeenText = `${Math.floor(diffSec / 60)}m ago`;
+                        } else {
+                            lastSeenText = lastSeenDate.toLocaleTimeString();
+                        }
+                    } catch (e) {
+                        lastSeenText = node.last_seen;
+                    }
+                }
+
+                html += `
+                    <tr ${isCurrent ? 'class="table-primary"' : ''}>
+                        <td>
+                            ${node.node_id}
+                            ${isCurrent ? '<span class="badge bg-info ms-2">Current</span>' : ''}
+                        </td>
+                        <td><span class="badge bg-secondary">${node.role}</span></td>
+                        <td>
+                            ${node.address}:${node.port}
+                            ${node.addresses && node.addresses.length > 1 ?
+                                `<small class="text-muted"><br>${node.addresses.length} addresses</small>` : ''}
+                        </td>
+                        <td>${statusBadge}</td>
+                        <td><span class="badge bg-primary">${peerVersion}</span></td>
+                        <td>
+                            ${services.length > 0 ?
+                                `<span class="badge bg-success">${services.length}</span>` :
+                                '<span class="text-muted">0</span>'}
+                        </td>
+                        <td><small>${lastSeenText}</small></td>
+                        <td>
+                            ${metadataKeys.length > 0 ?
+                                `<small class="text-muted">${metadataKeys.slice(0, 3).join(', ')}${metadataKeys.length > 3 ? '...' : ''}</small>` :
+                                '<span class="text-muted">-</span>'}
+                        </td>
+                    </tr>
+                `;
+            }
+
+            tbody.innerHTML = html;
+        }
+
+        function updateGossipPeerVersionsTable(peerVersions, currentVersion) {
+            const tbody = document.getElementById('gossipPeerVersionsTableBody');
+
+            const peers = Object.entries(peerVersions);
+            if (peers.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="3" class="text-center text-muted">No peer versions tracked</td></tr>';
+                return;
+            }
+
+            let html = '';
+            for (const [nodeId, version] of peers) {
+                const diff = currentVersion - version;
+                let diffBadge = '';
+
+                if (diff === 0) {
+                    diffBadge = '<span class="badge bg-success">Same</span>';
+                } else if (diff > 0) {
+                    diffBadge = `<span class="badge bg-warning">-${diff}</span>`;
+                } else {
+                    diffBadge = `<span class="badge bg-info">+${Math.abs(diff)}</span>`;
+                }
+
+                html += `
+                    <tr>
+                        <td>${nodeId}</td>
+                        <td><span class="badge bg-primary">${version}</span></td>
+                        <td>${diffBadge}</td>
+                    </tr>
+                `;
+            }
+
+            tbody.innerHTML = html;
+        }
+
+        function getNodeStatusBadge(status) {
+            const badges = {
+                'alive': '<span class="badge bg-success">Alive</span>',
+                'suspected': '<span class="badge bg-warning">Suspected</span>',
+                'dead': '<span class="badge bg-danger">Dead</span>'
+            };
+            return badges[status] || `<span class="badge bg-secondary">${status}</span>`;
+        }
+
+        // Auto-refresh gossip data when tab becomes active
+        document.addEventListener('DOMContentLoaded', function() {
+            const gossipTab = document.getElementById('gossip-tab');
+            if (gossipTab) {
+                gossipTab.addEventListener('shown.bs.tab', function() {
+                    refreshGossipData();
+                });
+            }
+        });
 
     </script>
 </body>

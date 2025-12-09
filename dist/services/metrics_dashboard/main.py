@@ -212,6 +212,48 @@ class Run(BaseService):
                 self.logger.error(f"Error clearing logs: {e}")
                 return {"success": False, "error": str(e)}
 
+        # Gossip API endpoint
+        @app.get("/api/gossip/data")
+        async def get_gossip_data():
+            """Get gossip protocol data from network layer"""
+            try:
+                network = self.context.get_shared("network")
+                if not network:
+                    return {"error": "Network layer not available"}
+
+                gossip = network.gossip
+
+                # Получаем данные из gossip
+                nodes_data = []
+                for node_id, node_info in gossip.node_registry.items():
+                    nodes_data.append({
+                        "node_id": node_id,
+                        "address": node_info.address,
+                        "port": node_info.port,
+                        "role": node_info.role,
+                        "status": node_info.status,
+                        "last_seen": node_info.last_seen.isoformat() if node_info.last_seen else None,
+                        "metadata": node_info.metadata,
+                        "services": list(node_info.services.keys()) if node_info.services else [],
+                        "capabilities": node_info.capabilities,
+                        "addresses": node_info.addresses
+                    })
+
+                return {
+                    "current_node_id": gossip.node_id,
+                    "gossip_version": gossip.gossip_version,
+                    "peer_versions": gossip.peer_versions,
+                    "nodes": nodes_data,
+                    "cluster_stats": gossip.get_cluster_stats(),
+                    "gossip_interval": gossip.gossip_interval if hasattr(gossip, 'gossip_interval') else None,
+                    "compression_enabled": gossip.compression_enabled if hasattr(gossip, 'compression_enabled') else False
+                }
+            except Exception as e:
+                self.logger.error(f"Error getting gossip data: {e}")
+                import traceback
+                self.logger.error(traceback.format_exc())
+                return {"error": str(e)}
+
         @app.post("/api/dashboard/control-service")
         async def control_service_endpoint(request: Request):
             """Control a service on a worker"""
@@ -1815,10 +1857,28 @@ class Run(BaseService):
                 hash_jobs_data["jobs"] = []
                 hash_jobs_data["workers"] = []
 
+            # Collect gossip data for real-time updates
+            gossip_data = {}
+            try:
+                network = self.context.get_shared("network")
+                if network:
+                    gossip = network.gossip
+                    gossip_data = {
+                        "current_node_id": gossip.node_id,
+                        "gossip_version": gossip.gossip_version,
+                        "peer_versions": gossip.peer_versions,
+                        "cluster_stats": gossip.get_cluster_stats(),
+                        "nodes_count": len(gossip.node_registry)
+                    }
+            except Exception as e:
+                self.logger.debug(f"Failed to get gossip data: {e}")
+                gossip_data = {}
+
             return {
                 "metrics": metrics_data,
                 "history": history_data,
                 "hash_jobs": hash_jobs_data,
+                "gossip": gossip_data,
                 "timestamp": datetime.now().isoformat()
             }
 
