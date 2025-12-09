@@ -2510,6 +2510,25 @@
         </div>
     </div>
 
+    <!-- Node Details Modal -->
+    <div class="modal fade" id="nodeDetailsModal" tabindex="-1" aria-labelledby="nodeDetailsModalLabel" aria-hidden="true">
+        <div class="modal-dialog modal-lg modal-dialog-scrollable">
+            <div class="modal-content bg-dark text-light">
+                <div class="modal-header border-secondary">
+                    <h5 class="modal-title" id="nodeDetailsModalLabel">Node Details</h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <h6 class="text-muted mb-3">Node ID: <span id="nodeDetailsId" class="text-white"></span></h6>
+                    <pre id="nodeDetailsJson" class="bg-dark text-light p-3 rounded" style="max-height: 60vh; overflow-y: auto; border: 1px solid #444;"><code></code></pre>
+                </div>
+                <div class="modal-footer border-secondary">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- Bootstrap JS -->
     <script src="/static/js/bootstrap.bundle.min.js"></script>
 
@@ -7287,12 +7306,22 @@
             }
         }
 
+        // Global variable to store node data for modal
+        let gossipNodesData = {};
+
         function updateGossipNodesTable(nodes, currentNodeId, peerVersions) {
             const tbody = document.getElementById('gossipNodesTableBody');
 
             if (!nodes || nodes.length === 0) {
                 tbody.innerHTML = '<tr><td colspan="8" class="text-center text-muted">No nodes found</td></tr>';
+                gossipNodesData = {};
                 return;
+            }
+
+            // Store nodes data for modal access
+            gossipNodesData = {};
+            for (const node of nodes) {
+                gossipNodesData[node.node_id] = node;
             }
 
             let html = '';
@@ -7327,7 +7356,9 @@
                 html += `
                     <tr ${isCurrent ? 'class="table-primary"' : ''}>
                         <td>
-                            ${node.node_id}
+                            <a href="#" class="text-decoration-none" onclick="showNodeDetails('${node.node_id}'); return false;" style="color: #6ea8fe; cursor: pointer;">
+                                ${node.node_id}
+                            </a>
                             ${isCurrent ? '<span class="badge bg-info ms-2">Current</span>' : ''}
                         </td>
                         <td><span class="badge bg-secondary">${node.role}</span></td>
@@ -7397,6 +7428,27 @@
                 'dead': '<span class="badge bg-danger">Dead</span>'
             };
             return badges[status] || `<span class="badge bg-secondary">${status}</span>`;
+        }
+
+        function showNodeDetails(nodeId) {
+            // Get node data from global storage
+            const nodeData = gossipNodesData[nodeId];
+
+            if (!nodeData) {
+                console.error('Node data not found for:', nodeId);
+                return;
+            }
+
+            // Update modal content
+            document.getElementById('nodeDetailsId').textContent = nodeId;
+
+            // Format JSON with syntax highlighting (simple color coding)
+            const jsonText = JSON.stringify(nodeData, null, 2);
+            document.getElementById('nodeDetailsJson').querySelector('code').textContent = jsonText;
+
+            // Show the modal using Bootstrap 5 API
+            const modal = new bootstrap.Modal(document.getElementById('nodeDetailsModal'));
+            modal.show();
         }
 
         // Auto-refresh gossip data when tab becomes active
