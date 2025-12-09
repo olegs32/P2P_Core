@@ -906,17 +906,94 @@ class Run(BaseService):
         # Use new versioned update_metadata API
         network.gossip.update_metadata(f"hash_job_{job_id}", job_metadata)
 
+    def _merge_batch_statuses(self, current_batches: dict, new_batches: dict) -> dict:
+        """
+        Мержит статусы чанков в batches с приоритетом solved > working > recovery > assigned
+
+        Args:
+            current_batches: Текущие batches из gossip
+            new_batches: Новые batches для публикации
+
+        Returns:
+            Замерженные batches
+        """
+        # Приоритеты статусов (выше = важнее)
+        status_priority = {
+            "solved": 4,
+            "working": 3,
+            "recovery": 2,
+            "timeout": 1,
+            "assigned": 0
+        }
+
+        merged = {}
+
+        # Объединяем все версии из обоих источников
+        all_versions = set(current_batches.keys()) | set(new_batches.keys())
+
+        for version in all_versions:
+            current_batch = current_batches.get(version, {})
+            new_batch = new_batches.get(version, {})
+
+            # Если версия только в одном источнике - берем как есть
+            if not current_batch:
+                merged[version] = new_batch
+                continue
+            if not new_batch:
+                merged[version] = current_batch
+                continue
+
+            # Мержим chunks
+            current_chunks = current_batch.get("chunks", {})
+            new_chunks = new_batch.get("chunks", {})
+
+            merged_chunks = {}
+            all_chunk_ids = set(current_chunks.keys()) | set(new_chunks.keys())
+
+            for chunk_id in all_chunk_ids:
+                current_chunk = current_chunks.get(chunk_id)
+                new_chunk = new_chunks.get(chunk_id)
+
+                # Если chunk только в одном источнике
+                if not current_chunk:
+                    merged_chunks[chunk_id] = new_chunk
+                    continue
+                if not new_chunk:
+                    merged_chunks[chunk_id] = current_chunk
+                    continue
+
+                # Оба chunk есть - выбираем по приоритету статуса
+                current_status = current_chunk.get("status", "assigned")
+                new_status = new_chunk.get("status", "assigned")
+
+                current_priority = status_priority.get(current_status, 0)
+                new_priority = status_priority.get(new_status, 0)
+
+                if new_priority >= current_priority:
+                    merged_chunks[chunk_id] = new_chunk
+                else:
+                    merged_chunks[chunk_id] = current_chunk
+
+            # Формируем замерженный batch
+            merged[version] = {
+                "chunks": merged_chunks,
+                "created_at": new_batch.get("created_at", current_batch.get("created_at")),
+                "is_recovery": new_batch.get("is_recovery", current_batch.get("is_recovery", False))
+            }
+
+        return merged
+
     async def _publish_batches(self, job_id: str, generator: DynamicChunkGenerator):
-        """Публикует batches в gossip"""
+        """Публикует batches в gossip с мержем текущего состояния"""
         network = self.context.get_shared("network")
         if not network:
             return
 
         # Публикуем только незавершенные батчи
-        active_batches = {}
+        new_batches = {}
 
-        # ДИАГНОСТИКА: Счетчики статусов
-        status_counts = {"assigned": 0, "working": 0, "solved": 0, "recovery": 0, "timeout": 0}
+        # ДИАГНОСТИКА: Счетчики статусов ДО мержа
+        new_status_counts = {"assigned": 0, "working": 0, "solved": 0, "recovery": 0, "timeout": 0}
 
         for version, batch in generator.generated_batches.items():
             if version not in generator.completed_batches:
@@ -933,19 +1010,40 @@ class Run(BaseService):
                     }
 
                     # ДИАГНОСТИКА: Считаем статусы
-                    status_counts[chunk.status] = status_counts.get(chunk.status, 0) + 1
+                    new_status_counts[chunk.status] = new_status_counts.get(chunk.status, 0) + 1
 
-                active_batches[version] = {
+                new_batches[version] = {
                     "chunks": chunks_dict,
                     "created_at": batch.created_at,
                     "is_recovery": batch.is_recovery
                 }
 
-        # ДИАГНОСТИКА: Логируем что публикуем
-        self.logger.info(f"📤 [DIAG] Publishing batches for {job_id}: {len(active_batches)} batches, statuses: {status_counts}")
+        # Читаем текущее состояние из gossip
+        batches_key = f"hash_batches_{job_id}"
+        current_batches = network.gossip.node_registry[network.gossip.node_id].metadata.get(batches_key, {})
+
+        # МЕРЖИМ с текущим состоянием (solved имеет приоритет!)
+        merged_batches = self._merge_batch_statuses(current_batches, new_batches)
+
+        # ДИАГНОСТИКА: Считаем статусы ПОСЛЕ мержа
+        merged_status_counts = {"assigned": 0, "working": 0, "solved": 0, "recovery": 0, "timeout": 0}
+        for batch_data in merged_batches.values():
+            for chunk_data in batch_data.get("chunks", {}).values():
+                status = chunk_data.get("status", "assigned")
+                merged_status_counts[status] = merged_status_counts.get(status, 0) + 1
+
+        # ДИАГНОСТИКА: Логируем мерж
+        if new_status_counts != merged_status_counts:
+            self.logger.info(
+                f"🔀 [DIAG] Merged batches for {job_id}: "
+                f"new={new_status_counts} + current={len(current_batches)} versions → "
+                f"merged={merged_status_counts}"
+            )
+        else:
+            self.logger.info(f"📤 [DIAG] Publishing batches for {job_id}: {len(merged_batches)} batches, statuses: {merged_status_counts}")
 
         # Use new versioned update_metadata API
-        network.gossip.update_metadata(f"hash_batches_{job_id}", active_batches)
+        network.gossip.update_metadata(batches_key, merged_batches)
 
     async def _monitor_loop(self):
         """Мониторинг состояния задач"""
