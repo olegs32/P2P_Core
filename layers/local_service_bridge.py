@@ -47,6 +47,13 @@ class SimpleLocalProxy:
         """Получить прокси для сервиса"""
         return ServiceMethodProxy(service_name, self.method_registry, context=self.context)
 
+    def __getitem__(self, service_name: str):
+        """
+        Поддержка subscript notation для совместимости с PyInstaller.
+        Делегирует вызов к __getattr__.
+        """
+        return self.__getattr__(service_name)
+
 
 class ServiceMethodProxy:
     """Прокси для методов сервиса с поддержкой таргетинга узлов"""
@@ -102,6 +109,16 @@ class ServiceMethodProxy:
             target_node=self.target_node,
             context=self.context
         )
+
+    def __getitem__(self, item: str):
+        """
+        Поддержка subscript notation для совместимости с PyInstaller.
+        Делегирует вызов к __getattr__.
+
+        Это необходимо, потому что в PyInstaller-сборках getattr() может
+        использовать __getitem__ внутренне.
+        """
+        return self.__getattr__(item)
 
 
 class MethodCaller:
