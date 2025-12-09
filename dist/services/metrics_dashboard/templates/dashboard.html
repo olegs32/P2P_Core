@@ -7277,6 +7277,15 @@
             if (gossipData.peer_versions) {
                 document.getElementById('gossipPeerCount').textContent = Object.keys(gossipData.peer_versions).length;
             }
+
+            // Update tables if nodes data available
+            if (gossipData.nodes && gossipData.current_node_id) {
+                updateGossipNodesTable(gossipData.nodes, gossipData.current_node_id, gossipData.peer_versions || {}, gossipData.gossip_version);
+            }
+
+            if (gossipData.peer_versions && gossipData.gossip_version !== undefined) {
+                updateGossipPeerVersionsTable(gossipData.peer_versions, gossipData.gossip_version);
+            }
         }
 
         async function refreshGossipData() {
@@ -7296,7 +7305,7 @@
                 document.getElementById('gossipPeerCount').textContent = Object.keys(data.peer_versions || {}).length;
 
                 // Update nodes table
-                updateGossipNodesTable(data.nodes || [], data.current_node_id, data.peer_versions || {});
+                updateGossipNodesTable(data.nodes || [], data.current_node_id, data.peer_versions || {}, data.gossip_version);
 
                 // Update peer versions table
                 updateGossipPeerVersionsTable(data.peer_versions || {}, data.gossip_version);
@@ -7309,7 +7318,7 @@
         // Global variable to store node data for modal
         let gossipNodesData = {};
 
-        function updateGossipNodesTable(nodes, currentNodeId, peerVersions) {
+        function updateGossipNodesTable(nodes, currentNodeId, peerVersions, currentVersion) {
             const tbody = document.getElementById('gossipNodesTableBody');
 
             if (!nodes || nodes.length === 0) {
@@ -7328,7 +7337,8 @@
             for (const node of nodes) {
                 const isCurrent = node.node_id === currentNodeId;
                 const statusBadge = getNodeStatusBadge(node.status);
-                const peerVersion = peerVersions[node.node_id] || '-';
+                // For current node, show currentVersion; for others, show peer version
+                const nodeVersion = isCurrent ? (currentVersion !== undefined ? currentVersion : '-') : (peerVersions[node.node_id] || '-');
                 const services = Array.isArray(node.services) ? node.services : [];
                 const metadataKeys = Object.keys(node.metadata || {});
 
@@ -7368,7 +7378,7 @@
                                 `<small class="text-muted"><br>${node.addresses.length} addresses</small>` : ''}
                         </td>
                         <td>${statusBadge}</td>
-                        <td><span class="badge bg-primary">${peerVersion}</span></td>
+                        <td><span class="badge bg-primary">${nodeVersion}</span></td>
                         <td>
                             ${services.length > 0 ?
                                 `<span class="badge bg-success">${services.length}</span>` :

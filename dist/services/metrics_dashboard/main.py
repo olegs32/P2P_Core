@@ -1863,10 +1863,28 @@ class Run(BaseService):
                 network = self.context.get_shared("network")
                 if network:
                     gossip = network.gossip
+
+                    # Collect nodes data for tables
+                    nodes_data = []
+                    for node_id, node_info in gossip.node_registry.items():
+                        nodes_data.append({
+                            "node_id": node_id,
+                            "address": node_info.address,
+                            "port": node_info.port,
+                            "role": node_info.role,
+                            "status": node_info.status,
+                            "last_seen": node_info.last_seen.isoformat() if node_info.last_seen else None,
+                            "metadata": node_info.metadata,
+                            "services": list(node_info.services.keys()) if node_info.services else [],
+                            "capabilities": node_info.capabilities,
+                            "addresses": node_info.addresses
+                        })
+
                     gossip_data = {
                         "current_node_id": gossip.node_id,
                         "gossip_version": gossip.gossip_version,
                         "peer_versions": gossip.peer_versions,
+                        "nodes": nodes_data,
                         "cluster_stats": gossip.get_cluster_stats(),
                         "nodes_count": len(gossip.node_registry)
                     }
