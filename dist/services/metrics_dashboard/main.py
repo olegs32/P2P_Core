@@ -2736,28 +2736,56 @@ class Run(BaseService):
         service_data = {}
 
         try:
-            if self.proxy:
-                # List of services that may provide dashboard data
-                services_to_check = ['legacy_certs', 'certs_tool']
+            if not self.proxy:
+                self.logger.warning("Proxy not available for collecting local service data")
+                return service_data
 
-                for service_name in services_to_check:
-                    try:
-                        # Check if service exists and has get_dashboard_data method
+            # List of services that may provide dashboard data
+            services_to_check = ['legacy_certs', 'certs_tool']
+            self.logger.debug(f"Checking local services: {services_to_check}")
+
+            for service_name in services_to_check:
+                try:
+                    # Direct method check in registry instead of hasattr
+                    # This is more reliable in PyInstaller builds
+                    method_path = f"{service_name}/get_dashboard_data"
+
+                    if self.context and hasattr(self.context, '_method_registry'):
+                        registry = self.context._method_registry
+                        self.logger.debug(f"Checking registry for {method_path}, registry has {len(registry)} methods")
+
+                        if method_path in registry:
+                            self.logger.info(f"Found {method_path} in registry, collecting data...")
+                            # Method exists in registry, call it directly
+                            service_proxy = getattr(self.proxy, service_name)
+                            data = await service_proxy.get_dashboard_data()
+                            if data:
+                                service_data[service_name] = data
+                                self.logger.info(f"✓ Collected dashboard data from local {service_name}")
+                            else:
+                                self.logger.debug(f"No data returned from {service_name}")
+                        else:
+                            self.logger.debug(f"Method {method_path} not found in registry")
+                    else:
+                        # Fallback to hasattr check (for compatibility)
+                        self.logger.debug(f"Using fallback hasattr check for {service_name}")
                         if hasattr(self.proxy, service_name):
                             service_proxy = getattr(self.proxy, service_name)
                             if hasattr(service_proxy, 'get_dashboard_data'):
                                 data = await service_proxy.get_dashboard_data()
                                 if data:
                                     service_data[service_name] = data
-                                    self.logger.debug(f"Collected dashboard data from local {service_name}")
-                    except AttributeError:
-                        # Service doesn't have get_dashboard_data method - skip
-                        pass
-                    except Exception as e:
-                        self.logger.debug(f"Could not get dashboard data from local {service_name}: {e}")
+                                    self.logger.info(f"✓ Collected dashboard data from local {service_name} (via fallback)")
+                except AttributeError as e:
+                    # Service doesn't have get_dashboard_data method - skip
+                    self.logger.debug(f"AttributeError for {service_name}: {e}")
+                except Exception as e:
+                    self.logger.warning(f"Could not get dashboard data from local {service_name}: {e}")
+
+            self.logger.debug(f"Collected data from {len(service_data)} local services")
 
         except Exception as e:
-            self.logger.error(f"Failed to collect local service data: {e}")
+            self.logger.error(f"Failed to collect local service data: {e}", exc_info=True)
 
         return service_data
 
