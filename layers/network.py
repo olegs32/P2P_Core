@@ -922,8 +922,11 @@ class P2PNetworkLayer:
         # This allows other nodes to try all addresses and find the reachable one
         all_addresses = self._get_all_local_ips()
 
+        # Add port to node_id for uniqueness (e.g., "worker-pc-8002")
+        node_id_with_port = f"{node_id}-{bind_port}"
+
         self.transport = transport_layer
-        self.gossip = SimpleGossipProtocol(node_id, self.advertise_address, bind_port, coordinator_mode,
+        self.gossip = SimpleGossipProtocol(node_id_with_port, self.advertise_address, bind_port, coordinator_mode,
                                           ssl_verify=ssl_verify, ca_cert_file=ca_cert_file, context=context,
                                           all_addresses=all_addresses)
         self.load_balancer_index = 0
