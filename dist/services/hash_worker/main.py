@@ -684,7 +684,7 @@ class Run(BaseService):
         network = self.context.get_shared("network")
         if not network:
             return None
-        print()
+
         # Получаем батчи из gossip
         coordinator_nodes = [
             node for node in network.gossip.node_registry.values()
@@ -696,7 +696,6 @@ class Run(BaseService):
 
         coordinator = coordinator_nodes[0]
         metadata = coordinator.metadata
-        print(metadata)
 
         batches_key = f"hash_batches_{job_id}"
         if batches_key not in metadata:
@@ -712,6 +711,15 @@ class Run(BaseService):
         # Инициализируем set для job_id если его нет
         if job_id not in self.processed_chunks:
             self.processed_chunks[job_id] = set()
+
+        # ДИАГНОСТИКА: Логируем что видим в gossip
+        total_chunks = sum(len(batch_data.get("chunks", {})) for batch_data in batches.values())
+        my_chunks = sum(
+            1 for batch_data in batches.values()
+            for chunk_data in batch_data.get("chunks", {}).values()
+            if chunk_data.get("assigned_worker") == my_worker_id
+        )
+        self.logger.debug(f"🔍 [DIAG] Checking batches for {job_id}: {len(batches)} versions, {total_chunks} total chunks, {my_chunks} assigned to me")
 
         # Ищем чанк для меня
         for version, batch_data in batches.items():
@@ -729,8 +737,12 @@ class Run(BaseService):
                     # Проверяем статус
                     status = chunk_data.get("status", "assigned")
 
+                    # ДИАГНОСТИКА: Логируем статусы моих чанков
+                    self.logger.debug(f"🔍 [DIAG] My chunk {chunk_id_int}: status={status}, cached={chunk_id_int in self.processed_chunks[job_id]}")
+
                     if status in ("assigned", "recovery"):
                         # Это мой чанк, можно брать
+                        self.logger.info(f"✅ [DIAG] Found available chunk: {chunk_id_int} (status={status}, version={version})")
                         return {
                             "job_id": job_id,
                             "version": version,
@@ -975,6 +987,9 @@ class Run(BaseService):
             "completed_chunks": self.completed_chunks
         }
 
+        # ДИАГНОСТИКА: Логируем публикацию статуса
+        self.logger.info(f"📤 [DIAG] Publishing chunk completed: chunk_id={chunk_id}, status=solved, hash_count={hash_count}")
+
         # Use new versioned update_metadata API
         network.gossip.update_metadata("hash_worker_status", worker_status)
 
@@ -983,7 +998,7 @@ class Run(BaseService):
             self.processed_chunks[job_id] = set()
         self.processed_chunks[job_id].add(chunk_id)
 
-        self.logger.debug(f"Marked chunk {chunk_id} as processed for job {job_id}")
+        self.logger.info(f"✅ [DIAG] Marked chunk {chunk_id} as processed in local cache for job {job_id}")
 
         # Координатор прочитает этот статус из gossip в _update_worker_states()
 

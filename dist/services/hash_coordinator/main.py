@@ -364,6 +364,9 @@ class DynamicChunkGenerator:
         found = False
         batch_version = None
 
+        # ДИАГНОСТИКА: Логируем попытку обновления
+        self.logger.info(f"🔍 [DIAG] chunk_completed called for chunk_id={chunk_id}, hash_count={hash_count}, solutions={len(solutions)}")
+
         for batch in self.generated_batches.values():
             for chunk in batch.chunks:
                 # Приводим к int для сравнения (может быть строкой из gossip)
@@ -373,7 +376,7 @@ class DynamicChunkGenerator:
                     found = True
                     batch_version = batch.version
 
-                    self.logger.info(f"Chunk {chunk_id} status: {old_status} → solved")
+                    self.logger.info(f"✅ [DIAG] Chunk {chunk_id} status: {old_status} → solved (batch_version={batch_version})")
 
                     # Производительность обновляется в _process_worker_chunk_status
                     # где есть доступ к time_taken из gossip
@@ -382,7 +385,8 @@ class DynamicChunkGenerator:
                 break
 
         if not found:
-            self.logger.warning(f"Chunk {chunk_id} not found in batches! Available chunks: {[c.chunk_id for b in self.generated_batches.values() for c in b.chunks]}")
+            available_chunks = [(b.version, c.chunk_id, c.status) for b in self.generated_batches.values() for c in b.chunks]
+            self.logger.warning(f"❌ [DIAG] Chunk {chunk_id} NOT FOUND in batches! Available: {available_chunks}")
             return
 
         # Проверяем, все ли чанки батча завершены
@@ -911,6 +915,9 @@ class Run(BaseService):
         # Публикуем только незавершенные батчи
         active_batches = {}
 
+        # ДИАГНОСТИКА: Счетчики статусов
+        status_counts = {"assigned": 0, "working": 0, "solved": 0, "recovery": 0, "timeout": 0}
+
         for version, batch in generator.generated_batches.items():
             if version not in generator.completed_batches:
                 # Формируем структуру: {chunk_id: {assigned_worker: data}}
@@ -925,11 +932,17 @@ class Run(BaseService):
                         "priority": chunk.priority
                     }
 
+                    # ДИАГНОСТИКА: Считаем статусы
+                    status_counts[chunk.status] = status_counts.get(chunk.status, 0) + 1
+
                 active_batches[version] = {
                     "chunks": chunks_dict,
                     "created_at": batch.created_at,
                     "is_recovery": batch.is_recovery
                 }
+
+        # ДИАГНОСТИКА: Логируем что публикуем
+        self.logger.info(f"📤 [DIAG] Publishing batches for {job_id}: {len(active_batches)} batches, statuses: {status_counts}")
 
         # Use new versioned update_metadata API
         network.gossip.update_metadata(f"hash_batches_{job_id}", active_batches)
@@ -1073,6 +1086,9 @@ class Run(BaseService):
             return
 
         generator = self.active_jobs[job_id]
+
+        # ДИАГНОСТИКА: Логируем все статусы от воркеров
+        self.logger.info(f"🔍 [DIAG] Worker {worker_id} reported chunk {chunk_id} status: {chunk_status}")
 
         # Обрабатываем статус "solved" - чанк завершен
         if chunk_status == "solved":
