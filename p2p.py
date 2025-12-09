@@ -351,143 +351,6 @@ async def create_worker_application(config: P2PConfig, coordinator_addresses: Li
 
     return context
 
-
-# === Основная логика запуска ===
-#
-# async def run_coordinator(node_id: str, port: int, bind_address: str, redis_url: str):
-#     """Запуск координатора с использованием Application Context"""
-#     logger = logging.getLogger("Coordinator")
-#
-#     config = P2PConfig(
-#         node_id=node_id,
-#         port=port,
-#         bind_address=bind_address,
-#         coordinator_mode=True,
-#         redis_url=redis_url
-#     )
-#
-#     # Создаем приложение
-#     app_context = await create_coordinator_application(config)
-#
-#     try:
-#         # Инициализируем все компоненты
-#         await app_context.initialize_all()
-#
-#         # Проверяем здоровье системы
-#         health = app_context.health_check()
-#         if not health["healthy"]:
-#             raise RuntimeError(f"System is not healthy: {health}")
-#
-#         # Определяем отображаемый адрес для логов
-#         display_address = "127.0.0.1" if bind_address == "0.0.0.0" else bind_address
-#
-#         logger.info("Coordinator started successfully")
-#         logger.info(f"Binding to: {bind_address}:{port}")
-#         logger.info(f"Available endpoints:")
-#
-#         # Основные пользовательские эндпоинты
-#         logger.info(f"  Health Check: http://{display_address}:{port}/health")
-#         logger.info(f"  RPC Interface: http://{display_address}:{port}/rpc")
-#
-#         # Документация API
-#         logger.info(f"  API Documentation: http://{display_address}:{port}/docs")
-#         logger.info(f"  ReDoc Documentation: http://{display_address}:{port}/redoc")
-#         logger.info(f"  OpenAPI Schema: http://{display_address}:{port}/openapi.json")
-#
-#         # Управление сервисами
-#         logger.info(f"  Services List: http://{display_address}:{port}/services")
-#         logger.info(f"  Service Info: http://{display_address}:{port}/services/{{service_name}}")
-#         logger.info(f"  Service Restart: http://{display_address}:{port}/services/{{service_name}}/restart")
-#
-#         # Метрики и мониторинг
-#         logger.info(f"  System Metrics: http://{display_address}:{port}/metrics")
-#         logger.info(f"  Service Metrics: http://{display_address}:{port}/metrics/{{service_name}}")
-#
-#         # Кластер и сеть
-#         logger.info(f"  Cluster Nodes: http://{display_address}:{port}/cluster/nodes")
-#
-#         # Аутентификация
-#         logger.info(f"  Auth Token: http://{display_address}:{port}/auth/token")
-#         logger.info(f"  Auth Revoke: http://{display_address}:{port}/auth/revoke")
-#
-#         # Внутренние эндпоинты (для отладки)
-#         logger.info(f"  Internal Gossip Join: http://{display_address}:{port}/internal/gossip/join")
-#         logger.info(f"  Internal Gossip Exchange: http://{display_address}:{port}/internal/gossip/exchange")
-#
-#         # Ждем сигнал shutdown
-#         await app_context.wait_for_shutdown()
-#
-#     except Exception as e:
-#         logger.error(f"Coordinator error: {e}")
-#         raise
-#     finally:
-#         # Graceful shutdown
-#         await app_context.shutdown_all()
-#
-#
-# async def run_worker(node_id: str, port: int, bind_address: str,
-#                      coordinator_addresses: List[str], redis_url: str):
-#     """Запуск рабочего узла с использованием Application Context"""
-#     logger = logging.getLogger("Worker")
-#
-#     config = P2PConfig(
-#         node_id=node_id,
-#         port=port,
-#         bind_address=bind_address,
-#         coordinator_mode=False,
-#         redis_url=redis_url
-#     )
-#
-#     # Создаем приложение
-#     app_context = await create_worker_application(config, coordinator_addresses)
-#
-#     try:
-#         # Инициализируем все компоненты
-#         await app_context.initialize_all()
-#
-#         # Проверяем здоровье системы
-#         health = app_context.health_check()
-#         if not health["healthy"]:
-#             raise RuntimeError(f"System is not healthy: {health}")
-#
-#         # Определяем отображаемый адрес для логов
-#         display_address = "127.0.0.1" if bind_address == "0.0.0.0" else bind_address
-#
-#         logger.info("Worker started successfully")
-#         logger.info(f"Binding to: {bind_address}:{port}")
-#         logger.info(f"Connected to coordinators: {', '.join(coordinator_addresses)}")
-#         logger.info(f"Available endpoints:")
-#
-#         # Основные пользовательские эндпоинты
-#         logger.info(f"  Health Check: http://{display_address}:{port}/health")
-#         logger.info(f"  RPC Interface: http://{display_address}:{port}/rpc")
-#
-#         # Документация API
-#         logger.info(f"  API Documentation: http://{display_address}:{port}/docs")
-#         logger.info(f"  ReDoc Documentation: http://{display_address}:{port}/redoc")
-#
-#         # Управление сервисами
-#         logger.info(f"  Services List: http://{display_address}:{port}/services")
-#         logger.info(f"  Service Info: http://{display_address}:{port}/services/{{service_name}}")
-#
-#         # Метрики и мониторинг
-#         logger.info(f"  System Metrics: http://{display_address}:{port}/metrics")
-#         logger.info(f"  Service Metrics: http://{display_address}:{port}/metrics/{{service_name}}")
-#
-#         # Кластер и сеть
-#         logger.info(f"  Cluster Nodes: http://{display_address}:{port}/cluster/nodes")
-#
-#         # Ждем сигнал shutdown
-#         await app_context.wait_for_shutdown()
-#
-#     except Exception as e:
-#         logger.error(f"Worker error: {e}")
-#         raise
-#     finally:
-#         # Graceful shutdown
-#         await app_context.shutdown_all()
-
-
 async def run_coordinator_from_context(app_context: P2PApplicationContext):
     """Запуск координатора из готового контекста приложения"""
     global _shutdown_requested, _shutdown_in_progress
@@ -886,6 +749,8 @@ async def main():
                         if args.node_id:
                             config.node_id = args.node_id
                             logger.info(f"Node ID overridden from CLI: {config.node_id}")
+                        else:
+                            config.node_id = f"{config.node_id}-{config.port}"
 
                         logger.info(f"Starting {config.node_id} ({'coordinator' if config.coordinator_mode else 'worker'})")
                         logger.info(f"Binding to: {config.bind_address}:{config.port}")
