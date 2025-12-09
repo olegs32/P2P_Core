@@ -463,6 +463,10 @@ class Run(BaseService):
         # Состояние воркеров из gossip
         self.worker_states: Dict[str, dict] = {}
 
+        # Отслеживание последних обработанных статусов (дедупликация)
+        # {worker_id: {job_id: {chunk_id: timestamp}}}
+        self.processed_worker_statuses: Dict[str, Dict[str, Dict[int, float]]] = {}
+
         # Background tasks
         self.monitor_task = None
         self.orphaned_detection_task = None
@@ -1170,6 +1174,7 @@ class Run(BaseService):
             return
 
         nodes = network.gossip.node_registry
+        jobs_to_publish = set()  # Какие job_id требуют публикации batches
 
         for node_id, node_info in nodes.items():
             if node_id in self.worker_states:
@@ -1189,7 +1194,16 @@ class Run(BaseService):
             # Обрабатываем hash_worker_status из metadata
             worker_status = node_info.metadata.get("hash_worker_status")
             if worker_status and isinstance(worker_status, dict):
+                job_id = worker_status.get("job_id")
+                if job_id and job_id in self.active_jobs:
+                    jobs_to_publish.add(job_id)
+
                 await self._process_worker_chunk_status(node_id, worker_status)
+
+        # Публикуем batches ОДИН РАЗ для каждой задачи после обработки всех воркеров
+        for job_id in jobs_to_publish:
+            if job_id in self.active_jobs:
+                await self._publish_batches(job_id, self.active_jobs[job_id])
 
     async def _process_worker_chunk_status(self, worker_id: str, status: dict):
         """
@@ -1202,6 +1216,7 @@ class Run(BaseService):
         job_id = status.get("job_id")
         chunk_id = status.get("chunk_id")
         chunk_status = status.get("status")
+        status_timestamp = status.get("timestamp", 0)
 
         if not job_id or chunk_id is None:
             return
@@ -1209,6 +1224,25 @@ class Run(BaseService):
         # Проверяем что задача активна
         if job_id not in self.active_jobs:
             return
+
+        # ДЕДУПЛИКАЦИЯ: Проверяем, не обрабатывали ли мы уже этот статус
+        if worker_id not in self.processed_worker_statuses:
+            self.processed_worker_statuses[worker_id] = {}
+        if job_id not in self.processed_worker_statuses[worker_id]:
+            self.processed_worker_statuses[worker_id][job_id] = {}
+
+        last_processed_ts = self.processed_worker_statuses[worker_id][job_id].get(chunk_id, 0)
+
+        if status_timestamp <= last_processed_ts:
+            # Уже обрабатывали этот или более новый статус
+            self.logger.debug(
+                f"⏭️ [DIAG] Skipping duplicate status from {worker_id}: "
+                f"chunk {chunk_id}, timestamp {status_timestamp} <= {last_processed_ts}"
+            )
+            return
+
+        # Обновляем timestamp последней обработки
+        self.processed_worker_statuses[worker_id][job_id][chunk_id] = status_timestamp
 
         generator = self.active_jobs[job_id]
 
@@ -1263,8 +1297,7 @@ class Run(BaseService):
             active_workers = await self._get_active_workers()
             await generator.ensure_lookahead_batches(active_workers)
 
-            # ВАЖНО: Публикуем обновленные batches в gossip
-            await self._publish_batches(job_id, generator)
+            # НЕ публикуем здесь - будет опубликовано один раз в конце _update_worker_states()
 
         # Обрабатываем статус "working" - обновляем прогресс
         elif chunk_status == "working":
