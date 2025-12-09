@@ -331,6 +331,26 @@ class LegacyCertsService(BaseService):
             elif 'Отпечаток' in cert_info and 'Thumbprint' not in cert_info:
                 cert_info['Thumbprint'] = cert_info['Отпечаток']
 
+            # Normalize Exportable field
+            # Check various field names for exportable status
+            exportable_value = None
+            for key in ['Exportable', 'Private key exportable', 'Экспортируемый']:
+                if key in cert_info:
+                    exportable_value = cert_info[key]
+                    break
+
+            # Normalize to boolean or string
+            if exportable_value:
+                exportable_lower = exportable_value.lower()
+                if 'yes' in exportable_lower or 'true' in exportable_lower or 'да' in exportable_lower:
+                    cert_info['Exportable'] = 'Yes'
+                elif 'no' in exportable_lower or 'false' in exportable_lower or 'нет' in exportable_lower:
+                    cert_info['Exportable'] = 'No'
+                else:
+                    cert_info['Exportable'] = exportable_value
+            else:
+                cert_info['Exportable'] = 'Unknown'
+
             if cert_info:
                 sub_cn = (cert_info['Subject_CN'] if 'Subject_CN' in cert_info else "-")
                 certificates[f"{index}_{sub_cn}"] = cert_info
@@ -748,6 +768,7 @@ class LegacyCertsService(BaseService):
                     "serial": cert_info.get("Serial", ""),
                     "valid_from": valid_from,
                     "valid_to": valid_to,
+                    "exportable": cert_info.get("Exportable", "Unknown"),
                 }
 
                 certs_list.append(cert_data)
@@ -791,9 +812,11 @@ class LegacyCertsService(BaseService):
             if thumbprint:
                 self.logger.info(f"Exporting PFX to memory: thumbprint={thumbprint}")
                 export_param = f'-thumbprint "{thumbprint}"'
+                identifier = thumbprint[:8]
             elif container_name:
                 self.logger.info(f"Exporting PFX to memory: container={container_name}")
                 export_param = f'-container "{container_name}"'
+                identifier = container_name[:20]
             else:
                 self.logger.error("Neither thumbprint nor container_name provided")
                 return {
@@ -807,19 +830,46 @@ class LegacyCertsService(BaseService):
                 tmp_pfx_path = tmp_file.name
 
             try:
-                # Export to temp file
+                # Try export with -keep_exportable first
                 export_cmd = (f'"{self.csp_path / "certmgr.exe"}" -export '
                               f'{export_param} -dest "{tmp_pfx_path}" '
                               f'-pfx -keep_exportable -pin {password}')
 
+                self.logger.debug(f"Export command: {export_cmd}")
                 output = await self._run_command_async(export_cmd)
                 error_code = self._extract_error_code(output)
 
+                # If error 0x8010002c (NTE_BAD_KEYSET) - try without -keep_exportable
+                if error_code == '0x8010002c':
+                    self.logger.warning(f"Export with -keep_exportable failed (0x8010002c), trying without flag...")
+
+                    # Retry without -keep_exportable
+                    export_cmd_simple = (f'"{self.csp_path / "certmgr.exe"}" -export '
+                                        f'{export_param} -dest "{tmp_pfx_path}" '
+                                        f'-pfx -pin {password}')
+
+                    self.logger.debug(f"Retry export command: {export_cmd_simple}")
+                    output = await self._run_command_async(export_cmd_simple)
+                    error_code = self._extract_error_code(output)
+
                 if error_code != '0x00000000':
                     self.logger.error(f"PFX export failed: {error_code}")
+                    self.logger.error(f"Full output: {output}")
+
+                    # Provide more detailed error message
+                    error_messages = {
+                        '0x8010002c': 'Private key is not exportable or not accessible',
+                        '0x80090016': 'Invalid certificate or key',
+                        '0x8009000d': 'Invalid data',
+                        '0x80070002': 'Certificate not found'
+                    }
+
+                    error_msg = error_messages.get(error_code, f"Export failed: {error_code}")
+
                     return {
                         "success": False,
-                        "error": f"Export failed: {error_code}",
+                        "error": error_msg,
+                        "error_code": error_code,
                         "pfx_base64": ""
                     }
 
