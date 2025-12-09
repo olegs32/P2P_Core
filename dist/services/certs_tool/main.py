@@ -770,12 +770,14 @@ class LegacyCertsService(BaseService):
             }
 
     @service_method(description="Export certificate to PFX bytes (in memory)", public=True)
-    async def export_pfx_to_bytes(self, container_name: str, password: str = "00000000") -> Dict[str, Any]:
+    async def export_pfx_to_bytes(self, container_name: str = None, thumbprint: str = None,
+                                   password: str = "00000000") -> Dict[str, Any]:
         """
         Экспортирует сертификат с закрытым ключом в PFX формат (в памяти, без сохранения на диск)
 
         Args:
-            container_name: Имя контейнера
+            container_name: Имя контейнера (опционально, если указан thumbprint)
+            thumbprint: Отпечаток сертификата (более надежный способ)
             password: Пароль для PFX файла
 
         Returns:
@@ -785,7 +787,20 @@ class LegacyCertsService(BaseService):
         import base64
 
         try:
-            self.logger.info(f"Exporting PFX to memory: container={container_name}")
+            # Prefer thumbprint over container_name (more reliable)
+            if thumbprint:
+                self.logger.info(f"Exporting PFX to memory: thumbprint={thumbprint}")
+                export_param = f'-thumbprint "{thumbprint}"'
+            elif container_name:
+                self.logger.info(f"Exporting PFX to memory: container={container_name}")
+                export_param = f'-container "{container_name}"'
+            else:
+                self.logger.error("Neither thumbprint nor container_name provided")
+                return {
+                    "success": False,
+                    "error": "Either thumbprint or container_name must be provided",
+                    "pfx_base64": ""
+                }
 
             # Create temporary file for export
             with tempfile.NamedTemporaryFile(mode='wb', suffix='.pfx', delete=False) as tmp_file:
@@ -794,7 +809,7 @@ class LegacyCertsService(BaseService):
             try:
                 # Export to temp file
                 export_cmd = (f'"{self.csp_path / "certmgr.exe"}" -export '
-                              f'-container "{container_name}" -dest "{tmp_pfx_path}" '
+                              f'{export_param} -dest "{tmp_pfx_path}" '
                               f'-pfx -keep_exportable -pin {password}')
 
                 output = await self._run_command_async(export_cmd)

@@ -1110,17 +1110,22 @@ class Run(BaseService):
                 export_errors = []
 
                 for cert in certs_to_deploy:
+                    # Prefer thumbprint over container (more reliable)
+                    thumbprint = cert.get("thumbprint")
                     container = cert.get("container")
-                    if not container:
-                        export_errors.append(f"No container for {cert.get('subject_cn', 'unknown')}")
-                        self.logger.error(f"Certificate {cert.get('id')} has no container")
+
+                    if not thumbprint and not container:
+                        export_errors.append(f"No thumbprint or container for {cert.get('subject_cn', 'unknown')}")
+                        self.logger.error(f"Certificate {cert.get('id')} has neither thumbprint nor container")
                         continue
 
                     try:
                         # Export PFX to memory (without saving to disk)
+                        # Use thumbprint if available (more reliable), otherwise fallback to container
                         if hasattr(self.proxy, 'certs_tool'):
                             export_result = await self.proxy.certs_tool.export_pfx_to_bytes(
-                                container_name=container,
+                                thumbprint=thumbprint if thumbprint else None,
+                                container_name=container if not thumbprint else None,
                                 password=current_password
                             )
 
