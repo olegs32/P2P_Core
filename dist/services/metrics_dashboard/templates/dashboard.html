@@ -1459,9 +1459,9 @@
             <div class="card">
                 <div class="card-header d-flex justify-content-between align-items-center">
                     <h5 class="mb-0">Распределение воркеров и чанков</h5>
-                    <button class="btn btn-sm btn-primary" onclick="refreshWorkersDistribution()">
-                        <i class="bi bi-arrow-clockwise"></i> Обновить
-                    </button>
+                    <span class="badge bg-success">
+                        <i class="bi bi-wifi"></i> Обновление в реальном времени
+                    </span>
                 </div>
                 <div class="card-body">
                     <!-- Summary Stats -->
@@ -1499,19 +1499,17 @@
                                 <tr>
                                     <th>Воркер</th>
                                     <th>Адрес</th>
-                                    <th>Статус</th>
                                     <th>Текущая задача</th>
                                     <th>Текущий чанк</th>
                                     <th>Назначено чанков</th>
                                     <th>Размер чанков</th>
                                     <th>Завершено чанков</th>
                                     <th>Вычислено хешей</th>
-                                    <th>Прогресс</th>
                                 </tr>
                             </thead>
                             <tbody id="workersDistributionTableBody">
                                 <tr>
-                                    <td colspan="10" class="text-center text-muted">
+                                    <td colspan="8" class="text-center text-muted">
                                         Загрузка данных...
                                     </td>
                                 </tr>
@@ -2928,24 +2926,19 @@
 
                     // Show corresponding content
                     if (targetTab === 'home') {
-                        stopWorkersDistributionAutoRefresh();
                         document.getElementById('homeTab').classList.add('active');
                     } else if (targetTab === 'certificates') {
-                        stopWorkersDistributionAutoRefresh();
                         document.getElementById('certificatesTab').classList.add('active');
                         // Load certificates when tab is opened
                         loadCertificates();
                     } else if (targetTab === 'logs') {
-                        stopWorkersDistributionAutoRefresh();
                         document.getElementById('logsTab').classList.add('active');
                     } else if (targetTab === 'hash-jobs') {
                         document.getElementById('hash-jobsTab').classList.add('active');
                         // Load hash jobs when tab is opened
                         loadActiveJobs();
-                        refreshWorkersDistribution();
-                        startWorkersDistributionAutoRefresh();
+                        // Workers distribution updates automatically via WebSocket
                     } else if (targetTab === 'control') {
-                        stopWorkersDistributionAutoRefresh();
                         document.getElementById('controlTab').classList.add('active');
                         // Initialize control panel
                         initializeControlPanel();
@@ -6911,128 +6904,7 @@
         document.getElementById('createJobForm')?.addEventListener('submit', createHashJob);
 
         // ==================== Workers Distribution Functions ====================
-
-        async function refreshWorkersDistribution() {
-            try {
-                const response = await fetch('/api/hash/workers-distribution');
-                const result = await response.json();
-
-                if (!result.success) {
-                    console.error('Failed to load workers distribution:', result.error);
-                    return;
-                }
-
-                updateWorkersSummary(result.summary);
-                updateWorkersTable(result.workers);
-                updateChunksVisualization(result.workers);
-
-            } catch (error) {
-                console.error('Failed to refresh workers distribution:', error);
-            }
-        }
-
-        function updateWorkersSummary(summary) {
-            document.getElementById('totalWorkersCount').textContent = summary.total_workers || 0;
-            document.getElementById('activeWorkersCount').textContent = summary.active_workers || 0;
-            document.getElementById('totalChunksCount').textContent = summary.total_chunks || 0;
-            document.getElementById('totalHashesCount').textContent =
-                (summary.total_hashes_computed || 0).toLocaleString();
-        }
-
-        function updateWorkersTable(workers) {
-            const tbody = document.getElementById('workersDistributionTableBody');
-
-            if (!workers || workers.length === 0) {
-                tbody.innerHTML = `
-                    <tr>
-                        <td colspan="10" class="text-center text-muted">
-                            Нет активных воркеров
-                        </td>
-                    </tr>
-                `;
-                return;
-            }
-
-            let html = '';
-            for (const worker of workers) {
-                const totalChunkSize = worker.chunks.reduce((sum, chunk) => sum + chunk.size, 0);
-                const statusBadge = getWorkerStatusBadge(worker.status);
-
-                html += `
-                    <tr>
-                        <td><strong>${worker.worker_id}</strong></td>
-                        <td><small>${worker.address}</small></td>
-                        <td>${statusBadge}</td>
-                        <td>${worker.current_job || '-'}</td>
-                        <td>${worker.current_chunk || '-'}</td>
-                        <td><span class="badge bg-primary">${worker.chunks.length}</span></td>
-                        <td>${totalChunkSize.toLocaleString()}</td>
-                        <td><span class="badge bg-success">${worker.completed_chunks}</span></td>
-                        <td>${(worker.total_hashes || 0).toLocaleString()}</td>
-                        <td>
-                            <div class="progress" style="height: 20px;">
-                                <div class="progress-bar bg-info" role="progressbar"
-                                     style="width: ${getWorkerProgressPercent(worker)}%">
-                                    ${getWorkerProgressPercent(worker).toFixed(1)}%
-                                </div>
-                            </div>
-                        </td>
-                    </tr>
-                `;
-            }
-
-            tbody.innerHTML = html;
-        }
-
-        function updateChunksVisualization(workers) {
-            const container = document.getElementById('chunksDetailsContainer');
-            const visualization = document.getElementById('chunksVisualization');
-
-            // Only show if there are chunks
-            const hasChunks = workers.some(w => w.chunks && w.chunks.length > 0);
-            if (!hasChunks) {
-                visualization.style.display = 'none';
-                return;
-            }
-
-            visualization.style.display = 'block';
-
-            let html = '';
-            for (const worker of workers) {
-                if (worker.chunks.length === 0) continue;
-
-                html += `
-                    <div class="worker-chunks-container">
-                        <h6 class="mb-3">
-                            <i class="bi bi-hdd-network"></i> ${worker.worker_id}
-                            <span class="badge bg-secondary ms-2">${worker.chunks.length} чанков</span>
-                        </h6>
-                        <div class="chunks-bars">
-                `;
-
-                // Sort chunks by chunk_id
-                const sortedChunks = worker.chunks.sort((a, b) => a.chunk_id - b.chunk_id);
-
-                for (const chunk of sortedChunks) {
-                    const sizeText = formatLargeNumber(chunk.size);
-                    const statusClass = `status-${chunk.status}`;
-
-                    html += `
-                        <div class="chunk-bar ${statusClass}"
-                             title="Job: ${chunk.job_id} | Chunk #${chunk.chunk_id} | Size: ${chunk.size.toLocaleString()} | Status: ${chunk.status}">
-                            <span>Chunk #${chunk.chunk_id} | ${sizeText} | ${chunk.status}</span>
-                        </div>
-                    `;
-                }
-
-                html += `
-                        </div>
-                    </div>
-                `;
-            }
-
-            container.innerHTML = html;
-        }
+        // NOTE: Workers distribution now updates via WebSocket only (no HTTP polling)
 
         function getWorkerStatusBadge(status) {
             const badges = {
@@ -7062,6 +6934,16 @@
             return num.toString();
         }
 
+        // Helper function to calculate summary from workers (fallback)
+        function calculateWorkersSummary(workers) {
+            return {
+                total_workers: workers.length,
+                active_workers: workers.filter(w => w.status === 'working' || w.status === 'solved').length,
+                total_chunks: workers.reduce((sum, w) => sum + ((w.chunks && w.chunks.length) || 0), 0),
+                total_hashes_computed: workers.reduce((sum, w) => sum + (w.total_hashes || 0), 0)
+            };
+        }
+
         // WebSocket-based real-time updates for hash jobs
         function updateHashJobsFromWS(hashJobsData) {
             try {
@@ -7072,7 +6954,9 @@
 
                 // Update workers distribution
                 if (hashJobsData.workers !== undefined) {
-                    updateWorkersDistributionFromWS(hashJobsData.workers);
+                    // Use summary from server if available, otherwise calculate client-side
+                    const summary = hashJobsData.summary || calculateWorkersSummary(hashJobsData.workers);
+                    updateWorkersDistributionFromWS(hashJobsData.workers, summary);
                 }
             } catch (error) {
                 console.error('Error updating hash jobs from WebSocket:', error);
@@ -7082,13 +6966,13 @@
         function updateActiveJobsList(jobs) {
             const container = document.getElementById('activeJobsContainer');
 
-            // Save state of opened job details BEFORE updating HTML
-            const openedJobDetails = new Set();
+            // Save state AND content of opened job details BEFORE updating HTML
+            const openedJobDetails = new Map(); // jobId -> innerHTML
             const existingDetails = container.querySelectorAll('[id^="jobDetails-"]');
             existingDetails.forEach(detailsDiv => {
                 if (detailsDiv.style.display !== 'none') {
                     const jobId = detailsDiv.id.replace('jobDetails-', '');
-                    openedJobDetails.add(jobId);
+                    openedJobDetails.set(jobId, detailsDiv.innerHTML); // Save content
                 }
             });
 
@@ -7114,7 +6998,7 @@
                 const processed = job.processed || 0;
                 const total = job.total || 0;
 
-                // Check if this job's details were open
+                // Check if this job's details were open (using Map instead of Set)
                 const detailsDisplay = openedJobDetails.has(job.job_id) ? 'block' : 'none';
 
                 html += `
@@ -7132,6 +7016,7 @@
                                 </button>
                             </div>
 
+                            ${progressPercent < 100 ? `
                             <div class="progress mb-3" style="height: 25px;">
                                 <div class="progress-bar progress-bar-striped progress-bar-animated bg-success"
                                      role="progressbar"
@@ -7142,6 +7027,7 @@
                                     ${progressPercent.toFixed(2)}%
                                 </div>
                             </div>
+                            ` : ''}
 
                             <div class="row text-center">
                                 <div class="col">
@@ -7168,25 +7054,21 @@
 
             container.innerHTML = html;
 
-            // Restore opened details content (re-fetch if needed)
-            openedJobDetails.forEach(jobId => {
-                loadJobDetails(jobId, true); // true = skip toggle, just load
+            // Restore opened details content WITHOUT re-fetching
+            openedJobDetails.forEach((savedContent, jobId) => {
+                const detailsContainer = document.getElementById(`jobDetails-${jobId}`);
+                if (detailsContainer && savedContent) {
+                    detailsContainer.innerHTML = savedContent; // Restore saved content
+                }
             });
         }
 
-        function updateWorkersDistributionFromWS(workers) {
-            // Calculate summary stats
-            const totalWorkers = workers.length;
-            const activeWorkers = workers.filter(w => w.status === 'working').length;
-            // Count assigned chunks (not completed chunks)
-            const totalChunks = workers.reduce((sum, w) => sum + ((w.chunks && w.chunks.length) || 0), 0);
-            const totalHashes = workers.reduce((sum, w) => sum + (w.total_hashes || 0), 0);
-
-            // Update summary
-            document.getElementById('totalWorkersCount').textContent = totalWorkers;
-            document.getElementById('activeWorkersCount').textContent = activeWorkers;
-            document.getElementById('totalChunksCount').textContent = totalChunks;
-            document.getElementById('totalHashesCount').textContent = totalHashes.toLocaleString();
+        function updateWorkersDistributionFromWS(workers, summary) {
+            // Use summary from server (no client-side recalculation)
+            document.getElementById('totalWorkersCount').textContent = summary.total_workers || 0;
+            document.getElementById('activeWorkersCount').textContent = summary.active_workers || 0;
+            document.getElementById('totalChunksCount').textContent = summary.total_chunks || 0;
+            document.getElementById('totalHashesCount').textContent = (summary.total_hashes_computed || 0).toLocaleString();
 
             // Update workers table
             const tbody = document.getElementById('workersDistributionTableBody');
@@ -7194,7 +7076,7 @@
             if (!workers || workers.length === 0) {
                 tbody.innerHTML = `
                     <tr>
-                        <td colspan="10" class="text-center text-muted">
+                        <td colspan="8" class="text-center text-muted">
                             Нет активных воркеров
                         </td>
                     </tr>
@@ -7204,9 +7086,6 @@
 
             let html = '';
             for (const worker of workers) {
-                const statusBadge = getWorkerStatusBadge(worker.status);
-                const progressPercent = worker.progress || 0;
-
                 const assignedChunks = (worker.chunks && worker.chunks.length) || 0;
                 const totalChunkSize = assignedChunks > 0
                     ? worker.chunks.reduce((sum, c) => sum + (c.size || 0), 0).toLocaleString()
@@ -7216,21 +7095,12 @@
                     <tr>
                         <td><strong>${worker.worker_id}</strong></td>
                         <td><small>${worker.address}</small></td>
-                        <td>${statusBadge}</td>
                         <td>${worker.current_job || '-'}</td>
                         <td>${worker.current_chunk !== null && worker.current_chunk !== undefined ? worker.current_chunk : '-'}</td>
                         <td><span class="badge bg-primary">${assignedChunks}</span></td>
                         <td>${totalChunkSize}</td>
                         <td><span class="badge bg-success">${worker.completed_chunks || 0}</span></td>
                         <td>${(worker.total_hashes || 0).toLocaleString()}</td>
-                        <td>
-                            <div class="progress" style="height: 20px;">
-                                <div class="progress-bar bg-info" role="progressbar"
-                                     style="width: ${progressPercent}%">
-                                    ${progressPercent.toFixed(1)}%
-                                </div>
-                            </div>
-                        </td>
                     </tr>
                 `;
             }
@@ -7238,26 +7108,7 @@
             tbody.innerHTML = html;
         }
 
-        // Auto-refresh workers distribution when on hash-jobs tab
-        let workersDistributionInterval = null;
-
-        function startWorkersDistributionAutoRefresh() {
-            if (workersDistributionInterval) return;
-
-            workersDistributionInterval = setInterval(() => {
-                const currentTab = document.querySelector('.nav-tab.active');
-                if (currentTab && currentTab.getAttribute('data-tab') === 'hash-jobs') {
-                    refreshWorkersDistribution();
-                }
-            }, 5000); // Refresh every 5 seconds
-        }
-
-        function stopWorkersDistributionAutoRefresh() {
-            if (workersDistributionInterval) {
-                clearInterval(workersDistributionInterval);
-                workersDistributionInterval = null;
-            }
-        }
+        // Workers distribution auto-refresh removed - now using WebSocket real-time updates
 
         // ============================================
         // Gossip Panel Functions
