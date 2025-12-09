@@ -703,7 +703,11 @@ class Run(BaseService):
             return None
 
         batches = metadata[batches_key]
-        my_worker_id = self.context.config.node_id
+
+        # ВАЖНО: Используем node_id из gossip (с портом), а не из конфига
+        # Так как coordinator назначает батчи используя gossip node_id
+        network = self.context.get_shared("network")
+        my_worker_id = network.gossip.node_id if network else self.context.config.node_id
 
         # Инициализируем set для job_id если его нет
         if job_id not in self.processed_chunks:
@@ -867,10 +871,14 @@ class Run(BaseService):
 
             # Немедленно уведомляем координатор о находке через RPC
             try:
+                # Используем node_id из gossip (с портом)
+                network = self.context.get_shared("network")
+                worker_id = network.gossip.node_id if network else self.context.config.node_id
+
                 await self.proxy.hash_coordinator.report_solution(
                     job_id=job_id,
                     chunk_id=chunk_id,
-                    worker_id=self.context.config.node_id,
+                    worker_id=worker_id,
                     solutions=result["solutions"]
                 )
                 self.logger.info(f"Reported {len(result['solutions'])} solutions to coordinator")
