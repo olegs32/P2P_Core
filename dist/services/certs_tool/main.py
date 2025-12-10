@@ -956,20 +956,25 @@ class LegacyCertsService(BaseService):
                         tmp_pfx_path = tmp_file.name
 
                     try:
-                        # Install PFX
+                        # Install PFX with private key
+                        # Remove -silent to see full output for debugging
+                        # Add -cont to ensure container is created
                         install_cmd = (f'"{self.csp_path / "certmgr.exe"}" -install -store uMy '
-                                       f'-file "{tmp_pfx_path}" -pfx -silent -keep_exportable -pin {current_password}')
+                                       f'-file "{tmp_pfx_path}" -pfx -pin {current_password} -keep_exportable')
 
+                        self.logger.info(f"Installing {filename} with command: {install_cmd}")
                         output = await self._run_command_async(install_cmd)
 
-                        # Debug logging for diagnostics
-                        self.logger.debug(f"certmgr.exe output for {filename}:")
-                        self.logger.debug(output)
+                        # Log full output for diagnostics
+                        self.logger.info(f"certmgr.exe output for {filename}:")
+                        for line in output.split('\n'):
+                            if line.strip():
+                                self.logger.info(f"  {line}")
 
                         error_code = self._extract_error_code(output)
                         container = self._extract_container(output)
 
-                        self.logger.debug(f"Extracted error_code: {error_code}, container: {container}")
+                        self.logger.info(f"Extracted error_code: {error_code}, container: {container}")
 
                         # Check for installation errors
                         if error_code != '0x00000000':
@@ -985,10 +990,13 @@ class LegacyCertsService(BaseService):
                             continue
 
                         # If error code is 0x00000000, installation was successful
-                        # Container name may not be present in output due to -silent flag
+                        # Check if container was created (indicates private key was imported)
                         if not container:
-                            self.logger.warning(f"Container name not found in output for {filename} (possibly due to -silent flag)")
-                            self.logger.info(f"Installation successful for {filename} (error code: {error_code})")
+                            self.logger.warning(f"⚠️ Container name not found in output for {filename}")
+                            self.logger.warning(f"This may indicate that only the certificate was imported, without private key")
+                            self.logger.info(f"Installation completed for {filename} (error code: {error_code})")
+                        else:
+                            self.logger.info(f"✓ Installation successful for {filename}, container: {container}")
 
                         # Change password if different and container was found
                         if new_password != current_password and container:
