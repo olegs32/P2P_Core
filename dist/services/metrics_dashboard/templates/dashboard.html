@@ -1655,6 +1655,11 @@
                         Gossip
                     </button>
                 </li>
+                <li class="nav-item" role="presentation">
+                    <button class="nav-link" id="aliases-tab" data-bs-toggle="tab" data-bs-target="#aliasesPanel" type="button">
+                        <i class="bi bi-tag"></i> Псевдонимы
+                    </button>
+                </li>
             </ul>
 
             <!-- Sub-tabs Content -->
@@ -2272,6 +2277,80 @@
                                     </tbody>
                                 </table>
                             </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Aliases Panel -->
+                <div class="tab-pane fade" id="aliasesPanel" role="tabpanel">
+                    <div class="card">
+                        <div class="card-header">
+                            <h5 class="mb-0"><i class="bi bi-tag"></i> Управление псевдонимами узлов</h5>
+                        </div>
+                        <div class="card-body">
+                            <p class="text-muted mb-3">
+                                Псевдонимы позволяют назначить понятные имена для узлов кластера.
+                                Они используются только на координаторе и отображаются во всех элементах интерфейса.
+                            </p>
+
+                            <!-- Aliases Table -->
+                            <div class="table-responsive">
+                                <table class="table table-dark table-striped table-hover">
+                                    <thead>
+                                        <tr>
+                                            <th style="width: 35%;">Node ID</th>
+                                            <th style="width: 40%;">Псевдоним</th>
+                                            <th style="width: 25%;">Действия</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="aliasesTableBody">
+                                        <tr>
+                                            <td colspan="3" class="text-center text-muted">
+                                                <div class="spinner-border spinner-border-sm" role="status">
+                                                    <span class="visually-hidden">Загрузка...</span>
+                                                </div>
+                                                Загрузка псевдонимов...
+                                            </td>
+                                        </tr>
+                                    </tbody>
+                                </table>
+                            </div>
+
+                            <!-- Add/Edit Form -->
+                            <div class="card mt-4" style="background-color: rgba(255,255,255,0.03);">
+                                <div class="card-header">
+                                    <h6 class="mb-0">Добавить/Изменить псевдоним</h6>
+                                </div>
+                                <div class="card-body">
+                                    <form id="aliasForm" onsubmit="event.preventDefault(); saveAlias();">
+                                        <div class="row g-3">
+                                            <div class="col-md-5">
+                                                <label for="aliasNodeId" class="form-label">Node ID</label>
+                                                <select class="form-select" id="aliasNodeId" required>
+                                                    <option value="">Выберите узел...</option>
+                                                </select>
+                                                <small class="text-muted">Выберите узел из списка активных узлов</small>
+                                            </div>
+                                            <div class="col-md-5">
+                                                <label for="aliasValue" class="form-label">Псевдоним</label>
+                                                <input type="text" class="form-control" id="aliasValue"
+                                                       placeholder="Например: Рабочая станция 1"
+                                                       maxlength="64" required>
+                                                <small class="text-muted">Максимум 64 символа</small>
+                                            </div>
+                                            <div class="col-md-2 d-flex align-items-end">
+                                                <button type="submit" class="btn btn-success w-100">
+                                                    <i class="bi bi-save"></i> Сохранить
+                                                </button>
+                                            </div>
+                                        </div>
+                                    </form>
+                                </div>
+                            </div>
+
+                            <!-- Status Messages -->
+                            <div id="aliasesSuccess" class="alert alert-success mt-3" style="display: none;"></div>
+                            <div id="aliasesError" class="alert alert-danger mt-3" style="display: none;"></div>
                         </div>
                     </div>
                 </div>
@@ -4338,10 +4417,14 @@
             const card = document.createElement('div');
             card.id = `worker-${workerId}`;
             card.className = 'node-card';
+
+            // Use alias if available
+            const displayName = getNodeDisplayName(workerId);
+
             card.innerHTML = `
                 <div class="node-header">
                     <div class="node-title">
-                        <span>${workerId}</span>
+                        <span>${displayName}</span>
                         <span class="status-badge status-online">Online</span>
                     </div>
                     <small class="text-muted worker-last-update">Last update: -</small>
@@ -5334,6 +5417,283 @@
                 }, Math.random() * 2000); // Random delay 0-2 seconds
             });
         }
+
+        // ========== NODE ALIASES MANAGEMENT ==========
+
+        // Global aliases storage
+        let nodeAliases = {};
+
+        // Load node aliases
+        async function loadAliases() {
+            try {
+                const response = await fetch('/api/dashboard/aliases');
+                const result = await response.json();
+
+                if (result.success) {
+                    nodeAliases = result.aliases || {};
+                    updateAliasesTable();
+                    updateNodeSelector();
+                } else {
+                    showAliasesError(result.error || 'Failed to load aliases');
+                }
+            } catch (error) {
+                console.error('Failed to load aliases:', error);
+                showAliasesError(`Error: ${error.message}`);
+            }
+        }
+
+        // Update aliases table
+        function updateAliasesTable() {
+            const tbody = document.getElementById('aliasesTableBody');
+            if (!tbody) return;
+
+            // Get all nodes from WebSocket data or create empty list
+            const allNodes = new Set();
+
+            // Add coordinator
+            allNodes.add('coordinator');
+
+            // Add workers from current metrics
+            if (window.lastMetricsData && window.lastMetricsData.workers) {
+                Object.keys(window.lastMetricsData.workers).forEach(nodeId => {
+                    allNodes.add(nodeId);
+                });
+            }
+
+            // Add nodes that have aliases
+            Object.keys(nodeAliases).forEach(nodeId => {
+                allNodes.add(nodeId);
+            });
+
+            if (allNodes.size === 0) {
+                tbody.innerHTML = `
+                    <tr>
+                        <td colspan="3" class="text-center text-muted">
+                            Нет доступных узлов
+                        </td>
+                    </tr>
+                `;
+                return;
+            }
+
+            // Sort nodes
+            const sortedNodes = Array.from(allNodes).sort();
+
+            tbody.innerHTML = sortedNodes.map(nodeId => {
+                const alias = nodeAliases[nodeId] || '<span class="text-muted">Не задан</span>';
+                const hasAlias = nodeAliases[nodeId] !== undefined;
+
+                return `
+                    <tr>
+                        <td><code>${nodeId}</code></td>
+                        <td>${alias}</td>
+                        <td>
+                            <div class="btn-group btn-group-sm" role="group">
+                                <button class="btn btn-primary" onclick="editAlias('${nodeId}')"
+                                        title="Редактировать">
+                                    <i class="bi bi-pencil"></i>
+                                </button>
+                                ${hasAlias ? `
+                                <button class="btn btn-danger" onclick="removeAlias('${nodeId}')"
+                                        title="Удалить">
+                                    <i class="bi bi-trash"></i>
+                                </button>
+                                ` : ''}
+                            </div>
+                        </td>
+                    </tr>
+                `;
+            }).join('');
+        }
+
+        // Update node selector in form
+        function updateNodeSelector() {
+            const selector = document.getElementById('aliasNodeId');
+            if (!selector) return;
+
+            // Get all nodes
+            const allNodes = new Set();
+            allNodes.add('coordinator');
+
+            if (window.lastMetricsData && window.lastMetricsData.workers) {
+                Object.keys(window.lastMetricsData.workers).forEach(nodeId => {
+                    allNodes.add(nodeId);
+                });
+            }
+
+            // Sort and populate selector
+            const sortedNodes = Array.from(allNodes).sort();
+            selector.innerHTML = '<option value="">Выберите узел...</option>' +
+                sortedNodes.map(nodeId => {
+                    const alias = nodeAliases[nodeId];
+                    const displayText = alias ? `${nodeId} (${alias})` : nodeId;
+                    return `<option value="${nodeId}">${displayText}</option>`;
+                }).join('');
+        }
+
+        // Edit alias (populate form)
+        function editAlias(nodeId) {
+            const nodeSelector = document.getElementById('aliasNodeId');
+            const aliasInput = document.getElementById('aliasValue');
+
+            if (nodeSelector && aliasInput) {
+                nodeSelector.value = nodeId;
+                aliasInput.value = nodeAliases[nodeId] || '';
+                aliasInput.focus();
+
+                // Scroll to form
+                document.getElementById('aliasForm').scrollIntoView({ behavior: 'smooth' });
+            }
+        }
+
+        // Save alias
+        async function saveAlias() {
+            const nodeId = document.getElementById('aliasNodeId').value;
+            const alias = document.getElementById('aliasValue').value.trim();
+
+            if (!nodeId || !alias) {
+                showAliasesError('Пожалуйста, заполните все поля');
+                return;
+            }
+
+            try {
+                const response = await fetch('/api/dashboard/set-alias', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        node_id: nodeId,
+                        alias: alias
+                    })
+                });
+
+                const result = await response.json();
+
+                if (result.success) {
+                    showAliasesSuccess(`Псевдоним сохранен: ${nodeId} → ${alias}`);
+                    // Reload aliases
+                    await loadAliases();
+                    // Clear form
+                    document.getElementById('aliasForm').reset();
+                    // Update all UI elements with new alias
+                    applyAliasesToUI();
+                } else {
+                    showAliasesError(result.error || 'Не удалось сохранить псевдоним');
+                }
+            } catch (error) {
+                console.error('Failed to save alias:', error);
+                showAliasesError(`Ошибка: ${error.message}`);
+            }
+        }
+
+        // Remove alias
+        async function removeAlias(nodeId) {
+            if (!confirm(`Удалить псевдоним для ${nodeId}?`)) {
+                return;
+            }
+
+            try {
+                const response = await fetch('/api/dashboard/remove-alias', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        node_id: nodeId
+                    })
+                });
+
+                const result = await response.json();
+
+                if (result.success) {
+                    showAliasesSuccess(`Псевдоним удален для ${nodeId}`);
+                    // Reload aliases
+                    await loadAliases();
+                    // Update all UI elements
+                    applyAliasesToUI();
+                } else {
+                    showAliasesError(result.error || 'Не удалось удалить псевдоним');
+                }
+            } catch (error) {
+                console.error('Failed to remove alias:', error);
+                showAliasesError(`Ошибка: ${error.message}`);
+            }
+        }
+
+        // Get display name for a node (with alias if exists)
+        function getNodeDisplayName(nodeId) {
+            if (nodeAliases[nodeId]) {
+                return `${nodeAliases[nodeId]} <small class="text-muted">(${nodeId})</small>`;
+            }
+            return nodeId;
+        }
+
+        // Apply aliases to all UI elements
+        function applyAliasesToUI() {
+            // Update worker cards titles
+            Object.keys(nodeAliases).forEach(nodeId => {
+                if (nodeId === 'coordinator') {
+                    // Update coordinator card title
+                    const coordCard = document.getElementById('coordinatorCard');
+                    if (coordCard) {
+                        const titleEl = coordCard.querySelector('.node-title span:first-child');
+                        if (titleEl) {
+                            titleEl.innerHTML = getNodeDisplayName('coordinator');
+                        }
+                    }
+                } else {
+                    // Update worker card title
+                    const workerCard = document.getElementById(`worker-${nodeId}`);
+                    if (workerCard) {
+                        const titleEl = workerCard.querySelector('.node-title span:first-child');
+                        if (titleEl) {
+                            titleEl.innerHTML = getNodeDisplayName(nodeId);
+                        }
+                    }
+                }
+            });
+        }
+
+        // Show success message
+        function showAliasesSuccess(message) {
+            const successDiv = document.getElementById('aliasesSuccess');
+            const errorDiv = document.getElementById('aliasesError');
+
+            if (errorDiv) errorDiv.style.display = 'none';
+            if (successDiv) {
+                successDiv.textContent = message;
+                successDiv.style.display = 'block';
+                setTimeout(() => {
+                    successDiv.style.display = 'none';
+                }, 5000);
+            }
+        }
+
+        // Show error message
+        function showAliasesError(message) {
+            const successDiv = document.getElementById('aliasesSuccess');
+            const errorDiv = document.getElementById('aliasesError');
+
+            if (successDiv) successDiv.style.display = 'none';
+            if (errorDiv) {
+                errorDiv.textContent = message;
+                errorDiv.style.display = 'block';
+            }
+        }
+
+        // Load aliases when aliases tab is opened
+        document.addEventListener('DOMContentLoaded', function() {
+            const aliasesTab = document.getElementById('aliases-tab');
+            if (aliasesTab) {
+                aliasesTab.addEventListener('shown.bs.tab', function() {
+                    loadAliases();
+                });
+            }
+
+            // Load aliases on page load
+            loadAliases();
+        });
 
         // ========== LOGS TAB FUNCTIONALITY ==========
 

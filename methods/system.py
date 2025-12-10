@@ -2033,6 +2033,209 @@ X-GNOME-Autostart-enabled=true
                 "error": str(e)
             }
 
+    # ========== Node Aliases Management ==========
+
+    @service_method(description="Get all node aliases", public=True)
+    async def get_node_aliases(self) -> Dict[str, Any]:
+        """
+        Get all configured node aliases (coordinator only)
+
+        Returns:
+            Dictionary with all node aliases
+        """
+        try:
+            # Only available on coordinator
+            if not self.context.config.coordinator_mode:
+                return {
+                    "success": False,
+                    "error": "Aliases are only managed on coordinator"
+                }
+
+            # Get storage manager
+            storage = self.context.get_shared("storage_manager")
+            if not storage:
+                return {
+                    "success": False,
+                    "error": "Storage manager not available"
+                }
+
+            # Read aliases from secure storage
+            try:
+                import json
+                aliases_data = storage.read_data("node_aliases.json")
+                if aliases_data:
+                    aliases = json.loads(aliases_data.decode('utf-8'))
+                else:
+                    aliases = {}
+            except Exception:
+                # File doesn't exist or is empty
+                aliases = {}
+
+            return {
+                "success": True,
+                "aliases": aliases,
+                "count": len(aliases)
+            }
+
+        except Exception as e:
+            self.logger.error(f"Failed to get node aliases: {e}")
+            return {
+                "success": False,
+                "error": str(e)
+            }
+
+    @service_method(description="Set node alias", public=True)
+    async def set_node_alias(self, node_id: str, alias: str) -> Dict[str, Any]:
+        """
+        Set alias for a node (coordinator only)
+
+        Args:
+            node_id: Node identifier
+            alias: Human-readable alias for the node
+
+        Returns:
+            Success status
+        """
+        try:
+            # Only available on coordinator
+            if not self.context.config.coordinator_mode:
+                return {
+                    "success": False,
+                    "error": "Aliases are only managed on coordinator"
+                }
+
+            # Validate inputs
+            if not node_id or not alias:
+                return {
+                    "success": False,
+                    "error": "Both node_id and alias are required"
+                }
+
+            # Sanitize alias (remove special characters, limit length)
+            alias = alias.strip()[:64]  # Max 64 characters
+            if not alias:
+                return {
+                    "success": False,
+                    "error": "Alias cannot be empty"
+                }
+
+            # Get storage manager
+            storage = self.context.get_shared("storage_manager")
+            if not storage:
+                return {
+                    "success": False,
+                    "error": "Storage manager not available"
+                }
+
+            # Read current aliases
+            import json
+            try:
+                aliases_data = storage.read_data("node_aliases.json")
+                if aliases_data:
+                    aliases = json.loads(aliases_data.decode('utf-8'))
+                else:
+                    aliases = {}
+            except Exception:
+                aliases = {}
+
+            # Set alias
+            old_alias = aliases.get(node_id)
+            aliases[node_id] = alias
+
+            # Save to secure storage
+            aliases_json = json.dumps(aliases, indent=2, ensure_ascii=False)
+            storage.write_data("node_aliases.json", aliases_json.encode('utf-8'))
+
+            self.logger.info(f"Set alias for {node_id}: '{alias}' (was: '{old_alias}')")
+
+            return {
+                "success": True,
+                "node_id": node_id,
+                "alias": alias,
+                "old_alias": old_alias,
+                "message": f"Alias set successfully"
+            }
+
+        except Exception as e:
+            self.logger.error(f"Failed to set node alias: {e}")
+            return {
+                "success": False,
+                "error": str(e)
+            }
+
+    @service_method(description="Remove node alias", public=True)
+    async def remove_node_alias(self, node_id: str) -> Dict[str, Any]:
+        """
+        Remove alias for a node (coordinator only)
+
+        Args:
+            node_id: Node identifier
+
+        Returns:
+            Success status
+        """
+        try:
+            # Only available on coordinator
+            if not self.context.config.coordinator_mode:
+                return {
+                    "success": False,
+                    "error": "Aliases are only managed on coordinator"
+                }
+
+            if not node_id:
+                return {
+                    "success": False,
+                    "error": "node_id is required"
+                }
+
+            # Get storage manager
+            storage = self.context.get_shared("storage_manager")
+            if not storage:
+                return {
+                    "success": False,
+                    "error": "Storage manager not available"
+                }
+
+            # Read current aliases
+            import json
+            try:
+                aliases_data = storage.read_data("node_aliases.json")
+                if aliases_data:
+                    aliases = json.loads(aliases_data.decode('utf-8'))
+                else:
+                    aliases = {}
+            except Exception:
+                aliases = {}
+
+            # Remove alias
+            removed_alias = aliases.pop(node_id, None)
+
+            if removed_alias is None:
+                return {
+                    "success": False,
+                    "error": f"No alias found for node {node_id}"
+                }
+
+            # Save to secure storage
+            aliases_json = json.dumps(aliases, indent=2, ensure_ascii=False)
+            storage.write_data("node_aliases.json", aliases_json.encode('utf-8'))
+
+            self.logger.info(f"Removed alias for {node_id}: '{removed_alias}'")
+
+            return {
+                "success": True,
+                "node_id": node_id,
+                "removed_alias": removed_alias,
+                "message": "Alias removed successfully"
+            }
+
+        except Exception as e:
+            self.logger.error(f"Failed to remove node alias: {e}")
+            return {
+                "success": False,
+                "error": str(e)
+            }
+
 
 # Для backward compatibility со старым кодом
 class SystemMethods(SystemService):

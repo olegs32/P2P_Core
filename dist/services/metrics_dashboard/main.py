@@ -453,6 +453,53 @@ class Run(BaseService):
                 self.logger.error(f"Failed to disable autostart on {node_id}: {e}")
                 return {"success": False, "error": str(e)}
 
+        # Node Aliases Management Endpoints
+        @app.get("/api/dashboard/aliases")
+        async def get_aliases_endpoint():
+            """Get all node aliases"""
+            try:
+                system_proxy = self.proxy.system
+                result = await system_proxy.get_node_aliases()
+                return result
+            except Exception as e:
+                self.logger.error(f"Failed to get aliases: {e}")
+                return {"success": False, "error": str(e)}
+
+        @app.post("/api/dashboard/set-alias")
+        async def set_alias_endpoint(request: Request):
+            """Set alias for a node"""
+            data = await request.json()
+            node_id = data.get('node_id')
+            alias = data.get('alias')
+
+            if not node_id or not alias:
+                return {"success": False, "error": "node_id and alias are required"}
+
+            try:
+                system_proxy = self.proxy.system
+                result = await system_proxy.set_node_alias(node_id=node_id, alias=alias)
+                return result
+            except Exception as e:
+                self.logger.error(f"Failed to set alias: {e}")
+                return {"success": False, "error": str(e)}
+
+        @app.post("/api/dashboard/remove-alias")
+        async def remove_alias_endpoint(request: Request):
+            """Remove alias for a node"""
+            data = await request.json()
+            node_id = data.get('node_id')
+
+            if not node_id:
+                return {"success": False, "error": "node_id is required"}
+
+            try:
+                system_proxy = self.proxy.system
+                result = await system_proxy.remove_node_alias(node_id=node_id)
+                return result
+            except Exception as e:
+                self.logger.error(f"Failed to remove alias: {e}")
+                return {"success": False, "error": str(e)}
+
         # Service Editor Endpoints
         @app.post("/api/services/p2p-list")
         async def list_p2p_services_endpoint(request: Request):
