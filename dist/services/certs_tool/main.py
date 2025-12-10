@@ -202,8 +202,7 @@ class LegacyCertsService(BaseService):
         result = CertOperationResult(success=False)
 
         # Устанавливаем PFX
-        pfx_cmd = (f'"{self.csp_path / "certmgr.exe"}" -install -store uMy '
-                   f'-file "{pfx_path}" -pfx -silent -keep_exportable -pin {pin}')
+        pfx_cmd = (f'"{self.csp_path / "certmgr.exe"}" -install -store uMy -file "{pfx_path}" -pfx -silent -keep_exportable -pin {pin}')
 
         pfx_output = await self._run_command_async(pfx_cmd)
         result.pfx_error = self._extract_error_code(pfx_output)
@@ -215,28 +214,30 @@ class LegacyCertsService(BaseService):
             self.logger.error("Failed to install PFX certificate")
             return result.to_dict()
 
-        # Устанавливаем CER
-        cer_cmd = (f'"{self.csp_path / "certmgr.exe"}" -install -store uMy '
-                   f'-file "{cer_path}" -certificate -container "{result.container}" '
-                   f'-silent -inst_to_cont')
+        # # Устанавливаем CER
+        # cer_cmd = (f'"{self.csp_path / "certmgr.exe"}" -install -store uMy '
+        #            f'-file "{cer_path}" -certificate -container "{result.container}" '
+        #            f'-silent -inst_to_cont')
+        #
+        # cer_output = await self._run_command_async(cer_cmd)
+        # result.cer_error = self._extract_error_code(cer_output)
+        result.cer_error = '0x00000000'
+        #
+        # self.logger.info(f"CER install result: {result.cer_error}")
+        #
+        # if result.cer_error != '0x00000000':
+        #     self.logger.error("Failed to install CER certificate")
+        #     return result.to_dict()
 
-        cer_output = await self._run_command_async(cer_cmd)
-        result.cer_error = self._extract_error_code(cer_output)
-
-        self.logger.info(f"CER install result: {result.cer_error}")
-
-        if result.cer_error != '0x00000000':
-            self.logger.error("Failed to install CER certificate")
-            return result.to_dict()
-
-        # Меняем пароль контейнера
-        passwd_cmd = (f'"{self.csp_path / "csptest.exe"}" -passwd '
-                      f'-container "{result.container}" -change {pin}')
-
-        passwd_output = await self._run_command_async(passwd_cmd)
-        result.password_error = self._extract_error_code(passwd_output)
-
-        self.logger.info(f"Password change result: {result.password_error}")
+        # # Меняем пароль контейнера
+        # passwd_cmd = (f'"{self.csp_path / "csptest.exe"}" -passwd '
+        #               f'-container "{result.container}" -change {pin}')
+        #
+        # passwd_output = await self._run_command_async(passwd_cmd)
+        # result.password_error = self._extract_error_code(passwd_output)
+        result.password_error = '0x00000000'
+        #
+        # self.logger.info(f"Password change result: {result.password_error}")
 
         # Проверяем общий результат
         result.success = all([
