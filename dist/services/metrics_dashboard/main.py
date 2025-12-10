@@ -1130,11 +1130,21 @@ class Run(BaseService):
                             )
 
                             if export_result.get("success"):
+                                pfx_size = export_result.get("pfx_size", 0)
                                 pfx_list.append({
                                     "pfx_base64": export_result.get("pfx_base64"),
                                     "filename": f"{cert.get('subject_cn', 'cert')}.pfx"
                                 })
-                                self.logger.info(f"Exported {cert.get('subject_cn')} successfully")
+
+                                # Warn if PFX is too small (likely no private key)
+                                if pfx_size < 1500:
+                                    warning_msg = (f"⚠️ Certificate '{cert.get('subject_cn')}' exported with size {pfx_size} bytes. "
+                                                 f"This is too small - likely contains NO PRIVATE KEY. "
+                                                 f"Certificate may be marked as non-exportable.")
+                                    self.logger.warning(warning_msg)
+                                    export_errors.append(warning_msg)
+                                else:
+                                    self.logger.info(f"Exported {cert.get('subject_cn')} successfully ({pfx_size} bytes)")
                             else:
                                 export_errors.append(f"Failed to export {cert.get('subject_cn')}: {export_result.get('error')}")
                                 self.logger.error(f"Failed to export {cert.get('subject_cn')}: {export_result.get('error')}")
@@ -1160,7 +1170,8 @@ class Run(BaseService):
 
                 # Batch install on target worker
                 if hasattr(self.proxy, 'certs_tool'):
-                    install_result = await self.proxy.certs_tool.__getattr__(target_worker).batch_install_pfx_from_bytes(
+                    # Use getattr instead of __getattr__ for PyInstaller compatibility
+                    install_result = await getattr(self.proxy.certs_tool, target_worker).batch_install_pfx_from_bytes(
                         pfx_list=pfx_list,
                         current_password=current_password,
                         new_password=new_password
@@ -1171,7 +1182,8 @@ class Run(BaseService):
                         try:
                             self.logger.info(f"Bulk deployment successful to {target_worker}, refreshing data")
                             # Get fresh certificate data from the target worker
-                            fresh_data = await self.proxy.certs_tool.__getattr__(target_worker).get_dashboard_data()
+                            # Use getattr instead of __getattr__ for PyInstaller compatibility
+                            fresh_data = await getattr(self.proxy.certs_tool, target_worker).get_dashboard_data()
 
                             # Update the service_data cache
                             if target_worker not in self.service_data:
@@ -1281,7 +1293,8 @@ class Run(BaseService):
                                 continue
                         else:
                             if hasattr(self.proxy, 'certs_tool'):
-                                delete_result = await self.proxy.certs_tool.__getattr__(target_node).delete_certificate(
+                                # Use getattr instead of __getattr__ for PyInstaller compatibility
+                                delete_result = await getattr(self.proxy.certs_tool, target_node).delete_certificate(
                                     thumbprint=thumbprint
                                 )
                             else:
@@ -1331,7 +1344,8 @@ class Run(BaseService):
                         if target_node == "coordinator":
                             fresh_data = await self.proxy.certs_tool.get_dashboard_data()
                         else:
-                            fresh_data = await self.proxy.certs_tool.__getattr__(target_node).get_dashboard_data()
+                            # Use getattr instead of __getattr__ for PyInstaller compatibility
+                            fresh_data = await getattr(self.proxy.certs_tool, target_node).get_dashboard_data()
 
                         # Update the service_data cache
                         if target_node not in self.service_data:

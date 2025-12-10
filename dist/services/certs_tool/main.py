@@ -886,11 +886,21 @@ class LegacyCertsService(BaseService):
                     pfx_bytes = f.read()
                     pfx_base64 = base64.b64encode(pfx_bytes).decode('utf-8')
 
-                self.logger.info(f"PFX exported successfully: {len(pfx_bytes)} bytes")
+                pfx_size = len(pfx_bytes)
+                self.logger.info(f"PFX exported successfully: {pfx_size} bytes")
+
+                # Warn if PFX file is suspiciously small (likely no private key)
+                # Typical PFX with private key is > 2KB, without key is < 1KB
+                if pfx_size < 1500:
+                    self.logger.warning(f"⚠️ PFX file is very small ({pfx_size} bytes)")
+                    self.logger.warning(f"This may indicate that private key was NOT exported")
+                    self.logger.warning(f"Certificate may be marked as non-exportable")
+                    self.logger.warning(f"Deployment to worker may fail (certificate without private key)")
 
                 return {
                     "success": True,
                     "pfx_base64": pfx_base64,
+                    "pfx_size": pfx_size,  # Include size in response
                     "error": ""
                 }
 
