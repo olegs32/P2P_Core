@@ -1110,26 +1110,41 @@ class Run(BaseService):
                 export_errors = []
 
                 for cert in certs_to_deploy:
+                    # Prefer thumbprint over container (more reliable)
+                    thumbprint = cert.get("thumbprint")
                     container = cert.get("container")
-                    if not container:
-                        export_errors.append(f"No container for {cert.get('subject_cn', 'unknown')}")
-                        self.logger.error(f"Certificate {cert.get('id')} has no container")
+
+                    if not thumbprint and not container:
+                        export_errors.append(f"No thumbprint or container for {cert.get('subject_cn', 'unknown')}")
+                        self.logger.error(f"Certificate {cert.get('id')} has neither thumbprint nor container")
                         continue
 
                     try:
                         # Export PFX to memory (without saving to disk)
+                        # Use thumbprint if available (more reliable), otherwise fallback to container
                         if hasattr(self.proxy, 'certs_tool'):
                             export_result = await self.proxy.certs_tool.export_pfx_to_bytes(
-                                container_name=container,
+                                thumbprint=thumbprint if thumbprint else None,
+                                container_name=container if not thumbprint else None,
                                 password=current_password
                             )
 
                             if export_result.get("success"):
+                                pfx_size = export_result.get("pfx_size", 0)
                                 pfx_list.append({
                                     "pfx_base64": export_result.get("pfx_base64"),
                                     "filename": f"{cert.get('subject_cn', 'cert')}.pfx"
                                 })
-                                self.logger.info(f"Exported {cert.get('subject_cn')} successfully")
+
+                                # Warn if PFX is too small (likely no private key)
+                                if pfx_size < 1500:
+                                    warning_msg = (f"⚠️ Certificate '{cert.get('subject_cn')}' exported with size {pfx_size} bytes. "
+                                                 f"This is too small - likely contains NO PRIVATE KEY. "
+                                                 f"Certificate may be marked as non-exportable.")
+                                    self.logger.warning(warning_msg)
+                                    export_errors.append(warning_msg)
+                                else:
+                                    self.logger.info(f"Exported {cert.get('subject_cn')} successfully ({pfx_size} bytes)")
                             else:
                                 export_errors.append(f"Failed to export {cert.get('subject_cn')}: {export_result.get('error')}")
                                 self.logger.error(f"Failed to export {cert.get('subject_cn')}: {export_result.get('error')}")
@@ -1155,7 +1170,8 @@ class Run(BaseService):
 
                 # Batch install on target worker
                 if hasattr(self.proxy, 'certs_tool'):
-                    install_result = await self.proxy.certs_tool.__getattr__(target_worker).batch_install_pfx_from_bytes(
+                    # Use getattr instead of __getattr__ for PyInstaller compatibility
+                    install_result = await getattr(self.proxy.certs_tool, target_worker).batch_install_pfx_from_bytes(
                         pfx_list=pfx_list,
                         current_password=current_password,
                         new_password=new_password
@@ -1166,7 +1182,8 @@ class Run(BaseService):
                         try:
                             self.logger.info(f"Bulk deployment successful to {target_worker}, refreshing data")
                             # Get fresh certificate data from the target worker
-                            fresh_data = await self.proxy.certs_tool.__getattr__(target_worker).get_dashboard_data()
+                            # Use getattr instead of __getattr__ for PyInstaller compatibility
+                            fresh_data = await getattr(self.proxy.certs_tool, target_worker).get_dashboard_data()
 
                             # Update the service_data cache
                             if target_worker not in self.service_data:
@@ -1276,7 +1293,8 @@ class Run(BaseService):
                                 continue
                         else:
                             if hasattr(self.proxy, 'certs_tool'):
-                                delete_result = await self.proxy.certs_tool.__getattr__(target_node).delete_certificate(
+                                # Use getattr instead of __getattr__ for PyInstaller compatibility
+                                delete_result = await getattr(self.proxy.certs_tool, target_node).delete_certificate(
                                     thumbprint=thumbprint
                                 )
                             else:
@@ -1326,7 +1344,8 @@ class Run(BaseService):
                         if target_node == "coordinator":
                             fresh_data = await self.proxy.certs_tool.get_dashboard_data()
                         else:
-                            fresh_data = await self.proxy.certs_tool.__getattr__(target_node).get_dashboard_data()
+                            # Use getattr instead of __getattr__ for PyInstaller compatibility
+                            fresh_data = await getattr(self.proxy.certs_tool, target_node).get_dashboard_data()
 
                         # Update the service_data cache
                         if target_node not in self.service_data:
@@ -2736,28 +2755,56 @@ class Run(BaseService):
         service_data = {}
 
         try:
-            if self.proxy:
-                # List of services that may provide dashboard data
-                services_to_check = ['legacy_certs', 'certs_tool']
+            if not self.proxy:
+                self.logger.warning("Proxy not available for collecting local service data")
+                return service_data
 
-                for service_name in services_to_check:
-                    try:
-                        # Check if service exists and has get_dashboard_data method
+            # List of services that may provide dashboard data
+            services_to_check = ['legacy_certs', 'certs_tool']
+            self.logger.debug(f"Checking local services: {services_to_check}")
+
+            for service_name in services_to_check:
+                try:
+                    # Direct method check in registry instead of hasattr
+                    # This is more reliable in PyInstaller builds
+                    method_path = f"{service_name}/get_dashboard_data"
+
+                    if self.context and hasattr(self.context, '_method_registry'):
+                        registry = self.context._method_registry
+                        self.logger.debug(f"Checking registry for {method_path}, registry has {len(registry)} methods")
+
+                        if method_path in registry:
+                            self.logger.info(f"Found {method_path} in registry, collecting data...")
+                            # Method exists in registry, call it directly
+                            service_proxy = getattr(self.proxy, service_name)
+                            data = await service_proxy.get_dashboard_data()
+                            if data:
+                                service_data[service_name] = data
+                                self.logger.info(f"✓ Collected dashboard data from local {service_name}")
+                            else:
+                                self.logger.debug(f"No data returned from {service_name}")
+                        else:
+                            self.logger.debug(f"Method {method_path} not found in registry")
+                    else:
+                        # Fallback to hasattr check (for compatibility)
+                        self.logger.debug(f"Using fallback hasattr check for {service_name}")
                         if hasattr(self.proxy, service_name):
                             service_proxy = getattr(self.proxy, service_name)
                             if hasattr(service_proxy, 'get_dashboard_data'):
                                 data = await service_proxy.get_dashboard_data()
                                 if data:
                                     service_data[service_name] = data
-                                    self.logger.debug(f"Collected dashboard data from local {service_name}")
-                    except AttributeError:
-                        # Service doesn't have get_dashboard_data method - skip
-                        pass
-                    except Exception as e:
-                        self.logger.debug(f"Could not get dashboard data from local {service_name}: {e}")
+                                    self.logger.info(f"✓ Collected dashboard data from local {service_name} (via fallback)")
+                except AttributeError as e:
+                    # Service doesn't have get_dashboard_data method - skip
+                    self.logger.debug(f"AttributeError for {service_name}: {e}")
+                except Exception as e:
+                    self.logger.warning(f"Could not get dashboard data from local {service_name}: {e}")
+
+            self.logger.debug(f"Collected data from {len(service_data)} local services")
 
         except Exception as e:
-            self.logger.error(f"Failed to collect local service data: {e}")
+            self.logger.error(f"Failed to collect local service data: {e}", exc_info=True)
 
         return service_data
 

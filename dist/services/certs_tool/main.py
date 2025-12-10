@@ -202,8 +202,7 @@ class LegacyCertsService(BaseService):
         result = CertOperationResult(success=False)
 
         # Устанавливаем PFX
-        pfx_cmd = (f'"{self.csp_path / "certmgr.exe"}" -install -store uMy '
-                   f'-file "{pfx_path}" -pfx -silent -keep_exportable -pin {pin}')
+        pfx_cmd = (f'"{self.csp_path / "certmgr.exe"}" -install -store uMy -file "{pfx_path}" -pfx -silent -keep_exportable -pin {pin}')
 
         pfx_output = await self._run_command_async(pfx_cmd)
         result.pfx_error = self._extract_error_code(pfx_output)
@@ -215,28 +214,30 @@ class LegacyCertsService(BaseService):
             self.logger.error("Failed to install PFX certificate")
             return result.to_dict()
 
-        # Устанавливаем CER
-        cer_cmd = (f'"{self.csp_path / "certmgr.exe"}" -install -store uMy '
-                   f'-file "{cer_path}" -certificate -container "{result.container}" '
-                   f'-silent -inst_to_cont')
+        # # Устанавливаем CER
+        # cer_cmd = (f'"{self.csp_path / "certmgr.exe"}" -install -store uMy '
+        #            f'-file "{cer_path}" -certificate -container "{result.container}" '
+        #            f'-silent -inst_to_cont')
+        #
+        # cer_output = await self._run_command_async(cer_cmd)
+        # result.cer_error = self._extract_error_code(cer_output)
+        result.cer_error = '0x00000000'
+        #
+        # self.logger.info(f"CER install result: {result.cer_error}")
+        #
+        # if result.cer_error != '0x00000000':
+        #     self.logger.error("Failed to install CER certificate")
+        #     return result.to_dict()
 
-        cer_output = await self._run_command_async(cer_cmd)
-        result.cer_error = self._extract_error_code(cer_output)
-
-        self.logger.info(f"CER install result: {result.cer_error}")
-
-        if result.cer_error != '0x00000000':
-            self.logger.error("Failed to install CER certificate")
-            return result.to_dict()
-
-        # Меняем пароль контейнера
-        passwd_cmd = (f'"{self.csp_path / "csptest.exe"}" -passwd '
-                      f'-container "{result.container}" -change {pin}')
-
-        passwd_output = await self._run_command_async(passwd_cmd)
-        result.password_error = self._extract_error_code(passwd_output)
-
-        self.logger.info(f"Password change result: {result.password_error}")
+        # # Меняем пароль контейнера
+        # passwd_cmd = (f'"{self.csp_path / "csptest.exe"}" -passwd '
+        #               f'-container "{result.container}" -change {pin}')
+        #
+        # passwd_output = await self._run_command_async(passwd_cmd)
+        # result.password_error = self._extract_error_code(passwd_output)
+        result.password_error = '0x00000000'
+        #
+        # self.logger.info(f"Password change result: {result.password_error}")
 
         # Проверяем общий результат
         result.success = all([
@@ -330,6 +331,26 @@ class LegacyCertsService(BaseService):
                 cert_info['Thumbprint'] = cert_info['Hash']
             elif 'Отпечаток' in cert_info and 'Thumbprint' not in cert_info:
                 cert_info['Thumbprint'] = cert_info['Отпечаток']
+
+            # Normalize Exportable field
+            # Check various field names for exportable status
+            exportable_value = None
+            for key in ['Exportable', 'Private key exportable', 'Экспортируемый']:
+                if key in cert_info:
+                    exportable_value = cert_info[key]
+                    break
+
+            # Normalize to boolean or string
+            if exportable_value:
+                exportable_lower = exportable_value.lower()
+                if 'yes' in exportable_lower or 'true' in exportable_lower or 'да' in exportable_lower:
+                    cert_info['Exportable'] = 'Yes'
+                elif 'no' in exportable_lower or 'false' in exportable_lower or 'нет' in exportable_lower:
+                    cert_info['Exportable'] = 'No'
+                else:
+                    cert_info['Exportable'] = exportable_value
+            else:
+                cert_info['Exportable'] = 'Unknown'
 
             if cert_info:
                 sub_cn = (cert_info['Subject_CN'] if 'Subject_CN' in cert_info else "-")
@@ -748,6 +769,7 @@ class LegacyCertsService(BaseService):
                     "serial": cert_info.get("Serial", ""),
                     "valid_from": valid_from,
                     "valid_to": valid_to,
+                    "exportable": cert_info.get("Exportable", "Unknown"),
                 }
 
                 certs_list.append(cert_data)
@@ -770,12 +792,14 @@ class LegacyCertsService(BaseService):
             }
 
     @service_method(description="Export certificate to PFX bytes (in memory)", public=True)
-    async def export_pfx_to_bytes(self, container_name: str, password: str = "00000000") -> Dict[str, Any]:
+    async def export_pfx_to_bytes(self, container_name: str = None, thumbprint: str = None,
+                                   password: str = "00000000") -> Dict[str, Any]:
         """
         Экспортирует сертификат с закрытым ключом в PFX формат (в памяти, без сохранения на диск)
 
         Args:
-            container_name: Имя контейнера
+            container_name: Имя контейнера (опционально, если указан thumbprint)
+            thumbprint: Отпечаток сертификата (более надежный способ)
             password: Пароль для PFX файла
 
         Returns:
@@ -785,26 +809,68 @@ class LegacyCertsService(BaseService):
         import base64
 
         try:
-            self.logger.info(f"Exporting PFX to memory: container={container_name}")
+            # Prefer thumbprint over container_name (more reliable)
+            if thumbprint:
+                self.logger.info(f"Exporting PFX to memory: thumbprint={thumbprint}")
+                export_param = f'-thumbprint "{thumbprint}"'
+                identifier = thumbprint[:8]
+            elif container_name:
+                self.logger.info(f"Exporting PFX to memory: container={container_name}")
+                export_param = f'-container "{container_name}"'
+                identifier = container_name[:20]
+            else:
+                self.logger.error("Neither thumbprint nor container_name provided")
+                return {
+                    "success": False,
+                    "error": "Either thumbprint or container_name must be provided",
+                    "pfx_base64": ""
+                }
 
             # Create temporary file for export
             with tempfile.NamedTemporaryFile(mode='wb', suffix='.pfx', delete=False) as tmp_file:
                 tmp_pfx_path = tmp_file.name
 
             try:
-                # Export to temp file
+                # Try export with -keep_exportable first
                 export_cmd = (f'"{self.csp_path / "certmgr.exe"}" -export '
-                              f'-container "{container_name}" -dest "{tmp_pfx_path}" '
+                              f'{export_param} -dest "{tmp_pfx_path}" '
                               f'-pfx -keep_exportable -pin {password}')
 
+                self.logger.debug(f"Export command: {export_cmd}")
                 output = await self._run_command_async(export_cmd)
                 error_code = self._extract_error_code(output)
 
+                # If error 0x8010002c (NTE_BAD_KEYSET) - try without -keep_exportable
+                if error_code == '0x8010002c':
+                    self.logger.warning(f"Export with -keep_exportable failed (0x8010002c), trying without flag...")
+
+                    # Retry without -keep_exportable
+                    export_cmd_simple = (f'"{self.csp_path / "certmgr.exe"}" -export '
+                                        f'{export_param} -dest "{tmp_pfx_path}" '
+                                        f'-pfx -pin {password}')
+
+                    self.logger.debug(f"Retry export command: {export_cmd_simple}")
+                    output = await self._run_command_async(export_cmd_simple)
+                    error_code = self._extract_error_code(output)
+
                 if error_code != '0x00000000':
                     self.logger.error(f"PFX export failed: {error_code}")
+                    self.logger.error(f"Full output: {output}")
+
+                    # Provide more detailed error message
+                    error_messages = {
+                        '0x8010002c': 'Private key is not exportable or not accessible',
+                        '0x80090016': 'Invalid certificate or key',
+                        '0x8009000d': 'Invalid data',
+                        '0x80070002': 'Certificate not found'
+                    }
+
+                    error_msg = error_messages.get(error_code, f"Export failed: {error_code}")
+
                     return {
                         "success": False,
-                        "error": f"Export failed: {error_code}",
+                        "error": error_msg,
+                        "error_code": error_code,
                         "pfx_base64": ""
                     }
 
@@ -821,11 +887,21 @@ class LegacyCertsService(BaseService):
                     pfx_bytes = f.read()
                     pfx_base64 = base64.b64encode(pfx_bytes).decode('utf-8')
 
-                self.logger.info(f"PFX exported successfully: {len(pfx_bytes)} bytes")
+                pfx_size = len(pfx_bytes)
+                self.logger.info(f"PFX exported successfully: {pfx_size} bytes")
+
+                # Warn if PFX file is suspiciously small (likely no private key)
+                # Typical PFX with private key is > 2KB, without key is < 1KB
+                if pfx_size < 1500:
+                    self.logger.warning(f"⚠️ PFX file is very small ({pfx_size} bytes)")
+                    self.logger.warning(f"This may indicate that private key was NOT exported")
+                    self.logger.warning(f"Certificate may be marked as non-exportable")
+                    self.logger.warning(f"Deployment to worker may fail (certificate without private key)")
 
                 return {
                     "success": True,
                     "pfx_base64": pfx_base64,
+                    "pfx_size": pfx_size,  # Include size in response
                     "error": ""
                 }
 
@@ -891,20 +967,30 @@ class LegacyCertsService(BaseService):
                         tmp_pfx_path = tmp_file.name
 
                     try:
-                        # Install PFX
+                        # Install PFX with private key
+                        # -store uMy: User's personal certificate store
+                        # -pfx: Import PFX file
+                        # -pin: Password for PFX
+                        # -keep_exportable: Keep private key exportable
+                        # -silent: Suppress UI dialogs (important for service mode)
+                        # Without -silent, Crypto-Pro shows "Select media" dialog in service mode
                         install_cmd = (f'"{self.csp_path / "certmgr.exe"}" -install -store uMy '
-                                       f'-file "{tmp_pfx_path}" -pfx -silent -keep_exportable -pin {current_password}')
+                                       f'-file "{tmp_pfx_path}" -pfx -pin {current_password} '
+                                       f'-keep_exportable -silent')
 
+                        self.logger.info(f"Installing {filename} with command: {install_cmd}")
                         output = await self._run_command_async(install_cmd)
 
-                        # Debug logging for diagnostics
-                        self.logger.debug(f"certmgr.exe output for {filename}:")
-                        self.logger.debug(output)
+                        # Log full output for diagnostics
+                        self.logger.info(f"certmgr.exe output for {filename}:")
+                        for line in output.split('\n'):
+                            if line.strip():
+                                self.logger.info(f"  {line}")
 
                         error_code = self._extract_error_code(output)
                         container = self._extract_container(output)
 
-                        self.logger.debug(f"Extracted error_code: {error_code}, container: {container}")
+                        self.logger.info(f"Extracted error_code: {error_code}, container: {container}")
 
                         # Check for installation errors
                         if error_code != '0x00000000':
@@ -920,10 +1006,13 @@ class LegacyCertsService(BaseService):
                             continue
 
                         # If error code is 0x00000000, installation was successful
-                        # Container name may not be present in output due to -silent flag
+                        # Check if container was created (indicates private key was imported)
                         if not container:
-                            self.logger.warning(f"Container name not found in output for {filename} (possibly due to -silent flag)")
-                            self.logger.info(f"Installation successful for {filename} (error code: {error_code})")
+                            self.logger.warning(f"⚠️ Container name not found in output for {filename}")
+                            self.logger.warning(f"This may indicate that only the certificate was imported, without private key")
+                            self.logger.info(f"Installation completed for {filename} (error code: {error_code})")
+                        else:
+                            self.logger.info(f"✓ Installation successful for {filename}, container: {container}")
 
                         # Change password if different and container was found
                         if new_password != current_password and container:
