@@ -392,6 +392,67 @@ class Run(BaseService):
                 self.logger.error(f"Failed to delete storage file from {node_id}: {e}")
                 return {"success": False, "error": str(e)}
 
+        # Autostart Management Endpoints
+        @app.post("/api/dashboard/check-autostart")
+        async def check_autostart_endpoint(request: Request):
+            """Check autostart status on a node"""
+            data = await request.json()
+            node_id = data.get('node_id', 'coordinator')
+
+            try:
+                if node_id == 'coordinator':
+                    system_proxy = self.proxy.system
+                else:
+                    system_proxy = self.proxy.system.__getattr__(node_id)
+
+                result = await system_proxy.check_autostart_status()
+                return result
+            except Exception as e:
+                self.logger.error(f"Failed to check autostart on {node_id}: {e}")
+                return {"success": False, "error": str(e)}
+
+        @app.post("/api/dashboard/enable-autostart")
+        async def enable_autostart_endpoint(request: Request):
+            """Enable autostart on a node"""
+            data = await request.json()
+            node_id = data.get('node_id', 'coordinator')
+            service_name = data.get('service_name', 'p2p_core')
+            description = data.get('description', 'P2P Core Network Service')
+
+            try:
+                if node_id == 'coordinator':
+                    system_proxy = self.proxy.system
+                else:
+                    system_proxy = self.proxy.system.__getattr__(node_id)
+
+                result = await system_proxy.enable_autostart(
+                    service_name=service_name,
+                    description=description
+                )
+                return result
+            except Exception as e:
+                self.logger.error(f"Failed to enable autostart on {node_id}: {e}")
+                return {"success": False, "error": str(e)}
+
+        @app.post("/api/dashboard/disable-autostart")
+        async def disable_autostart_endpoint(request: Request):
+            """Disable autostart on a node"""
+            data = await request.json()
+            node_id = data.get('node_id', 'coordinator')
+            service_name = data.get('service_name', 'p2p_core')
+
+            try:
+                if node_id == 'coordinator':
+                    system_proxy = self.proxy.system
+                else:
+                    system_proxy = self.proxy.system.__getattr__(node_id)
+
+                result = await system_proxy.disable_autostart(service_name=service_name)
+                return result
+            except Exception as e:
+                self.logger.error(f"Failed to disable autostart on {node_id}: {e}")
+                return {"success": False, "error": str(e)}
+
         # Service Editor Endpoints
         @app.post("/api/services/p2p-list")
         async def list_p2p_services_endpoint(request: Request):

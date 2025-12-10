@@ -2927,6 +2927,10 @@
                     // Show corresponding content
                     if (targetTab === 'home') {
                         document.getElementById('homeTab').classList.add('active');
+                        // Check autostart status for all workers when home tab is opened
+                        setTimeout(() => {
+                            checkAllWorkersAutostart();
+                        }, 1000); // Wait 1 second for workers to be rendered
                     } else if (targetTab === 'certificates') {
                         document.getElementById('certificatesTab').classList.add('active');
                         // Load certificates when tab is opened
@@ -4348,6 +4352,36 @@
                     </div>
                 </div>
 
+                <!-- Autostart Management -->
+                <div class="mt-3 p-3" style="background-color: rgba(255,255,255,0.03); border-radius: 6px; border: 1px solid var(--border-color);">
+                    <div class="d-flex justify-content-between align-items-center mb-2">
+                        <h6 class="mb-0">
+                            <i class="bi bi-power"></i> Autostart
+                        </h6>
+                        <span class="badge worker-autostart-badge" data-status="unknown">
+                            <i class="bi bi-question-circle"></i> Unknown
+                        </span>
+                    </div>
+                    <div class="d-flex gap-2">
+                        <button class="btn btn-sm btn-success worker-autostart-enable"
+                                onclick="enableAutostart('${workerId}')"
+                                style="flex: 1;">
+                            <i class="bi bi-check-circle"></i> Enable
+                        </button>
+                        <button class="btn btn-sm btn-danger worker-autostart-disable"
+                                onclick="disableAutostart('${workerId}')"
+                                style="flex: 1;">
+                            <i class="bi bi-x-circle"></i> Disable
+                        </button>
+                        <button class="btn btn-sm btn-secondary worker-autostart-refresh"
+                                onclick="checkAutostart('${workerId}')"
+                                title="Refresh status">
+                            <i class="bi bi-arrow-clockwise"></i>
+                        </button>
+                    </div>
+                    <small class="text-muted worker-autostart-details mt-2 d-block"></small>
+                </div>
+
                 <div class="chart-container">
                     <canvas id="chart-${workerId}"></canvas>
                 </div>
@@ -4990,6 +5024,217 @@
                 console.error('Failed to control service:', error);
                 alert(`Error: ${error.message}`);
             }
+        }
+
+        // ========== AUTOSTART MANAGEMENT ==========
+
+        // Check autostart status for a node
+        async function checkAutostart(nodeId) {
+            try {
+                const card = document.getElementById(`worker-${nodeId}`);
+                if (!card) return;
+
+                const badge = card.querySelector('.worker-autostart-badge');
+                const details = card.querySelector('.worker-autostart-details');
+                const enableBtn = card.querySelector('.worker-autostart-enable');
+                const disableBtn = card.querySelector('.worker-autostart-disable');
+                const refreshBtn = card.querySelector('.worker-autostart-refresh');
+
+                // Show loading state
+                refreshBtn.innerHTML = '<i class="bi bi-hourglass-split"></i>';
+                refreshBtn.disabled = true;
+
+                const response = await fetch('/api/dashboard/check-autostart', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        node_id: nodeId
+                    })
+                });
+
+                const result = await response.json();
+
+                // Update UI
+                if (result.success) {
+                    updateAutostartUI(card, result);
+                } else {
+                    badge.className = 'badge bg-danger';
+                    badge.innerHTML = '<i class="bi bi-exclamation-circle"></i> Error';
+                    badge.setAttribute('data-status', 'error');
+                    details.textContent = result.error || 'Failed to check status';
+                    enableBtn.disabled = false;
+                    disableBtn.disabled = false;
+                }
+
+            } catch (error) {
+                console.error('Failed to check autostart:', error);
+                const card = document.getElementById(`worker-${nodeId}`);
+                if (card) {
+                    const badge = card.querySelector('.worker-autostart-badge');
+                    badge.className = 'badge bg-danger';
+                    badge.innerHTML = '<i class="bi bi-exclamation-circle"></i> Error';
+                    badge.setAttribute('data-status', 'error');
+                }
+            } finally {
+                const card = document.getElementById(`worker-${nodeId}`);
+                if (card) {
+                    const refreshBtn = card.querySelector('.worker-autostart-refresh');
+                    refreshBtn.innerHTML = '<i class="bi bi-arrow-clockwise"></i>';
+                    refreshBtn.disabled = false;
+                }
+            }
+        }
+
+        // Enable autostart for a node
+        async function enableAutostart(nodeId) {
+            if (!confirm(`Enable autostart for ${nodeId}?`)) {
+                return;
+            }
+
+            try {
+                const card = document.getElementById(`worker-${nodeId}`);
+                if (!card) return;
+
+                const enableBtn = card.querySelector('.worker-autostart-enable');
+                const originalContent = enableBtn.innerHTML;
+                enableBtn.innerHTML = '<i class="bi bi-hourglass-split"></i> Enabling...';
+                enableBtn.disabled = true;
+
+                const response = await fetch('/api/dashboard/enable-autostart', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        node_id: nodeId,
+                        service_name: 'p2p_core',
+                        description: 'P2P Core Network Service'
+                    })
+                });
+
+                const result = await response.json();
+
+                if (result.success) {
+                    alert(`Autostart enabled successfully on ${nodeId}\n\n${result.message || ''}`);
+                    // Refresh status
+                    await checkAutostart(nodeId);
+                } else {
+                    alert(`Failed to enable autostart: ${result.error}`);
+                    enableBtn.innerHTML = originalContent;
+                    enableBtn.disabled = false;
+                }
+
+            } catch (error) {
+                console.error('Failed to enable autostart:', error);
+                alert(`Error: ${error.message}`);
+                const card = document.getElementById(`worker-${nodeId}`);
+                if (card) {
+                    const enableBtn = card.querySelector('.worker-autostart-enable');
+                    enableBtn.innerHTML = '<i class="bi bi-check-circle"></i> Enable';
+                    enableBtn.disabled = false;
+                }
+            }
+        }
+
+        // Disable autostart for a node
+        async function disableAutostart(nodeId) {
+            if (!confirm(`Disable autostart for ${nodeId}?`)) {
+                return;
+            }
+
+            try {
+                const card = document.getElementById(`worker-${nodeId}`);
+                if (!card) return;
+
+                const disableBtn = card.querySelector('.worker-autostart-disable');
+                const originalContent = disableBtn.innerHTML;
+                disableBtn.innerHTML = '<i class="bi bi-hourglass-split"></i> Disabling...';
+                disableBtn.disabled = true;
+
+                const response = await fetch('/api/dashboard/disable-autostart', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        node_id: nodeId,
+                        service_name: 'p2p_core'
+                    })
+                });
+
+                const result = await response.json();
+
+                if (result.success) {
+                    alert(`Autostart disabled successfully on ${nodeId}\n\n${result.message || ''}`);
+                    // Refresh status
+                    await checkAutostart(nodeId);
+                } else {
+                    alert(`Failed to disable autostart: ${result.error}`);
+                    disableBtn.innerHTML = originalContent;
+                    disableBtn.disabled = false;
+                }
+
+            } catch (error) {
+                console.error('Failed to disable autostart:', error);
+                alert(`Error: ${error.message}`);
+                const card = document.getElementById(`worker-${nodeId}`);
+                if (card) {
+                    const disableBtn = card.querySelector('.worker-autostart-disable');
+                    disableBtn.innerHTML = '<i class="bi bi-x-circle"></i> Disable';
+                    disableBtn.disabled = false;
+                }
+            }
+        }
+
+        // Update autostart UI based on status
+        function updateAutostartUI(card, statusData) {
+            const badge = card.querySelector('.worker-autostart-badge');
+            const details = card.querySelector('.worker-autostart-details');
+            const enableBtn = card.querySelector('.worker-autostart-enable');
+            const disableBtn = card.querySelector('.worker-autostart-disable');
+
+            if (statusData.enabled) {
+                // Autostart is enabled
+                badge.className = 'badge bg-success';
+                badge.innerHTML = '<i class="bi bi-check-circle-fill"></i> Enabled';
+                badge.setAttribute('data-status', 'enabled');
+                enableBtn.disabled = true;
+                disableBtn.disabled = false;
+
+                // Show details
+                let detailsText = `Platform: ${statusData.platform || 'Unknown'}`;
+                if (statusData.method) {
+                    detailsText += ` | Method: ${statusData.method}`;
+                }
+                if (statusData.locations && statusData.locations.length > 0) {
+                    const location = statusData.locations[0];
+                    detailsText += ` | Path: ${location.path}`;
+                }
+                details.textContent = detailsText;
+            } else {
+                // Autostart is disabled
+                badge.className = 'badge bg-secondary';
+                badge.innerHTML = '<i class="bi bi-x-circle"></i> Disabled';
+                badge.setAttribute('data-status', 'disabled');
+                enableBtn.disabled = false;
+                disableBtn.disabled = true;
+
+                details.textContent = `Platform: ${statusData.platform || 'Unknown'} | Autostart not configured`;
+            }
+        }
+
+        // Check autostart status for all workers on page load
+        function checkAllWorkersAutostart() {
+            const workerCards = document.querySelectorAll('[id^="worker-"]');
+            workerCards.forEach(card => {
+                const workerId = card.id.replace('worker-', '');
+                // Delay each check to avoid overwhelming the server
+                setTimeout(() => {
+                    checkAutostart(workerId);
+                }, Math.random() * 2000); // Random delay 0-2 seconds
+            });
         }
 
         // ========== LOGS TAB FUNCTIONALITY ==========

@@ -1605,20 +1605,20 @@ class SystemService(BaseService):
     async def increment_service_version(self, service_name: str) -> Dict[str, Any]:
         """
         Increment patch version in manifest.json (e.g., 1.0.0 -> 1.0.1)
-        
+
         Args:
             service_name: Name of the service
-            
+
         Returns:
             New version info
         """
         try:
             from pathlib import Path
             import json
-            
+
             service_dir = Path(f"dist/services/{service_name}")
             manifest_file = service_dir / "manifest.json"
-            
+
             # Read or create manifest
             if manifest_file.exists():
                 with open(manifest_file, 'r', encoding='utf-8') as f:
@@ -1629,24 +1629,24 @@ class SystemService(BaseService):
                     "version": "1.0.0",
                     "description": ""
                 }
-            
+
             # Parse version
             current_version = manifest.get("version", "1.0.0")
             parts = current_version.split('.')
-            
+
             # Increment patch version
             if len(parts) >= 3:
                 parts[2] = str(int(parts[2]) + 1)
             else:
                 parts = ["1", "0", "1"]
-            
+
             new_version = '.'.join(parts)
             manifest["version"] = new_version
-            
+
             # Save manifest
             with open(manifest_file, 'w', encoding='utf-8') as f:
                 json.dump(manifest, f, indent=2, ensure_ascii=False)
-            
+
             return {
                 "success": True,
                 "service": service_name,
@@ -1657,6 +1657,380 @@ class SystemService(BaseService):
         except Exception as e:
             self.logger.error(f"Failed to increment service version: {e}")
             return {"success": False, "error": str(e)}
+
+    # ========== Autostart Management Methods ==========
+
+    @service_method(description="Check autostart status", public=True)
+    async def check_autostart_status(self) -> Dict[str, Any]:
+        """
+        Check if P2P Core is configured to start automatically
+
+        Returns:
+            Dictionary with autostart status and details
+        """
+        try:
+            if self.is_windows:
+                return await self._check_autostart_windows()
+            else:
+                return await self._check_autostart_linux()
+        except Exception as e:
+            self.logger.error(f"Failed to check autostart status: {e}")
+            return {
+                "success": False,
+                "enabled": False,
+                "error": str(e)
+            }
+
+    @service_method(description="Enable autostart", public=True)
+    async def enable_autostart(
+        self,
+        service_name: str = "p2p_core",
+        description: str = "P2P Core Network Service"
+    ) -> Dict[str, Any]:
+        """
+        Enable autostart for P2P Core
+
+        Args:
+            service_name: Name for the autostart entry
+            description: Description of the service
+
+        Returns:
+            Success status and details
+        """
+        try:
+            if self.is_windows:
+                return await self._enable_autostart_windows(service_name, description)
+            else:
+                return await self._enable_autostart_linux(service_name, description)
+        except Exception as e:
+            self.logger.error(f"Failed to enable autostart: {e}")
+            return {
+                "success": False,
+                "error": str(e)
+            }
+
+    @service_method(description="Disable autostart", public=True)
+    async def disable_autostart(self, service_name: str = "p2p_core") -> Dict[str, Any]:
+        """
+        Disable autostart for P2P Core
+
+        Args:
+            service_name: Name of the autostart entry
+
+        Returns:
+            Success status and details
+        """
+        try:
+            if self.is_windows:
+                return await self._disable_autostart_windows(service_name)
+            else:
+                return await self._disable_autostart_linux(service_name)
+        except Exception as e:
+            self.logger.error(f"Failed to disable autostart: {e}")
+            return {
+                "success": False,
+                "error": str(e)
+            }
+
+    # Linux autostart implementation
+    async def _check_autostart_linux(self) -> Dict[str, Any]:
+        """Check autostart status on Linux"""
+        autostart_locations = []
+        enabled = False
+
+        # Check systemd service
+        try:
+            result = await asyncio.create_subprocess_shell(
+                "systemctl is-enabled p2p_core.service 2>/dev/null",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            stdout, _ = await result.communicate()
+            status = stdout.decode().strip()
+
+            if status == "enabled":
+                enabled = True
+                autostart_locations.append({
+                    "type": "systemd",
+                    "path": "/etc/systemd/system/p2p_core.service",
+                    "enabled": True
+                })
+        except Exception as e:
+            self.logger.debug(f"Systemd check failed: {e}")
+
+        # Check user autostart directory
+        autostart_dir = Path.home() / ".config" / "autostart"
+        desktop_file = autostart_dir / "p2p_core.desktop"
+
+        if desktop_file.exists():
+            enabled = True
+            autostart_locations.append({
+                "type": "desktop",
+                "path": str(desktop_file),
+                "enabled": True
+            })
+
+        return {
+            "success": True,
+            "enabled": enabled,
+            "platform": "Linux",
+            "locations": autostart_locations,
+            "method": "systemd" if any(loc["type"] == "systemd" for loc in autostart_locations) else "desktop"
+        }
+
+    async def _enable_autostart_linux(self, service_name: str, description: str) -> Dict[str, Any]:
+        """Enable autostart on Linux using .desktop file"""
+        try:
+            # Create autostart directory if it doesn't exist
+            autostart_dir = Path.home() / ".config" / "autostart"
+            autostart_dir.mkdir(parents=True, exist_ok=True)
+
+            # Get current script path and Python interpreter
+            import sys
+            python_path = sys.executable
+            script_path = Path(os.getcwd()) / "p2p.py"
+
+            # Determine config file based on node mode
+            if self.context.config.coordinator_mode:
+                config_file = "config/coordinator.yaml"
+            else:
+                config_file = "config/worker.yaml"
+
+            # Create .desktop file content
+            desktop_content = f"""[Desktop Entry]
+Type=Application
+Name={service_name}
+Comment={description}
+Exec={python_path} {script_path} --config {config_file}
+Terminal=false
+StartupNotify=false
+X-GNOME-Autostart-enabled=true
+"""
+
+            # Write .desktop file
+            desktop_file = autostart_dir / f"{service_name}.desktop"
+            with open(desktop_file, 'w') as f:
+                f.write(desktop_content)
+
+            # Make executable
+            desktop_file.chmod(0o755)
+
+            return {
+                "success": True,
+                "enabled": True,
+                "platform": "Linux",
+                "method": "desktop",
+                "path": str(desktop_file),
+                "message": f"Autostart enabled using .desktop file at {desktop_file}"
+            }
+
+        except Exception as e:
+            self.logger.error(f"Failed to enable Linux autostart: {e}")
+            return {
+                "success": False,
+                "error": str(e)
+            }
+
+    async def _disable_autostart_linux(self, service_name: str) -> Dict[str, Any]:
+        """Disable autostart on Linux"""
+        removed_locations = []
+
+        try:
+            # Remove .desktop file
+            autostart_dir = Path.home() / ".config" / "autostart"
+            desktop_file = autostart_dir / f"{service_name}.desktop"
+
+            if desktop_file.exists():
+                desktop_file.unlink()
+                removed_locations.append(str(desktop_file))
+
+            # Try to disable systemd service if exists
+            try:
+                result = await asyncio.create_subprocess_shell(
+                    f"systemctl disable {service_name}.service 2>/dev/null",
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE
+                )
+                await result.communicate()
+                if result.returncode == 0:
+                    removed_locations.append(f"/etc/systemd/system/{service_name}.service")
+            except:
+                pass
+
+            return {
+                "success": True,
+                "enabled": False,
+                "platform": "Linux",
+                "removed_locations": removed_locations,
+                "message": f"Autostart disabled. Removed {len(removed_locations)} entries."
+            }
+
+        except Exception as e:
+            self.logger.error(f"Failed to disable Linux autostart: {e}")
+            return {
+                "success": False,
+                "error": str(e)
+            }
+
+    # Windows autostart implementation
+    async def _check_autostart_windows(self) -> Dict[str, Any]:
+        """Check autostart status on Windows"""
+        autostart_locations = []
+        enabled = False
+
+        try:
+            # Check Registry Run key
+            import winreg
+
+            # Check HKCU\Software\Microsoft\Windows\CurrentVersion\Run
+            try:
+                key = winreg.OpenKey(
+                    winreg.HKEY_CURRENT_USER,
+                    r"Software\Microsoft\Windows\CurrentVersion\Run",
+                    0,
+                    winreg.KEY_READ
+                )
+
+                try:
+                    value, _ = winreg.QueryValueEx(key, "P2P_Core")
+                    enabled = True
+                    autostart_locations.append({
+                        "type": "registry",
+                        "path": r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run",
+                        "value": value,
+                        "enabled": True
+                    })
+                except FileNotFoundError:
+                    pass
+                finally:
+                    winreg.CloseKey(key)
+            except Exception as e:
+                self.logger.debug(f"Registry check failed: {e}")
+
+            # Check Startup folder
+            import os
+            startup_folder = Path(os.getenv('APPDATA')) / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup"
+            shortcut_file = startup_folder / "P2P_Core.lnk"
+
+            if shortcut_file.exists():
+                enabled = True
+                autostart_locations.append({
+                    "type": "startup_folder",
+                    "path": str(shortcut_file),
+                    "enabled": True
+                })
+
+            return {
+                "success": True,
+                "enabled": enabled,
+                "platform": "Windows",
+                "locations": autostart_locations
+            }
+
+        except Exception as e:
+            self.logger.error(f"Windows autostart check failed: {e}")
+            return {
+                "success": False,
+                "enabled": False,
+                "error": str(e)
+            }
+
+    async def _enable_autostart_windows(self, service_name: str, description: str) -> Dict[str, Any]:
+        """Enable autostart on Windows using Registry"""
+        try:
+            import winreg
+            import sys
+
+            # Get current script path and Python interpreter
+            python_path = sys.executable
+            script_path = Path(os.getcwd()) / "p2p.py"
+
+            # Determine config file
+            if self.context.config.coordinator_mode:
+                config_file = "config/coordinator.yaml"
+            else:
+                config_file = "config/worker.yaml"
+
+            # Create command line
+            command = f'"{python_path}" "{script_path}" --config {config_file}'
+
+            # Open Registry key
+            key = winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER,
+                r"Software\Microsoft\Windows\CurrentVersion\Run",
+                0,
+                winreg.KEY_SET_VALUE
+            )
+
+            # Set value
+            winreg.SetValueEx(key, "P2P_Core", 0, winreg.REG_SZ, command)
+            winreg.CloseKey(key)
+
+            return {
+                "success": True,
+                "enabled": True,
+                "platform": "Windows",
+                "method": "registry",
+                "path": r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run",
+                "command": command,
+                "message": "Autostart enabled in Windows Registry"
+            }
+
+        except Exception as e:
+            self.logger.error(f"Failed to enable Windows autostart: {e}")
+            return {
+                "success": False,
+                "error": str(e)
+            }
+
+    async def _disable_autostart_windows(self, service_name: str) -> Dict[str, Any]:
+        """Disable autostart on Windows"""
+        removed_locations = []
+
+        try:
+            import winreg
+
+            # Remove from Registry
+            try:
+                key = winreg.OpenKey(
+                    winreg.HKEY_CURRENT_USER,
+                    r"Software\Microsoft\Windows\CurrentVersion\Run",
+                    0,
+                    winreg.KEY_SET_VALUE
+                )
+
+                try:
+                    winreg.DeleteValue(key, "P2P_Core")
+                    removed_locations.append(r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run")
+                except FileNotFoundError:
+                    pass
+                finally:
+                    winreg.CloseKey(key)
+            except Exception as e:
+                self.logger.debug(f"Registry removal failed: {e}")
+
+            # Remove from Startup folder
+            startup_folder = Path(os.getenv('APPDATA')) / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup"
+            shortcut_file = startup_folder / "P2P_Core.lnk"
+
+            if shortcut_file.exists():
+                shortcut_file.unlink()
+                removed_locations.append(str(shortcut_file))
+
+            return {
+                "success": True,
+                "enabled": False,
+                "platform": "Windows",
+                "removed_locations": removed_locations,
+                "message": f"Autostart disabled. Removed {len(removed_locations)} entries."
+            }
+
+        except Exception as e:
+            self.logger.error(f"Failed to disable Windows autostart: {e}")
+            return {
+                "success": False,
+                "error": str(e)
+            }
 
 
 # Для backward compatibility со старым кодом
