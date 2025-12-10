@@ -968,10 +968,15 @@ class LegacyCertsService(BaseService):
 
                     try:
                         # Install PFX with private key
-                        # Remove -silent to see full output for debugging
-                        # Add -cont to ensure container is created
+                        # -store uMy: User's personal certificate store
+                        # -pfx: Import PFX file
+                        # -pin: Password for PFX
+                        # -keep_exportable: Keep private key exportable
+                        # -silent: Suppress UI dialogs (important for service mode)
+                        # Without -silent, Crypto-Pro shows "Select media" dialog in service mode
                         install_cmd = (f'"{self.csp_path / "certmgr.exe"}" -install -store uMy '
-                                       f'-file "{tmp_pfx_path}" -pfx -pin {current_password} -keep_exportable')
+                                       f'-file "{tmp_pfx_path}" -pfx -pin {current_password} '
+                                       f'-keep_exportable -silent')
 
                         self.logger.info(f"Installing {filename} with command: {install_cmd}")
                         output = await self._run_command_async(install_cmd)
