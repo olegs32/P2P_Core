@@ -2730,9 +2730,7 @@
                     // Update uptime
                     if (uptimeDisplayEl) {
                         const uptimeSeconds = metrics.stats.uptime_seconds || 0;
-                        const hours = Math.floor(uptimeSeconds / 3600);
-                        const minutes = Math.floor((uptimeSeconds % 3600) / 60);
-                        uptimeDisplayEl.textContent = `${hours}h ${minutes}m`;
+                        uptimeDisplayEl.textContent = formatUptime(uptimeSeconds);
                     }
                 }
 
@@ -4138,9 +4136,7 @@
 
                 // Update uptime
                 const uptimeSeconds = data.stats.uptime_seconds || 0;
-                const hours = Math.floor(uptimeSeconds / 3600);
-                const minutes = Math.floor((uptimeSeconds % 3600) / 60);
-                document.getElementById('uptimeDisplay').textContent = `${hours}h ${minutes}m`;
+                document.getElementById('uptimeDisplay').textContent = formatUptime(uptimeSeconds);
 
                 // Update coordinator metrics
                 if (data.coordinator && data.coordinator.metrics) {
