@@ -1072,7 +1072,7 @@ REM Self-delete trick: call del from separate context then exit
             available_updates = []
 
             # Look for repository info in gossip
-            for node_id, node_info in gossip.node_registry.items():
+            for node_id, node_info in gossip.node.items():
                 if hasattr(node_info, 'metadata') and 'repository' in node_info.metadata:
                     repo_data = node_info.metadata['repository']
                     if 'available_versions' in repo_data:

@@ -702,7 +702,7 @@ class Run(BaseService):
             repo_info = {}
 
             # Collect repository info from all nodes
-            for node_id, node_info in gossip.node_registry.items():
+            for node_id, node_info in gossip.node.items():
                 if hasattr(node_info, 'metadata') and 'repository' in node_info.metadata:
                     repo_info[node_id] = node_info.metadata['repository']
 

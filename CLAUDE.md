@@ -2181,13 +2181,13 @@ class Run(BaseService):
         if hasattr(self, 'context'):
             # Get configuration
             node_id = self.context.config.node_id
-            
+
             # Get shared components
             network = self.context.get_shared("network")
             cache = self.context.get_shared("cache")
-            
+
             # Access node registry
-            nodes = network.gossip.node_registry
+            nodes = network.gossip.node
 ```
 
 ### 4. Using Secure Storage
@@ -2310,11 +2310,11 @@ async def my_endpoint(request: Dict[str, Any]):
 async def broadcast_message(self, message: str) -> Dict[str, Any]:
     """Send message to all nodes in cluster"""
     network = self.context.get_shared("network")
-    nodes = network.gossip.node_registry
-    
+    nodes = network.gossip.node
+
     results = {}
     tasks = []
-    
+
     for node_id, node_info in nodes.items():
         if node_id != self.context.config.node_id:  # Skip self
             # Create task for each node
@@ -2322,7 +2322,7 @@ async def broadcast_message(self, message: str) -> Dict[str, Any]:
                 message=message
             )
             tasks.append((node_id, task))
-    
+
     # Execute in parallel
     for node_id, task in tasks:
         try:
@@ -2330,7 +2330,7 @@ async def broadcast_message(self, message: str) -> Dict[str, Any]:
             results[node_id] = {"status": "success", "result": result}
         except Exception as e:
             results[node_id] = {"status": "error", "error": str(e)}
-    
+
     return {"results": results}
 ```
 
@@ -2584,10 +2584,10 @@ network = context.get_shared("network")
 gossip = network.gossip
 
 # Get all nodes
-nodes = gossip.node_registry  # Dict[str, NodeInfo]
+nodes = gossip.node  # Dict[str, NodeInfo]
 
 # Get specific node
-node_info = gossip.node_registry.get("worker_123")
+node_info = gossip.node.get("worker_123")
 
 # Get node URL
 if node_info:
@@ -2595,7 +2595,7 @@ if node_info:
 
 # Filter by role
 coordinators = [
-    node for node in gossip.node_registry.values()
+    node for node in gossip.node.values()
     if node.role == "coordinator"
 ]
 ```
@@ -2789,13 +2789,14 @@ storage = context.get_shared("storage_manager")
 **Cause**: Node not yet discovered via gossip
 
 **Solution**:
+
 ```python
 # Wait for gossip to discover nodes
 await asyncio.sleep(5)
 
 # Or check if node exists before calling
 network = context.get_shared("network")
-if "worker_123" in network.gossip.node_registry:
+if "worker_123" in network.gossip.node:
     result = await proxy.service.worker_123.method()
 ```
 
@@ -3077,16 +3078,17 @@ for version, batch_data in batches.items():
 ```
 
 **Worker Status Updates**:
+
 ```python
 # Worker publishes (every 10s for progress, immediate for solutions)
 Key: hash_worker_status
 Value: {
     "job_id": "test-job-1",
     "chunk_id": 5000,
-    "status": "solved",               # "working" or "solved"
-    "progress": 5000456,              # Current index (for working status)
+    "status": "solved",  # "working" or "solved"
+    "progress": 5000456,  # Current index (for working status)
     "hash_count": 1000000,
-    "time_taken": 234.5,              # Seconds (for performance tracking)
+    "time_taken": 234.5,  # Seconds (for performance tracking)
     "solutions": [
         {
             "combination": "password",
@@ -3101,7 +3103,7 @@ Value: {
 }
 
 # Coordinator reads (every 10s)
-for node_id, node_info in gossip.node_registry.items():
+for node_id, node_info in gossip.node.items():
     worker_status = node_info.metadata.get("hash_worker_status")
     if worker_status:
         await self._process_worker_chunk_status(node_id, worker_status)

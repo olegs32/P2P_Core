@@ -81,7 +81,7 @@ class ServiceMethodProxy:
         try:
             network = self.context.get_shared('network')
             if network and hasattr(network, 'gossip') and hasattr(network.gossip, 'node_registry'):
-                known_nodes = set(network.gossip.node_registry.keys())
+                known_nodes = set(network.gossip.node.keys())
         except:
             pass
 
@@ -195,7 +195,7 @@ class MethodCaller:
                 raise RuntimeError("Network component not available")
 
             # Получаем информацию об узле
-            node_info = network.gossip.node_registry.get(self.target_node)
+            node_info = network.gossip.node.get(self.target_node)
             if not node_info:
                 raise RuntimeError(f"Target node '{self.target_node}' not found in network registry or config")
 

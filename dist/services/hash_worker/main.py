@@ -656,7 +656,7 @@ class Run(BaseService):
 
         # Ищем hash_job_* в metadata координатора
         coordinator_nodes = [
-            node for node in network.gossip.node_registry.values()
+            node for node in network.gossip.node.values()
             if node.role == "coordinator"
         ]
 
@@ -687,7 +687,7 @@ class Run(BaseService):
 
         # Получаем батчи из gossip
         coordinator_nodes = [
-            node for node in network.gossip.node_registry.values()
+            node for node in network.gossip.node.values()
             if node.role == "coordinator"
         ]
 
@@ -914,7 +914,7 @@ class Run(BaseService):
             return None
 
         coordinator_nodes = [
-            node for node in network.gossip.node_registry.values()
+            node for node in network.gossip.node.values()
             if node.role == "coordinator"
         ]
 

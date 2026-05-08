@@ -751,7 +751,7 @@ class Run(BaseService):
                 }
 
             gossip = network.gossip
-            node_registry = gossip.node_registry
+            node_registry = gossip.node
 
             cluster_status = {}
             for node_id, node_info in node_registry.items():

@@ -225,7 +225,7 @@ class Run(BaseService):
 
                 # Получаем данные из gossip
                 nodes_data = []
-                for node_id, node_info in gossip.node_registry.items():
+                for node_id, node_info in gossip.node.items():
                     nodes_data.append({
                         "node_id": node_id,
                         "address": node_info.address,
@@ -1818,7 +1818,7 @@ class Run(BaseService):
                     network = self.context.get_shared("network")
                     if network:
                         workers_distribution = []
-                        node_registry = network.gossip.node_registry
+                        node_registry = network.gossip.node
 
                         # Find coordinator for chunk data
                         coordinator_nodes = [n for n in node_registry.values() if n.role == "coordinator"]
@@ -1916,7 +1916,7 @@ class Run(BaseService):
 
                     # Collect nodes data for tables
                     nodes_data = []
-                    for node_id, node_info in gossip.node_registry.items():
+                    for node_id, node_info in gossip.node.items():
                         nodes_data.append({
                             "node_id": node_id,
                             "address": node_info.address,
@@ -1936,7 +1936,7 @@ class Run(BaseService):
                         "peer_versions": gossip.peer_versions,
                         "nodes": nodes_data,
                         "cluster_stats": gossip.get_cluster_stats(),
-                        "nodes_count": len(gossip.node_registry)
+                        "nodes_count": len(gossip.node)
                     }
             except Exception as e:
                 self.logger.debug(f"Failed to get gossip data: {e}")
@@ -2105,7 +2105,7 @@ class Run(BaseService):
                 total_hashes = 0
 
                 # Get all nodes from gossip
-                node_registry = network.gossip.node_registry
+                node_registry = network.gossip.node
 
                 # Find all workers
                 for node_id, node_info in node_registry.items():
@@ -2462,7 +2462,7 @@ class Run(BaseService):
                 if network and hasattr(network, 'gossip'):
                     gossip = network.gossip
                     if hasattr(gossip, 'node_registry'):
-                        for node_id, node_info in gossip.node_registry.items():
+                        for node_id, node_info in gossip.node.items():
                             # Skip coordinator
                             if node_info.role == 'coordinator':
                                 continue
@@ -2641,7 +2641,7 @@ class Run(BaseService):
                 if network and hasattr(network, 'gossip'):
                     gossip = network.gossip
                     if hasattr(gossip, 'node_registry'):
-                        for node_id, node_info in gossip.node_registry.items():
+                        for node_id, node_info in gossip.node.items():
                             # Use gossip if:
                             # 1. Node not in services_by_node yet
                             # 2. OR node has empty/no services in services_by_node but has services in gossip

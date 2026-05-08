@@ -102,7 +102,7 @@ result = await proxy.metrics_dashboard.coordinator.report_metrics(...)
 ```python
 def __getattr__(self, attr_name: str):
     network = self.context.get_shared('network')
-    known_targets = network.gossip.node_registry
+    known_targets = network.gossip.node
 
     # Проверка роли
     if attr_name in ['coordinator', 'worker']:
@@ -136,7 +136,7 @@ async def _remote_call(self, method_path: str, **kwargs):
     network = self.context.get_shared('network')
 
     # 2. Получить NodeInfo из registry
-    node_info = network.gossip.node_registry[self.target_node]
+    node_info = network.gossip.node[self.target_node]
 
     # 3. Получить URL узла
     node_url = node_info.get_url(https=https_enabled)
@@ -366,7 +366,7 @@ self.logger.error(f"Remote call failed to {self.target_node}: {e}")
 ```python
 # В любом сервисе с context
 network = self.context.get_shared('network')
-nodes = network.gossip.node_registry
+nodes = network.gossip.node
 
 for node_id, node_info in nodes.items():
     print(f"{node_id}: {node_info.role} at {node_info.get_url()}")
