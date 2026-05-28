@@ -1,22 +1,24 @@
-# modules/network.py
+# GRID/network.py
+
 import asyncio
 import logging
-from typing import Dict
 
 import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from pydantic import BaseModel, Field
+from typing import Dict
+
+from GRID.templates import ModuleGeneric
+from GRID.protocol import MsgPack, PackType
+from GRID.router import Router
+from GRID.transport import WebSocketTransport
 
 log = logging.getLogger('Network')
 
 
-class Node(BaseModel):
-    node_id: str
-    ws: WebSocket
-    services: Dict[str, Dict[str, str]] = Field(default_factory=dict)
-
-    class Config:
-        arbitrary_types_allowed = True
+class Node:
+    def __init__(self, node_id: str, ws: WebSocket):
+        self.node_id = node_id
+        self.ws = ws
 
 
 class ConnectionManager:
@@ -30,37 +32,39 @@ class ConnectionManager:
     def disconnect(self, websocket: WebSocket):
         self.active_connections.remove(websocket)
 
-    async def send(self, message: str, websocket: WebSocket):
-        await websocket.send_text(message)
-
-    async def broadcast(self, message: str):
+    async def broadcast(self, pack: MsgPack):
         for ws in self.active_connections:
-            await ws.send_text(message)
+            await ws.send_json(pack.model_dump())
 
 
 class NodesManager:
-    def __init__(self, conn_manager: ConnectionManager):
-        self.conn_manager = conn_manager
+    def __init__(self):
         self.nodes: Dict[str, Node] = {}
 
-    def register(self, node_id: str, websocket: WebSocket) -> bool:
-        self.nodes[node_id] = Node(node_id=node_id, ws=websocket)
+    def register(self, node_id: str, websocket: WebSocket) -> Node:
+        node = Node(node_id=node_id, ws=websocket)
+        self.nodes[node_id] = node
         log.info(f'Node {node_id} registered')
-        return True  # here will be a secure lvl
+        return node
 
     def remove(self, node_id: str):
         self.nodes.pop(node_id, None)
         log.info(f'Node {node_id} removed')
 
+    def get(self, node_id: str) -> Node | None:
+        return self.nodes.get(node_id)
 
-class NetworkModule:
-    def __init__(self, host: str = "0.0.0.0", port: int = 9000):
+
+class NetworkModule(ModuleGeneric):
+    def __init__(self, name: str, context, host: str = "0.0.0.0", port: int = 9000):
+        super().__init__(name, context)
         self.host = host
         self.port = port
         self.app = FastAPI()
 
-        self.conn_manager = ConnectionManager()
-        self.nodes_manager = NodesManager(self.conn_manager)
+        self.conn_manager  = ConnectionManager()
+        self.nodes_manager = NodesManager()
+        self.router        = Router(self.nodes_manager, context)
 
         self._server: uvicorn.Server | None = None
         self._task: asyncio.Task | None = None
@@ -74,25 +78,42 @@ class NetworkModule:
         async def websocket_endpoint(websocket: WebSocket, node_id: str):
             await self.conn_manager.connect(websocket)
             self.nodes_manager.register(node_id, websocket)
+            transport = WebSocketTransport(websocket)
             try:
                 while True:
-                    data = await websocket.receive_text()
-                    await self.conn_manager.send(f"You wrote: {data}", websocket)
-                    await self.conn_manager.broadcast(f"Client #{node_id} says: {data}")
+                    data = await websocket.receive_json()
+                    pack = MsgPack(**data)
+                    await self.router.handle(pack, transport)
             except WebSocketDisconnect:
                 self.nodes_manager.remove(node_id)
                 self.conn_manager.disconnect(websocket)
-                await self.conn_manager.broadcast(f"Client #{node_id} left the chat")
+                self.log.info(f'Node {node_id} disconnected')
+
+    # ------------------------------------------------------------------ #
+    #  Lifecycle
+    # ------------------------------------------------------------------ #
 
     async def start(self):
-        config = uvicorn.Config(self.app, host=self.host, port=self.port, log_level="info")
+        config = uvicorn.Config(self.app, host=self.host, port=self.port, log_level="warning")
         self._server = uvicorn.Server(config)
         self._task = asyncio.create_task(self._server.serve())
-        log.info(f'[network] started on {self.host}:{self.port}')
+        self.log.info(f'Started on {self.host}:{self.port}')
 
     async def stop(self):
         if self._server:
             self._server.should_exit = True
         if self._task:
             await self._task
-        log.info('[network] stopped')
+        self.log.info('Stopped')
+
+    # ------------------------------------------------------------------ #
+    #  Public API
+    # ------------------------------------------------------------------ #
+
+    async def call(self, dst: str, service: str, method: str, data=None, timeout: int = 10):
+        """Single RPC вызов."""
+        return await self.router.call(dst, service, method, data, timeout)
+
+    async def stream(self, dst: str, service: str, method: str, data=None):
+        """Stream вызов — возвращает async generator."""
+        return await self.router.stream(dst, service, method, data)

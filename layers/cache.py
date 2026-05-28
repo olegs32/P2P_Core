@@ -216,7 +216,7 @@ class P2PMultiLevelCache:
                 await pubsub.subscribe('cache_invalidation')
 
                 async def handle_invalidation():
-                    async for message in pubsub.listen():
+                    async for message in pubsub.listen_ws():
                         if message['type'] == 'message':
                             try:
                                 data = json.loads(message['data'])

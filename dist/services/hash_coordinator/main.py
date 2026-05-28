@@ -845,7 +845,7 @@ class Run(BaseService):
         if not network:
             return []
 
-        nodes = network.gossip.node_registry
+        nodes = network.gossip.node
 
         # Фильтруем воркеров с сервисом hash_worker
         workers = []
@@ -1051,7 +1051,7 @@ class Run(BaseService):
 
         # Читаем текущее состояние из gossip
         batches_key = f"hash_batches_{job_id}"
-        current_batches = network.gossip.node_registry[network.gossip.node_id].metadata.get(batches_key, {})
+        current_batches = network.gossip.node[network.gossip.node_id].metadata.get(batches_key, {})
 
         # МЕРЖИМ с текущим состоянием (solved имеет приоритет!)
         merged_batches = self._merge_batch_statuses(current_batches, new_batches)
@@ -1173,7 +1173,7 @@ class Run(BaseService):
         if not network:
             return
 
-        nodes = network.gossip.node_registry
+        nodes = network.gossip.node
         jobs_to_publish = set()  # Какие job_id требуют публикации batches
 
         for node_id, node_info in nodes.items():
@@ -1255,7 +1255,7 @@ class Run(BaseService):
             time_taken = status.get("time_taken", 0)
             solutions = status.get("solutions", [])
 
-            # Обновляем статус чанка в generator
+            # Обновляем статус чанка в gen
             generator.chunk_completed(chunk_id, hash_count, solutions)
 
             # Обновляем производительность воркера

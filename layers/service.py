@@ -1151,7 +1151,7 @@ class ServiceManager:
             # Передаем service_manager и context в сервис
             service_instance._service_manager = self
             if hasattr(self.rpc, 'context'):
-                service_instance.context = self.rpc.context
+                service_instance.context = self.rpc.ctx
 
             # КРИТИЧЕСКИ ВАЖНО: ЗАПУСКАЕМ СЕРВИС
             await service_instance.start()  # <-- ЭТО ОТСУТСТВОВАЛО!
@@ -1195,8 +1195,8 @@ class ServiceManager:
                     await self.rpc.register_method(rpc_path, method)
                     self.logger.debug(f"Registered method: {rpc_path}")
                 # Если есть context, регистрируем там
-                elif hasattr(self.rpc, 'context') and self.rpc.context:
-                    self.rpc.context.register_method(rpc_path, method)
+                elif hasattr(self.rpc, 'context') and self.rpc.ctx:
+                    self.rpc.ctx.register_method(rpc_path, method)
                     self.logger.debug(f"Registered method in context: {rpc_path}")
                 else:
                     self.logger.warning(f"Cannot register method {rpc_path}: no registry available")

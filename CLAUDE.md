@@ -810,12 +810,13 @@ stats = await proxy.log_collector.get_stats()
 **Custom logging handler** that captures logs on worker nodes for transmission to coordinator.
 
 **Usage in services**:
+
 ```python
 import logging
 from methods.log_collector import P2PLogHandler
 
 # In service initialization
-log_handler = P2PLogHandler(node_id=self.context.config.node_id)
+log_handler = P2PLogHandler(node_id=self.ctx.config.node_id)
 log_handler.setLevel(logging.INFO)
 
 # Attach to root logger or service logger
@@ -825,7 +826,7 @@ logging.getLogger().addHandler(log_handler)
 new_logs = log_handler.get_new_logs()
 if new_logs:
     await self.proxy.log_collector.add_logs(
-        node_id=self.context.config.node_id,
+        node_id=self.ctx.config.node_id,
         logs=new_logs
     )
 ```
@@ -1314,10 +1315,11 @@ The metrics dashboard provides a comprehensive web interface for monitoring and 
 - Manage service lifecycle on workers
 
 **Initialization**:
+
 ```python
 async def initialize(self):
     # Only runs on coordinator
-    if self.context.config.coordinator_mode:
+    if self.ctx.config.coordinator_mode:
         # Register HTTP endpoints
         self._register_http_endpoints()
 
@@ -1622,9 +1624,10 @@ class P2PLogHandler(logging.Handler):
 ```
 
 **Setup with Immediate Callback** (`layers/application_context.py`):
+
 ```python
 def _setup_log_handler(self):
-    log_collector = self.context.get_shared("log_collector")
+    log_collector = self.ctx.get_shared("log_collector")
 
     # Create async callback for immediate log delivery
     async def immediate_log_callback(node_id, logs):
@@ -1635,8 +1638,8 @@ def _setup_log_handler(self):
 
     # Create handler with immediate callback
     log_handler = P2PLogHandler(
-        node_id=self.context.config.node_id,
-        max_logs=self.context.config.max_log_entries,
+        node_id=self.ctx.config.node_id,
+        max_logs=self.ctx.config.max_log_entries,
         immediate_callback=immediate_log_callback
     )
 
@@ -2194,7 +2197,7 @@ class Run(BaseService):
 
 ```python
 # In component initialization
-storage = self.context.get_shared("storage_manager")
+storage = self.ctx.get_shared("storage_manager")
 
 # Read configuration
 config_yaml = storage.read_config("my_config.yaml")
@@ -2309,14 +2312,14 @@ async def my_endpoint(request: Dict[str, Any]):
 @service_method(public=True)
 async def broadcast_message(self, message: str) -> Dict[str, Any]:
     """Send message to all nodes in cluster"""
-    network = self.context.get_shared("network")
+    network = self.ctx.get_shared("network")
     nodes = network.gossip.node
 
     results = {}
     tasks = []
 
     for node_id, node_info in nodes.items():
-        if node_id != self.context.config.node_id:  # Skip self
+        if node_id != self.ctx.config.node_id:  # Skip self
             # Create task for each node
             task = self.proxy.my_service.__getattr__(node_id).receive_message(
                 message=message
@@ -2469,9 +2472,10 @@ cert_file = "/etc/certs/ca_cert.cer"
 ```
 
 ✅ **CORRECT**:
+
 ```python
-config_file = self.context.config.ssl_cert_file
-state_file = self.context.config.get_state_path("my_state.json")
+config_file = self.ctx.config.ssl_cert_file
+state_file = self.ctx.config.get_state_path("my_state.json")
 ```
 
 ### 8. ALWAYS Log Important Events

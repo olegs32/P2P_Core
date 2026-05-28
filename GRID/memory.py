@@ -4,6 +4,8 @@ import logging
 from concurrent.futures import ThreadPoolExecutor
 from typing import Callable, Dict, Optional
 
+from GRID.templates import ModuleGeneric
+
 log = logging.getLogger('Memory')
 
 _SENTINEL = object()
@@ -126,9 +128,10 @@ class Dispatcher:
         self._resume.set()
 
 
-class MemoryModule:
-    def __init__(self, node: str):
-        self.node = node
+class MemoryModule(ModuleGeneric):
+    def __init__(self, name: str, context):
+        super().__init__(name, context)
+        self.node = name
         self.pipes: Dict[str, Pipe] = {}
         self.dispatchers: list[Dispatcher] = []
         self._counter = 0

@@ -101,7 +101,7 @@ result = await proxy.metrics_dashboard.coordinator.report_metrics(...)
 
 ```python
 def __getattr__(self, attr_name: str):
-    network = self.context.get_shared('network')
+    network = self.ctx.get_shared('network')
     known_targets = network.gossip.node
 
     # Проверка роли
@@ -133,7 +133,7 @@ def __getattr__(self, attr_name: str):
 ```python
 async def _remote_call(self, method_path: str, **kwargs):
     # 1. Получить network layer
-    network = self.context.get_shared('network')
+    network = self.ctx.get_shared('network')
 
     # 2. Получить NodeInfo из registry
     node_info = network.gossip.node[self.target_node]
@@ -176,11 +176,12 @@ remote_result = await proxy.system.coordinator.get_metrics()
 ```
 
 ### 3. Автоматическая SSL/TLS
+
 ```python
 # SSL конфигурация из context.config
-https_enabled = self.context.config.https_enabled
-ssl_verify = self.context.config.ssl_verify
-ca_cert_file = self.context.config.ssl_ca_cert_file
+https_enabled = self.ctx.config.https_enabled
+ssl_verify = self.ctx.config.ssl_verify
+ca_cert_file = self.ctx.config.ssl_ca_cert_file
 
 # connection_manager автоматически использует правильный SSL контекст
 ```
@@ -365,7 +366,7 @@ self.logger.error(f"Remote call failed to {self.target_node}: {e}")
 
 ```python
 # В любом сервисе с context
-network = self.context.get_shared('network')
+network = self.ctx.get_shared('network')
 nodes = network.gossip.node
 
 for node_id, node_info in nodes.items():
