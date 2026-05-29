@@ -7,7 +7,7 @@ import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from typing import Dict
 
-from GRID.templates import ModuleGeneric
+from GRID.base import ModuleGeneric
 from GRID.protocol import MsgPack, PackType
 from GRID.router import Router
 from GRID.transport import WebSocketTransport

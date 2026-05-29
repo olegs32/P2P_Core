@@ -1,6 +1,5 @@
-# GRID/protocol.py — типы пакетов и MsgPack
+# GRID/protocol.py
 
-import time
 import uuid
 from enum import Enum
 from typing import Any
@@ -10,7 +9,10 @@ from pydantic import BaseModel, Field
 class PackType(str, Enum):
     REQUEST      = "request"
     RESPONSE     = "response"
+    STREAM_OPEN  = "stream_open"   # ← handshake: подготовить consumer
+    STREAM_READY = "stream_ready"  # ← подтверждение: готов к приёму
     STREAM_CHUNK = "stream_chunk"
+    STREAM_ACK   = "stream_ack"    # ← клиент → сервер: пришли ещё buff штук
     STREAM_EOF   = "stream_eof"
     ERROR        = "error"
     PING         = "ping"
@@ -22,7 +24,7 @@ class MsgPack(BaseModel):
     source:   str
     dst:      str | None = None
     service:  str | None = None
-    method:   str | None = None
+    method:   str | None = None  # имя stream для STREAM_OPEN
     data:     Any = None
     label:    str = Field(default_factory=lambda: str(uuid.uuid4()))
     error:    str | None = None

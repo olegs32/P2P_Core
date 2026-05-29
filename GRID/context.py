@@ -4,7 +4,7 @@ from typing import AsyncGenerator
 from typing import TYPE_CHECKING
 
 from GRID.services.manager import ServiceManager
-from GRID.templates import ModuleGeneric
+from GRID.base import ModuleGeneric
 
 if TYPE_CHECKING:
     from GRID.memory import MemoryModule

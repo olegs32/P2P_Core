@@ -11,14 +11,21 @@ class RPCTimeout(Exception):
     def __init__(self, label, timeout):
         super().__init__(f'timeout {timeout}s label={label[:8]}')
 
+class SessionMeta:
+    def __init__(self, service: str, method: str):
+        self.service = service
+        self.method  = method
+
 
 class SessionTable:
     def __init__(self):
         self._table: Dict[str, asyncio.Future | asyncio.Queue] = {}
+        self._meta:  Dict[str, SessionMeta] = {}
 
-    def register_single(self, label: str) -> asyncio.Future:
+    def register_single(self, label: str, service: str = '', method: str = '') -> asyncio.Future:
         f = asyncio.get_event_loop().create_future()
         self._table[label] = f
+        self._meta[label]  = SessionMeta(service, method)  # ← новое
         return f
 
     def register_stream(self, label: str) -> asyncio.Queue:
@@ -44,6 +51,17 @@ class SessionTable:
             self._table.pop(label)
 
     def cancel(self, label: str):
+        self._meta.pop(label, None)
         session = self._table.pop(label, None)
         if isinstance(session, asyncio.Future) and not session.done():
             session.cancel()
+
+    def cancel_by_service(self, service_name: str) -> int:
+        targets = [
+            label for label, meta in self._meta.items()
+            if meta.service == service_name
+        ]
+        for label in targets:
+            self.cancel(label)
+        return len(targets)
+

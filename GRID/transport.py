@@ -1,22 +1,27 @@
-# GRID/transport.py — всё что знает про WS
+# GRID/transport.py
 
+import json
 import logging
-from typing import Protocol
-from fastapi import WebSocket
 from GRID.protocol import MsgPack
 
 log = logging.getLogger('Transport')
 
 
-class ITransport(Protocol):
-    """Абстракция транспорта — можно заменить на TCP/IPC."""
-    async def send(self, pack: MsgPack): ...
-
-
 class WebSocketTransport:
-    def __init__(self, websocket: WebSocket):
+    """
+    Универсальный транспорт — работает с обоими типами WS:
+    - FastAPI WebSocket (server-side) — имеет send_json()
+    - websockets ClientConnection (client-side) — имеет только send()
+    """
+    def __init__(self, websocket):
         self.ws = websocket
+        # определяем тип один раз при создании
+        self._is_fastapi = hasattr(websocket, 'send_json')
 
     async def send(self, pack: MsgPack):
-        await self.ws.send_json(pack.model_dump())
+        data = pack.model_dump_json()
+        if self._is_fastapi:
+            await self.ws.send_json(pack.model_dump())
+        else:
+            await self.ws.send(data)
         log.debug(f'→ {pack.type} [{pack.label[:8]}] to {pack.dst}')

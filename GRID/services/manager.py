@@ -1,7 +1,7 @@
 # GRID/services/manager.py
 
 from typing import Callable, Any, Dict
-from GRID.templates import ModuleGeneric
+from GRID.base import ModuleGeneric
 
 
 class ServiceManager:
