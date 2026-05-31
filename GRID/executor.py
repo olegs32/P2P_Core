@@ -5,6 +5,7 @@ import inspect
 import logging
 from typing import Any, Callable, AsyncGenerator
 
+from GRID.exceptions import MethodNotFound
 from GRID.protocol import MsgPack, PackType
 from GRID.stream_registry import StreamRegistry
 from GRID.memory import Pipe
@@ -12,9 +13,7 @@ from GRID.memory import Pipe
 log = logging.getLogger('Executor')
 
 
-class MethodNotFound(Exception):
-    def __init__(self, service, method):
-        super().__init__(f'{service}.{method}')
+
 
 
 class LocalExecutor:

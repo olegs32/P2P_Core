@@ -16,12 +16,12 @@ class Pipe:
     def __init__(self, pipe_id: str, buff_len: int = 10):
         self.pipe_id = pipe_id
         self.buff_len = buff_len
-        self.low_watermark = max(1, buff_len // 3)
+        self.low_watermark = max(1, buff_len // 3)  # may be truncated
         self._queue = asyncio.Queue(maxsize=buff_len)
         self._closed = False
         self._refill_cb: Optional[Callable[[str], None]] = None
 
-    def set_refill_callback(self, cb: Callable[[str], None]):
+    def set_refill_callback(self, cb: Callable[[str], None]):  # may be truncated
         self._refill_cb = cb
 
     async def put(self, item):
@@ -57,8 +57,6 @@ class Pipe:
             raise StopAsyncIteration
         return item
 
-
-# GRID/memory.py — PipeTransport кредитный насос
 
 class PipeTransport:
     def __init__(self, pipe: Pipe, transport, pack_template: MsgPack,

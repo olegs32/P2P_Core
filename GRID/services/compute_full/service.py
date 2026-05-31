@@ -6,7 +6,7 @@ import asyncio
 from GRID.base import ModuleGeneric
 from GRID.services.rpc import rpc, stream_wrapper, stream_consumer
 from GRID.protocol import MsgPack
-from GRID.transport import WebSocketTransport
+from GRID.transport import WebSocketTransport, send_ack
 from GRID.memory import Pipe
 
 
@@ -86,7 +86,7 @@ class Compute(ModuleGeneric):
 
         # первый запрос порции
         if ws and label:
-            await self._send_ack(ws, label, buff)
+            await send_ack(self.ctx.NODE, 'Node0', ws, label, buff)
 
         async for chunk in pipe:
             ctx['index'] += 1
@@ -97,7 +97,7 @@ class Compute(ModuleGeneric):
 
             # prefetch — запросить следующую порцию пока считаем
             if ws and label and queue_size < buff and not ctx.get('eof'):
-                await self._send_ack(ws, label, buff)
+                await send_ack(self.ctx.NODE, 'Node0', ws, label, buff)
 
             # вычисление с задержкой
             await asyncio.sleep(0.1)
@@ -107,16 +107,3 @@ class Compute(ModuleGeneric):
 
         self.log.info(f'Consumer done — total={len(results)} results={results}')
 
-    async def _send_ack(self, ws, label: str, buff: int):
-        from GRID.protocol import PackType
-        from GRID.transport import WebSocketTransport
-        pack = MsgPack(
-            type=PackType.STREAM_ACK,
-            source=self.ctx.NODE,
-            dst='Node0',
-            label=label,
-            data=buff,
-        )
-        transport = WebSocketTransport(ws)  # сам разберётся с типом
-        await transport.send(pack)
-        self.log.debug(f'ACK → {label[:8]} buff={buff}')

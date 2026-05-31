@@ -4,7 +4,7 @@ import os.path
 from pathlib import Path
 
 from GRID.context import AppContext, app_lifespan
-from GRID.core_logging import setup_logging
+from GRID.setup_logging import setup_logging
 from GRID.services.loader import ServiceLoader
 from layers import ServiceManager
 from network import NetworkModule

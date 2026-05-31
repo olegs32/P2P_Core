@@ -1,1 +1,0 @@
-"""Update manager models package"""

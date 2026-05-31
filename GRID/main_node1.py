@@ -1,7 +1,7 @@
 import asyncio
 import logging
 from GRID.context import AppContext, app_lifespan
-from GRID.core_logging import setup_logging
+from GRID.setup_logging import setup_logging
 from GRID.network import NetworkModule
 from GRID.memory import MemoryModule
 from GRID.node_connector import NodeConnector

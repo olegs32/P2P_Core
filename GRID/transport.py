@@ -2,7 +2,10 @@
 
 import json
 import logging
-from GRID.protocol import MsgPack
+
+import websockets
+
+from GRID.protocol import MsgPack, PackType
 
 log = logging.getLogger('Transport')
 
@@ -25,3 +28,16 @@ class WebSocketTransport:
         else:
             await self.ws.send(data)
         log.debug(f'→ {pack.type} [{pack.label[:8]}] to {pack.dst}')
+
+
+async def send_ack(src: str, dst:str, ws: websockets, label: str, buff: int):
+    pack = MsgPack(
+        type=PackType.STREAM_ACK,
+        source=src,
+        dst=dst,
+        label=label,
+        data=buff,
+    )
+    transport = WebSocketTransport(ws)  # сам разберётся с типом
+    await transport.send(pack)
+    log.debug(f'ACK → {label[:8]} buff={buff}')

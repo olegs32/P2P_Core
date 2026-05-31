@@ -7,9 +7,6 @@ from typing import Any, Dict
 log = logging.getLogger('Sessions')
 
 
-class RPCTimeout(Exception):
-    def __init__(self, label, timeout):
-        super().__init__(f'timeout {timeout}s label={label[:8]}')
 
 class SessionMeta:
     def __init__(self, service: str, method: str):

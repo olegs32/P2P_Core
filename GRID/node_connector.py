@@ -40,7 +40,7 @@ class NodeConnector(ModuleGeneric):
             try:
                 async with websockets.connect(self.target_uri) as ws:
                     self._ws = ws
-                    self.ctx.network.router.upstream_ws = ws  # ← должно быть
+                    self.ctx.network.router.upstream_ws = ws
                     self.log.info(f'Connected to {self.target_uri}')
 
                     # пробросить ws в Router чтобы consumer мог слать ACK
