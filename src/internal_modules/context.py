@@ -3,7 +3,8 @@ from typing import AsyncGenerator
 from typing import TYPE_CHECKING
 
 from services.manager import ServiceManager
-from base import ModuleGeneric
+from src.internal_modules.base import ModuleGeneric
+from src.internal_modules.config import Config
 
 if TYPE_CHECKING:
     from memory import MemoryModule
@@ -12,9 +13,11 @@ if TYPE_CHECKING:
 
 
 class AppContext:
-    def __init__(self, config: dict):
+    def __init__(self, config: Config):
         self.config = config
-        self.NODE = config.get('node', 'Node0')
+        self.config_manager = None  # заполняется в main.py
+        self.NODE = config.node
+        self.peers = config.local.peers
         self._modules: list[ModuleGeneric] = []  # порядок важен
 
         # модули

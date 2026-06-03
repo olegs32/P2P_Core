@@ -1,5 +1,6 @@
 dist/.env
 .env
+config.local.yaml
 
 # Python cache and compiled files
 __pycache__/

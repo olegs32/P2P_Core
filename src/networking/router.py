@@ -7,10 +7,10 @@ from typing import Any
 
 from src.internal_modules.exceptions import RPCTimeout
 from src.internal_modules.executor import LocalExecutor, MethodNotFound
-from protocol import MsgPack, PackType
-from sessions import SessionTable
-from stream_registry import StreamRegistry
-from transport import WebSocketTransport
+from src.networking.protocol import MsgPack, PackType
+from src.networking.sessions import SessionTable
+from src.networking.stream_registry import StreamRegistry
+from src.networking.transport import WebSocketTransport
 
 log = logging.getLogger('Router')
 
@@ -21,9 +21,9 @@ class NodeNotFound(Exception):
 
 class Router:
     def __init__(self, nodes, context):
-        self.context         = context
-        self.nodes           = nodes
-        self.sessions        = SessionTable()
+        self.context = context
+        self.nodes = nodes
+        self.sessions = SessionTable()
         self.stream_registry = StreamRegistry()
         # router.py — передать self в executor
         self.executor = LocalExecutor(context.services, self.stream_registry, router_ref=self)
@@ -70,27 +70,27 @@ class Router:
             if inspect.isasyncgen(result):
                 async for chunk in result:
                     await transport.send(MsgPack(
-                        type    = PackType.STREAM_CHUNK,
-                        source  = self.context.NODE,
-                        dst     = pack.source,
-                        label   = pack.label,
-                        data    = chunk,
+                        type=PackType.STREAM_CHUNK,
+                        source=self.context.NODE,
+                        dst=pack.source,
+                        label=pack.label,
+                        data=chunk,
                     ))
                 await transport.send(MsgPack(
-                    type   = PackType.STREAM_EOF,
-                    source = self.context.NODE,
-                    dst    = pack.source,
-                    label  = pack.label,
+                    type=PackType.STREAM_EOF,
+                    source=self.context.NODE,
+                    dst=pack.source,
+                    label=pack.label,
                 ))
             else:
                 await transport.send(result)
         except MethodNotFound as e:
             await transport.send(MsgPack(
-                type   = PackType.ERROR,
-                source = self.context.NODE,
-                dst    = pack.source,
-                label  = pack.label,
-                error  = str(e),
+                type=PackType.ERROR,
+                source=self.context.NODE,
+                dst=pack.source,
+                label=pack.label,
+                error=str(e),
             ))
 
     async def _on_stream_open(self, pack: MsgPack) -> MsgPack:
@@ -98,22 +98,22 @@ class Router:
             return await self.executor.open_stream(pack)
         except MethodNotFound as e:
             return MsgPack(
-                type   = PackType.ERROR,
-                source = self.context.NODE,
-                dst    = pack.source,
-                label  = pack.label,
-                error  = str(e),
+                type=PackType.ERROR,
+                source=self.context.NODE,
+                dst=pack.source,
+                label=pack.label,
+                error=str(e),
             )
 
     async def call(self, dst: str, service: str, method: str,
                    data: Any = None, timeout: int = 10) -> Any:
         pack = MsgPack(
-            type    = PackType.REQUEST,
-            source  = self.context.NODE,
-            dst     = dst,
-            service = service,
-            method  = method,
-            data    = data,
+            type=PackType.REQUEST,
+            source=self.context.NODE,
+            dst=dst,
+            service=service,
+            method=method,
+            data=data,
         )
         if dst == self.context.NODE:
             response = await self.executor.execute(pack)

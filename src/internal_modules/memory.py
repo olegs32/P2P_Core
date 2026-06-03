@@ -4,7 +4,7 @@ import asyncio
 import logging
 from typing import Callable, Dict, Optional
 
-from base import ModuleGeneric
+from src.internal_modules.base import ModuleGeneric
 from src.networking.protocol import MsgPack, PackType
 
 log = logging.getLogger('Memory')
@@ -116,11 +116,11 @@ class PipeTransport:
 
             if sent_in_batch >= self.buff_size:
                 # батч отправлен — ждём ACK от remote
-                log.info(f'[pipe_transport] batch done ({self.buff_size} chunks) — waiting ACK')
+                log.debug(f'[pipe_transport] batch done ({self.buff_size} chunks) — waiting ACK')
                 ack_future = self.router.sessions.register_single(ack_label, '', '')
                 try:
                     await asyncio.wait_for(ack_future, timeout=self.timeout)
-                    log.info(f'[pipe_transport] ACK received — next batch')
+                    log.debug(f'[pipe_transport] ACK received — next batch')
                 except asyncio.TimeoutError:
                     log.error(f'[pipe_transport] ACK timeout — stopping')
                     break
@@ -187,7 +187,7 @@ class Dispatcher:
         while self._running:
             item = await gen_queue.get()
             if item is _SENTINEL:
-                log.info('[dispatcher] generator exhausted')
+                log.debug('[dispatcher] generator exhausted')
                 break
 
             target = None

@@ -5,9 +5,9 @@ import inspect
 import logging
 from typing import Callable, AsyncGenerator
 
-from exceptions import MethodNotFound
+from  src.internal_modules.exceptions import MethodNotFound
 from src.networking.protocol import MsgPack, PackType
-from memory import Pipe
+from  src.internal_modules.memory import Pipe
 
 log = logging.getLogger('Executor')
 

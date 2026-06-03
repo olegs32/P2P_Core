@@ -4,7 +4,7 @@ import logging
 
 import websockets
 
-from protocol import MsgPack, PackType
+from src.networking.protocol import MsgPack, PackType
 
 log = logging.getLogger('Transport')
 

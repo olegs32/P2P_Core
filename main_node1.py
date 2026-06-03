@@ -1,4 +1,7 @@
 import asyncio
+
+from main import BASE_DIR
+from src.internal_modules.config import load_config
 from src.internal_modules.context import AppContext, app_lifespan
 from src.internal_modules.setup_logging import setup_logging
 from src.networking.network import NetworkModule
@@ -11,7 +14,15 @@ setup_logging()
 config = {'node': 'Node1'}
 
 async def main():
-    ctx = AppContext(config)
+    cfg_manager = load_config(
+        base_path=BASE_DIR / 'config.yaml',
+        local_path=BASE_DIR / 'config.local.yaml',
+    )
+    cfg = cfg_manager.cfg
+
+    ctx = AppContext(cfg)
+    ctx.config_manager = cfg_manager  # доступен из любого модуля
+
 
     ctx.memory  = ctx.register(MemoryModule(name='Memory', context=ctx))
     ctx.network = ctx.register(NetworkModule(name='Network', context=ctx, port=9001))

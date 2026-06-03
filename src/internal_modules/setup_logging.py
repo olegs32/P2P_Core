@@ -1,5 +1,7 @@
 import logging
 
+from src.internal_modules.config import LoggingConfig
+
 COLORS = {
     'DEBUG':    '\033[36m',   # cyan
     'INFO':     '\033[32m',   # green
@@ -23,14 +25,19 @@ class ColorFormatter(logging.Formatter):
         record.msg       = f"{color}{record.msg}{RESET}"
         return super().format(record)
 
-def setup_logging(level=logging.DEBUG):
+def setup_logging(cfg: LoggingConfig = None):
     handler = logging.StreamHandler()
     handler.setFormatter(ColorFormatter(
         fmt="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S"
     ))
-    logging.root.setLevel(level)
+    logging.root.setLevel(getattr(logging, cfg.level) if cfg else logging.DEBUG)
     logging.root.handlers = [handler]
+
+    ws_level = getattr(logging, cfg.websockets_level) if cfg else logging.WARNING
+    logging.getLogger("websockets").setLevel(ws_level)
+    logging.getLogger("websockets.client").setLevel(ws_level)
+    logging.getLogger("websockets.server").setLevel(ws_level)
 
     # приглушаем uvicorn
     logging.getLogger("uvicorn").setLevel(logging.WARNING)

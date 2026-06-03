@@ -8,9 +8,9 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from typing import Dict
 
 from src.internal_modules.base import ModuleGeneric
-from protocol import MsgPack
-from router import Router
-from transport import WebSocketTransport
+from src.networking.protocol import MsgPack
+from src.networking.router import Router
+from src.networking.transport import WebSocketTransport
 
 log = logging.getLogger('Network')
 

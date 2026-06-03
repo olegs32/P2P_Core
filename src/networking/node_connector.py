@@ -7,7 +7,7 @@ import logging
 import websockets
 
 from src.internal_modules.base import ModuleGeneric
-from protocol import MsgPack, PackType
+from src.networking.protocol import MsgPack, PackType
 
 log = logging.getLogger('NodeConnector')
 
@@ -59,7 +59,7 @@ class NodeConnector(ModuleGeneric):
                                 'eof', True
                             )
 
-                        from transport import WebSocketTransport
+                        from src.networking.transport import WebSocketTransport
                         transport = WebSocketTransport(ws)
                         await self.ctx.network.router.handle(pack, transport)
 
