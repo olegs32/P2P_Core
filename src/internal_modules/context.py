@@ -1,14 +1,14 @@
-import logging
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 from typing import TYPE_CHECKING
 
-from GRID.services.manager import ServiceManager
-from GRID.base import ModuleGeneric
+from services.manager import ServiceManager
+from base import ModuleGeneric
 
 if TYPE_CHECKING:
-    from GRID.memory import MemoryModule
-    from GRID.network import NetworkModule
+    from memory import MemoryModule
+    from src.networking.network import NetworkModule
+    from spawner import Spawner
 
 
 class AppContext:
@@ -22,6 +22,7 @@ class AppContext:
 
         self.network: NetworkModule | None = None
         self.memory: MemoryModule | None = None
+        self.spawn: Spawner | None =  None
 
     def register(self, module: ModuleGeneric):
         """Регистрация в порядке вызова = порядок startup."""

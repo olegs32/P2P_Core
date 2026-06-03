@@ -3,17 +3,30 @@
 
 import uuid
 import asyncio
-from GRID.base import ModuleGeneric
-from GRID.services.rpc import rpc, stream_wrapper, stream_consumer
-from GRID.protocol import MsgPack
-from GRID.transport import WebSocketTransport, send_ack
-from GRID.memory import Pipe
+from src.internal_modules.base import ModuleGeneric
+from services.rpc import rpc, stream_wrapper, stream_consumer, generator
+from src.networking.protocol import MsgPack
+from src.networking.transport import WebSocketTransport, send_ack
+from src.internal_modules.memory import Pipe
 
 
 class Compute(ModuleGeneric):
     def __init__(self, name, context):
         super().__init__(name, context)
 
+
+    @generator
+    def compute_ranges(self, data: dict):
+        count = data.get('count', 20) if isinstance(data, dict) else 20
+        for i in range(count):
+            self.log.debug(f'generate #{i}')
+            yield [i * 100, (i + 1) * 100]
+
+    @generator
+    def compute_squares(self, data: dict):
+        count = data.get('count', 20) if isinstance(data, dict) else 20
+        for i in range(count):
+            yield i * i
     # ------------------------------------------------------------------ #
     #  Генератор — вызывается по RPC, стримит на target ноду
     # ------------------------------------------------------------------ #

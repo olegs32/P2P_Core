@@ -7,13 +7,12 @@ import logging
 import sys
 import types
 from pathlib import Path
-from typing import Callable
 
 from watchdog.observers import Observer
-from watchdog.events import FileSystemEventHandler, FileModifiedEvent, FileCreatedEvent
+from watchdog.events import FileSystemEventHandler
 
-from GRID.base import ModuleGeneric
-from GRID.services.rpc import get_rpc_methods
+from src.internal_modules.base import ModuleGeneric
+from services.rpc import get_rpc_methods
 
 log = logging.getLogger('ServiceLoader')
 

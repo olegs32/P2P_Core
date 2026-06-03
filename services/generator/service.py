@@ -1,10 +1,10 @@
 # GRID/services/generator/service.py
 
 import uuid
-from GRID.base import ModuleGeneric
-from GRID.services.rpc import rpc
-from GRID.protocol import MsgPack
-from GRID.transport import WebSocketTransport
+from src.internal_modules.base import ModuleGeneric
+from services.rpc import rpc
+from src.networking.protocol import MsgPack
+from src.networking.transport import WebSocketTransport
 
 
 class Generator(ModuleGeneric):

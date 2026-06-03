@@ -5,7 +5,7 @@ import json
 import time
 import websockets
 
-from GRID.protocol import MsgPack, PackType
+from src.networking.protocol import MsgPack, PackType
 
 URI  = "ws://localhost:9000/ws/DebugClient"
 BUFF = 3
@@ -232,8 +232,8 @@ async def test_node_to_node(websocket, received: dict):
     trigger = MsgPack(
         source  = 'DebugClient',
         dst     = 'Node0',
-        service = 'compute',
-        method  = 'start_stream',
+        service = 'Spawner',
+        method  = 'spawn',
         data    = {
             'target':     'Node1',
             'count':      120,
@@ -265,6 +265,45 @@ async def test_ping(websocket, received: dict):
         print(f"[RESULT] pong received")
 
 
+async def test_spawner(websocket, received: dict):
+    print("\n" + "="*50)
+    print("TEST 4: Spawner с GeneratorRegistry")
+    print("="*50)
+
+    # сначала посмотреть доступные генераторы
+    list_pack = MsgPack(
+        source  = 'DebugClient',
+        dst     = 'Node0',
+        service = 'spawner',
+        method  = 'list_generators',
+        data    = {'service': 'compute'},
+    )
+    await websocket.send(list_pack.model_dump_json())
+    response = await wait_for_label(received, list_pack.label, timeout=3)
+    if response:
+        print(f"[GENERATORS]   {response.data}")
+
+    # запустить spawn
+    trigger = MsgPack(
+        source  = 'DebugClient',
+        dst     = 'Node0',
+        service = 'spawner',
+        method  = 'spawn',
+        data    = {
+            'generator_service': 'compute',       # где живёт генератор
+            'generator':         'compute_ranges', # @generator метод
+            'service':           'compute',        # сервис на Node1
+            'method':            'run_range',      # stream_name на Node1
+            'workers_count':     1,
+            'buff':              3,
+            'init_data':         {'multiplier': 2, 'buff': 3, 'count': 12},
+        },
+    )
+    await websocket.send(trigger.model_dump_json())
+    response = await wait_for_label(received, trigger.label, timeout=5)
+    if response:
+        print(f"[TRIGGER ACK]  {response.data}")
+    print("[INFO] Логи на Node0 и Node1")
 # ------------------------------------------------------------------ #
 #  Main
 # ------------------------------------------------------------------ #
@@ -282,16 +321,17 @@ async def main():
                 receive_loop(websocket, received, pipe, stream_info)
             )
 
-            await test_ping(websocket, received)
+            # await test_ping(websocket, received)
+            # await asyncio.sleep(0.3)
+            #
+            # await test_rpc(websocket, received)
+            # await asyncio.sleep(0.3)
+            #
+            # await test_local_stream(websocket, received, pipe, stream_info)
             await asyncio.sleep(0.3)
 
-            await test_rpc(websocket, received)
-            await asyncio.sleep(0.3)
-
-            await test_local_stream(websocket, received, pipe, stream_info)
-            await asyncio.sleep(0.3)
-
-            await test_node_to_node(websocket, received)
+            # await test_node_to_node(websocket, received)
+            await test_spawner(websocket, received)
 
             # ждём завершения node-to-node стрима
             # (12 чанков × 0.1с + сетевые задержки)

@@ -3,13 +3,14 @@
 import asyncio
 import inspect
 import logging
-from typing import Any, AsyncGenerator
+from typing import Any
 
-from GRID.executor import LocalExecutor, MethodNotFound
-from GRID.protocol import MsgPack, PackType
-from GRID.sessions import SessionTable, RPCTimeout
-from GRID.stream_registry import StreamRegistry
-from GRID.transport import WebSocketTransport
+from src.internal_modules.exceptions import RPCTimeout
+from src.internal_modules.executor import LocalExecutor, MethodNotFound
+from protocol import MsgPack, PackType
+from sessions import SessionTable
+from stream_registry import StreamRegistry
+from transport import WebSocketTransport
 
 log = logging.getLogger('Router')
 

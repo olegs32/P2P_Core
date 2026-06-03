@@ -7,10 +7,10 @@ import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from typing import Dict
 
-from GRID.base import ModuleGeneric
-from GRID.protocol import MsgPack, PackType
-from GRID.router import Router
-from GRID.transport import WebSocketTransport
+from src.internal_modules.base import ModuleGeneric
+from protocol import MsgPack
+from router import Router
+from transport import WebSocketTransport
 
 log = logging.getLogger('Network')
 
@@ -54,6 +54,17 @@ class NodesManager:
     def get(self, node_id: str) -> Node | None:
         return self.nodes.get(node_id)
 
+    def get_nodes(self, count):
+        if count > len(self.nodes):
+            log.warning(f"Requested nodes count not existing in network, use {len(self.nodes)} of {count} requested")
+            count = len(self.nodes)
+        try:
+            nodes = list(self.nodes.values())[:count]
+        except Exception as e:
+            log.error(f"Couldn't slice requested nodes scope: {e}")
+            raise e
+        return nodes
+
 
 class NetworkModule(ModuleGeneric):
     def __init__(self, name: str, context, host: str = "0.0.0.0", port: int = 9000):
@@ -62,9 +73,9 @@ class NetworkModule(ModuleGeneric):
         self.port = port
         self.app = FastAPI()
 
-        self.conn_manager  = ConnectionManager()
-        self.nodes_manager = NodesManager()
-        self.router        = Router(self.nodes_manager, context)
+        self.conn_manager = ConnectionManager()
+        self.nodes_manager: NodesManager = NodesManager()
+        self.router = Router(self.nodes_manager, context)
 
         self._server: uvicorn.Server | None = None
         self._task: asyncio.Task | None = None
@@ -117,3 +128,5 @@ class NetworkModule(ModuleGeneric):
     async def stream(self, dst: str, service: str, method: str, data=None):
         """Stream вызов — возвращает async generator."""
         return await self.router.stream(dst, service, method, data)
+
+

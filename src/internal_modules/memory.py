@@ -2,11 +2,10 @@
 
 import asyncio
 import logging
-from concurrent.futures import ThreadPoolExecutor
 from typing import Callable, Dict, Optional
 
-from GRID.base import ModuleGeneric
-from GRID.protocol import MsgPack, PackType
+from base import ModuleGeneric
+from src.networking.protocol import MsgPack, PackType
 
 log = logging.getLogger('Memory')
 _SENTINEL = object()
@@ -249,6 +248,9 @@ class MemoryModule(ModuleGeneric):
         self.pipes[pipe_id] = pipe
         log.debug(f'pipe created: {pipe_id}')
         return pipe
+
+    def create_pipes(self, buff: int = 10, count: int = 1) -> list:
+        return [self.create_pipe(buff) for _ in range(count)]
 
     def create_dispatcher(self, pipes: list[Pipe]) -> Dispatcher:
         d = Dispatcher(pipes)

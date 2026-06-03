@@ -1,11 +1,10 @@
 import asyncio
-import logging
-from GRID.context import AppContext, app_lifespan
-from GRID.setup_logging import setup_logging
-from GRID.network import NetworkModule
-from GRID.memory import MemoryModule
-from GRID.node_connector import NodeConnector
-from GRID.services.compute_full.service import Compute
+from src.internal_modules.context import AppContext, app_lifespan
+from src.internal_modules.setup_logging import setup_logging
+from src.networking.network import NetworkModule
+from src.internal_modules.memory import MemoryModule
+from src.networking.node_connector import NodeConnector
+from services.compute_full.service import Compute
 
 setup_logging()
 

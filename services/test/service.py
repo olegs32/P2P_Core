@@ -1,7 +1,7 @@
 # GRID/services/test/service.py
 
-from GRID.base import ModuleGeneric
-from GRID.services.rpc import rpc
+from src.internal_modules.base import ModuleGeneric
+from services.rpc import rpc
 import asyncio
 
 

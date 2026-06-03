@@ -3,12 +3,11 @@
 import asyncio
 import inspect
 import logging
-from typing import Any, Callable, AsyncGenerator
+from typing import Callable, AsyncGenerator
 
-from GRID.exceptions import MethodNotFound
-from GRID.protocol import MsgPack, PackType
-from GRID.stream_registry import StreamRegistry
-from GRID.memory import Pipe
+from exceptions import MethodNotFound
+from src.networking.protocol import MsgPack, PackType
+from memory import Pipe
 
 log = logging.getLogger('Executor')
 
@@ -56,7 +55,7 @@ class LocalExecutor:
         if not service_obj:
             raise MethodNotFound(pack.service, pack.method)
 
-        from GRID.services.rpc import get_stream_handlers
+        from services.rpc import get_stream_handlers
         handlers = get_stream_handlers(service_obj)
         handler = handlers.get(pack.method)
 

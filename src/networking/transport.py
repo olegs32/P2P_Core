@@ -1,11 +1,10 @@
 # GRID/transport.py
 
-import json
 import logging
 
 import websockets
 
-from GRID.protocol import MsgPack, PackType
+from protocol import MsgPack, PackType
 
 log = logging.getLogger('Transport')
 

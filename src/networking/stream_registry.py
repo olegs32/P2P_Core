@@ -4,7 +4,7 @@
 import asyncio
 import logging
 from typing import Dict, Optional
-from GRID.memory import Pipe, _SENTINEL
+from src.internal_modules.memory import Pipe, _SENTINEL
 
 log = logging.getLogger('StreamRegistry')
 

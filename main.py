@@ -1,14 +1,13 @@
 import asyncio
 import logging
-import os.path
 from pathlib import Path
 
-from GRID.context import AppContext, app_lifespan
-from GRID.setup_logging import setup_logging
-from GRID.services.loader import ServiceLoader
-from layers import ServiceManager
-from network import NetworkModule
-from memory import MemoryModule
+from src.internal_modules.context import AppContext, app_lifespan
+from src.internal_modules.setup_logging import setup_logging
+from services.loader import ServiceLoader
+from src.networking.network import NetworkModule
+from src.internal_modules.spawner import Spawner
+from src.internal_modules.memory import MemoryModule
 
 config = {'node': 'Node0'}
 BASE_DIR = Path(Path().resolve())
@@ -31,12 +30,13 @@ async def main():
     # порядок вызовов = порядок загрузки
     ctx.memory = ctx.register(MemoryModule(name='Memory', context=ctx))
     ctx.network = ctx.register(NetworkModule(name='Network', context=ctx, port=9000))
+    ctx.spawn =  ctx.register(Spawner(name='spawner', context=ctx))
 
     # # регистрация сервисов
-    # test = Test('test', ctx)
-    # ctx.services.register_service(test)
-    # ctx.services.register_method(test, 'echo', test.echo)
-    # ctx.services.register_method(test, 'echo_stream', test.echo_stream)
+    ctx.services.register_service(ctx.spawn)
+    ctx.services.register_method(ctx.spawn, 'spawn', ctx.spawn.spawn)
+    ctx.services.register_method(ctx.spawn, 'list_generators', ctx.spawn.list_generators)
+
 
     # пробрасываем ctx в роуты FastAPI
     ctx.network.app.state.ctx = ctx
