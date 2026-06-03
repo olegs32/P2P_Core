@@ -11,3 +11,8 @@ class RPCTimeout(Exception):
     def __init__(self, label, timeout):
         super().__init__(f'RPC timeout ({timeout}s): {label}')
 
+class RoutingRequired(Exception):
+    def __init__(self, host):
+        super().__init__(f'Routing required to reach {host}')
+
+

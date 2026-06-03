@@ -29,6 +29,9 @@ class Router:
         self.executor = LocalExecutor(context.services, self.stream_registry, router_ref=self)
 
     async def handle(self, pack: MsgPack, transport: WebSocketTransport):
+        if pack.source:
+            self.context.network.neighbor_table.touch(pack.source)
+
         match pack.type:
             case PackType.STREAM_ACK:
                 # разблокировать ожидающий батч на сервере
@@ -63,6 +66,28 @@ class Router:
                     dst=pack.source,
                     label=pack.label,
                 ))
+
+            case PackType.GOSSIP:
+                data = pack.data or {}
+                neighbors = data.get('neighbors', [])
+                from_node = data.get('from', pack.source)
+                self.context.network.neighbor_table.merge_gossip(
+                    neighbors, from_node
+                )
+                log.debug(f'GOSSIP from {from_node}: {len(neighbors)} neighbors')
+
+            case PackType.ANNOUNCE:
+                data = pack.data or {}
+                services = data.get('services', [])
+                from_node = data.get('from', pack.source)
+                self.context.network.neighbor_table.update_services(
+                    from_node, services
+                )
+                log.debug(f'ANNOUNCE from {from_node}: {services}')
+
+            case PackType.PONG:
+                # last_ts уже обновлён выше — ничего дополнительно не нужно
+                log.debug(f'PONG from {pack.source}')
 
     async def _on_request(self, pack: MsgPack, transport: WebSocketTransport):
         try:

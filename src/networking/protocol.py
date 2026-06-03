@@ -17,6 +17,11 @@ class PackType(str, Enum):
     ERROR        = "error"
     PING         = "ping"
     PONG         = "pong"
+    HELLO        = "hello"  # представление при подключении
+    HELLO_ACK    = "hello_ack"  # принято + таблица соседей + сервисы
+    HELLO_REJECT = "hello_reject"  # отклонено + причина
+    GOSSIP       = "gossip"  # периодическая рассылка топологии
+    ANNOUNCE     = "announce"  # периодическая рассылка сервисов
 
 
 class MsgPack(BaseModel):

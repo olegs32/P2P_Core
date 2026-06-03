@@ -15,8 +15,8 @@ config = {'node': 'Node1'}
 
 async def main():
     cfg_manager = load_config(
-        base_path=BASE_DIR / 'config.yaml',
-        local_path=BASE_DIR / 'config.local.yaml',
+        base_path=BASE_DIR / 'config1.yaml',
+        local_path=BASE_DIR / 'config1.local.yaml',
     )
     cfg = cfg_manager.cfg
 
@@ -29,10 +29,18 @@ async def main():
 
     # подключение к Node0
     connector = ctx.register(NodeConnector(
-        name       = 'NodeConnector',
-        context    = ctx,
-        target_uri = 'ws://localhost:9000/ws/Node1',  # регистрируемся как Node1
+        name            = 'NodeConnector',
+        context         = ctx,
+        peer_node_id    = 'Node10001',
+        target_uri      = 'ws://localhost:9000/ws/Node1',  # регистрируемся как Node1
     ))
+
+    # connector = ctx.register(NodeConnector(
+    #     name=f'Connector_{peer.node_id}',
+    #     context=ctx,
+    #     peer_node_id=peer.node_id,
+    #     target_uri=f'{peer.uri}{ctx.NODE}',
+    # ))
 
     ctx.network.app.state.ctx = ctx
 
