@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 class PackType(str, Enum):
     REQUEST      = "request"
     RESPONSE     = "response"
+    FORWARDED    = "forwarded"
     STREAM_OPEN  = "stream_open"   # ← handshake: подготовить consumer
     STREAM_READY = "stream_ready"  # ← подтверждение: готов к приёму
     STREAM_CHUNK = "stream_chunk"
@@ -33,3 +34,5 @@ class MsgPack(BaseModel):
     data:     Any = None
     label:    str = Field(default_factory=lambda: str(uuid.uuid4()))
     error:    str | None = None
+    path: list[str] = Field(default_factory=list)  # [Node0, Node1, ...]
+    ttl: int = 16
