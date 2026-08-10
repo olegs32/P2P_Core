@@ -12,7 +12,6 @@ from src.internal_modules.base import ModuleGeneric
 from src.networking.neighbor_table import PROTOCOL_VERSION
 from src.networking.protocol import MsgPack, PackType
 from src.networking.transport import WebSocketTransport
-
 log = logging.getLogger('NodeConnector')
 
 KEEPALIVE_INTERVAL = 20   # сек между проверками

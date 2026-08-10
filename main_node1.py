@@ -31,7 +31,7 @@ async def main():
     connector = ctx.register(NodeConnector(
         name            = 'NodeConnector',
         context         = ctx,
-        peer_node_id    = 'Node10001',
+        peer_node_id    = 'Node0',
         target_uri      = 'ws://localhost:9000/ws/Node1',  # регистрируемся как Node1
     ))
 

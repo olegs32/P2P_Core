@@ -1,433 +1,711 @@
-# debug_client.py — полная версия с HELLO и тестами сети
-
+# debug_client.py — интерактивный клиент с ASCII-панелью сети и сервисами
+# Кроссплатформенная версия (без curses, через msvcrt/win32 console)
 import asyncio
 import json
 import time
 import uuid
+import sys
+import os
+import threading
 import websockets
-
 from src.networking.protocol import MsgPack, PackType
 from src.networking.neighbor_table import PROTOCOL_VERSION
 
-URI      = "ws://localhost:9000/ws/DebugClient"
-BUFF     = 3
+# ------------------------------------------------------------------
+# Windows console setup — enable ANSI escape sequences
+# ------------------------------------------------------------------
+if sys.platform == "win32":
+    try:
+        import ctypes
+        kernel32 = ctypes.windll.kernel32
+        kernel32.SetConsoleMode(kernel32.GetStdHandle(-11), 7)
+    except Exception:
+        pass  # fallback: ANSI may still work on modern Windows
+
+# ------------------------------------------------------------------
+# Configuration
+# ------------------------------------------------------------------
+URI = "ws://localhost:9000/ws/DebugClient"
 OWN_NODE = "DebugClient"
 DST_NODE = "Node0"
 
+# ------------------------------------------------------------------
+# Terminal helpers
+# ------------------------------------------------------------------
+# ANSI escape codes
+CLEAR = "\033[2J"
+HOME = "\033[H"
+SHOW_CURSOR = "\033[?25h"
+HIDE_CURSOR = "\033[?25l"
+RESET = "\033[0m"
+BOLD = "\033[1m"
+DIM = "\033[2m"
+REVERSE = "\033[7m"
+GREEN = "\033[32m"
+YELLOW = "\033[33m"
+RED = "\033[31m"
+CYAN = "\033[36m"
+WHITE_ON_BLUE = "\033[37;44m"
 
-# ------------------------------------------------------------------ #
-#  Handshake
-# ------------------------------------------------------------------ #
+# Box-drawing characters
+TL = "┌"  # top-left
+TR = "┐"  # top-right
+BL = "└"  # bottom-left
+BR = "┘"  # bottom-right
+TM = "┬"  # top-middle
+BM = "┴"  # bottom-middle
+LM = "├"  # left-middle
+RM = "┤"  # right-middle
+H = "─"   # horizontal
+V = "│"   # vertical
+MM = "┼"  # middle-middle
 
-async def do_handshake(websocket) -> bool:
-    """Отправить HELLO, получить HELLO_ACK или HELLO_REJECT."""
-    hello = MsgPack(
-        type   = PackType.HELLO,
-        source = OWN_NODE,
-        dst    = DST_NODE,
-        data   = {
-            'node_id':    OWN_NODE,
-            'host':       'localhost',
-            'port':       0,            # debug client — порта нет
-            'version':    PROTOCOL_VERSION,
-            'session_id': str(uuid.uuid4()),
-            'services':   [],           # debug client сервисов не имеет
-        }
-    )
-    print(f"[HELLO →]      node_id={OWN_NODE} version={PROTOCOL_VERSION}")
-    await websocket.send(hello.model_dump_json())
 
+def get_terminal_size():
+    """Get terminal size cross-platform."""
     try:
-        raw  = await asyncio.wait_for(websocket.recv(), timeout=5)
+        cols, rows = os.get_terminal_size()
+        return cols, rows
+    except Exception:
+        return 80, 24
+
+
+def goto(x, y):
+    """Move cursor to (x, y) — 1-based."""
+    return f"\033[{y};{x}H"
+
+
+def box_title(title, width):
+    """Center a title within a box top-border."""
+    if len(title) >= width - 4:
+        return TL + H * (width - 2) + TR
+    padding = width - 4 - len(title)
+    left = padding // 2
+    right = padding - left
+    return TL + H * left + f" {title} " + H * right + TR
+
+
+def draw_box(top, left, height, width, title=""):
+    """Return string that draws a box at (left, top) with given size."""
+    lines = []
+    # Top border with title
+    top_line = box_title(title, width)
+    lines.append(goto(left + 1, top + 1) + top_line)
+    # Side borders
+    for r in range(1, height - 1):
+        lines.append(goto(left + 1, top + 1 + r) + V + " " * (width - 2) + V)
+    if height > 1:
+        # Bottom border
+        lines.append(goto(left + 1, top + height) + BL + H * (width - 2) + BR)
+    return "".join(lines)
+
+
+def put_text(x, y, text, style="", max_width=0):
+    """Return string to place text at (x, y)."""
+    if max_width > 0 and len(text) > max_width:
+        text = text[: max_width - 1]
+    return goto(x + 1, y + 1) + style + text + RESET
+
+
+def clear_line(y, width):
+    """Clear a line and return the escape string."""
+    return goto(1, y + 1) + " " * width + goto(1, y + 1)
+
+
+def format_neighbor(n: dict, max_width: int = 0) -> str:
+    # FIX: Removed trailing spaces in .get() keys
+    node_id = n.get("node_id", "?")[:12]
+    host = n.get("host", "?")[:15]
+    port = str(n.get("port", "?"))
+    status = n.get("status", "?")[:12]
+    via = n.get("via", "")[:12]
+    color = GREEN if status == "CONNECTED" else YELLOW
+    text = f"  {node_id:<12} {host:>15}:{port:<6} {status:<12} via={via}"
+    if max_width > 0:
+        text = text[:max_width]
+    return color + text + RESET
+
+
+# ------------------------------------------------------------------
+# Networking helpers
+# ------------------------------------------------------------------
+async def do_handshake(websocket) -> bool:
+    hello = MsgPack(
+        type=PackType.HELLO,
+        source=OWN_NODE,
+        dst=DST_NODE,
+        data={
+            "node_id": OWN_NODE,
+            "host": "localhost",
+            "port": 0,
+            "version": PROTOCOL_VERSION,
+            "session_id": str(uuid.uuid4()),
+            "services": [],
+        },
+    )
+    await websocket.send(hello.model_dump_json())
+    try:
+        raw = await asyncio.wait_for(websocket.recv(), timeout=5)
         pack = MsgPack(**json.loads(raw))
-
         if pack.type == PackType.HELLO_ACK:
-            data      = pack.data or {}
-            neighbors = data.get('neighbors', [])
-            services  = data.get('services', [])
-            session   = data.get('session_id', '')[:8]
-            print(f"[HELLO_ACK ←]  session={session} "
-                  f"neighbors={len(neighbors)} "
-                  f"services={services}")
-            if neighbors:
-                print("[NEIGHBORS]    от сервера:")
-                for n in neighbors:
-                    print(f"               {n.get('node_id')} "
-                          f"{n.get('host')}:{n.get('port')} "
-                          f"status={n.get('status')} "
-                          f"via={n.get('via')}")
             return True
-
         elif pack.type == PackType.HELLO_REJECT:
-            reason = (pack.data or {}).get('reason', 'unknown')
-            print(f"[HELLO_REJECT ←] reason={reason}")
-            return False
+            reason = (pack.data or {}).get("reason", "unknown")
 
+            return False
     except asyncio.TimeoutError:
-        print("[ERROR] HELLO timeout")
+        pass
     return False
 
 
-# ------------------------------------------------------------------ #
-#  Receive loop
-# ------------------------------------------------------------------ #
-
-async def receive_loop(websocket, received: dict, pipe: asyncio.Queue,
-                       stream_info: dict):
+async def receive_loop(websocket, state: dict, pipe: asyncio.Queue):
+    """Background receive loop — fills state dict."""
     try:
         async for raw in websocket:
             data = json.loads(raw)
             pack = MsgPack(**data)
-            label_short = pack.label[:8]
-
             match pack.type:
                 case PackType.RESPONSE:
-                    print(f"[RESPONSE]     label={label_short} data={pack.data}")
-
+                    state["last_response"] = pack.data
+                    state["response_label"] = pack.label[:8]
+                    state["response_ready"] = True
                 case PackType.GOSSIP:
-                    neighbors = (pack.data or {}).get('neighbors', [])
-                    from_node = (pack.data or {}).get('from', pack.source)
-                    print(f"\n[GOSSIP ←]     from={from_node} "
-                          f"neighbors={len(neighbors)}")
-                    for n in neighbors:
-                        print(f"               {n.get('node_id')} "
-                              f"{n.get('host')}:{n.get('port')} "
-                              f"status={n.get('status')} "
-                              f"via={n.get('via')}")
-
+                    state["gossip_data"] = (pack.data or {}).get("neighbors", [])
+                    state["gossip_from"] = (pack.data or {}).get("from", pack.source)
                 case PackType.ANNOUNCE:
-                    services  = (pack.data or {}).get('services', [])
-                    from_node = (pack.data or {}).get('from', pack.source)
-                    print(f"\n[ANNOUNCE ←]   from={from_node} services={services}")
-
+                    svc = (pack.data or {}).get("services", [])
+                    from_node = (pack.data or {}).get("from", pack.source)
+                    state["announces"].append((from_node, svc))
+                    state["announces"] = state["announces"][-5:]
                 case PackType.PING:
-                    print(f"[PING ←]       label={label_short} — sending PONG")
                     pong = MsgPack(
-                        type   = PackType.PONG,
-                        source = OWN_NODE,
-                        dst    = pack.source,
-                        label  = pack.label,
+                        type=PackType.PONG,
+                        source=OWN_NODE,
+                        dst=pack.source,
+                        label=pack.label,
                     )
                     await websocket.send(pong.model_dump_json())
-
-                case PackType.PONG:
-                    print(f"[PONG ←]       label={label_short}")
-
                 case PackType.STREAM_OPEN:
-                    stream_info['label'] = pack.label
-                    stream_info['eof']   = False
-                    print(f"\n[STREAM_OPEN]  label={label_short} "
-                          f"service={pack.service}.{pack.method}")
-                    await websocket.send(MsgPack(
-                        type   = PackType.STREAM_READY,
-                        source = OWN_NODE,
-                        dst    = pack.source,
-                        label  = pack.label,
-                        data   = 'ready',
-                    ).model_dump_json())
-                    print(f"[STREAM_READY →] label={label_short}")
-
+                    state["stream_label"] = pack.label
+                    state["stream_eof"] = False
+                    state["stream_service"] = pack.service
+                    state["stream_method"] = pack.method
+                    await websocket.send(
+                        MsgPack(
+                            type=PackType.STREAM_READY,
+                            source=OWN_NODE,
+                            dst=pack.source,
+                            label=pack.label,
+                            data="ready",
+                        ).model_dump_json()
+                    )
                 case PackType.STREAM_CHUNK:
-                    print(f"[CHUNK ←]      label={label_short} "
-                          f"data={pack.data} pipe_queue={pipe.qsize()}")
-                    await pipe.put(pack.data)
-
+                    await pipe.put(("chunk", pack.data))
                 case PackType.STREAM_EOF:
-                    print(f"[EOF ←]        label={label_short}")
-                    stream_info['eof'] = True
-                    await pipe.put(None)
-
+                    state["stream_eof"] = True
+                    await pipe.put(("eof", None))
                 case PackType.STREAM_READY:
-                    print(f"[STREAM_READY ←] label={label_short}")
-
+                    state["stream_ready"] = True
                 case PackType.ERROR:
-                    print(f"[ERROR]        label={label_short} error={pack.error}")
-
+                    state["last_response"] = {"error": pack.error}
+                    state["response_ready"] = True
                 case _:
-                    print(f"[UNKNOWN]      type={pack.type} label={label_short}")
-
-            slot = received.get(pack.label)
-            if slot:
-                slot['pack'] = pack
-                slot['event'].set()
-
-    except websockets.exceptions.ConnectionClosedOK:
-        print("[INFO] Connection closed OK")
-    except websockets.exceptions.ConnectionClosedError as e:
-        print(f"[INFO] Connection closed: {e}")
-    except Exception as e:
-        print(f"[RECEIVE ERROR] {e}")
+                    pass
+    except (
+        websockets.exceptions.ConnectionClosedOK,
+        websockets.exceptions.ConnectionClosedError,
+    ):
+        state["connection_closed"] = True
+    except Exception:
+        state["connection_closed"] = True
 
 
-# ------------------------------------------------------------------ #
-#  Helpers
-# ------------------------------------------------------------------ #
-
-async def wait_for_label(received: dict, label: str,
-                         timeout: int = 5) -> MsgPack | None:
-    slot = {'event': asyncio.Event(), 'pack': None}
-    received[label] = slot
-    try:
-        await asyncio.wait_for(slot['event'].wait(), timeout=timeout)
-        return slot['pack']
-    except asyncio.TimeoutError:
-        print(f"[TIMEOUT]      label={label[:8]}")
-        return None
-    finally:
-        received.pop(label, None)
-
-
-async def rpc(websocket, received, service, method, data=None,
-              dst=DST_NODE) -> dict | None:
+async def rpc(websocket, state, service, method, data=None, dst=DST_NODE):
+    """One-shot RPC — returns response data or None on timeout."""
+    state["response_ready"] = False
+    state["last_response"] = None
     pack = MsgPack(
-        source  = OWN_NODE,
-        dst     = dst,
-        service = service,
-        method  = method,
-        data    = data,
+        source=OWN_NODE,
+        dst=dst,
+        service=service,
+        method=method,
+        data=data,
     )
     await websocket.send(pack.model_dump_json())
-    response = await wait_for_label(received, pack.label)
-    return response.data if response else None
-
-
-async def wait_for_stream_open(stream_info: dict, timeout: int = 5) -> bool:
-    for _ in range(timeout * 10):
-        if 'label' in stream_info:
-            return True
+    for _ in range(50):  # 5 sec total
+        if state.get("response_ready"):
+            return state.get("last_response")
         await asyncio.sleep(0.1)
-    print("[ERROR] STREAM_OPEN не получен")
-    return False
+    return {"error": "timeout waiting for response"}
 
 
-# ------------------------------------------------------------------ #
-#  Slow consumer (для локального stream теста)
-# ------------------------------------------------------------------ #
+# ------------------------------------------------------------------
+# Known service methods (from docs)
+# ------------------------------------------------------------------
+KNOWN_METHODS = {
+    "netinfo": ["neighbors", "nodes", "services", "find_service"],
+    "compute": ["start_stream"],
+    "compute_full": [
+        "start_stream",
+        "compute_ranges",
+        "compute_squares",
+        "run_range",
+    ],
+    "generator": ["start_stream"],
+    "test": ["echo", "echo_stream"],
+}
 
-async def slow_consumer(pipe: asyncio.Queue, websocket, stream_info: dict):
-    label = stream_info['label']
-    index = 0
-    start = time.time()
+# ------------------------------------------------------------------
+# Windows key input — msvcrt-based non-blocking keyboard
+# ------------------------------------------------------------------
+if sys.platform == "win32":
+    import msvcrt
 
-    print(f"[CONSUMER]     started buff={BUFF} delay=0.1s/chunk\n")
-    await websocket.send(MsgPack(
-        type   = PackType.STREAM_ACK,
-        source = OWN_NODE,
-        dst    = DST_NODE,
-        label  = label,
-        data   = BUFF,
-    ).model_dump_json())
-
-    while True:
-        chunk = await pipe.get()
-        if chunk is None:
-            elapsed = time.time() - start
-            print(f"\n[CONSUMER DONE] chunks={index} elapsed={elapsed:.1f}s")
-            break
-
-        index += 1
-        queue_size = pipe.qsize()
-
-        if queue_size < BUFF and not stream_info.get('eof', False):
-            await websocket.send(MsgPack(
-                type   = PackType.STREAM_ACK,
-                source = OWN_NODE,
-                dst    = DST_NODE,
-                label  = label,
-                data   = BUFF,
-            ).model_dump_json())
-
-        await asyncio.sleep(0.1)
-        print(f"  [DONE]       #{index} result={chunk[0] * 2}")
-
-
-# ------------------------------------------------------------------ #
-#  Тесты
-# ------------------------------------------------------------------ #
-
-async def test_ping(websocket, received):
-    print("\n" + "="*50)
-    print("TEST 0: Ping")
-    print("="*50)
-    pack = MsgPack(type=PackType.PING, source=OWN_NODE, dst=DST_NODE)
-    await websocket.send(pack.model_dump_json())
-    r = await wait_for_label(received, pack.label, timeout=3)
-    print(f"[RESULT]       {'pong ok' if r else 'timeout'}")
-
-
-async def test_neighbors(websocket, received):
-    print("\n" + "="*50)
-    print("TEST 1: NeighborTable на Node0")
-    print("="*50)
-    result = await rpc(websocket, received, 'netinfo', 'neighbors')
-    if result:
-        print(f"[OWN]          {result.get('own')}")
-        print(f"[CONNECTED]    {len(result.get('connected', []))} nodes:")
-        for n in result.get('connected', []):
-            print(f"               {n['node_id']} {n['host']}:{n['port']} "
-                  f"session={str(n.get('session_id',''))[:8]}")
-        print(f"[KNOWN]        {len(result.get('known', []))} nodes:")
-        for n in result.get('known', []):
-            print(f"               {n['node_id']} via={n.get('via')} "
-                  f"services={n.get('services')}")
-
-
-async def test_active_nodes(websocket, received):
-    print("\n" + "="*50)
-    print("TEST 2: NodesManager (активные WS)")
-    print("="*50)
-    result = await rpc(websocket, received, 'netinfo', 'nodes')
-    if result:
-        print(f"[NODES]        {list(result.keys())}")
-
-
-async def test_services(websocket, received):
-    print("\n" + "="*50)
-    print("TEST 3: Сервисы на Node0")
-    print("="*50)
-    result = await rpc(websocket, received, 'netinfo', 'services')
-    if result:
-        print(f"[SERVICES]     {result}")
-
-
-async def test_find_service(websocket, received):
-    print("\n" + "="*50)
-    print("TEST 4: Найти ноды с сервисом 'compute'")
-    print("="*50)
-    result = await rpc(websocket, received, 'netinfo', 'find_service',
-                       {'service': 'compute'})
-    if result is not None:
-        print(f"[FOUND]        {len(result)} nodes with 'compute':")
-        for n in result:
-            print(f"               {n['node_id']} status={n['status']}")
-
-
-async def test_duplicate_connection():
-    """
-    Попытаться подключиться с тем же node_id — должен получить REJECT.
-    Запускается отдельным соединением.
-    """
-    print("\n" + "="*50)
-    print("TEST 5: Дублирующее подключение (ожидаем REJECT)")
-    print("="*50)
-    try:
-        async with websockets.connect(URI) as ws2:
-            hello = MsgPack(
-                type   = PackType.HELLO,
-                source = OWN_NODE,   # тот же node_id
-                dst    = DST_NODE,
-                data   = {
-                    'node_id':    OWN_NODE,
-                    'host':       'localhost',
-                    'port':       0,
-                    'version':    PROTOCOL_VERSION,
-                    'session_id': str(uuid.uuid4()),
-                    'services':   [],
+    def get_key_nonblocking():
+        """Returns a key character or None if no key pressed."""
+        if msvcrt.kbhit():
+            ch = msvcrt.getch()
+            if ch == b"\xe0" or ch == b"\x00":
+                ch2 = msvcrt.getch()
+                arrow_map = {
+                    b"H": "UP",
+                    b"P": "DOWN",
+                    b"K": "LEFT",
+                    b"M": "RIGHT",
+                    b"G": "HOME",
+                    b"O": "END",
                 }
-            )
-            await ws2.send(hello.model_dump_json())
-            raw  = await asyncio.wait_for(ws2.recv(), timeout=5)
-            pack = MsgPack(**json.loads(raw))
-            if pack.type == PackType.HELLO_REJECT:
-                print(f"[REJECT ←]     reason={pack.data.get('reason')} ✓")
+                return arrow_map.get(ch2, None)
+            elif ch == b"\r":
+                return "ENTER"
+            elif ch == b"\x1b":
+                return "ESC"
+            elif ch == b"\x08" or ch == b"\x7f":
+                return "BACKSPACE"
+            elif ch == b"\x03":
+                return "CTRL_C"
             else:
-                print(f"[UNEXPECTED]   type={pack.type}")
-    except Exception as e:
-        print(f"[ERROR]        {e}")
+                try:
+                    return ch.decode("utf-8", errors="replace")
+                except Exception:
+                    return None
+        return None
+
+else:
+    import select
+    import tty
+    import termios
+
+    def get_key_nonblocking():
+        if select.select([sys.stdin], [], [], 0)[0]:
+            ch = sys.stdin.read(1)
+            if ch == "\r":
+                return "ENTER"
+            elif ch == "\x1b":
+                if select.select([sys.stdin], [], [], 0.01)[0]:
+                    seq = sys.stdin.read(2)
+                    if seq == "[A":
+                        return "UP"
+                    elif seq == "[B":
+                        return "DOWN"
+                return "ESC"
+            elif ch in ("\x08", "\x7f"):
+                return "BACKSPACE"
+            elif ch == "\x03":
+                return "CTRL_C"
+            return ch
+        return None
 
 
-async def test_local_stream(websocket, received, pipe, stream_info):
-    print("\n" + "="*50)
-    print("TEST 6: Generator(Node0) → DebugClient (backpressure)")
-    print(f"         count=9 buff={BUFF} delay=0.1s/chunk")
-    print("="*50)
-    result = await rpc(websocket, received, 'compute', 'start_stream', {
-        'target':     OWN_NODE,
-        'count':      9,
-        'multiplier': 1,
-        'buff':       BUFF,
-    })
-    if result:
-        print(f"[TRIGGER ACK]  {result}\n")
+# ------------------------------------------------------------------
+# Screen rendering
+# ------------------------------------------------------------------
+def render_screen(state, selected_idx, scroll_offset, input_buf, input_mode, status_msg):
+    """Build the entire screen as a string."""
+    cols, rows = get_terminal_size()
+    if rows < 15 or cols < 40:
+        return goto(1, 1) + RED + "Terminal too small! Need at least 40x15" + RESET
 
-    if not await wait_for_stream_open(stream_info):
-        return
-    await slow_consumer(pipe, websocket, stream_info)
+    sep_row = max(5, int(rows * 0.40))
+    services = state.get("services", [])
+    parts = []
+
+    parts.append(CLEAR + HOME)
+
+    # ============ NETWORK PANEL ============
+    net_h = sep_row - 1
+    parts.append(draw_box(0, 0, net_h, cols, " Network Status "))
+
+    header = f" Own Node: {OWN_NODE} | Target: {DST_NODE} | Protocol v{PROTOCOL_VERSION}"
+    parts.append(put_text(2, 1, header, BOLD, max_width=cols - 4))
+
+    neighbors = state.get("neighbors", [])
+    connected = [n for n in neighbors if n.get("status") == "CONNECTED"]
+    known = [n for n in neighbors if n.get("status") == "KNOWN"]
+    parts.append(
+        put_text(
+            2, 2,
+            f" Connected: {len(connected)}  |  Known: {len(known)}",
+            BOLD,
+            max_width=cols - 4,
+        )
+    )
+
+    row = 3
+    if row < net_h - 1:
+        parts.append(
+            put_text(2, row, "  Node ID        Host:Port        Status       Via", DIM, max_width=cols - 4)
+        )
+        row += 1
+
+    for n in connected:
+        if row >= net_h - 1:
+            break
+        # FIX: Added max_width= keyword
+        parts.append(put_text(2, row, format_neighbor(n), max_width=cols - 4))
+        row += 1
+
+    for n in known:
+        if row >= net_h - 1:
+            break
+        # FIX: Added max_width= keyword
+        parts.append(put_text(2, row, format_neighbor(n), max_width=cols - 4))
+        row += 1
+
+    gossip_from = state.get("gossip_from", "")
+    if gossip_from and row < net_h - 1:
+        gossip_n = state.get("gossip_data", [])
+        parts.append(
+            put_text(2, row, f" Gossip from {gossip_from}: {len(gossip_n)} neighbors", CYAN, max_width=cols - 4)
+        )
+        row += 1
+
+    announces = state.get("announces", [])[-3:]
+    for from_node, svcs in announces:
+        if row >= net_h - 1:
+            break
+        svc_str = ", ".join(svcs)
+        parts.append(
+            put_text(2, row, f" Announce from {from_node}: {svc_str}", CYAN, max_width=cols - 4)
+        )
+        row += 1
+
+    conn_status = "DISCONNECTED" if state.get("connection_closed") else "CONNECTED"
+    conn_color = RED if state.get("connection_closed") else GREEN
+    badge_x = max(cols - 18, 2)
+    parts.append(put_text(badge_x, net_h - 2, f" [{conn_status}] ", conn_color + BOLD))
+
+    parts.append(goto(1, net_h + 1) + LM + H * (cols - 2) + RM)
+
+    # ============ SERVICE PANEL ============
+    svc_top = net_h + 1
+    svc_h = rows - svc_top - 1
+    parts.append(draw_box(svc_top, 0, svc_h, cols, " Services "))
+
+    svc_inner_top = svc_top + 1
+    parts.append(put_text(2, svc_inner_top, " #  Service", BOLD, max_width=cols - 4))
+
+    list_rows = max(1, (svc_h - 4) // 2)
+    visible = services[scroll_offset : scroll_offset + list_rows]
+    for i, svc in enumerate(visible):
+        r = svc_inner_top + 1 + i
+        idx = scroll_offset + i
+        if idx >= svc_inner_top + list_rows:
+            break
+        if r >= svc_top + svc_h - 1:
+            break
+        if idx == selected_idx:
+            parts.append(
+                put_text(2, r, f">>> [{idx}] {svc}", REVERSE + BOLD, max_width=cols - 4)
+            )
+        else:
+            # FIX: Added max_width= keyword (THIS WAS THE CRASH)
+            parts.append(put_text(2, r, f"    [{idx}] {svc}", max_width=cols - 4))
+
+    sep_in_svc = svc_inner_top + 1 + list_rows
+    if sep_in_svc < svc_top + svc_h - 2:
+        parts.append(put_text(2, sep_in_svc, H * (cols - 6), DIM, max_width=cols - 4))
+
+    detail_row = sep_in_svc + 1
+    if services and selected_idx < len(services) and detail_row < svc_top + svc_h - 2:
+        sel_svc = services[selected_idx]
+        parts.append(put_text(2, detail_row, f" Service: {sel_svc}", BOLD, max_width=cols - 4))
+        methods = state.get("service_methods", {}).get(sel_svc, [])
+        if methods and detail_row + 1 < svc_top + svc_h - 2:
+            method_str = "  ".join(f"[{i}] {m}" for i, m in enumerate(methods))
+            parts.append(
+                put_text(4, detail_row + 1, f"Methods: {method_str}", DIM, max_width=cols - 6)
+            )
+
+    resp_start = detail_row + 3
+    if state.get("last_response") is not None:
+        resp_h = svc_top + svc_h - 2 - resp_start
+        if resp_h > 2:
+            parts.append(draw_box(resp_start, 2, resp_h, cols - 4, " Response "))
+            resp_text = json.dumps(state.get("last_response"), indent=2, default=str)
+            lines = resp_text.split("\n")
+            for i, line in enumerate(lines[: resp_h - 2]):
+                rr = resp_start + 1 + i
+                if rr >= svc_top + svc_h - 2:
+                    break
+                # FIX: Added max_width= keyword
+                parts.append(put_text(4, rr, line[: cols - 8], max_width=cols - 8))
+
+    if state.get("stream_label"):
+        slabel = state["stream_label"][:8]
+        ssvc = state.get("stream_service", "")
+        smeth = state.get("stream_method", "")
+        eof = " [EOF]" if state.get("stream_eof") else ""
+        sx = max(cols - 42, 2)
+        sy = svc_top + svc_h - 2
+        parts.append(
+            put_text(sx, sy, f" stream:{slabel} {ssvc}:{smeth}{eof}", CYAN)
+        )
+
+    # ============ INPUT BAR ============
+    input_row = rows - 1
+    parts.append(goto(1, input_row) + " " * cols)
+    if input_mode:
+        parts.append(
+            goto(1, input_row)
+            + BOLD
+            + WHITE_ON_BLUE
+            + f" ARGS> {input_buf}"
+            + " " * max(0, cols - len(input_buf) - 8)
+            + RESET
+        )
+    else:
+        if status_msg:
+            parts.append(goto(1, input_row) + DIM + status_msg[: cols - 1] + RESET)
+        else:
+            services = state.get("services", [])
+            sel_svc = services[selected_idx] if selected_idx < len(services) else ""
+            methods = state.get("service_methods", {}).get(sel_svc, [])
+            hint = "Enter=invoke"
+            if methods:
+                hint += f" {sel_svc}.{methods[0]}"
+            hint += " | type args or method name | q=quit | r=refresh"
+            parts.append(goto(1, input_row) + DIM + hint[: cols - 1] + RESET)
+
+    return "".join(parts)
 
 
-async def test_node_to_node(websocket, received):
-    print("\n" + "="*50)
-    print("TEST 7: Generator(Node0) → Node1")
-    print("         [Логи на Node0 и Node1]")
-    print("="*50)
-    result = await rpc(websocket, received, 'compute', 'start_stream', {
-        'target':     'Node1',
-        'count':      9,
-        'multiplier': 2,
-        'buff':       3,
-    })
-    if result:
-        print(f"[TRIGGER ACK]  {result}")
+# ------------------------------------------------------------------
+# Main interactive loop
+# ------------------------------------------------------------------
+async def async_main():
+    # FIX: Removed trailing spaces in state keys
+    state = {
+        "neighbors": [],
+        "services": [],
+        "service_methods": {},
+        "last_response": None,
+        "response_ready": False,
+        "response_label": "",
+        "gossip_data": [],
+        "gossip_from": "",
+        "announces": [],
+        "stream_label": None,
+        "stream_eof": False,
+        "stream_ready": False,
+        "stream_service": "",
+        "stream_method": "",
+        "connection_closed": False,
+    }
+    selected_idx = 0
+    scroll_offset = 0
+    input_buf = ""
+    input_mode = False
+    status_msg = "Connecting..."
+    refresh_timer = 0
 
-
-# ------------------------------------------------------------------ #
-#  Main
-# ------------------------------------------------------------------ #
-
-async def main():
-    received    = {}
-    pipe        = asyncio.Queue()
-    stream_info = {}
-
-    print(f"Connecting to {URI}...")
+    sys.stdout.write(HIDE_CURSOR + CLEAR + HOME)
+    sys.stdout.flush()
 
     try:
         async with websockets.connect(URI) as websocket:
-
-            # handshake первым делом
             accepted = await do_handshake(websocket)
             if not accepted:
-                print("[FATAL] Handshake failed — exit")
+                status_msg = RED + "Handshake REJECTED" + RESET
+                sys.stdout.write(goto(1, 1) + status_msg + goto(1, 3) + SHOW_CURSOR)
+                sys.stdout.flush()
+                await asyncio.sleep(3)
                 return
 
-            print(f"[INFO]         Connected as {OWN_NODE}\n")
-
-            recv_task = asyncio.create_task(
-                receive_loop(websocket, received, pipe, stream_info)
+            status_msg = (
+                f"Connected as {OWN_NODE} — "
+                f"↑↓ navigate, Enter invoke, 'q' quit"
             )
 
-            await test_ping(websocket, received)
-            await asyncio.sleep(0.3)
+            pipe = asyncio.Queue()
+            recv_task = asyncio.create_task(receive_loop(websocket, state, pipe))
 
-            await test_neighbors(websocket, received)
-            await asyncio.sleep(0.3)
+            neighbors_data = await rpc(websocket, state, "netinfo", "neighbors")
+            if neighbors_data:
+                state["neighbors"] = neighbors_data.get("connected", []) + \
+                                     neighbors_data.get("known", [])
 
-            await test_active_nodes(websocket, received)
-            await asyncio.sleep(0.3)
+            svc_data = await rpc(websocket, state, "netinfo", "services")
+            if svc_data:
+                state["services"] = svc_data if isinstance(svc_data, list) else []
+                state["service_methods"] = {
+                    svc: KNOWN_METHODS.get(svc, ["?"])
+                    for svc in state["services"]
+                }
 
-            await test_services(websocket, received)
-            await asyncio.sleep(0.3)
+            while True:
+                cols, rows = get_terminal_size()
+                key = get_key_nonblocking()
 
-            await test_find_service(websocket, received)
-            await asyncio.sleep(0.3)
+                if key == "CTRL_C" or (key == "q" and not input_mode):
+                    break
 
-            # тест дубля — отдельное соединение
-            await test_duplicate_connection()
-            await asyncio.sleep(0.3)
+                if input_mode:
+                    if key == "ESC":
+                        input_mode = False
+                        input_buf = ""
+                    elif key == "ENTER":
+                        input_mode = False
+                        services = state.get("services", [])
+                        if services and selected_idx < len(services):
+                            sel_svc = services[selected_idx]
+                            methods = state.get("service_methods", {}).get(sel_svc, [])
+                            raw_input = input_buf.strip()
+                            method_name = methods[0] if methods else ""
+                            call_data = {}
+                            if raw_input:
+                                try:
+                                    parsed = json.loads(raw_input)
+                                    if isinstance(parsed, dict):
+                                        call_data = dict(parsed)
+                                        if "method" in call_data:
+                                            method_name = call_data.pop("method")
+                                    else:
+                                        call_data = {"value": parsed}
+                                except json.JSONDecodeError:
+                                    parts = raw_input.split(None, 1)
+                                    if parts[0] in methods:
+                                        method_name = parts[0]
+                                        rest = parts[1] if len(parts) > 1 else ""
+                                    else:
+                                        method_name = parts[0]
+                                        rest = ""
+                                    if rest:
+                                        try:
+                                            for pair in rest.split(","):
+                                                k, v = pair.strip().split("=", 1)
+                                                try:
+                                                    v = int(v)
+                                                except ValueError:
+                                                    try:
+                                                        v = float(v)
+                                                    except ValueError:
+                                                        pass
+                                                call_data[k.strip()] = v
+                                        except Exception:
+                                            call_data = {"_raw": rest}
+                            if not method_name:
+                                status_msg = f"No method for {sel_svc}"
+                            else:
+                                status_msg = f"Calling {sel_svc}.{method_name}..."
+                                result = await rpc(
+                                    websocket, state, sel_svc, method_name, call_data
+                                )
+                                if result:
+                                    status_msg = f"OK: {sel_svc}.{method_name}"
+                                else:
+                                    status_msg = f"Timeout: {sel_svc}.{method_name}"
+                        input_buf = ""
+                    elif key == "BACKSPACE":
+                        input_buf = input_buf[:-1]
+                    elif key and len(key) == 1 and ord(key) >= 32:
+                        input_buf += key
+                else:
+                    services = state.get("services", [])
+                    max_idx = len(services) - 1 if services else 0
+                    if key == "UP":
+                        selected_idx = max(0, selected_idx - 1)
+                    elif key == "DOWN":
+                        selected_idx = min(max_idx, selected_idx + 1)
+                    elif key == "HOME":
+                        selected_idx = 0
+                    elif key == "END":
+                        selected_idx = max_idx
+                    elif key == "ENTER":
+                        input_mode = True
+                        input_buf = ""
+                    elif key == "r":
+                        status_msg = "Refreshing..."
+                        nd = await rpc(websocket, state, "netinfo", "neighbors")
+                        if nd:
+                            state["neighbors"] = nd.get("connected", []) + \
+                                                 nd.get("known", [])
+                        sd = await rpc(websocket, state, "netinfo", "services")
+                        if sd:
+                            state["services"] = sd if isinstance(sd, list) else []
+                            state["service_methods"] = {
+                                svc: KNOWN_METHODS.get(svc, ["?"])
+                                for svc in state["services"]
+                            }
+                        status_msg = "Refreshed"
 
-            await test_local_stream(websocket, received, pipe, stream_info)
-            await asyncio.sleep(0.3)
+                list_rows = max(1, (rows - int(rows * 0.40) - 5) // 2)
+                if selected_idx < scroll_offset:
+                    scroll_offset = selected_idx
+                elif selected_idx >= scroll_offset + list_rows:
+                    scroll_offset = selected_idx - list_rows + 1
 
-            await test_node_to_node(websocket, received)
-            await asyncio.sleep(5)
+                refresh_timer += 1
+                if refresh_timer % 50 == 0:
+                    nd = await rpc(websocket, state, "netinfo", "neighbors")
+                    if nd:
+                        state["neighbors"] = nd.get("connected", []) + \
+                                             nd.get("known", [])
+                    refresh_timer = 0
+
+                while not pipe.empty():
+                    msg_type, msg_data = await pipe.get()
+                    if msg_type == "chunk":
+                        state["last_response"] = msg_data
+                        state["response_ready"] = True
+                    elif msg_type == "eof":
+                        state["stream_eof"] = True
+
+                screen = render_screen(
+                    state, selected_idx, scroll_offset,
+                    input_buf, input_mode, status_msg
+                )
+                sys.stdout.write(screen)
+                sys.stdout.flush()
+                await asyncio.sleep(0.05)
 
             recv_task.cancel()
+            try:
+                await recv_task
+            except asyncio.CancelledError:
+                pass
 
     except ConnectionRefusedError:
-        print("Connection refused — сервер недоступен")
-    except Exception as e:
-        print(f"Error: {e}")
+        sys.stdout.write(
+            goto(1, 1) + RED + f"Connection refused — server not running on {URI}" + RESET
+        )
+        sys.stdout.flush()
+        await asyncio.sleep(3)
+    finally:
+        sys.stdout.write(SHOW_CURSOR + goto(1, rows) + RESET)
+        sys.stdout.flush()
 
 
+def main():
+    try:
+        asyncio.run(async_main())
+    except KeyboardInterrupt:
+        pass
+    finally:
+        sys.stdout.write(SHOW_CURSOR + RESET + "\n")
+        sys.stdout.flush()
+
+
+# FIX: Was `if name == "main"` — must be `__name__` and `"__main__"`
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
