@@ -23,10 +23,11 @@ class NodeConnector(ModuleGeneric):
     """Исходящее подключение к другой ноде."""
 
     def __init__(self, name: str, context, peer_node_id: str,
-                 target_uri: str):
+                 target_uri: str, force: bool = False):
         super().__init__(name, context)
         self.peer_node_id = peer_node_id
         self.target_uri   = target_uri   # ws://host:port/ws/{own_node_id}
+        self._force       = force        # обойти лексикографическое правило
         self._ws          = None
         self._connect_task   = None
         self._keepalive_task = None
@@ -63,7 +64,10 @@ class NodeConnector(ModuleGeneric):
         """
         Подключаться только если наш node_id лексикографически меньше.
         Исключает взаимоподключение.
+        При force=True — обходит правило, проверяя только наличие подключения.
         """
+        if self._force:
+            return not self._already_connected()
         return self.ctx.NODE > self.peer_node_id
 
     def _already_connected(self) -> bool:

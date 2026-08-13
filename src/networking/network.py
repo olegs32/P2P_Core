@@ -285,6 +285,29 @@ class NetworkModule(ModuleGeneric):
     #  Public API
     # ------------------------------------------------------------------ #
 
+    async def connect_to(self, node_id: str, target_uri: str):
+        """Динамически создать и запустить исходящее подключение к узлу.
+
+        Обходит лексикографическое правило (force=True).
+        Проверяет, что узел ещё не подключен (по NeighborTable).
+        """
+        from src.networking.node_connector import NodeConnector
+
+        existing = self.neighbor_table.get(node_id)
+        if existing and existing.status.value == 'connected':
+            raise ValueError(f'Узел {node_id} уже подключен')
+
+        connector = NodeConnector(
+            name=f'Connector_{node_id}',
+            context=self.ctx,
+            peer_node_id=node_id,
+            target_uri=target_uri,
+            force=True,
+        )
+        self.ctx.register(connector)
+        await connector.start()
+        self.log.info(f'Dynamic connection initiated → {node_id} ({target_uri})')
+
     async def call(self, dst: str, service: str, method: str, data=None, timeout: int = 10):
         """Single RPC вызов."""
         return await self.router.call(dst, service, method, data, timeout)
