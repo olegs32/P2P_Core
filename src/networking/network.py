@@ -288,7 +288,6 @@ class NetworkModule(ModuleGeneric):
     async def connect_to(self, node_id: str, target_uri: str):
         """Динамически создать и запустить исходящее подключение к узлу.
 
-        Обходит лексикографическое правило (force=True).
         Проверяет, что узел ещё не подключен (по NeighborTable).
         """
         from src.networking.node_connector import NodeConnector
@@ -302,7 +301,6 @@ class NetworkModule(ModuleGeneric):
             context=self.ctx,
             peer_node_id=node_id,
             target_uri=target_uri,
-            force=True,
         )
         self.ctx.register(connector)
         await connector.start()

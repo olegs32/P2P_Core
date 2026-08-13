@@ -42,6 +42,101 @@ def _expiry_badge(valid_to_str: str) -> tuple[str, str]:
         return '🟢', f'{days_left}д'
 
 
+# Поля для удобочитаемого отображения подробностей
+_DETAIL_LABELS = {
+    'Subject':           'Subject (Владелец)',
+    'Issuer':            'Issuer (Удостоверяющий)',
+    'Thumbprint':        'Thumbprint (Отпечаток)',
+    'SHA1 Thumbprint':   'SHA1 Thumbprint (Отпечаток)',
+    'Serial':            'Serial (Серийный номер)',
+    'Container':         'Container (Контейнер)',
+    'ContainerType':     'Container Type (Тип хранилища)',
+    'ValidFrom':         'Valid From (Действует с)',
+    'ValidTo':           'Valid To (Действует до)',
+    'Not valid before':  'Not valid before',
+    'Not valid after':   'Not valid after',
+    'Действителен с':    'Действителен с',
+    'Действителен до':   'Действителен до',
+    'SHA1 Hash':         'SHA1 Hash',
+    'Hash':              'Hash',
+    'Отпечаток':         'Отпечаток',
+    'PrivateKey':        'Private Key (Закрытый ключ)',
+    'PrivateKey Link':   'PrivateKey Link (Привязка закрытого ключа)',
+    'CertType':          'Тип сертификата',
+    'ProvType':          'Тип провайдера',
+    'KeyProvInfo':       'Информация о ключе',
+    'Provider Name':     'Provider Name (Провайдер)',
+    'Provider Info':     'Provider Info (Информация о провайдере)',
+    'Identification Kind': 'Identification Kind (Тип идентификации)',
+    'SubjectKeyID':      'Subject Key ID',
+    'Signature Algorithm': 'Signature Algorithm (Алгоритм подписи)',
+    'PublicKey Algorithm': 'PublicKey Algorithm (Алгоритм открытого ключа)',
+    'Extended Key Usage': 'Extended Key Usage (Расширенное использование)',
+}
+
+# Поля, которые уже отображены в основной строке — не дублировать
+_SUMMARY_FIELDS = {'Subject', 'Subject_CN', 'Issuer', 'Issuer_CN',
+                   'Thumbprint', 'SHA1 Thumbprint', 'Container', 'ContainerType',
+                   'ValidFrom', 'ValidTo',
+                   'Not valid before', 'Not valid after',
+                   'Действителен с', 'Действителен до'}
+
+
+def _render_cert_detail(cert: dict, idx: int):
+    """Рендерит развёрнутую панель подробностей сертификата."""
+    raw = cert.get('raw', {})
+
+    with st.container():
+        col_close, col_title = st.columns([1, 10])
+        with col_close:
+            if st.button("✕", key=f"cert_detail_close_{idx}"):
+                st.session_state.pop(f'cert_detail_{idx}', None)
+                st.rerun()
+        with col_title:
+            st.markdown(f"**📋 Подробности: {cert.get('subject_cn', '?')}**")
+
+        # Ключевые данные — крупно
+        c1, c2 = st.columns(2)
+        with c1:
+            st.markdown(f"**Thumbprint:** `{cert.get('thumbprint', '—')}`")
+            st.markdown(f"**Контейнер:** `{cert.get('container', '—')}`")
+            st.markdown(f"**Серийный номер:** `{cert.get('serial', '—')}`")
+        with c2:
+            st.markdown(f"**Действует с:** {cert.get('valid_from', '—')}")
+            st.markdown(f"**Действует до:** {cert.get('valid_to', '—')}")
+            exp_emoji, exp_label = _expiry_badge(cert.get('valid_to', ''))
+            st.markdown(f"**Срок:** {exp_emoji} {exp_label}")
+
+        st.divider()
+
+        # Subject / Issuer — отдельно для наглядности
+        if cert.get('subject'):
+            st.markdown("**Subject:**")
+            for part in cert['subject'].split(', '):
+                if '=' in part:
+                    k, v = part.split('=', 1)
+                    st.markdown(f"&nbsp;&nbsp;`{k}` = `{v}`")
+        if cert.get('issuer') and cert['issuer'] != cert.get('subject'):
+            st.markdown("**Issuer:**")
+            for part in cert['issuer'].split(', '):
+                if '=' in part:
+                    k, v = part.split('=', 1)
+                    st.markdown(f"&nbsp;&nbsp;`{k}` = `{v}`")
+
+        # Остальные поля из raw, не показанные выше
+        other_fields = {k: v for k, v in raw.items()
+                        if k not in _SUMMARY_FIELDS and not k.startswith('Subject_')
+                        and not k.startswith('Issuer_') and v}
+        if other_fields:
+            st.divider()
+            st.markdown("**Дополнительные поля:**")
+            for k, v in other_fields.items():
+                label = _DETAIL_LABELS.get(k, k)
+                st.markdown(f"**{label}:** `{v}`")
+
+        st.divider()
+
+
 def render(rpc):
     tab_list, tab_install, tab_net, tab_export, tab_search = st.tabs(
         ["Сертификаты", "Установка", "🌐 Сетевая установка", "Экспорт", "Поиск"]
@@ -95,36 +190,7 @@ def render(rpc):
                     with cols[2]:
                         st.markdown(f"{exp_emoji} **{exp_label}**")
                     with cols[3]:
-                        if has_container:
-                            if st.button("📦 PFX", key=f"exp_pfx_{i}"):
-                                with st.spinner("Экспорт PFX..."):
-                                    try:
-                                        res = rpc.call('certstool', 'export_certificate_pfx', {
-                                            'container_name': container,
-                                            'password': '00000000',
-                                        })
-                                        if res.get('success'):
-                                            st.session_state[f'pfx_dl_{i}'] = res['pfx_base64']
-                                            st.session_state[f'pfx_name_{i}'] = cn
-                                        else:
-                                            st.error(f"PFX: {res.get('error', 'ошибка')}")
-                                    except Exception as e:
-                                        st.error(f"Ошибка: {e}")
-                    with cols[3]:
-                        if st.button("📄 CER", key=f"exp_cer_{i}"):
-                            with st.spinner("Экспорт CER..."):
-                                try:
-                                    res = rpc.call('certstool', 'export_certificate_cer', {
-                                        'container_name': container,
-                                        'thumbprint': thumbprint,
-                                    })
-                                    if res.get('success'):
-                                        st.session_state[f'cer_dl_{i}'] = res['cer_base64']
-                                        st.session_state[f'cer_name_{i}'] = cn
-                                    else:
-                                        st.error(f"CER: {res.get('error', 'ошибка')}")
-                                except Exception as e:
-                                    st.error(f"Ошибка: {e}")
+                        st.caption(f"`{thumbprint[:16]}…`")
                     with cols[4]:
                         if st.button("🗑️", key=f"del_{i}"):
                             try:
@@ -139,6 +205,63 @@ def render(rpc):
                                     st.error(f"Ошибка: {res.get('error', 'не удалось')}")
                             except Exception as e:
                                 st.error(f"Ошибка: {e}")
+                    with cols[5]:
+                        if st.button("🔍", key=f"detail_{i}"):
+                            st.session_state[f'cert_detail_{i}'] = True
+
+                    # Диалог экспорта PFX / CER
+                    if st.session_state.get(f'pfx_trigger_{i}'):
+                        pfx_pwd = st.text_input(
+                            "Пароль PFX", value="00000000", type="password",
+                            key=f"pfx_pwd_{i}",
+                        )
+                        pfx_cols = st.columns([1, 1, 4])
+                        with pfx_cols[0]:
+                            if st.button("📦 Экспорт PFX", key=f"pfx_go_{i}"):
+                                with st.spinner("Экспорт PFX..."):
+                                    try:
+                                        res = rpc.call('certstool', 'export_certificate_pfx', {
+                                            'container_name': container,
+                                            'thumbprint': thumbprint,
+                                            'password': pfx_pwd,
+                                        })
+                                        if res.get('success'):
+                                            st.session_state[f'pfx_dl_{i}'] = res['pfx_base64']
+                                            st.session_state[f'pfx_name_{i}'] = cn
+                                            st.session_state.pop(f'pfx_trigger_{i}', None)
+                                        else:
+                                            st.error(f"PFX: {res.get('error', 'ошибка')}")
+                                    except Exception as e:
+                                        st.error(f"Ошибка: {e}")
+                        with pfx_cols[1]:
+                            if st.button("Отмена", key=f"pfx_cancel_{i}"):
+                                st.session_state.pop(f'pfx_trigger_{i}', None)
+                                st.rerun()
+                    else:
+                        export_cols = st.columns([1, 1])
+                        with export_cols[0]:
+                            if has_container and st.button("📦 PFX", key=f"exp_pfx_{i}"):
+                                st.session_state[f'pfx_trigger_{i}'] = True
+                                st.rerun()
+                        with export_cols[1]:
+                            if st.button("📄 CER", key=f"exp_cer_{i}"):
+                                with st.spinner("Экспорт CER..."):
+                                    try:
+                                        res = rpc.call('certstool', 'export_certificate_cer', {
+                                            'container_name': container,
+                                            'thumbprint': thumbprint,
+                                        })
+                                        if res.get('success'):
+                                            st.session_state[f'cer_dl_{i}'] = res['cer_base64']
+                                            st.session_state[f'cer_name_{i}'] = cn
+                                        else:
+                                            st.error(f"CER: {res.get('error', 'ошибка')}")
+                                    except Exception as e:
+                                        st.error(f"Ошибка: {e}")
+
+                    # Подробности сертификата
+                    if st.session_state.get(f'cert_detail_{i}'):
+                        _render_cert_detail(c, i)
 
                     # Download buttons if export completed
                     if f'pfx_dl_{i}' in st.session_state:

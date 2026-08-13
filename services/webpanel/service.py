@@ -35,6 +35,7 @@ class WebPanel(ModuleGeneric):
             'P2P_WS_HOST': self.ctx.config.network.host,
             'P2P_PANEL_PORT': str(self._panel_port),
             'P2P_PROJECT_ROOT': str(Path(__file__).parent.parent.parent),
+            'PYTHONWARNINGS': 'ignore::DeprecationWarning',
         }
 
         self._process = await asyncio.create_subprocess_exec(

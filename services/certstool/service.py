@@ -30,6 +30,8 @@ class CertsTool(ModuleGeneric):
     - Сетевая установка: экспорт с удалённого узла → импорт локально
     """
 
+    _CARRIER = '\\\\.\\HDIMAGE'
+
     def __init__(self, name: str, context):
         super().__init__(name, context)
         self.csp_path = Path(__file__).parent
@@ -115,11 +117,20 @@ class CertsTool(ModuleGeneric):
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
-            stdout, _ = await proc.communicate()
+            stdout, stderr = await proc.communicate()
             try:
-                return stdout.decode('cp1251')
+                out = stdout.decode('cp1251')
             except UnicodeDecodeError:
-                return stdout.decode('utf-8', errors='ignore')
+                out = stdout.decode('utf-8', errors='ignore')
+            if stderr:
+                try:
+                    err_text = stderr.decode('cp1251')
+                except UnicodeDecodeError:
+                    err_text = stderr.decode('utf-8', errors='ignore')
+                if err_text.strip():
+                    self.log.warning(f'certmgr stderr: {err_text[:500]}')
+                    out += '\n' + err_text
+            return out
         except Exception as e:
             self.log.error(f'Command error: {e}')
             return ''
@@ -133,7 +144,7 @@ class CertsTool(ModuleGeneric):
                     code = parts[-1].strip().replace(']', '').strip()
                     if code.startswith('0x'):
                         return code
-        return '0x00000000'
+        return ''
 
     @staticmethod
     def _extract_container(output: str) -> str:
@@ -146,6 +157,28 @@ class CertsTool(ModuleGeneric):
                         return c
         return ''
 
+    # Русские → английские имена полей (certmgr с chcp 1251)
+    _FIELD_NAME_MAP = {
+        'Издатель': 'Issuer',
+        'Субъект': 'Subject',
+        'Серийный номер': 'Serial',
+        'SHA1 отпечаток': 'SHA1 Thumbprint',
+        'Идентификатор ключа': 'SubjectKeyID',
+        'Алгоритм подписи': 'Signature Algorithm',
+        'Алгоритм откр. кл.': 'PublicKey Algorithm',
+        'Выдан': 'Not valid before',
+        'Истекает': 'Not valid after',
+        'Ссылка на ключ': 'PrivateKey Link',
+        'Контейнер': 'Container',
+        'Имя провайдера': 'Provider Name',
+        'Инфо о провайдере': 'Provider Info',
+        'Тип идентификации': 'Identification Kind',
+        'URL сертификата УЦ': 'CA cert URL',
+        'URL списка отзыва': 'CDP',
+        'Встроенная лицензия': 'Embedded License',
+        'Назначение/EKU': 'Extended Key Usage',
+    }
+
     def _parse_certificate_list(self, output: str) -> dict:
         certificates = {}
         for index, cert_block in enumerate(output.split('-------')):
@@ -156,7 +189,14 @@ class CertsTool(ModuleGeneric):
                 line = re.sub(r'  +', ' ', line.strip())
                 if ' : ' in line:
                     key, value = line.split(' : ', 1)
-                    cert_info[key.strip()] = value.strip()
+                    key = key.strip()
+                    # Нормализация русских имён полей → английские
+                    key = self._FIELD_NAME_MAP.get(key, key)
+                    cert_info[key] = value.strip()
+
+            # --- CSP v5: Subject может отсутствовать (корневые CA) → взять Issuer ---
+            if 'Subject' not in cert_info and 'Issuer' in cert_info:
+                cert_info['Subject'] = cert_info['Issuer']
 
             if 'Subject' in cert_info:
                 for part in cert_info['Subject'].split(', '):
@@ -170,11 +210,31 @@ class CertsTool(ModuleGeneric):
                         k, v = part.split('=', 1)
                         cert_info[f'Issuer_{k.strip()}'] = v.strip()
 
-            # Нормализация Thumbprint
-            for alt in ('SHA1 Hash', 'SHA1', 'Hash', 'Отпечаток'):
+            # --- Нормализация Thumbprint (CSP v5: SHA1 Thumbprint) ---
+            for alt in ('SHA1 Thumbprint', 'SHA1 Hash', 'SHA1', 'Hash', 'Отпечаток'):
                 if alt in cert_info and 'Thumbprint' not in cert_info:
                     cert_info['Thumbprint'] = cert_info[alt]
                     break
+
+            # --- Нормализация дат (CSP v5: Not valid before/after) ---
+            if 'ValidFrom' not in cert_info and 'Not valid before' in cert_info:
+                cert_info['ValidFrom'] = cert_info['Not valid before']
+            if 'ValidTo' not in cert_info and 'Not valid after' in cert_info:
+                cert_info['ValidTo'] = cert_info['Not valid after']
+
+            # --- Нормализация Container (убрать REGISTRY\\, FAT12\, HDIMAGE\\ префиксы) ---
+            container = cert_info.get('Container', '')
+            if container:
+                for prefix in ('REGISTRY\\\\', 'HDIMAGE\\\\'):
+                    if container.startswith(prefix):
+                        cert_info['Container'] = container[len(prefix):]
+                        cert_info['ContainerType'] = prefix.rstrip('\\')
+                        break
+                else:
+                    for prefix in ('FAT12\\',):
+                        if container.startswith(prefix):
+                            cert_info['ContainerType'] = prefix.rstrip('\\')
+                            break
 
             if cert_info:
                 sub_cn = cert_info.get('Subject_CN', '-')
@@ -229,13 +289,18 @@ class CertsTool(ModuleGeneric):
                   'container': ''}
 
         # 1. Install PFX
+        import secrets as _s
+        auto_container = f'{self._CARRIER}\\p2p_{_s.token_hex(4)}'
         cmd = (f'"{self.csp_path / "certmgr.exe"}" -install -store uMy '
-               f'-file "{pfx_path}" -pfx -silent -keep_exportable -pin {pin}')
+               f'-file "{pfx_path}" -pfx -container "{auto_container}" '
+               f'-silent -keep_exportable -pin {pin}')
         output = await self._run_async(cmd)
         result['pfx_error'] = self._extract_error_code(output)
         result['container'] = self._extract_container(output)
+        if not result['container'] and result['pfx_error'] == '0x00000000':
+            result['container'] = auto_container
 
-        if result['pfx_error'] != '0x00000000' or not result['container']:
+        if result['pfx_error'] != '0x00000000':
             return result
 
         # 2. Install CER
@@ -264,6 +329,7 @@ class CertsTool(ModuleGeneric):
     async def export_certificate_pfx(self, data: dict) -> dict:
         """Экспорт закрытого ключа в PFX (base64)."""
         container = data.get('container_name', '')
+        thumbprint = data.get('thumbprint', '')
         password = data.get('password', '00000000')
 
         with tempfile.NamedTemporaryFile(suffix='.pfx', delete=False) as tmp:
@@ -276,8 +342,14 @@ class CertsTool(ModuleGeneric):
             output = await self._run_async(cmd)
             error = self._extract_error_code(output)
 
+            self.log.info(f'export_pfx: container={container}, error={error}')
+            self.log.info(f'export_pfx certmgr output:\n{output}')
+
             if error != '0x00000000' or not Path(tmp_path).exists():
                 return {'success': False, 'error': f'Export failed: {error}', 'pfx_base64': ''}
+
+            pfx_size = Path(tmp_path).stat().st_size
+            self.log.info(f'export_pfx: file size={pfx_size} bytes')
 
             with open(tmp_path, 'rb') as f:
                 b64 = base64.b64encode(f.read()).decode('utf-8')
@@ -399,14 +471,30 @@ class CertsTool(ModuleGeneric):
             tmp_path = tmp.name
 
         try:
+            # CSP v5: без явного контейнера certmgr может не привязать закрытый ключ.
+            # Генерируем имя контейнера, если не задано.
+            container_name = data.get('container_name', '')
+            if not container_name:
+                import secrets as _s
+                container_name = f'{self._CARRIER}\\p2p_{_s.token_hex(4)}'
+
             cmd = (f'"{self.csp_path / "certmgr.exe"}" -install -store uMy '
-                   f'-file "{tmp_path}" -pfx -silent -keep_exportable -pin {password}')
+                   f'-file "{tmp_path}" -pfx -container "{container_name}" '
+                   f'-silent -keep_exportable -pin {password}')
             output = await self._run_async(cmd)
             error = self._extract_error_code(output)
             container = self._extract_container(output)
 
-            if error == '0x00000000' and container:
+            # Если certmgr не вернул контейнер — используем заданное имя
+            if not container and error == '0x00000000':
+                container = container_name
+
+            self.log.info(f'install_pfx: error={error}, container={container}, output_len={len(output)}')
+            self.log.info(f'install_pfx certmgr output:\n{output[:1000]}')
+
+            if error == '0x00000000':
                 return {'success': True, 'container': container}
+
             return {'success': False, 'error': f'Install failed: {error}', 'error_code': error}
         finally:
             Path(tmp_path).unlink(missing_ok=True)
@@ -438,11 +526,18 @@ class CertsTool(ModuleGeneric):
                 tmp_path = tmp.name
 
             try:
+                import secrets as _s
+                auto_container = f'{self._CARRIER}\\p2p_{_s.token_hex(4)}'
+
                 cmd = (f'"{self.csp_path / "certmgr.exe"}" -install -store uMy '
-                       f'-file "{tmp_path}" -pfx -silent -keep_exportable -pin {current_pwd}')
+                       f'-file "{tmp_path}" -pfx -container "{auto_container}" '
+                       f'-silent -keep_exportable -pin {current_pwd}')
                 output = await self._run_async(cmd)
                 error = self._extract_error_code(output)
                 container = self._extract_container(output)
+
+                if not container and error == '0x00000000':
+                    container = auto_container
 
                 if error != '0x00000000':
                     results.append({'filename': fname, 'success': False,
@@ -490,6 +585,7 @@ class CertsTool(ModuleGeneric):
                     'serial': info.get('Serial', ''),
                     'valid_from': valid_from,
                     'valid_to': valid_to,
+                    'raw': info,
                 })
             return {
                 'total_certificates': len(cert_list),
@@ -598,7 +694,7 @@ class CertsTool(ModuleGeneric):
                 dst=source_node,
                 service='certstool',
                 method='export_certificate_pfx',
-                data={'container_name': container, 'password': one_time_password},
+                data={'container_name': container, 'thumbprint': thumbprint, 'password': one_time_password},
                 timeout=15,
             )
         except Exception as e:

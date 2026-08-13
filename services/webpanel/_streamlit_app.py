@@ -103,6 +103,19 @@ with st.sidebar:
         index=0,
         key="selected_node_select",
     )
+
+    # При смене узла — очистить кешированные данные всех сервисов
+    prev_node = st.session_state.get('_prev_selected_node')
+    st.session_state['_prev_selected_node'] = selected_node
+
+    if prev_node is not None and prev_node != selected_node:
+        _PRESERVED = {'rpc', 'current_page', '_prev_selected_node',
+                       'selected_node_select'}
+        for key in list(st.session_state.keys()):
+            if key not in _PRESERVED:
+                del st.session_state[key]
+        st.rerun()
+
     st.session_state['selected_node'] = selected_node
 
     if selected_node == local_node:

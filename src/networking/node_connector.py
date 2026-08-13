@@ -23,11 +23,10 @@ class NodeConnector(ModuleGeneric):
     """Исходящее подключение к другой ноде."""
 
     def __init__(self, name: str, context, peer_node_id: str,
-                 target_uri: str, force: bool = False):
+                 target_uri: str):
         super().__init__(name, context)
         self.peer_node_id = peer_node_id
         self.target_uri   = target_uri   # ws://host:port/ws/{own_node_id}
-        self._force       = force        # обойти лексикографическое правило
         self._ws          = None
         self._connect_task   = None
         self._keepalive_task = None
@@ -37,10 +36,9 @@ class NodeConnector(ModuleGeneric):
     # ------------------------------------------------------------------ #
 
     async def start(self):
-        if not self._should_connect():
+        if self._already_connected():
             self.log.info(
-                f'Skip connect to {self.peer_node_id} '
-                f'(lexicographic rule: {self.ctx.NODE} > {self.peer_node_id})'
+                f'Skip connect to {self.peer_node_id} (already connected)'
             )
             return
         self._connect_task   = asyncio.create_task(self._connect_loop())
@@ -60,18 +58,10 @@ class NodeConnector(ModuleGeneric):
     #  Правило подключения
     # ------------------------------------------------------------------ #
 
-    def _should_connect(self) -> bool:
-        """
-        Подключаться только если наш node_id лексикографически меньше.
-        Исключает взаимоподключение.
-        При force=True — обходит правило, проверяя только наличие подключения.
-        """
-        if self._force:
-            return not self._already_connected()
-        return self.ctx.NODE > self.peer_node_id
-
     def _already_connected(self) -> bool:
-        return self.ctx.network.nodes_manager.get(self.peer_node_id) is not None
+        """Узел уже подключен — не пытаться подключиться повторно."""
+        return self.ctx.network.neighbor_table.get(self.peer_node_id) is not None and \
+               self.ctx.network.neighbor_table.get(self.peer_node_id).status.value == 'connected'
 
     # ------------------------------------------------------------------ #
     #  Подключение

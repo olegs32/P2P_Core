@@ -4,6 +4,7 @@ import asyncio
 import inspect
 import logging
 import time
+import uuid
 from dataclasses import dataclass, field
 from typing import Any, AsyncGenerator
 
@@ -389,7 +390,8 @@ class Router:
         # 1. server-side
         node = self._nodes_mgr.get(dst)
         if node:
-            pack.path.append(self.context.NODE)
+            if not pack.path or pack.path[-1] != self.context.NODE:
+                pack.path.append(self.context.NODE)
             pack.ttl -= 1
             log.debug(
                 f'[mesh] direct {self.context.NODE}→{dst} '
@@ -402,7 +404,8 @@ class Router:
         # 1b. client-side
         client_ws = self._client_ws.get(dst)
         if client_ws:
-            pack.path.append(self.context.NODE)
+            if not pack.path or pack.path[-1] != self.context.NODE:
+                pack.path.append(self.context.NODE)
             pack.ttl -= 1
             log.debug(
                 f'[mesh] client-direct {self.context.NODE}→{dst} '
@@ -417,7 +420,8 @@ class Router:
         if neighbor and neighbor.via:
             via_transport = self.get_transport_to(neighbor.via)
             if via_transport:
-                pack.path.append(self.context.NODE)
+                if not pack.path or pack.path[-1] != self.context.NODE:
+                    pack.path.append(self.context.NODE)
                 pack.ttl -= 1
                 if pack.type == PackType.REQUEST:
                     pack.type = PackType.FORWARDED
