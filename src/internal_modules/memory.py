@@ -170,6 +170,8 @@ class Dispatcher:
         total_buff = sum(p.buff_len for p in self.pipes.values())
         gen_queue: asyncio.Queue = asyncio.Queue(maxsize=total_buff)
 
+        _producer_failed = False
+
         def _produce():
             try:
                 for item in generator():
@@ -178,16 +180,21 @@ class Dispatcher:
                     asyncio.run_coroutine_threadsafe(gen_queue.put(item), loop).result()
             except Exception as e:
                 log.error(f'[dispatcher] generator error: {e}')
+                nonlocal _producer_failed
+                _producer_failed = True
             finally:
                 asyncio.run_coroutine_threadsafe(gen_queue.put(_SENTINEL), loop).result()
 
-        loop.run_in_executor(None, _produce)
+        producer_future = loop.run_in_executor(None, _produce)
         log.info(f'[dispatcher] started → {len(self.pipes)} pipes')
 
         while self._running:
             item = await gen_queue.get()
             if item is _SENTINEL:
-                log.debug('[dispatcher] generator exhausted')
+                if _producer_failed:
+                    log.error('[dispatcher] producer failed — closing all pipes')
+                else:
+                    log.debug('[dispatcher] generator exhausted')
                 break
 
             target = None
@@ -201,10 +208,16 @@ class Dispatcher:
             if target:
                 await target.put(item)
 
-        # закрываем все pipes sentinel'ом чтобы PipeTransport отправил EOF
-        for pipe in self.pipes.values():
-            await pipe.put(_SENTINEL)
-            pipe.close()
+        # При ошибке producer — закрыть pipes без sentinel (прервать цепочку)
+        if _producer_failed:
+            for pipe in self.pipes.values():
+                pipe.close()
+            log.error('[dispatcher] aborted due to producer failure')
+        else:
+            # закрываем все pipes sentinel'ом чтобы PipeTransport отправил EOF
+            for pipe in self.pipes.values():
+                await pipe.put(_SENTINEL)
+                pipe.close()
 
         log.info('[dispatcher] finished')
 

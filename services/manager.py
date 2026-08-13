@@ -1,7 +1,11 @@
 # GRID/services/manager.py
 
+import logging
 from typing import Callable, Any, Dict
 from src.internal_modules.base import ModuleGeneric
+from services.rpc import get_generators
+
+_log = logging.getLogger('ServiceManager')
 
 
 class ServiceManager:
@@ -14,13 +18,9 @@ class ServiceManager:
         self.services[service.name]['self'] = service
 
         # авторегистрация @generator методов
-        from services.rpc import get_generators
         for name, method in get_generators(service).items():
             self._set(service.name, f'__gen__{name}', method)
-            import logging
-            logging.getLogger('ServiceManager').debug(
-                f'Auto-registered generator: {service.name}.{name}'
-            )
+            _log.debug(f'Auto-registered generator: {service.name}.{name}')
 
     def get_service(self, service: str) -> Any | None:
         return self.services.get(service, {}).get('self')

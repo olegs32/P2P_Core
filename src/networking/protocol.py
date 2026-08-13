@@ -23,6 +23,7 @@ class PackType(str, Enum):
     HELLO_REJECT = "hello_reject"  # отклонено + причина
     GOSSIP       = "gossip"  # периодическая рассылка топологии
     ANNOUNCE     = "announce"  # периодическая рассылка сервисов
+    CERT_SYNC    = "cert_sync"  # рассылка digest сертификатов (thumbprint→метаданные)
 
 
 class MsgPack(BaseModel):

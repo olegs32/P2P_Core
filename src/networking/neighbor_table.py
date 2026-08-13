@@ -29,9 +29,11 @@ class NeighborInfo(BaseModel):
     version:    str             = PROTOCOL_VERSION
     services:   List[str]       = []       # сервисы на этой ноде
 
-    @property
-    def uri(self) -> str:
-        return f"ws://{self.host}:{self.port}/ws/"
+    # UNUSED: свойство uri не используется в проекте.
+    # При необходимости: ws://{host}:{port}/ws/{node_id}
+    # @property
+    # def uri(self) -> str:
+    #     return f"ws://{self.host}:{self.port}/ws/{self.node_id}"
 
 
 class NeighborTable:

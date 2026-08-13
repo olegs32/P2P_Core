@@ -4,7 +4,6 @@ fastapi~=0.121.1
 pydantic~=2.10.6
 starlette~=0.50.0
 uvicorn~=0.38.0
-websockets~=15.0.1
 PyJWT~=2.12.0
 psutil~=7.0.0
 pyinstaller

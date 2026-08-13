@@ -68,8 +68,12 @@ class LocalExecutor:
         pipe = Pipe(pipe_id=f'inbound_{pack.label[:8]}', buff_len=10)
         inbound = self.stream_registry.register(pack.label, pipe)
 
-        # получить upstream ws из router для ACK
-        upstream_ws = getattr(self._router_ref, 'upstream_ws', None)
+        # получить транспорт к источнику стрима для ACK
+        upstream_ws = None
+        if self._router_ref:
+            transport = self._router_ref.get_transport_to(pack.source)
+            if transport:
+                upstream_ws = transport.ws
 
         asyncio.create_task(
             self._run_consumer(wrapper, consumer, pipe, pack.data, inbound,

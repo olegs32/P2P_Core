@@ -222,18 +222,21 @@ async def receive_loop(websocket, state: dict, pipe: asyncio.Queue):
 
 async def rpc(websocket, state, service, method, data=None, dst=DST_NODE):
     """One-shot RPC — returns response data or None on timeout."""
+    label = str(uuid.uuid4())
     state["response_ready"] = False
     state["last_response"] = None
+    state["_rpc_label"] = label
     pack = MsgPack(
         source=OWN_NODE,
         dst=dst,
         service=service,
         method=method,
         data=data,
+        label=label,
     )
     await websocket.send(pack.model_dump_json())
     for _ in range(50):  # 5 sec total
-        if state.get("response_ready"):
+        if state.get("response_ready") and state.get("_rpc_label") == label:
             return state.get("last_response")
         await asyncio.sleep(0.1)
     return {"error": "timeout waiting for response"}
@@ -244,7 +247,6 @@ async def rpc(websocket, state, service, method, data=None, dst=DST_NODE):
 # ------------------------------------------------------------------
 KNOWN_METHODS = {
     "netinfo": ["neighbors", "nodes", "services", "find_service"],
-    "compute": ["start_stream"],
     "compute_full": [
         "start_stream",
         "compute_ranges",

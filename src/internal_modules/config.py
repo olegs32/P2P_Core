@@ -117,10 +117,6 @@ def _load_yaml(path: Path) -> dict:
 
 def _save_yaml(path: Path, data: dict):
     path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, encoding='utf-8') as f:
-        existing = yaml.safe_load(f) or {} if path.exists() else {}
-
-    # сохраняем комментарии-заголовки если файл уже был
     with open(path, 'w', encoding='utf-8') as f:
         yaml.dump(data, f, allow_unicode=True,
                   default_flow_style=False, sort_keys=False)

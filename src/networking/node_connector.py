@@ -81,7 +81,8 @@ class NodeConnector(ModuleGeneric):
             try:
                 async with websockets.connect(self.target_uri) as ws:
                     self._ws = ws
-                    self.ctx.network.router.upstream_ws = ws
+                    # Регистрируем client-side WS в Router для ACK и маршрутизации
+                    self.ctx.network.router.register_client_ws(self.peer_node_id, ws)
 
                     # handshake
                     accepted = await self._handshake(ws)
@@ -108,6 +109,7 @@ class NodeConnector(ModuleGeneric):
                 self.log.error(f'Connector error ({self.peer_node_id}): {e}')
             finally:
                 self._ws = None
+                self.ctx.network.router.unregister_client_ws(self.peer_node_id)
                 self.ctx.network.neighbor_table.mark_unreachable(self.peer_node_id)
                 await asyncio.sleep(5)
 

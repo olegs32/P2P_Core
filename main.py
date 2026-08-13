@@ -2,10 +2,7 @@ import asyncio
 import logging
 from pathlib import Path
 
-
 from services.loader import ServiceLoader
-from services.netinfo.service import NetInfo
-from services.webpanel.service import WebPanel
 from src.internal_modules.config import load_config
 from src.internal_modules.context import AppContext, app_lifespan
 from src.internal_modules.memory import MemoryModule
@@ -14,10 +11,7 @@ from src.internal_modules.spawner import Spawner
 from src.networking.network import NetworkModule
 from src.networking.node_connector import NodeConnector
 
-config = {'node': 'Node0'}
 BASE_DIR = Path(Path().resolve())
-print(BASE_DIR)
-# exit()
 
 logging.basicConfig(
     level=logging.INFO,
@@ -37,7 +31,7 @@ async def main():
     setup_logging(cfg.logging)
 
     ctx = AppContext(cfg)
-    ctx.config_manager = cfg_manager  # доступен из любого модуля
+    ctx.config_manager = cfg_manager
 
     # порядок вызовов = порядок загрузки
     ctx.memory = ctx.register(MemoryModule(name='memory', context=ctx))
@@ -45,16 +39,10 @@ async def main():
                                              context=ctx,
                                              host=cfg.network.host,
                                              port=cfg.network.port, ))
+
+    # Spawner — не в services/, регистрируем вручную
     ctx.spawn = ctx.register(Spawner(name='spawner', context=ctx))
-
-    netinfo = NetInfo('netinfo', ctx)
-    webpanel = WebPanel('webpanel', ctx)
-
-    # # регистрация сервисов
-    ctx.services.register_service(netinfo)
     ctx.services.register_service(ctx.spawn)
-    ctx.services.register_service(webpanel)
-    ctx.register(webpanel)
     ctx.services.register_method(ctx.spawn, 'spawn', ctx.spawn.spawn)
     ctx.services.register_method(ctx.spawn, 'list_generators', ctx.spawn.list_generators)
 

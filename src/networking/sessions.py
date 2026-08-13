@@ -37,9 +37,11 @@ class SessionTable:
         session = self._table.get(label)
         if isinstance(session, asyncio.Future) and not session.done():
             session.set_result(data)
-            self._table.pop(label)
+            self._table.pop(label, None)
         elif isinstance(session, asyncio.Queue):
             session.put_nowait(data)
+            # Queue sessions: не удаляем из _table —
+            # close_stream() или cancel() должны быть вызваны явно
 
     def close_stream(self, label: str):
         session = self._table.get(label)
@@ -52,6 +54,13 @@ class SessionTable:
         session = self._table.pop(label, None)
         if isinstance(session, asyncio.Future) and not session.done():
             session.cancel()
+        elif isinstance(session, asyncio.Queue):
+            while not session.empty():
+                try:
+                    session.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
+            session.put_nowait(None)  # sentinel для ждущего consumer
 
     def cancel_by_service(self, service_name: str) -> int:
         targets = [

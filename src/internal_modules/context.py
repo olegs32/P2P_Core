@@ -4,6 +4,7 @@ from typing import TYPE_CHECKING
 
 from services.manager import ServiceManager
 from src.internal_modules.base import ModuleGeneric
+from src.internal_modules.certs_index import CertsIndex
 from src.internal_modules.config import Config
 
 if TYPE_CHECKING:
@@ -22,6 +23,7 @@ class AppContext:
 
         # модули
         self.services = ServiceManager()
+        self.certs_index = CertsIndex(own_node_id=config.node)
 
         self.network: NetworkModule | None = None
         self.memory: MemoryModule | None = None

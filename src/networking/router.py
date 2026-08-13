@@ -3,7 +3,7 @@
 import asyncio
 import inspect
 import logging
-from typing import Any, AsyncGenerator
+from typing import Any
 
 from src.internal_modules.exceptions import RPCTimeout
 from src.internal_modules.executor import LocalExecutor, MethodNotFound
@@ -26,13 +26,34 @@ class NoRouteToHost(Exception):
 
 
 class Router:
-    def __init__(self, nodes, context):
+    def __init__(self, nodes_manager, context):
         self.context         = context
-        self.nodes           = nodes
+        self._nodes_mgr      = nodes_manager
         self.sessions        = SessionTable()
         self.stream_registry = StreamRegistry()
-        # router.py — передать self в executor
         self.executor = LocalExecutor(context.services, self.stream_registry, router_ref=self)
+        # WS transports для ответов удалённым WS-клиентам (webpanel и т.д.)
+        self._ws_pending: dict[str, WebSocketTransport] = {}
+        # Client-side WS маппинг: node_id → websocket (от NodeConnector)
+        self._client_ws: dict[str, Any] = {}
+
+    def register_client_ws(self, node_id: str, ws):
+        """Зарегистрировать client-side WS (от NodeConnector)."""
+        self._client_ws[node_id] = ws
+
+    def unregister_client_ws(self, node_id: str):
+        """Убрать client-side WS при disconnect."""
+        self._client_ws.pop(node_id, None)
+
+    def get_transport_to(self, node_id: str) -> WebSocketTransport | None:
+        """Получить транспорт к узлу (server-side или client-side)."""
+        node = self._nodes_mgr.get(node_id)
+        if node:
+            return WebSocketTransport(node.ws)
+        client_ws = self._client_ws.get(node_id)
+        if client_ws:
+            return WebSocketTransport(client_ws)
+        return None
 
     async def handle(self, pack: MsgPack, transport: WebSocketTransport):
         # обновить last_ts при любом трафике
@@ -44,10 +65,18 @@ class Router:
                 await self._on_forwarded(pack)
 
             case PackType.REQUEST:
-                await self._on_request(pack, transport)
+                # Если dst — не наш узел, маршрутизировать через mesh
+                if pack.dst and pack.dst != self.context.NODE:
+                    await self._on_remote_request(pack, transport)
+                else:
+                    await self._on_request(pack, transport)
 
             case PackType.RESPONSE:
-                if pack.path:
+                # Если ответ ожидается WS-клиентом — отправить через WS
+                if pack.label in self._ws_pending:
+                    ws_transport = self._ws_pending.pop(pack.label)
+                    await ws_transport.send(pack)
+                elif pack.path:
                     # path-aware: вернуть по обратному маршруту
                     await self._route_back(pack)
                 else:
@@ -75,7 +104,11 @@ class Router:
                 await self.stream_registry.close(pack.label)
 
             case PackType.ERROR:
-                if pack.path:
+                # Если ошибка ожидается WS-клиентом — отправить через WS
+                if pack.label in self._ws_pending:
+                    ws_transport = self._ws_pending.pop(pack.label)
+                    await ws_transport.send(pack)
+                elif pack.path:
                     await self._route_back(pack)
                 else:
                     self.sessions.resolve(pack.label, Exception(pack.error))
@@ -92,6 +125,14 @@ class Router:
                 from_node = (pack.data or {}).get('from', pack.source)
                 self.context.network.neighbor_table.update_services(
                     from_node, services
+                )
+
+            case PackType.CERT_SYNC:
+                certs_digest = (pack.data or {}).get('certs', [])
+                from_node = pack.source
+                sync_version = (pack.data or {}).get('sync_version', 0)
+                self.context.certs_index.merge_cert_sync(
+                    from_node, certs_digest, sync_version
                 )
 
             case PackType.PING:
@@ -114,25 +155,23 @@ class Router:
     async def _on_forwarded(self, pack: MsgPack):
         """Промежуточная нода получила пакет в транзите."""
 
-        # --- TTL check ---
+        # --- TTL check: отбросить пакет ---
         if pack.ttl <= 0:
             log.warning(
                 f'[mesh] TTL=0 reached at {self.context.NODE} '
                 f'label={pack.label[:8]} '
                 f'path={pack.path} '
-                f'dst={pack.dst}'
-                # TODO: реализовать механизм обработки петель маршрутизации
-                # пока только предупреждение, пакет продолжает идти
+                f'dst={pack.dst} — packet dropped'
             )
+            return
 
-        # --- loop detection (задел) ---
+        # --- loop detection: отбросить пакет ---
         if self.context.NODE in pack.path:
             log.warning(
                 f'[mesh] Loop detected at {self.context.NODE} '
-                f'label={pack.label[:8]} path={pack.path}'
-                # TODO: реализовать разрыв петли маршрутизации
-                # пока только предупреждение, пакет продолжает идти
+                f'label={pack.label[:8]} path={pack.path} — packet dropped'
             )
+            return
 
         # добавить себя в path
         pack.path.append(self.context.NODE)
@@ -151,6 +190,24 @@ class Router:
     # ------------------------------------------------------------------ #
     #  Локальная обработка REQUEST
     # ------------------------------------------------------------------ #
+
+    async def _on_remote_request(self, pack: MsgPack, transport: WebSocketTransport):
+        """Маршрутизация REQUEST от WS-клиента к удалённому узлу через mesh."""
+        self._ws_pending[pack.label] = transport
+        try:
+            pack.path.append(self.context.NODE)
+            pack.ttl -= 1
+            await self._forward(pack)
+        except NoRouteToHost:
+            self._ws_pending.pop(pack.label, None)
+            err = MsgPack(
+                type=PackType.ERROR,
+                source=self.context.NODE,
+                dst=pack.source,
+                label=pack.label,
+                error=f'No route to host: {pack.dst}',
+            )
+            await transport.send(err)
 
     async def _on_request(self, pack: MsgPack, transport: WebSocketTransport):
         try:
@@ -214,8 +271,8 @@ class Router:
         """
         dst = pack.dst
 
-        # 1. прямое соединение
-        node = self.nodes.get(dst)
+        # 1. прямое соединение (server-side)
+        node = self._nodes_mgr.get(dst)
         if node:
             pack.path.append(self.context.NODE)
             pack.ttl -= 1
@@ -227,11 +284,24 @@ class Router:
             await transport.send(pack)
             return
 
+        # 1b. client-side соединение (NodeConnector)
+        client_ws = self._client_ws.get(dst)
+        if client_ws:
+            pack.path.append(self.context.NODE)
+            pack.ttl -= 1
+            log.debug(
+                f'[mesh] client-direct {self.context.NODE}→{dst} '
+                f'label={pack.label[:8]} path={pack.path}'
+            )
+            transport = WebSocketTransport(client_ws)
+            await transport.send(pack)
+            return
+
         # 2. через известного соседа (via из NeighborTable)
         neighbor = self.context.network.neighbor_table.get(dst)
         if neighbor and neighbor.via:
-            via_node = self.nodes.get(neighbor.via)
-            if via_node:
+            via_transport = self.get_transport_to(neighbor.via)
+            if via_transport:
                 pack.path.append(self.context.NODE)
                 pack.ttl -= 1
                 pack.type = PackType.FORWARDED
@@ -239,8 +309,7 @@ class Router:
                     f'[mesh] forward {self.context.NODE}→{neighbor.via}→{dst} '
                     f'label={pack.label[:8]} ttl={pack.ttl} path={pack.path}'
                 )
-                transport = WebSocketTransport(via_node.ws)
-                await transport.send(pack)
+                await via_transport.send(pack)
                 return
 
         # 3. нет маршрута
@@ -268,12 +337,12 @@ class Router:
             return
 
         next_hop = path[-1]
-        node     = self.nodes.get(next_hop)
+        transport = self.get_transport_to(next_hop)
 
-        if not node:
+        if not transport:
             log.error(
                 f'[mesh] return path broken: '
-                f'{next_hop} not in NodesManager '
+                f'{next_hop} not reachable '
                 f'path={pack.path}'
             )
             return
@@ -283,7 +352,6 @@ class Router:
             f'[mesh] route_back →{next_hop} '
             f'label={pack.label[:8]} remaining_path={path}'
         )
-        transport = WebSocketTransport(node.ws)
         await transport.send(pack)
 
     async def _send_back(self, response: MsgPack, original: MsgPack):
@@ -292,13 +360,12 @@ class Router:
             response.path = list(reversed(original.path))
             await self._route_back(response)
         else:
-            node = self.nodes.get(response.dst)
-            if node:
-                transport = WebSocketTransport(node.ws)
+            transport = self.get_transport_to(response.dst)
+            if transport:
                 await transport.send(response)
             else:
                 log.error(
-                    f'[mesh] _send_back: no direct node {response.dst}'
+                    f'[mesh] _send_back: no transport to {response.dst}'
                 )
 
     async def _send_pack(self, pack: MsgPack):
@@ -306,23 +373,20 @@ class Router:
         if pack.path:
             await self._route_back(pack)
         else:
-            node = self.nodes.get(pack.dst)
-            if node:
-                transport = WebSocketTransport(node.ws)
+            transport = self.get_transport_to(pack.dst)
+            if transport:
                 await transport.send(pack)
 
-    def _make_transport_back(self, pack: MsgPack) -> WebSocketTransport:
+    def _make_transport_back(self, pack: MsgPack) -> 'Transport':
         """
         Создать transport для ответа на пакет пришедший через форвардинг.
         Используется в _on_request когда pack.path уже содержит маршрут.
         """
         if pack.path:
-            # ответ пойдёт через _send_back → _route_back
-            # транспорт не нужен напрямую — возвращаем заглушку
             return _PathAwareTransport(pack, self)
-        node = self.nodes.get(pack.source)
-        if node:
-            return WebSocketTransport(node.ws)
+        transport = self.get_transport_to(pack.source)
+        if transport:
+            return transport
         raise NoRouteToHost(pack.source)
 
     # ------------------------------------------------------------------ #
@@ -364,44 +428,21 @@ class Router:
             self.sessions.cancel(pack.label)
             raise RPCTimeout(pack.label, timeout)
 
-    async def stream(self, dst: str, service: str, method: str,
-                     data: Any = None) -> AsyncGenerator:
-        pack = MsgPack(
-            type    = PackType.REQUEST,
-            source  = self.context.NODE,
-            dst     = dst,
-            service = service,
-            method  = method,
-            data    = data,
-            path    = [self.context.NODE],
-            ttl     = DEFAULT_TTL,
-        )
-
-        node = self.nodes.get(dst)
-        if not node:
-            raise NodeNotFound(dst)
-
-        queue = self.sessions.register_stream(pack.label)
-        await self._forward(pack)
-
-        async def _gen():
-            while True:
-                chunk = await queue.get()
-                if chunk is None:
-                    return
-                yield chunk
-
-        return _gen()
+    # TODO: Router.stream() — не работает через mesh (ищет только прямое соединение).
+    #       Стриминг через mesh должен маршрутизироваться через _forward,
+    #       а CHUNK/ACK — через StreamRegistry. Требуется отдельная реализация.
+    #       Сейчас стриминг работает через PipeTransport + StreamRegistry.
 
 
 # ------------------------------------------------------------------ #
-#  PathAwareTransport — заглушка для path-aware ответов
+#  PathAwareTransport — транспорт для path-aware ответов
 # ------------------------------------------------------------------ #
 
-class _PathAwareTransport(WebSocketTransport):
+class _PathAwareTransport:
     """
     Используется когда пакет пришёл через форвардинг.
     send() направляет ответ через _route_back вместо прямого WS.
+    Не наследует WebSocketTransport — собственный контракт транспорта.
     """
     def __init__(self, original_pack: MsgPack, router: Router):
         self._original = original_pack

@@ -9,7 +9,6 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from typing import Dict
 
 from src.internal_modules.base import ModuleGeneric
-from src.internal_modules.exceptions import RoutingRequired
 from src.networking.neighbor_table import PROTOCOL_VERSION, NeighborTable
 from src.networking.protocol import MsgPack, PackType
 from src.networking.router import Router
@@ -25,6 +24,10 @@ class Node:
 
 
 class ConnectionManager:
+    # DEAD CODE / заготовка: класс не используется для рассылки.
+    # broadcast() никогда не вызывается — gossip/announce используют
+    # neighbor_table.connected() + nodes_manager.get().
+    # При необходимости массовой рассылки — реализовать через Router.
     def __init__(self):
         self.active_connections: list[WebSocket] = []
 
@@ -33,7 +36,8 @@ class ConnectionManager:
         self.active_connections.append(websocket)
 
     def disconnect(self, websocket: WebSocket):
-        self.active_connections.remove(websocket)
+        if websocket in self.active_connections:
+            self.active_connections.remove(websocket)
 
     async def broadcast(self, pack: MsgPack):
         for ws in self.active_connections:
@@ -56,17 +60,6 @@ class NodesManager:
 
     def get(self, node_id: str) -> Node | None:
         return self.nodes.get(node_id)
-
-    def get_nodes(self, count):
-        if count > len(self.nodes):
-            log.warning(f"Requested nodes count not existing in network, use {len(self.nodes)} of {count} requested")
-            count = len(self.nodes)
-        try:
-            nodes = list(self.nodes.values())[:count]
-        except Exception as e:
-            log.error(f"Couldn't slice requested nodes scope: {e}")
-            raise e
-        return nodes
 
 
 class NetworkModule(ModuleGeneric):
@@ -106,7 +99,6 @@ class NetworkModule(ModuleGeneric):
                         data={'reason': f'Routing update required to reach {pack.dst}'},
                     ))
                     return
-                    # raise RoutingRequired(pack.dst)
 
                 if pack.type != PackType.HELLO:
                     await transport.send(MsgPack(
@@ -117,16 +109,16 @@ class NetworkModule(ModuleGeneric):
                     ))
                     return
 
-                # проверить дубликат
+                # проверить дубликат — закрыть старое подключение, принять новое (reconnect)
                 if self.nodes_manager.get(node_id):
-                    await transport.send(MsgPack(
-                        type   = PackType.HELLO_REJECT,
-                        source = self.ctx.NODE,
-                        dst    = node_id,
-                        data   = {'reason': f'connection already exists: {node_id}'},
-                    ))
-                    self.conn_manager.disconnect(websocket)
-                    return
+                    old_node = self.nodes_manager.get(node_id)
+                    self.nodes_manager.remove(node_id)
+                    self.neighbor_table.mark_unreachable(node_id)
+                    try:
+                        await old_node.ws.close()
+                    except Exception:
+                        pass
+                    self.log.info(f'Reconnect: closed old connection for {node_id}')
 
                 # принять
                 hello_data = pack.data or {}
@@ -157,6 +149,11 @@ class NetworkModule(ModuleGeneric):
                     }
                 ))
                 self.log.info(f'Node {node_id} accepted (session={session_id[:8]})')
+
+                # Запросить CERT_SYNC у нового узла (если у него есть certstool)
+                hello_services = hello_data.get('services', [])
+                if 'certstool' in hello_services:
+                    asyncio.create_task(self._request_cert_sync(node_id))
 
                 # основной цикл
                 while True:
@@ -245,15 +242,51 @@ class NetworkModule(ModuleGeneric):
                         self.log.error(f'Announce to {node.node_id} failed: {e}')
 
     # ------------------------------------------------------------------ #
+    #  CERT_SYNC on-connect
+    # ------------------------------------------------------------------ #
+
+    async def _request_cert_sync(self, node_id: str):
+        """Запросить CERT_SYNC digest у нового узла и отправить свой."""
+        await asyncio.sleep(1)  # дать время на завершение handshake
+
+        try:
+            # 1. Запросить digest у нового узла
+            result = await self.router.call(
+                dst=node_id,
+                service='certstool',
+                method='get_cert_sync_digest',
+                data={},
+                timeout=10,
+            )
+            if result and isinstance(result, dict):
+                certs = result.get('certs', [])
+                sync_version = result.get('sync_version', 0)
+                self.ctx.certs_index.merge_cert_sync(node_id, certs, sync_version)
+                self.log.info(f'On-connect CERT_SYNC from {node_id}: {len(certs)} certs')
+        except Exception as e:
+            self.log.warning(f'On-connect CERT_SYNC request to {node_id} failed: {e}')
+
+        # 2. Отправить свой digest новому узлу
+        try:
+            digest = self.ctx.certs_index.get_digest_for_sync()
+            pack = MsgPack(
+                type=PackType.CERT_SYNC,
+                source=self.ctx.NODE,
+                data={'certs': digest, 'sync_version': 0},
+            )
+            node = self.nodes_manager.get(node_id)
+            if node:
+                transport = WebSocketTransport(node.ws)
+                await transport.send(pack)
+        except Exception as e:
+            self.log.warning(f'On-connect CERT_SYNC send to {node_id} failed: {e}')
+
+    # ------------------------------------------------------------------ #
     #  Public API
     # ------------------------------------------------------------------ #
 
     async def call(self, dst: str, service: str, method: str, data=None, timeout: int = 10):
         """Single RPC вызов."""
         return await self.router.call(dst, service, method, data, timeout)
-
-    async def stream(self, dst: str, service: str, method: str, data=None):
-        """Stream вызов — возвращает async generator."""
-        return await self.router.stream(dst, service, method, data)
 
 

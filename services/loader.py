@@ -20,7 +20,6 @@ log = logging.getLogger('ServiceLoader')
 class ServiceLoader:
     def __init__(self, services_path: Path, context, services_manager):
         self.path     = Path(services_path)
-        print(self.path)
         self.context  = context
         self.manager  = services_manager
         self._observer: Observer | None = None
@@ -100,7 +99,9 @@ class ServiceLoader:
             self.manager.register_service(instance)
             for method_name, method in rpc_methods.items():
                 self.manager.register_method(instance, method_name, method)
-                log.info(f'Registered {service_name}.{method_name}')
+            # Регистрация в lifecycle для корректного start()/stop()
+            self.context.register(instance)
+            log.info(f'Registered {service_name}.{method_name}')
 
     def _cancel_pending(self, service_name: str):
         """Отменить все pending futures для данного сервиса."""

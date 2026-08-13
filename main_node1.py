@@ -1,3 +1,5 @@
+# DEPRECATED: тестовая версия ноды для ручного запуска второго узла.
+# Подлежит удалению после перехода на конфигурационный запуск (config.local.yaml).
 import asyncio
 
 from main import BASE_DIR
@@ -10,8 +12,6 @@ from src.networking.node_connector import NodeConnector
 from services.compute_full.service import Compute
 
 setup_logging()
-
-config = {'node': 'Node1'}
 
 async def main():
     cfg_manager = load_config(

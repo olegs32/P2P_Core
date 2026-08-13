@@ -1,6 +1,6 @@
 # P2P Core — Mesh Network P2P System
 
-WebSocket-based P2P mesh network with RPC service discovery, multi-hop routing, and distributed data streaming with backpressure.
+WebSocket-based P2P mesh network with RPC service discovery, multi-hop routing, distributed data streaming with backpressure, CryptoPro certificate management, and web control panel.
 
 ## Содержание
 
@@ -14,9 +14,13 @@ WebSocket-based P2P mesh network with RPC service discovery, multi-hop routing, 
 - [Обнаружение сервисов](#обнаружение-сервисов)
 - [Стриминг с backpressure](#стриминг-с-backpressure)
 - [RPC система](#rpc-система)
+- [Веб-панель управления](#веб-панель-управления)
+- [Сертификаты КриптоПро](#сертификаты-криптопро)
 - [Сервисы](#сервисы)
+- [Создание нового сервиса](#создание-нового-сервиса)
 - [Тестирование](#тестирование)
 - [Структура проекта](#структура-проекта)
+- [Зависимости](#зависимости)
 
 ---
 
@@ -33,6 +37,8 @@ WebSocket-based P2P mesh network with RPC service discovery, multi-hop routing, 
 | **RPC** | Удалённый вызов методов между узлами с автоматической маршрутизацией |
 | **Streaming** | Потоковая передача данных с backpressure между producer и consumer узлами |
 | **Service Loader** | Динамическая загрузка и hot-reload сервисов из директории `services/` |
+| **Web Panel** | Streamlit-панель управления с доступом к любому узлу сети |
+| **CertsTool** | Управление КриптоПро сертификатами с сетевым деплоем между узлами |
 
 ---
 
@@ -42,25 +48,31 @@ WebSocket-based P2P mesh network with RPC service discovery, multi-hop routing, 
 ┌─────────────────────────────────────────────────────────────┐
 │                        Node (FastAPI)                        │
 ├─────────────────────────────────────────────────────────────┤
-│  NetworkModule (WebSocket endpoint /ws/{node_id})            │
-│  ├── Router (message dispatch, TTL, path-based routing)      │
-│  ├── ConnectionManager (incoming connections)                │
-│  ├── NodesManager (peer state, gossip, announce)             │
-│  └── NodeConnector (outgoing peer connections)               │
+│  NetworkModule (WebSocket endpoint /ws/{node_id})           │
+│  ├── Router (message dispatch, TTL, path-based routing)     │
+│  ├── ConnectionManager (incoming connections)               │
+│  ├── NodesManager (peer state, gossip, announce)            │
+│  └── NodeConnector (outgoing peer connections)              │
 ├─────────────────────────────────────────────────────────────┤
-│  MemoryModule (streaming infrastructure)                     │
-│  ├── Pipe (async queue with backpressure)                    │
-│  ├── Dispatcher (distribute to multiple pipes)               │
-│  └── PipeTransport (network chunk transfer + ACK)            │
+│  MemoryModule (streaming infrastructure)                    │
+│  ├── Pipe (async queue with backpressure)                   │
+│  ├── Dispatcher (distribute to multiple pipes)              │
+│  └── PipeTransport (network chunk transfer + ACK)           │
 ├─────────────────────────────────────────────────────────────┤
-│  ServiceLoader + ServiceManager                              │
-│  ├── Dynamic import from services/                           │
-│  ├── Hot-reload via watchdog                                 │
-│  └── RPC method registration                                 │
+│  ServiceLoader + ServiceManager                             │
+│  ├── Dynamic import from services/                          │
+│  ├── Hot-reload via watchdog                               │
+│  └── RPC method registration                               │
 ├─────────────────────────────────────────────────────────────┤
-│  Spawner (distributed compute jobs)                          │
+│  Spawner (distributed compute jobs)                         │
 ├─────────────────────────────────────────────────────────────┤
-│  AppContext (module registry, lifespan management)            │
+│  CertsIndex (network certificate metadata)                  │
+├─────────────────────────────────────────────────────────────┤
+│  WebPanel (Streamlit subprocess on port 8501)               │
+│  ├── NodeRPC (sync WS RPC client for Streamlit)             │
+│  └── RPCProxy (injects dst for remote node targeting)       │
+├─────────────────────────────────────────────────────────────┤
+│  AppContext (module registry, lifespan management)          │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -87,14 +99,25 @@ WebSocket-based P2P mesh network with RPC service discovery, multi-hop routing, 
 - `PipeTransport`: отправка батчами + ACK protocol
 - Автоматическая пауза при заполнении буфера
 
-### 4. Connection Deduplication
-- Lexicographic rule: `self.NODE_ID < peer.NODE_ID` предотвращает дублирующие соединения
-- HELLO handshake отклоняет дубликаты, неправильный тип или destination
+### 4. Connection Reconnect
+- При дубликате node_id — закрыть старое подключение, принять новое (reconnect pattern)
+- Позволяет Streamlit обновлять страницу без HELLO_REJECT
 
 ### 5. Hot-Reload Сервисов
 - `watchdog` мониторит директорию `services/`
 - Динамический re-import без перезапуска узла
 - Отмена pending RPC при reload
+
+### 6. Web Panel
+- Streamlit на отдельном порту (8501), подключается к узлу как WS-клиент
+- Навигация по сервисам с группировкой и иконками
+- Управление любой нодой сети через mesh-маршрутизацию RPC
+- Динамический рендеринг `web_ui.py` каждого сервиса
+
+### 7. Сетевой деплой сертификатов
+- CERT_SYNC: периодическая рассылка digest сертификатов в mesh
+- On-connect обмен при подключении нового узла
+- Сетевая установка с одноразовыми паролями и конфликтом по subject_cn
 
 ---
 
@@ -107,7 +130,8 @@ python main.py
 ```
 
 - Загружает `config.yaml`
-- Стартует FastAPI сервер
+- Стартует FastAPI сервер на порту 9000
+- Запускает Streamlit-панель на порту 8501
 - Автоматически загружает все сервисы из `services/`
 - Подключается к настроенным пирам
 
@@ -119,23 +143,16 @@ python main_node1.py
 
 - Загружает `config1.yaml` + `config1.local.yaml`
 - Подключается к Node0 как outgoing peer
-- Запускает Compute сервис (consumer-only)
+
+### Веб-панель
+
+Откройте `http://localhost:8501` после запуска узла.
 
 ### Тестовый клиент
 
 ```bash
 python debug_client.py
 ```
-
-Выполняет 7 тестов:
-1. Ping/Pong
-2. Таблица соседей
-3. Активные узлы
-4. Список сервисов
-5. Поиск сервиса
-6. Отклонение дублирующих соединений
-7. Локальный стриминг с backpressure
-8. Node-to-node streaming
 
 ---
 
@@ -153,29 +170,23 @@ python debug_client.py
 
 Двухфайловая система с deep merge:
 - `config.yaml` — shared настройки
-- `config.local.yaml` — локальные override
+- `config.local.yaml` — локальные override (в .gitignore)
 
 ```yaml
-node:
-  name: "Node0"
+node: Node0
 
 network:
   host: "0.0.0.0"
   port: 9000
 
 memory:
-  buffer_size: 1024
+  default_buff: 10
 
 logging:
   level: "INFO"
 
 services:
-  path: "services"
-
-peers:
-  - host: "localhost"
-    port: 9001
-    node_id: "Node1"
+  path: "services/"
 ```
 
 ### ConfigManager API
@@ -184,11 +195,11 @@ peers:
 from src.internal_modules.config import ConfigManager
 
 config = ConfigManager()
-config.get("network.port")       # Получить значение
-config.update({"network.port": 9002})  # Обновить с автосохранением
-config.add_peer(...)             # Добавить пира
-config.remove_peer("Node1")      # Удалить пира
-config.list_peers()              # Список пиров
+config.get("network.port")                    # Получить значение
+config.update({"network.port": 9002})         # Обновить с автосохранением
+config.add_peer(...)                          # Добавить пира
+config.remove_peer("Node1")                   # Удалить пира
+config.list_peers()                           # Список пиров
 ```
 
 ---
@@ -200,7 +211,7 @@ config.list_peers()              # Список пиров
 | Тип | Направление | Описание |
 |-----|-------------|----------|
 | `HELLO` | → | Запрос подключения |
-| `HELLO_ACK` | ← | Подтверждение подключения |
+| `HELLO_ACK` | ← | Подтверждение подключения + таблица соседей |
 | `HELLO_REJECT` | ← | Отклонение подключения |
 | `REQUEST` | → | RPC вызов |
 | `RESPONSE` | ← | RPC ответ |
@@ -214,6 +225,7 @@ config.list_peers()              # Список пиров
 | `PING` / `PONG` | ↔ | Keepalive |
 | `GOSSIP` | ↔ | Обмен топологией |
 | `ANNOUNCE` | ↔ | Объявление сервисов |
+| `CERT_SYNC` | ↔ | Рассылка digest сертификатов |
 
 ### Структура сообщения (`MsgPack`)
 
@@ -222,23 +234,15 @@ MsgPack(
     type=PackType.REQUEST,
     source="Node0",
     dst="Node2",
-    service="compute",
-    method="start_stream",
-    data={"ranges": [...]},
-    label="uuid-...",       # Идентификатор сессии/стрима
-    path=["Node0", "Node1"], # История маршрута
-    ttl=16,                  # Time-to-live
+    service="certstool",
+    method="list_certificates",
+    data={},
+    label="uuid-...",         # Идентификатор сессии
+    path=["Node0", "Node1"],  # История маршрута
+    ttl=16,                   # Time-to-live
     error=None
 )
 ```
-
-### WebSocket Transport
-
-`WebSocketTransport` работает с обоими типами соединений:
-- FastAPI WebSocket (server-side, `send_json`)
-- `websockets` client connections
-
-Автоматически определяет тип и использует соответствующий метод отправки.
 
 ---
 
@@ -251,21 +255,13 @@ Node0 → Node1 → Node2
 ```
 
 1. Node0 отправляет `REQUEST` с `path=["Node0"]`, `ttl=16`
-2. Node1 принимает, decrement TTL до 15, добавляет себя в `path`
-3. Node1 пересылает `FORWARDED` пакет в Node2
-4. Node2 выполняет вызов локально через `LocalExecutor`
-5. Ответ идёт обратно по reversed `path`: Node2 → Node1 → Node0
+2. Node1 принимает, decrement TTL, добавляет себя в `path`, пересылает `FORWARDED`
+3. Node2 выполняет вызов локально через `LocalExecutor`
+4. Ответ идёт обратно по reversed `path`: Node2 → Node1 → Node0
 
-### Loop detection
+### WS-клиенты (webpanel)
 
-Если узел обнаруживает себя в `pack.path`, он логирует warning. Полная блокировка циклов — TODO.
-
-### Session tracking
-
-`SessionTable` хранит:
-- `register_single(label, Future)` — для one-shot RPC
-- `register_stream(label, Queue)` — для streaming
-- `cancel_by_service(service)` — отмена при hot-reload
+RPC от WS-клиентов к удалённым узлам: Router сохраняет WS-transport в `_ws_pending[label]`, форвардит запрос. Ответ возвращается через `_ws_pending` напрямую в WS, минуя `_route_back`.
 
 ---
 
@@ -277,12 +273,11 @@ Node0 → Node1 → Node2
 
 ```python
 neighbor_table.merge_gossip(received_gossip)
-# Обновляет статусы, via (next-hop), last_activity, services
 ```
 
 ### Announce (каждые 60s)
 
-Рассылка списка локальных сервисов всем известным узлам.
+Рассылка списка локальных сервисов всем known-узлам.
 
 ### NeighborTable
 
@@ -291,20 +286,20 @@ class NeighborInfo:
     node_id: str
     status: NeighborStatus  # CONNECTED / KNOWN / UNREACHABLE
     via: str                # Next-hop для маршрутизации
-    last_activity: float
-    services: list[str]
-```
-
-### Поиск сервисов
-
-```python
-# Найти узлы, предоставляющие сервис "compute"
-nodes = neighbor_table.find_by_service("compute")
+    last_ts: float          # Timestamp последнего трафика
+    services: list[str]     # Сервисы на этом узле
 ```
 
 ---
 
-## Стриминг с Backpressure
+## Стриминг с backpressure
+
+### Поток данных
+
+```
+Generator → Dispatcher → [Pipe] → PipeTransport → Network (STREAM_CHUNK)
+                                                   ← STREAM_ACK
+```
 
 ### Компоненты
 
@@ -312,33 +307,13 @@ nodes = neighbor_table.find_by_service("compute")
 |-----------|------|
 | **Pipe** | Async queue с `buff_len`, `low_watermark`, refill callback |
 | **Dispatcher** | Распределяет данные генератора по множеству pipes |
-| **PipeTransport** | Отправляет чанки по сети, ждёт ACK перед следующей партией |
-
-### Поток данных
-
-```
-Generator → Dispatcher → Pipe → PipeTransport → Network → Stream Chunk
-                                                        ↓
-                                                  ACK ← Remote
-```
-
-### Backpressure механизм
-
-1. `Pipe` имеет `buff_len` (размер буфера)
-2. Когда буфер заполняется, `Dispatcher` ставит producer на паузу
-3. `PipeTransport` отправляет батч и ждёт `STREAM_ACK`
-4. После получения ACK буфер освобождается, producer возобновляет работу
+| **PipeTransport** | Отправляет батчи по сети, ждёт ACK перед следующей партией |
+| **MemoryModule** | Фабрика: `create_pipe()`, `create_dispatcher()`, `attach_transport()` |
+| **StreamRegistry** | Реестр inbound-стримов: label → Pipe |
 
 ### Spawner — распределённые вычисления
 
-```python
-# RPC метод spawn
-# 1. Берёт генератор с локального сервиса
-# 2. Создаёт pipes для каждого worker node
-# 3. Dispatcher распределяет данные
-# 4. PipeTransport отправляет батчи worker'ам
-# 5. Workers обрабатывают и возвращают результаты
-```
+Берёт генератор с локального сервиса, создаёт N Pipe + Dispatcher, подключает каждый Pipe к удалённому worker-узлу через PipeTransport.
 
 ---
 
@@ -349,50 +324,145 @@ Generator → Dispatcher → Pipe → PipeTransport → Network → Stream Chunk
 ```python
 from services.rpc import rpc, generator, stream_wrapper, stream_consumer
 
-class MyService:
+class MyService(ModuleGeneric):
     @rpc
-    def echo(self, data: dict) -> dict:
-        """Обычный RPC вызов"""
+    async def echo(self, data: dict) -> dict:
         return {"echo": data}
 
     @generator
     def compute_ranges(self, start: int, end: int):
-        """Генератор для streaming"""
         for i in range(start, end):
             yield i
 
-    @stream_wrapper
+    @stream_wrapper("my_stream")
     def open_stream(self, context: dict):
-        """Подготовка контекста стрима"""
         pass
 
-    @stream_consumer
+    @stream_consumer("my_stream")
     def run_range(self, pipe, context: dict):
-        """Обработка чанков из pipe"""
         async for chunk in pipe:
             process(chunk)
 ```
 
-### Автоматическая регистрация
-
-- `@rpc` методы регистрируются напрямую
-- `@generator` методы автоматически регистрируются с префиксом `__gen__`
-- `ServiceLoader` сканирует `services/` и импортирует все Python файлы
-
 ### Вызов RPC
 
 ```python
-# Локальный вызов
-result = await network_module.call(service="test", method="echo", data={"msg": "hi"})
-
-# Remote вызов (автоматическая маршрутизация)
-result = await network_module.call(
-    service="compute",
-    method="start_stream",
-    data={"start": 0, "end": 100},
-    dst="Node2"  # Если не указан, маршрутизируется автоматически
+# Из async-кода (модули)
+result = await ctx.network.call(
+    dst="Node2",
+    service="certstool",
+    method="list_certificates",
+    data={},
+    timeout=10
 )
+
+# Локальный shortcut (dst = self)
+result = await ctx.network.call(dst=ctx.NODE, ...)
+
+# Из Streamlit (синхронный)
+rpc.call('certstool', 'list_certificates', data={})
+rpc.call('certstool', 'network_certs', data={}, dst='Node1')
 ```
+
+---
+
+## Веб-панель управления
+
+### Архитектура
+
+```
+WebPanel (service.py)          — запускает Streamlit subprocess
+  └── _streamlit_app.py        — entry point
+       ├── rpc_client.py       — NodeRPC: синхронный WS RPC в отдельном потоке
+       ├── RPCProxy            — подставляет dst из session_state['selected_node']
+       ├── views/home.py       — главная: метрики + таблица соседей + сервисы
+       └── views/service_view.py — динамический import web_ui.py → render(rpc)
+```
+
+### Контракт web_ui.py
+
+Каждый сервис с веб-интерфейсом должен содержать `services/<name>/web_ui.py` с функцией:
+
+```python
+def render(rpc):
+    """rpc — RPCProxy, поддерживает rpc.call(service, method, data, dst, timeout)"""
+    ...
+```
+
+### Sidebar навигация
+
+- Кнопки с иконками и группировкой по категориям
+- Селектор целевого узла (локальный / connected / known)
+- Активная кнопка подсвечивается `type="primary"`
+
+### Реестр сервисов
+
+```python
+SERVICE_META = {
+    'certstool':    ('🔐', 'Сертификаты',  'Управление КриптоПро сертификатами'),
+    'netinfo':      ('🌐', 'Сеть',         'Состояние сети и маршрутизация'),
+    'compute_full': ('⚡', 'Вычисления',   'Генератор + консьюмер'),
+    'generator':    ('📤', 'Вычисления',   'Генератор стримов'),
+    'compute':      ('⏳', 'Вычисления',   'Стрим-консьюмер'),
+    'test':         ('🧪', 'Диагностика',  'Тестовый echo-сервис'),
+}
+```
+
+---
+
+## Сертификаты КриптоПро
+
+### CertsTool — управление сертификатами
+
+Сервис `certstool` предоставляет 17 RPC-методов:
+
+| Метод | Описание |
+|-------|----------|
+| `list_certificates` | Список установленных сертификатов |
+| `find_certificate_by_subject` | Поиск по Subject |
+| `find_certificates_by_subject` | Поиск всех по Subject |
+| `deploy_certificate` | Развертывание из PFX + CER |
+| `export_certificate_pfx` | Экспорт закрытого ключа в PFX (base64) |
+| `export_certificate_cer` | Экспорт открытого ключа в CER (base64) |
+| `export_certificate_by_subject` | Экспорт по Subject (PFX + CER) |
+| `export_certificates_by_subject` | Массовый экспорт по Subject |
+| `delete_certificate` | Удаление по thumbprint |
+| `install_pfx_from_base64` | Установка PFX из base64 |
+| `export_pfx_to_bytes` | Экспорт PFX в base64 (в памяти) |
+| `batch_install_pfx_from_bytes` | Пакетная установка со сменой пароля |
+| `get_dashboard_data` | Данные для веб-панели |
+| `get_certificate_info` | Информация по контейнеру или thumbprint |
+| `network_certs` | Сертификаты из сети, не установленные локально |
+| `install_from_node` | Сетевая установка с удалённого узла |
+| `get_cert_sync_digest` | Digest для CERT_SYNC |
+| `get_install_history` | История сетевых установок |
+
+### CERT_SYNC — сетевая синхронизация
+
+1. **Периодическая рассылка** (каждые 60с): CertsTool обновляет CertsIndex, рассылает CERT_SYNC соседям
+2. **On-connect**: при HELLO от узла с `certstool` — немедленный обмен digest
+3. **Router.handle(CERT_SYNC)**: вызывает `CertsIndex.merge_cert_sync()`
+
+### Сетевая установка
+
+```
+NodeA (источник)                      NodeB (целевой)
+  1. get_certificate_info(thumbprint) →  ← RPC через mesh
+  2. export_pfx_to_bytes(container,     ← одноразовый пароль
+     one_time_password)
+  3. PFX + password →                  →  install_pfx_from_base64(pfx, otp)
+                                            сменить пароль контейнера
+                                            обновить CertsIndex
+```
+
+### Веб-интерфейс CertsTool
+
+5 вкладок:
+1. **Сертификаты** — построчный рендер с PFX/CER/Delete, 🟢🟡🔴 expiry badges
+2. **Установка** — PFX из файла, пакетная установка
+3. **🌐 Сетевая установка** — сертификаты из сети, группировка по subject_cn, конфликт-детекция, пакетная очередь
+4. **Экспорт** — по Subject или контейнеру
+5. **Поиск** — по паттерну Subject
 
 ---
 
@@ -400,41 +470,80 @@ result = await network_module.call(
 
 ### Встроенные сервисы
 
-| Сервис | Файл | RPC методы | Описание |
-|--------|------|------------|----------|
-| **netinfo** | `services/netinfo/service.py` | `neighbors`, `nodes`, `services`, `find_service` | Диагностика сети |
-| **compute_full** | `services/compute_full/service.py` | `start_stream`, `compute_ranges`, `compute_squares`, `run_range` | Полный compute pipeline |
-| **compute** | `services/compute/service.py` | — | Consumer-only compute (Node1) |
-| **generator** | `services/generator/service.py` | `start_stream` | Простой генератор диапазонов |
-| **test** | `services/test/service.py` | `echo`, `echo_stream` | Тестовый сервис |
+| Сервис | Файл | Описание |
+|--------|------|----------|
+| **netinfo** | `services/netinfo/` | Диагностика сети: соседи, узлы, сервисы, поиск |
+| **certstool** | `services/certstool/` | Управление КриптоПро сертификатами с сетевым деплоем |
+| **webpanel** | `services/webpanel/` | Веб-панель на Streamlit |
+| **compute_full** | `services/compute_full/` | Полный compute pipeline (генератор + консьюмер) |
+| **generator** | `services/generator/` | Простой генератор диапазонов |
+| **compute** | `services/compute/` | Consumer-only compute |
+| **test** | `services/test/` | Тестовый echo-сервис |
+| **spawner** | `src/internal_modules/spawner.py` | Распределённые вычисления |
 
-### NetInfo сервис
+---
+
+## Создание нового сервиса
+
+### 1. Структура директории
+
+```
+services/myservice/
+├── __init__.py          # пустой
+├── service.py           # реализация сервиса
+└── web_ui.py            # (опционально) веб-интерфейс
+```
+
+### 2. Реализация сервиса
 
 ```python
-# Получить таблицу соседей
-neighbors = await call("netinfo", "neighbors")
+# services/myservice/service.py
+from src.internal_modules.base import ModuleGeneric
+from services.rpc import rpc
 
-# Список активных узлов
-nodes = await call("netinfo", "nodes")
 
-# Все зарегистрированные сервисы
-services = await call("netinfo", "services")
+class MyService(ModuleGeneric):
+    def __init__(self, name: str, context):
+        super().__init__(name, context)
 
-# Найти узлы с конкретным сервисом
-found = await call("netinfo", "find_service", {"service": "compute"})
+    async def start(self):
+        self.log.info('MyService started')
+
+    async def stop(self):
+        self.log.info('MyService stopped')
+
+    @rpc
+    async def my_method(self, data: dict) -> dict:
+        return {"result": "ok"}
 ```
 
-### Compute Full Pipeline
+### 3. Веб-интерфейс (опционально)
 
+```python
+# services/myservice/web_ui.py
+import streamlit as st
+
+
+def render(rpc):
+    st.header("My Service")
+    result = rpc.call('myservice', 'my_method', data={})
+    st.json(result)
 ```
-Node0 (producer)                          Node1 (consumer)
-┌──────────────────┐                      ┌──────────────────┐
-│ compute_ranges() │─── stream ──────────>│ run_range()      │
-│   → yield ranges │      (backpressure)  │   → process      │
-│ compute_squares()│<── results ──────────│   → log results  │
-│   → yield sq     │                      │                  │
-└──────────────────┘                      └──────────────────┘
+
+### 4. Добавить в реестр
+
+В `services/webpanel/_streamlit_app.py` и `services/webpanel/views/service_view.py`:
+
+```python
+SERVICE_META = {
+    ...
+    'myservice': ('📦', 'Категория', 'Описание сервиса'),
+}
 ```
+
+### 5. ServiceLoader
+
+Сервис будет автоматически обнаружен при запуске. Файлы с `_`-префиксом игнорируются.
 
 ---
 
@@ -467,48 +576,65 @@ python debug_client.py
 
 ```
 P2P_Core/
-├── main.py                    # Точка входа Node0
-├── main_node1.py              # Точка входа Node1
-├── debug_client.py            # Тестовый клиент
-├── config.yaml                # Базовая конфигурация
-├── config1.yaml               # Конфигурация Node1
-├── config1.local.yaml         # Локальные настройки Node1
-├── requirements.txt           # Зависимости
+├── main.py                 # Точка входа Node0
+├── main_node1.py           # Точка входа Node1
+├── debug_client.py         # Тестовый клиент
+├── config.yaml             # Конфигурация Node0
+├── config1.yaml            # Конфигурация Node1
+├── config1.local.yaml      # Локальные настройки Node1
+├── glm.md                  # База знаний для AI-ассистента
+├── requirements.txt        # Зависимости
 │
 ├── src/
 │   ├── internal_modules/
-│   │   ├── base.py            # ModuleGeneric — базовый класс модулей
-│   │   ├── config.py          # Config, ConfigManager — система конфигурации
-│   │   ├── context.py         # AppContext, app_lifespan — контекст приложения
-│   │   ├── exceptions.py      # Custom exceptions
-│   │   ├── executor.py        # LocalExecutor — локальное выполнение RPC
-│   │   ├── memory.py          # Pipe, Dispatcher, PipeTransport, MemoryModule
-│   │   ├── setup_logging.py   # Colored logging
-│   │   └── spawner.py         # Spawner — распределённые вычисления
+│   │   ├── base.py         # ModuleGeneric — базовый класс
+│   │   ├── certs_index.py  # CertsIndex — индекс сертификатов сети
+│   │   ├── config.py       # Config, ConfigManager — система конфигурации
+│   │   ├── context.py      # AppContext, app_lifespan — контекст приложения
+│   │   ├── exceptions.py   # Кастомные исключения
+│   │   ├── executor.py     # LocalExecutor — локальное выполнение RPC
+│   │   ├── memory.py       # Pipe, Dispatcher, PipeTransport, MemoryModule
+│   │   ├── setup_logging.py # Настройка логирования
+│   │   └── spawner.py      # Spawner — распределённые вычисления
 │   │
 │   └── networking/
-│       ├── protocol.py        # PackType, MsgPack — сетевой протокол
-│       ├── transport.py       # WebSocketTransport — транспорт
-│       ├── network.py         # NetworkModule, Node, ConnectionManager
-│       ├── router.py          # Router — маршрутизация сообщений
-│       ├── sessions.py        # SessionTable — tracking RPC futures
+│       ├── protocol.py     # PackType, MsgPack — сетевой протокол
+│       ├── transport.py    # WebSocketTransport — транспорт
+│       ├── network.py      # NetworkModule, NodesManager, ConnectionManager
+│       ├── router.py       # Router — маршрутизация сообщений
+│       ├── sessions.py     # SessionTable — tracking RPC futures
 │       ├── stream_registry.py # StreamRegistry — registry inbound стримов
 │       ├── neighbor_table.py  # NeighborTable — топология сети
-│       └── node_connector.py  # NodeConnector — outgoing peer connections
+│       └── node_connector.py  # NodeConnector — исходящие соединения
 │
 ├── services/
-│   ├── loader.py              # ServiceLoader — динамическая загрузка
-│   ├── manager.py             # ServiceManager — реестр сервисов
-│   ├── rpc.py                 # Декораторы @rpc, @generator, etc.
+│   ├── loader.py           # ServiceLoader — динамическая загрузка
+│   ├── manager.py          # ServiceManager — реестр сервисов
+│   ├── rpc.py              # Декораторы @rpc, @generator, etc.
 │   │
-│   ├── netinfo/               # Диагностика сети
-│   ├── compute_full/          # Полный compute pipeline
-│   ├── compute/               # Consumer-only compute
-│   ├── generator/             # Генератор диапазонов
-│   └── test/                  # Тестовый сервис
+│   ├── certstool/          # 🔐 КриптоПро сертификаты
+│   │   ├── service.py      #   17 RPC-методов
+│   │   └── web_ui.py       #   5 вкладок: сертификаты, установка, сетевая, экспорт, поиск
+│   │
+│   ├── netinfo/            # 🌐 Диагностика сети
+│   │   ├── service.py      #   4 RPC-метода
+│   │   └── web_ui.py       #   3 вкладки: соседи, узлы, поиск
+│   │
+│   ├── webpanel/           # Веб-панель управления
+│   │   ├── service.py      #   Запуск Streamlit subprocess
+│   │   ├── _streamlit_app.py #  Entry point: sidebar + роутинг
+│   │   ├── rpc_client.py   #   NodeRPC — синхронный WS RPC клиент
+│   │   └── views/
+│   │       ├── home.py     #     Главная: метрики + сеть + сервисы
+│   │       └── service_view.py #  Динамический рендер web_ui.py
+│   │
+│   ├── compute_full/       # ⚡ Полный compute pipeline
+│   ├── generator/          # 📤 Генератор стримов
+│   ├── compute/            # ⏳ Стрим-консьюмер
+│   └── test/               # 🧪 Тестовый echo-сервис
 │
-├── docs/                      # Документация (эта директория)
-└── venv/                      # Виртуальное окружение
+├── docs/                   # Документация
+└── legacy/                 # Legacy код (не используется)
 ```
 
 ---
@@ -516,61 +642,16 @@ P2P_Core/
 ## Зависимости
 
 | Пакет | Назначение |
-|-------|------------|
+|-------|-----------|
 | `fastapi`, `uvicorn`, `starlette` | Web framework и сервер |
-| `websockets` | WebSocket клиент для outgoing соединений |
-| `httpx`, `aiohttp`, `requests` | HTTP клиенты |
+| `websockets` | WebSocket клиент для исходящих соединений |
 | `pydantic`, `pydantic-settings` | Валидация данных и настройки |
 | `pyyaml` | YAML конфигурация |
-| `lz4` | Сжатие gossip сообщений |
-| `cryptography` | Генерация сертификатов |
+| `lz4` | LZ4 сжатие для gossip |
 | `watchdog` | Hot-reload сервисов |
-| `pyjwt` | Аутентификация |
+| `streamlit` | Веб-панель управления |
+| `pandas` | DataFrames для веб-интерфейса |
+| `cryptography` | SSL/TLS сертификаты |
 | `psutil` | Системная информация |
-| `python-dotenv` | Загрузка .env файлов |
+| `pyjwt` | Аутентификация |
 | `cachetools` | Кеширование |
-
----
-
-## Паттерны и практики
-
-### Module Lifecycle
-
-Все модули наследуют `ModuleGeneric`:
-
-```python
-class ModuleGeneric:
-    name: str
-    context: AppContext
-    
-    async def start(self): ...
-    async def stop(self): ...
-```
-
-`AppContext` запускает модули в порядке регистрации, останавливает в обратном.
-
-### Connection Management
-
-```python
-# Lexicographic rule предотвращает дублирующие соединения
-if self.ctx.NODE < peer_node_id:
-    # Мы соединяемся
-    await self.connect(peer)
-else:
-    # Они соединятся к нам
-    pass
-```
-
-### Stream Pattern
-
-```python
-# Producer side
-pipe = Pipe(buff_len=100)
-dispatcher = Dispatcher(generator, pipes=[pipe])
-transport = PipeTransport(pipe, network_transport, label)
-
-# Consumer side
-async def consumer(pipe: Pipe):
-    async for chunk in pipe:
-        process(chunk)
-```
