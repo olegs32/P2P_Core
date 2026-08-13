@@ -6,14 +6,12 @@ import asyncio
 from src.internal_modules.base import ModuleGeneric
 from services.rpc import rpc, stream_wrapper, stream_consumer, generator
 from src.networking.protocol import MsgPack
-from src.networking.transport import WebSocketTransport, send_ack
 from src.internal_modules.memory import Pipe
 
 
 class Compute(ModuleGeneric):
     def __init__(self, name, context):
         super().__init__(name, context)
-
 
     @generator
     def compute_ranges(self, data: dict):
@@ -27,6 +25,7 @@ class Compute(ModuleGeneric):
         count = data.get('count', 20) if isinstance(data, dict) else 20
         for i in range(count):
             yield i * i
+
     # ------------------------------------------------------------------ #
     #  Генератор — вызывается по RPC, стримит на target ноду
     # ------------------------------------------------------------------ #
@@ -58,15 +57,15 @@ class Compute(ModuleGeneric):
         template = MsgPack(
             source  = self.ctx.NODE,
             dst     = target,
-            service = 'compute',       # имя сервиса на Node1
-            method  = 'run_range',     # stream_name
+            service = 'compute_full',
+            method  = 'run_range',
             label   = str(uuid.uuid4()),
             data    = {'multiplier': multiplier, 'buff': buff},
         )
 
-        transport = WebSocketTransport(node.ws)
+        # PipeTransport через Router (mesh-маршрутизация)
         self.ctx.memory.attach_transport(
-            pipe, transport, template, self.ctx.network.router
+            pipe, template, self.ctx.network.router
         )
         dispatcher.start(compute_ranges)
 
@@ -94,12 +93,12 @@ class Compute(ModuleGeneric):
         multiplier = ctx['multiplier']
         buff       = ctx['buff']
         results    = ctx['results']
-        ws         = ctx.get('ws')      # websocket обратно к Node0 для ACK
         label      = ctx.get('label')
+        router     = self.ctx.network.router
 
         # первый запрос порции
-        if ws and label:
-            await send_ack(self.ctx.NODE, 'Node0', ws, label, buff)
+        if label:
+            await router.send_stream_ack(label, buff)
 
         async for chunk in pipe:
             ctx['index'] += 1
@@ -109,14 +108,12 @@ class Compute(ModuleGeneric):
             self.log.info(f'CONSUME #{index} data={chunk} queue={queue_size}')
 
             # prefetch — запросить следующую порцию пока считаем
-            if ws and label and queue_size < buff and not ctx.get('eof'):
-                await send_ack(self.ctx.NODE, 'Node0', ws, label, buff)
+            if label and queue_size < buff and not ctx.get('eof'):
+                await router.send_stream_ack(label, buff)
 
-            # вычисление с задержкой
             await asyncio.sleep(0.1)
             result = chunk[0] * multiplier
             results.append(result)
             self.log.info(f'RESULT  #{index} = {result}')
 
         self.log.info(f'Consumer done — total={len(results)} results={results}')
-

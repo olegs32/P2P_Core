@@ -68,16 +68,10 @@ class LocalExecutor:
         pipe = Pipe(pipe_id=f'inbound_{pack.label[:8]}', buff_len=10)
         inbound = self.stream_registry.register(pack.label, pipe)
 
-        # получить транспорт к источнику стрима для ACK
-        upstream_ws = None
-        if self._router_ref:
-            transport = self._router_ref.get_transport_to(pack.source)
-            if transport:
-                upstream_ws = transport.ws
-
+        # label для ACK через Router.send_stream_ack()
         asyncio.create_task(
             self._run_consumer(wrapper, consumer, pipe, pack.data, inbound,
-                               ws=upstream_ws, label=pack.label)
+                               label=pack.label)
         )
 
         return MsgPack(
@@ -89,14 +83,13 @@ class LocalExecutor:
         )
 
     async def _run_consumer(self, wrapper, consumer, pipe, data, inbound,
-                            ws=None, label=None):
+                            label=None):
         ctx = None
         if wrapper:
             ctx = await wrapper(data) if asyncio.iscoroutinefunction(wrapper) else wrapper(data)
 
-        # пробросить ws и label в ctx для ACK
+        # пробросить label в ctx для ACK через Router
         if isinstance(ctx, dict):
-            ctx['ws'] = ws
             ctx['label'] = label
             ctx['eof'] = False
 

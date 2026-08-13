@@ -1,0 +1,693 @@
+# services/certs_tool/service.py — управление КриптоПро сертификатами
+# Переработано из legacy/dist/services/certs_tool под текущую архитектуру:
+#   BaseService → ModuleGeneric, @service_method → @rpc, proxy_client → ctx
+
+import asyncio
+import base64
+import re
+import secrets
+import tempfile
+from datetime import datetime
+from pathlib import Path
+from typing import Any
+
+from src.internal_modules.base import ModuleGeneric
+from src.networking.protocol import MsgPack, PackType
+from src.networking.transport import WebSocketTransport
+from services.rpc import rpc
+
+
+class CertsTool(ModuleGeneric):
+    """
+    Сервис управления КриптоПро сертификатами (CSP).
+
+    Обеспечивает:
+    - Развертывание сертификатов из PFX/CER
+    - Экспорт сертификатов в PFX/CER (base64)
+    - Поиск и листинг установленных сертификатов
+    - Пакетная установка со сменой пароля
+    - CERT_SYNC: периодическая рассылка digest в mesh
+    - Сетевая установка: экспорт с удалённого узла → импорт локально
+    """
+
+    def __init__(self, name: str, context):
+        super().__init__(name, context)
+        self.csp_path = Path(__file__).parent
+        self._cert_sync_task: asyncio.Task | None = None
+        self._local_sync_counter: int = 0
+        self._install_history: list[dict] = []
+
+    async def start(self):
+        self._validate_csp_path()
+        self._cert_sync_task = asyncio.create_task(self._cert_sync_loop())
+        self.log.info(f'CertsTool started (csp_path={self.csp_path})')
+
+    async def stop(self):
+        if self._cert_sync_task:
+            self._cert_sync_task.cancel()
+        self.log.info('CertsTool stopped')
+
+    # ------------------------------------------------------------------ #
+    #  CERT_SYNC — периодическая рассылка digest сертификатов
+    # ------------------------------------------------------------------ #
+
+    async def _cert_sync_loop(self):
+        """Каждые 60с: обновить CertsIndex из локальных сертификатов,
+        рассылать CERT_SYNC всем connected соседям."""
+        while True:
+            try:
+                await asyncio.sleep(60)
+
+                # 1. Обновить локальные сертификаты в индексе
+                certs = await self.list_certificates({})
+                self.ctx.certs_index.update_local(certs)
+                self._local_sync_counter += 1
+
+                # 2. Подготовить digest для рассылки
+                digest = self.ctx.certs_index.get_digest_for_sync()
+                sync_version = self._local_sync_counter
+
+                # 3. Рассылать CERT_SYNC всем connected соседям
+                pack = MsgPack(
+                    type=PackType.CERT_SYNC,
+                    source=self.ctx.NODE,
+                    data={
+                        'certs': digest,
+                        'sync_version': sync_version,
+                    },
+                )
+                for neighbor in self.ctx.network.neighbor_table.connected():
+                    node = self.ctx.network.nodes_manager.get(neighbor.node_id)
+                    if node:
+                        transport = WebSocketTransport(node.ws)
+                        try:
+                            await transport.send(pack)
+                        except Exception as e:
+                            self.log.warning(f'CERT_SYNC to {neighbor.node_id} failed: {e}')
+
+                self.log.debug(f'CERT_SYNC broadcast: {len(digest)} certs, v{sync_version}')
+
+            except asyncio.CancelledError:
+                return
+            except Exception as e:
+                self.log.error(f'CERT_SYNC loop error: {e}')
+                await asyncio.sleep(10)
+
+    # ------------------------------------------------------------------ #
+    #  Внутренние утилиты
+    # ------------------------------------------------------------------ #
+
+    def _validate_csp_path(self):
+        if not self.csp_path.exists():
+            self.log.warning(f'CSP path not found: {self.csp_path}')
+            return
+        missing = [t for t in ('certmgr.exe', 'csptest.exe')
+                    if not (self.csp_path / t).exists()]
+        if missing:
+            self.log.warning(f'Missing CSP tools: {missing}')
+
+    async def _run_async(self, command: str) -> str:
+        try:
+            # chcp 1251 в том же shell-контексте, что и основная команда
+            full_command = f'chcp 1251 && {command}'
+            proc = await asyncio.create_subprocess_shell(
+                full_command,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, _ = await proc.communicate()
+            try:
+                return stdout.decode('cp1251')
+            except UnicodeDecodeError:
+                return stdout.decode('utf-8', errors='ignore')
+        except Exception as e:
+            self.log.error(f'Command error: {e}')
+            return ''
+
+    @staticmethod
+    def _extract_error_code(output: str) -> str:
+        for line in output.split('\n'):
+            if 'ErrorCode' in line or 'КодОшибки' in line or '[0x' in line:
+                parts = line.split(':')
+                if len(parts) >= 2:
+                    code = parts[-1].strip().replace(']', '').strip()
+                    if code.startswith('0x'):
+                        return code
+        return '0x00000000'
+
+    @staticmethod
+    def _extract_container(output: str) -> str:
+        for line in output.split('\n'):
+            if 'Container' in line or 'Контейнер' in line:
+                parts = line.split(':', 1)
+                if len(parts) >= 2:
+                    c = parts[1].strip().replace('[', '').replace(']', '').replace('"', '').strip()
+                    if c:
+                        return c
+        return ''
+
+    def _parse_certificate_list(self, output: str) -> dict:
+        certificates = {}
+        for index, cert_block in enumerate(output.split('-------')):
+            if ' : ' not in cert_block or not cert_block.strip():
+                continue
+            cert_info: dict[str, str] = {}
+            for line in cert_block.split('\n'):
+                line = re.sub(r'  +', ' ', line.strip())
+                if ' : ' in line:
+                    key, value = line.split(' : ', 1)
+                    cert_info[key.strip()] = value.strip()
+
+            if 'Subject' in cert_info:
+                for part in cert_info['Subject'].split(', '):
+                    if '=' in part:
+                        k, v = part.split('=', 1)
+                        cert_info[f'Subject_{k.strip()}'] = v.strip()
+
+            if 'Issuer' in cert_info:
+                for part in cert_info['Issuer'].split(', '):
+                    if '=' in part:
+                        k, v = part.split('=', 1)
+                        cert_info[f'Issuer_{k.strip()}'] = v.strip()
+
+            # Нормализация Thumbprint
+            for alt in ('SHA1 Hash', 'SHA1', 'Hash', 'Отпечаток'):
+                if alt in cert_info and 'Thumbprint' not in cert_info:
+                    cert_info['Thumbprint'] = cert_info[alt]
+                    break
+
+            if cert_info:
+                sub_cn = cert_info.get('Subject_CN', '-')
+                certificates[f'{index}_{sub_cn}'] = cert_info
+        return certificates
+
+    # ------------------------------------------------------------------ #
+    #  RPC методы
+    # ------------------------------------------------------------------ #
+
+    @rpc
+    async def list_certificates(self, data: dict) -> dict:
+        """Список установленных сертификатов."""
+        cmd = f'"{self.csp_path / "certmgr.exe"}" -list'
+        output = await self._run_async(cmd)
+        if not output.strip():
+            return {}
+        return self._parse_certificate_list(output)
+
+    @rpc
+    async def find_certificate_by_subject(self, data: dict) -> dict:
+        """Найти первый сертификат по паттерну в Subject."""
+        pattern = data.get('subject_pattern', '')
+        certs = await self.list_certificates({})
+        for info in certs.values():
+            if 'Subject' in info and pattern.lower() in info['Subject'].lower():
+                return info
+        return {}
+
+    @rpc
+    async def find_certificates_by_subject(self, data: dict) -> list:
+        """Найти все сертификаты по паттерну в Subject."""
+        pattern = data.get('subject_pattern', '')
+        certs = await self.list_certificates({})
+        return [info for info in certs.values()
+                if 'Subject' in info and pattern.lower() in info['Subject'].lower()]
+
+    @rpc
+    async def deploy_certificate(self, data: dict) -> dict:
+        """Развернуть сертификат из PFX + CER файлов."""
+        pfx_path = data.get('pfx_path', '')
+        cer_path = data.get('cer_path', '')
+        pin = data.get('pin', '00000000')
+
+        if not Path(pfx_path).exists():
+            return {'success': False, 'error': f'PFX not found: {pfx_path}'}
+        if not Path(cer_path).exists():
+            return {'success': False, 'error': f'CER not found: {cer_path}'}
+
+        result = {'success': False, 'pfx_error': '0x00000000',
+                  'cer_error': '0x00000000', 'password_error': '0x00000000',
+                  'container': ''}
+
+        # 1. Install PFX
+        cmd = (f'"{self.csp_path / "certmgr.exe"}" -install -store uMy '
+               f'-file "{pfx_path}" -pfx -silent -keep_exportable -pin {pin}')
+        output = await self._run_async(cmd)
+        result['pfx_error'] = self._extract_error_code(output)
+        result['container'] = self._extract_container(output)
+
+        if result['pfx_error'] != '0x00000000' or not result['container']:
+            return result
+
+        # 2. Install CER
+        cmd = (f'"{self.csp_path / "certmgr.exe"}" -install -store uMy '
+               f'-file "{cer_path}" -certificate -container "{result["container"]}" '
+               f'-silent -inst_to_cont')
+        output = await self._run_async(cmd)
+        result['cer_error'] = self._extract_error_code(output)
+
+        if result['cer_error'] != '0x00000000':
+            return result
+
+        # 3. Change password
+        cmd = (f'"{self.csp_path / "csptest.exe"}" -passwd '
+               f'-container "{result["container"]}" -change {pin}')
+        output = await self._run_async(cmd)
+        result['password_error'] = self._extract_error_code(output)
+
+        result['success'] = all(
+            result[k] == '0x00000000'
+            for k in ('pfx_error', 'cer_error', 'password_error')
+        )
+        return result
+
+    @rpc
+    async def export_certificate_pfx(self, data: dict) -> dict:
+        """Экспорт закрытого ключа в PFX (base64)."""
+        container = data.get('container_name', '')
+        password = data.get('password', '00000000')
+
+        with tempfile.NamedTemporaryFile(suffix='.pfx', delete=False) as tmp:
+            tmp_path = tmp.name
+
+        try:
+            cmd = (f'"{self.csp_path / "certmgr.exe"}" -export '
+                   f'-container "{container}" -dest "{tmp_path}" '
+                   f'-pfx -keep_exportable -pin {password}')
+            output = await self._run_async(cmd)
+            error = self._extract_error_code(output)
+
+            if error != '0x00000000' or not Path(tmp_path).exists():
+                return {'success': False, 'error': f'Export failed: {error}', 'pfx_base64': ''}
+
+            with open(tmp_path, 'rb') as f:
+                b64 = base64.b64encode(f.read()).decode('utf-8')
+
+            return {'success': True, 'pfx_base64': b64, 'error': ''}
+        except Exception as e:
+            return {'success': False, 'error': str(e), 'pfx_base64': ''}
+        finally:
+            Path(tmp_path).unlink(missing_ok=True)
+
+    @rpc
+    async def export_certificate_cer(self, data: dict) -> dict:
+        """Экспорт открытого ключа в CER (base64)."""
+        container = data.get('container_name', '')
+        thumbprint = data.get('thumbprint', '')
+
+        if not container and not thumbprint:
+            return {'success': False, 'error': 'container_name or thumbprint required', 'cer_base64': ''}
+
+        with tempfile.NamedTemporaryFile(suffix='.cer', delete=False) as tmp:
+            tmp_path = tmp.name
+
+        try:
+            if container:
+                cmd = (f'"{self.csp_path / "certmgr.exe"}" -export '
+                       f'-container "{container}" -dest "{tmp_path}"')
+            else:
+                cmd = (f'"{self.csp_path / "certmgr.exe"}" -export '
+                       f'-thumbprint "{thumbprint}" -dest "{tmp_path}"')
+
+            output = await self._run_async(cmd)
+            error = self._extract_error_code(output)
+
+            if error != '0x00000000' or not Path(tmp_path).exists():
+                return {'success': False, 'error': f'Export failed: {error}', 'cer_base64': ''}
+
+            with open(tmp_path, 'rb') as f:
+                b64 = base64.b64encode(f.read()).decode('utf-8')
+
+            return {'success': True, 'cer_base64': b64, 'error': ''}
+        except Exception as e:
+            return {'success': False, 'error': str(e), 'cer_base64': ''}
+        finally:
+            Path(tmp_path).unlink(missing_ok=True)
+
+    @rpc
+    async def export_certificate_by_subject(self, data: dict) -> dict:
+        """Найти по Subject и экспортировать PFX + CER (base64)."""
+        pattern = data.get('subject_pattern', '')
+        password = data.get('password', '00000000')
+
+        cert = await self.find_certificate_by_subject({'subject_pattern': pattern})
+        if not cert:
+            return {'pfx': {'success': False, 'error': 'Certificate not found', 'pfx_base64': ''},
+                    'cer': {'success': False, 'error': 'Certificate not found', 'cer_base64': ''}}
+
+        container = cert.get('Container', '')
+        thumbprint = cert.get('Thumbprint', '')
+
+        pfx_result = {'success': False, 'error': 'No container', 'pfx_base64': ''}
+        if container:
+            pfx_result = await self.export_certificate_pfx(
+                {'container_name': container, 'password': password})
+
+        cer_result = await self.export_certificate_cer(
+            {'container_name': container, 'thumbprint': thumbprint})
+
+        return {'pfx': pfx_result, 'cer': cer_result}
+
+    @rpc
+    async def export_certificates_by_subject(self, data: dict) -> list:
+        """Массовый экспорт всех сертификатов по Subject (base64)."""
+        pattern = data.get('subject_pattern', '')
+        password = data.get('password', '00000000')
+
+        certs = await self.find_certificates_by_subject({'subject_pattern': pattern})
+        results = []
+        for cert in certs:
+            container = cert.get('Container', '')
+            thumbprint = cert.get('Thumbprint', '')
+            pfx_r = {'success': False, 'error': 'No container', 'pfx_base64': ''}
+            if container:
+                pfx_r = await self.export_certificate_pfx(
+                    {'container_name': container, 'password': password})
+            cer_r = await self.export_certificate_cer(
+                {'container_name': container, 'thumbprint': thumbprint})
+            results.append({'subject_cn': cert.get('Subject_CN', ''), 'pfx': pfx_r, 'cer': cer_r})
+        return results
+
+    @rpc
+    async def delete_certificate(self, data: dict) -> dict:
+        """Удалить сертификат по thumbprint."""
+        thumbprint = data.get('thumbprint', '')
+        if not thumbprint:
+            return {'success': False, 'error': 'Thumbprint is required'}
+
+        cmd = f'"{self.csp_path / "certmgr.exe"}" -delete -thumbprint "{thumbprint}"'
+        output = await self._run_async(cmd)
+        error = self._extract_error_code(output)
+
+        if error == '0x00000000':
+            return {'success': True}
+        return {'success': False, 'error': f'Delete failed: {error}', 'error_code': error}
+
+    @rpc
+    async def install_pfx_from_base64(self, data: dict) -> dict:
+        """Установка PFX из base64-данных."""
+        pfx_b64 = data.get('pfx_base64', '')
+        password = data.get('password', '00000000')
+        filename = data.get('filename', 'cert.pfx')
+
+        try:
+            pfx_bytes = base64.b64decode(pfx_b64)
+        except Exception as e:
+            return {'success': False, 'error': f'Base64 decode error: {e}'}
+
+        with tempfile.NamedTemporaryFile(suffix='.pfx', delete=False) as tmp:
+            tmp.write(pfx_bytes)
+            tmp_path = tmp.name
+
+        try:
+            cmd = (f'"{self.csp_path / "certmgr.exe"}" -install -store uMy '
+                   f'-file "{tmp_path}" -pfx -silent -keep_exportable -pin {password}')
+            output = await self._run_async(cmd)
+            error = self._extract_error_code(output)
+            container = self._extract_container(output)
+
+            if error == '0x00000000' and container:
+                return {'success': True, 'container': container}
+            return {'success': False, 'error': f'Install failed: {error}', 'error_code': error}
+        finally:
+            Path(tmp_path).unlink(missing_ok=True)
+
+    @rpc
+    async def batch_install_pfx_from_bytes(self, data: dict) -> dict:
+        """Пакетная установка PFX из base64 со сменой пароля."""
+        pfx_list: list[dict[str, str]] = data.get('pfx_list', [])
+        current_pwd = data.get('current_password', '00000000')
+        new_pwd = data.get('new_password') or current_pwd
+
+        results = []
+        ok = 0
+        fail = 0
+
+        for idx, item in enumerate(pfx_list):
+            pfx_b64 = item.get('pfx_base64', '')
+            fname = item.get('filename', f'cert_{idx}.pfx')
+
+            try:
+                pfx_bytes = base64.b64decode(pfx_b64)
+            except Exception as e:
+                results.append({'filename': fname, 'success': False, 'error': str(e)})
+                fail += 1
+                continue
+
+            with tempfile.NamedTemporaryFile(suffix='.pfx', delete=False) as tmp:
+                tmp.write(pfx_bytes)
+                tmp_path = tmp.name
+
+            try:
+                cmd = (f'"{self.csp_path / "certmgr.exe"}" -install -store uMy '
+                       f'-file "{tmp_path}" -pfx -silent -keep_exportable -pin {current_pwd}')
+                output = await self._run_async(cmd)
+                error = self._extract_error_code(output)
+                container = self._extract_container(output)
+
+                if error != '0x00000000':
+                    results.append({'filename': fname, 'success': False,
+                                    'error': f'Install failed', 'error_code': error})
+                    fail += 1
+                    continue
+
+                if new_pwd != current_pwd and container:
+                    pw_cmd = (f'"{self.csp_path / "csptest.exe"}" -passwd '
+                              f'-container "{container}" -change {new_pwd}')
+                    await self._run_async(pw_cmd)
+
+                results.append({'filename': fname, 'success': True, 'container': container})
+                ok += 1
+            finally:
+                Path(tmp_path).unlink(missing_ok=True)
+
+        return {
+            'success': ok > 0,
+            'total': len(pfx_list),
+            'success_count': ok,
+            'fail_count': fail,
+            'results': results,
+        }
+
+    @rpc
+    async def get_dashboard_data(self, data: dict) -> dict:
+        """Данные для веб-панели: список сертификатов с нормализацией полей."""
+        try:
+            certs = await self.list_certificates({})
+            cert_list = []
+            for cert_id, info in certs.items():
+                valid_from = (info.get('ValidFrom') or info.get('Not valid before') or
+                              info.get('Действителен с') or '')
+                valid_to = (info.get('ValidTo') or info.get('Not valid after') or
+                            info.get('Действителен до') or '')
+                cert_list.append({
+                    'id': cert_id,
+                    'subject': info.get('Subject', 'Unknown'),
+                    'subject_cn': info.get('Subject_CN', 'Unknown'),
+                    'issuer': info.get('Issuer', 'Unknown'),
+                    'issuer_cn': info.get('Issuer_CN', info.get('Issuer', 'Unknown')),
+                    'thumbprint': info.get('Thumbprint', ''),
+                    'container': info.get('Container', ''),
+                    'serial': info.get('Serial', ''),
+                    'valid_from': valid_from,
+                    'valid_to': valid_to,
+                })
+            return {
+                'total_certificates': len(cert_list),
+                'certificates': cert_list,
+            }
+        except Exception as e:
+            self.log.error(f'Dashboard data error: {e}')
+            return {'total_certificates': 0, 'certificates': [], 'error': str(e)}
+
+    # ------------------------------------------------------------------ #
+    #  Сетевая установка сертификатов (CERT_SYNC)
+    # ------------------------------------------------------------------ #
+
+    @rpc
+    async def network_certs(self, data: dict) -> dict:
+        """Сертификаты из сети, не установленные локально, сгруппированные по subject_cn.
+
+        Возвращает:
+          groups: {subject_cn: [entry_dict, ...]}
+          total: общее число недостающих сертификатов
+        Каждый entry_dict: {thumbprint, subject_cn, valid_to, available_on, sync_version}
+        Сортировка: сначала самые свежие (valid_to), CONNECTED узлы приоритетнее.
+        """
+        available = self.ctx.certs_index.get_network_available()
+        connected_ids = {n.node_id for n in self.ctx.network.neighbor_table.connected()}
+
+        groups: dict[str, list[dict]] = {}
+        for entry in available:
+            entry_dict = {
+                'thumbprint': entry.thumbprint,
+                'subject_cn': entry.subject_cn,
+                'valid_to': entry.valid_to,
+                'available_on': entry.available_on,
+                'sync_version': entry.sync_version,
+            }
+            cn = entry.subject_cn or '?'
+            groups.setdefault(cn, []).append(entry_dict)
+
+        # Сортировка внутри группы: приоритет по CONNECTED узлам, затем по valid_to
+        for cn, entries in groups.items():
+            def _sort_key(e):
+                has_connected = any(n in connected_ids for n in e['available_on'])
+                return (0 if has_connected else 1, e.get('valid_to', ''))
+            entries.sort(key=_sort_key)
+
+        return {
+            'groups': groups,
+            'total': len(available),
+        }
+
+    @rpc
+    async def install_from_node(self, data: dict) -> dict:
+        """Сетевая установка сертификата с удалённого узла.
+
+        Процесс:
+        1. RPC к удалённому узлу certstool.export_pfx_to_bytes — экспорт с одноразовым паролем
+        2. Локальная установка PFX с этим паролем
+        3. Смена пароля контейнера на пользовательский (или дефолтный)
+
+        Параметры:
+          thumbprint: str — идентификатор сертификата
+          source_node: str — узел-источник (из available_on)
+          new_password: str — новый пароль контейнера (default='00000000')
+
+        Возвращает: {success, container, error, source_node, thumbprint}
+        """
+        thumbprint = data.get('thumbprint', '')
+        source_node = data.get('source_node', '')
+        new_password = data.get('new_password', '') or '00000000'
+
+        if not thumbprint:
+            return {'success': False, 'error': 'thumbprint is required'}
+        if not source_node:
+            return {'success': False, 'error': 'source_node is required'}
+
+        # Проверить, что сертификат не установлен локально
+        entry = self.ctx.certs_index.get_by_thumbprint(thumbprint)
+        if entry and entry.installed_locally:
+            return {'success': False, 'error': 'Certificate already installed locally'}
+
+        # 1. Найти контейнер по thumbprint на удалённом узле
+        try:
+            cert_info = await self.ctx.network.call(
+                dst=source_node,
+                service='certstool',
+                method='get_certificate_info',
+                data={'thumbprint_lookup': thumbprint},
+                timeout=10,
+            )
+        except Exception as e:
+            return {'success': False, 'error': f'Remote lookup failed: {e}'}
+
+        if not cert_info:
+            return {'success': False, 'error': 'Certificate not found on source node'}
+
+        container = cert_info.get('Container', '')
+        if not container:
+            return {'success': False, 'error': 'No container on source node'}
+
+        # 2. Сгенерировать одноразовый пароль для PFX экспорта
+        one_time_password = secrets.token_hex(8)
+
+        # 3. Запросить PFX с удалённого узла
+        try:
+            export_result = await self.ctx.network.call(
+                dst=source_node,
+                service='certstool',
+                method='export_certificate_pfx',
+                data={'container_name': container, 'password': one_time_password},
+                timeout=15,
+            )
+        except Exception as e:
+            return {'success': False, 'error': f'Remote export failed: {e}'}
+
+        if not export_result.get('success'):
+            return {'success': False, 'error': f'Remote export error: {export_result.get("error", "?")}'}
+
+        pfx_b64 = export_result.get('pfx_base64', '')
+        if not pfx_b64:
+            return {'success': False, 'error': 'Empty PFX data from source node'}
+
+        # 4. Установить PFX локально с одноразовым паролем
+        install_result = await self.install_pfx_from_base64({
+            'pfx_base64': pfx_b64,
+            'password': one_time_password,
+            'filename': f'{thumbprint[:8]}.pfx',
+        })
+
+        if not install_result.get('success'):
+            return {
+                'success': False,
+                'error': f'Local install failed: {install_result.get("error", "?")}',
+                'source_node': source_node,
+                'thumbprint': thumbprint,
+            }
+
+        local_container = install_result.get('container', '')
+
+        # 5. Сменить пароль на пользовательский
+        if new_password != one_time_password and local_container:
+            pw_cmd = (f'"{self.csp_path / "csptest.exe"}" -passwd '
+                      f'-container "{local_container}" -change {new_password}')
+            await self._run_async(pw_cmd)
+
+        # 6. Обновить CertsIndex и историю
+        self.ctx.certs_index.update_local(await self.list_certificates({}))
+        self._add_install_history(thumbprint, source_node)
+
+        self.log.info(
+            f'Network install OK: {thumbprint[:8]} from {source_node} → container {local_container}'
+        )
+        return {
+            'success': True,
+            'container': local_container,
+            'source_node': source_node,
+            'thumbprint': thumbprint,
+            'error': '',
+        }
+
+    @rpc
+    async def get_cert_sync_digest(self, data: dict) -> dict:
+        """Digest локальных сертификатов для CERT_SYNC (по запросу).
+
+        Используется при подключении нового узла для немедленного обмена.
+        """
+        digest = self.ctx.certs_index.get_digest_for_sync()
+        return {
+            'certs': digest,
+            'sync_version': self._local_sync_counter,
+        }
+
+    @rpc
+    async def get_install_history(self, data: dict) -> list:
+        """История сетевой установки сертификатов."""
+        return self._install_history
+
+    @rpc
+    async def get_certificate_info(self, data: dict) -> dict:
+        """Детальная информация о сертификате по имени контейнера или thumbprint."""
+        container = data.get('container_name', '')
+        thumbprint_lookup = data.get('thumbprint_lookup', '')
+        certs = await self.list_certificates({})
+        for info in certs.values():
+            if container and info.get('Container', '') == container:
+                return info
+            if thumbprint_lookup and info.get('Thumbprint', '').lower() == thumbprint_lookup.lower():
+                return info
+        return {}
+
+    # ------------------------------------------------------------------ #
+    #  История установки
+    # ------------------------------------------------------------------ #
+
+    def _add_install_history(self, thumbprint: str, source_node: str):
+        record = {
+            'thumbprint': thumbprint,
+            'source_node': source_node,
+            'installed_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+        }
+        self._install_history.append(record)
+        self.log.info(f'Install history: {thumbprint[:8]} from {source_node}')

@@ -1,0 +1,6 @@
+alias: sysadmin1-pc
+secret: null
+
+peers: []
+#  - node_id: Node1
+#    uri: ws://192.168.1.10:9001/ws/Node0

@@ -4,7 +4,6 @@ import uuid
 from src.internal_modules.base import ModuleGeneric
 from services.rpc import rpc
 from src.networking.protocol import MsgPack
-from src.networking.transport import WebSocketTransport
 
 
 class Generator(ModuleGeneric):
@@ -13,41 +12,30 @@ class Generator(ModuleGeneric):
 
     @rpc
     async def start_stream(self, data: dict):
-        """
-        Запустить генератор и стримить на указанную ноду.
-        data = {target: str, count: int, multiplier: int}
-        """
         target     = data.get('target', 'DebugClient')
         count      = data.get('count', 10)
         multiplier = data.get('multiplier', 1)
 
-        node = self.ctx.network.nodes_manager.get(target)
-        if not node:
-            return {'error': f'node {target} not found'}
-
-        # генератор диапазонов
         def compute_ranges():
             for i in range(count):
                 self.log.debug(f'generating range {i}')
                 yield [i * 100, (i + 1) * 100]
 
-        # pipe + dispatcher
         pipe       = self.ctx.memory.create_pipe(buff=5)
         dispatcher = self.ctx.memory.create_dispatcher([pipe])
 
-        # шаблон пакета — указывает remote сервис/метод для handshake
         template = MsgPack(
             source  = self.ctx.NODE,
             dst     = target,
-            service = 'compute',
+            service = 'compute_full',
             method  = 'run_range',
             label   = str(uuid.uuid4()),
-            data    = {'multiplier': multiplier},  # для wrapper на remote
+            data    = {'multiplier': multiplier},
         )
 
-        transport = WebSocketTransport(node.ws)
+        # PipeTransport через Router (mesh-маршрутизация)
         self.ctx.memory.attach_transport(
-            pipe, transport, template, self.ctx.network.router
+            pipe, template, self.ctx.network.router
         )
 
         dispatcher.start(compute_ranges)

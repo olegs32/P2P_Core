@@ -58,14 +58,13 @@ class Pipe:
 
 
 class PipeTransport:
-    def __init__(self, pipe: Pipe, transport, pack_template: MsgPack,
-                 router, timeout: int = 30):
+    def __init__(self, pipe: Pipe, router, pack_template: MsgPack,
+                 timeout: int = 30):
         self.pipe = pipe
-        self.transport = transport
-        self.template = pack_template
         self.router = router
+        self.template = pack_template
         self.timeout = timeout
-        self.buff_size = pipe.buff_len  # размер батча = размер буфера pipe
+        self.buff_size = pipe.buff_len
         self._task: Optional[asyncio.Task] = None
 
     def start(self) -> asyncio.Task:
@@ -73,7 +72,6 @@ class PipeTransport:
         return self._task
 
     async def _handshake_and_pump(self):
-        # handshake
         open_pack = MsgPack(
             type=PackType.STREAM_OPEN,
             source=self.template.source,
@@ -82,13 +80,16 @@ class PipeTransport:
             method=self.template.method,
             label=self.template.label,
             data=self.template.data,
+            path=[self.template.source],
+            ttl=16,
         )
         future = self.router.sessions.register_single(
             self.template.label,
             self.template.service,
             self.template.method or '',
         )
-        await self.transport.send(open_pack)
+        # Маршрутизация через mesh вместо прямого transport.send()
+        await self.router._forward(open_pack)
 
         try:
             await asyncio.wait_for(future, timeout=self.timeout)
@@ -104,18 +105,18 @@ class PipeTransport:
         ack_label = f'ack_{self.template.label}'
 
         async for chunk in self.pipe:
-            await self.transport.send(MsgPack(
+            chunk_pack = MsgPack(
                 type=PackType.STREAM_CHUNK,
                 source=self.template.source,
                 dst=self.template.dst,
                 label=self.template.label,
                 data=chunk,
-            ))
+            )
+            await self.router._send_pack(chunk_pack)
             sent_in_batch += 1
             log.debug(f'[pipe_transport] sent #{sent_in_batch}/{self.buff_size}')
 
             if sent_in_batch >= self.buff_size:
-                # батч отправлен — ждём ACK от remote
                 log.debug(f'[pipe_transport] batch done ({self.buff_size} chunks) — waiting ACK')
                 ack_future = self.router.sessions.register_single(ack_label, '', '')
                 try:
@@ -126,12 +127,13 @@ class PipeTransport:
                     break
                 sent_in_batch = 0
 
-        await self.transport.send(MsgPack(
+        eof_pack = MsgPack(
             type=PackType.STREAM_EOF,
             source=self.template.source,
             dst=self.template.dst,
             label=self.template.label,
-        ))
+        )
+        await self.router._send_pack(eof_pack)
         log.info(f'[pipe_transport] EOF sent')
 
     def stop(self):
@@ -274,12 +276,12 @@ class MemoryModule(ModuleGeneric):
     #  Network pipe: outbound (локальный генератор → remote)
     # ------------------------------------------------------------------ #
 
-    def attach_transport(self, pipe: Pipe, transport, pack_template: MsgPack, router) -> PipeTransport:
+    def attach_transport(self, pipe: Pipe, pack_template: MsgPack, router) -> PipeTransport:
         """
         Подключить сетевой транспорт к pipe.
-        Чанки из pipe потекут как STREAM_CHUNK на remote.
+        Чанки из pipe потекут как STREAM_CHUNK на remote через Router.
         """
-        pt = PipeTransport(pipe, transport, pack_template, router)
+        pt = PipeTransport(pipe, router, pack_template)
         self._transports.append(pt)
         pt.start()
         return pt
@@ -310,7 +312,7 @@ class MemoryModule(ModuleGeneric):
 
 """
 Пример использования — outbound:
-python# локальный генератор → 3 remote worker'а через сеть
+python# локальный генератор → 3 remote worker'а через mesh
 
 def compute_ranges():
     for i in range(100):
@@ -319,37 +321,25 @@ def compute_ranges():
 pipes = [ctx.memory.create_pipe(buff=10) for _ in range(3)]
 dispatcher = ctx.memory.create_dispatcher(pipes)
 
-# каждый pipe → свой remote worker
+# каждый pipe → свой remote worker через Router
 for i, pipe in enumerate(pipes):
-    node   = ctx.network.nodes_manager.get(f'Worker{i}')
-    transport = WebSocketTransport(node.ws)
-    template  = MsgPack(
+    template = MsgPack(
         source  = ctx.NODE,
         dst     = f'Worker{i}',
         service = 'compute',
         method  = 'run_range',
         label   = str(uuid.uuid4()),
     )
-    ctx.memory.attach_transport(pipe, transport, template)
+    ctx.memory.attach_transport(pipe, template, ctx.network.router)
 
-dispatcher.start(compute_ranges)        
+dispatcher.start(compute_ranges)
 
 
 Пример использования — inbound:
-python# получить стрим с remote в локальный pipe
+python# получить стрим с remote через mesh
 
-stream_label = str(uuid.uuid4())
-pipe = ctx.memory.pipe_from_stream(stream_label, buff=10)
-
-# запросить стрим у remote
-await ctx.network.router.call(
-    dst='Node1', service='data', method='stream_data',
-    data={'label': stream_label}
-)
-
-# читать локально
-async for chunk in pipe:
+async for chunk in await ctx.network.stream(
+    dst='Node1', service='data', method='stream_data', data={}
+):
     print(chunk)
-
-        
 """

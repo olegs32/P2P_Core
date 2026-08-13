@@ -5,7 +5,6 @@ import uuid
 from src.internal_modules.base import ModuleGeneric
 from src.networking.protocol import MsgPack
 from services.rpc import rpc
-from src.networking.transport import WebSocketTransport
 
 
 class Spawner(ModuleGeneric):
@@ -15,15 +14,14 @@ class Spawner(ModuleGeneric):
 
     @rpc
     async def spawn(self, data: dict):
-        service_name = data.get('generator_service')  # сервис, где живёт генератор
-        generator_name = data.get('generator')  # имя @generator метода
-        target_service = data.get('service')  # сервис на remote
-        target_method = data.get('method')  # stream_name на remote
+        service_name = data.get('generator_service')
+        generator_name = data.get('generator')
+        target_service = data.get('service')
+        target_method = data.get('method')
         workers_count = data.get('workers_count', 1)
         buff = data.get('buff', 3)
         init_data = data.get('init_data', {})
 
-        # получить генератор из реестра
         gen_fn = self.ctx.services.get_generator(service_name, generator_name)
         if not gen_fn:
             available = self.ctx.services.list_generators(service_name)
@@ -32,7 +30,6 @@ class Spawner(ModuleGeneric):
                 'available': available,
             }
 
-        # обернуть — генератор принимает init_data
         def _generator():
             yield from gen_fn(init_data)
 
@@ -55,9 +52,9 @@ class Spawner(ModuleGeneric):
                 label=label,
                 data=init_data,
             )
-            transport = WebSocketTransport(node.ws)
+            # PipeTransport через Router (mesh-маршрутизация)
             self.ctx.memory.attach_transport(
-                pipes[index], transport, template, self.ctx.network.router
+                pipes[index], template, self.ctx.network.router
             )
             labels.append(label)
             self.log.info(f'Pipe → {node.node_id} gen={service_name}.{generator_name}')

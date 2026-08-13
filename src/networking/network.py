@@ -289,4 +289,9 @@ class NetworkModule(ModuleGeneric):
         """Single RPC вызов."""
         return await self.router.call(dst, service, method, data, timeout)
 
+    async def stream(self, dst: str, service: str, method: str,
+                     data=None, timeout: int = 30):
+        """Открыть mesh-стрим и вернуть async iterator по чанкам."""
+        return await self.router.stream(dst, service, method, data, timeout)
+
 

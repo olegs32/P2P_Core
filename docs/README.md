@@ -12,7 +12,7 @@ WebSocket-based P2P mesh network with RPC service discovery, multi-hop routing, 
 - [Сетевой протокол](#сетевой-протокол)
 - [Маршрутизация](#маршрутизация)
 - [Обнаружение сервисов](#обнаружение-сервисов)
-- [Стриминг с backpressure](#стриминг-с-backpressure)
+- [Mesh-стриминг с backpressure](#mesh-стриминг-с-backpressure)
 - [RPC система](#rpc-система)
 - [Веб-панель управления](#веб-панель-управления)
 - [Сертификаты КриптоПро](#сертификаты-криптопро)
@@ -35,7 +35,7 @@ WebSocket-based P2P mesh network with RPC service discovery, multi-hop routing, 
 | **Node** | Экземпляр приложения с уникальным ID, FastAPI сервером и набором сервисов |
 | **Mesh Network** | Децентрализованная сеть с gossip-based discovery и multi-hop routing |
 | **RPC** | Удалённый вызов методов между узлами с автоматической маршрутизацией |
-| **Streaming** | Потоковая передача данных с backpressure между producer и consumer узлами |
+| **Mesh Streaming** | Потоковая передача данных через mesh с route caching и backpressure |
 | **Service Loader** | Динамическая загрузка и hot-reload сервисов из директории `services/` |
 | **Web Panel** | Streamlit-панель управления с доступом к любому узлу сети |
 | **CertsTool** | Управление КриптоПро сертификатами с сетевым деплоем между узлами |
@@ -49,27 +49,27 @@ WebSocket-based P2P mesh network with RPC service discovery, multi-hop routing, 
 │                        Node (FastAPI)                        │
 ├─────────────────────────────────────────────────────────────┤
 │  NetworkModule (WebSocket endpoint /ws/{node_id})           │
-│  ├── Router (message dispatch, TTL, path-based routing)     │
-│  ├── ConnectionManager (incoming connections)               │
+│  ├── Router (message dispatch, TTL, path-based routing,     │
+│  │         stream route cache, send_stream_ack)             │
 │  ├── NodesManager (peer state, gossip, announce)            │
 │  └── NodeConnector (outgoing peer connections)              │
 ├─────────────────────────────────────────────────────────────┤
 │  MemoryModule (streaming infrastructure)                    │
 │  ├── Pipe (async queue with backpressure)                   │
 │  ├── Dispatcher (distribute to multiple pipes)              │
-│  └── PipeTransport (network chunk transfer + ACK)           │
+│  └── PipeTransport (via Router: STREAM_CHUNK + ACK)         │
 ├─────────────────────────────────────────────────────────────┤
 │  ServiceLoader + ServiceManager                             │
 │  ├── Dynamic import from services/                          │
 │  ├── Hot-reload via watchdog                               │
-│  └── RPC method registration                               │
+│  └── RPC method registration + ctx.register()              │
 ├─────────────────────────────────────────────────────────────┤
 │  Spawner (distributed compute jobs)                         │
 ├─────────────────────────────────────────────────────────────┤
 │  CertsIndex (network certificate metadata)                  │
 ├─────────────────────────────────────────────────────────────┤
 │  WebPanel (Streamlit subprocess on port 8501)               │
-│  ├── NodeRPC (sync WS RPC client for Streamlit)             │
+│  ├── NodeRPC (sync WS RPC client, reconnect-aware)          │
 │  └── RPCProxy (injects dst for remote node targeting)       │
 ├─────────────────────────────────────────────────────────────┤
 │  AppContext (module registry, lifespan management)          │
@@ -85,36 +85,43 @@ WebSocket-based P2P mesh network with RPC service discovery, multi-hop routing, 
 - TTL-based предотвращение бесконечных циклов (TTL=16)
 - Path tracking: каждый узел добавляет себя в `pack.path`
 - Обратная маршрутизация по reversed path для ответов
-- Loop detection (warning-only)
+- Loop detection: TTL=0 или loop → packet dropped
 
-### 2. Service Discovery
+### 2. Mesh Streaming
+- STREAM_OPEN маршрутизируется через mesh, маршрут кэшируется на всех узлах пути
+- StreamRoute: forward_path + backward_path для быстрого форвардинга
+- PipeTransport отправляет через Router вместо прямого WS
+- Consumer отправляет ACK через `Router.send_stream_ack()` по backward_path
+- `_MeshStreamIterator` — публичный async iterator API
+
+### 3. Service Discovery
 - **GOSSIP** (каждые 30s): обмен топологией сети
 - **ANNOUNCE** (каждые 60s): рассылка списка сервисов
 - `NeighborTable` хранит статус каждого узла: `CONNECTED`, `KNOWN`, `UNREACHABLE`
 - Поиск сервисов по имени across the network
 
-### 3. Streaming с Backpressure
+### 4. Streaming с Backpressure
 - `Pipe`: async queue с `buff_len` и `low_watermark`
-- `Dispatcher`: распределяет данные по множеству pipes
-- `PipeTransport`: отправка батчами + ACK protocol
+- `Dispatcher`: распределяет данные по множеству pipes; при ошибке producer — close() без sentinel
+- `PipeTransport`: отправка батчами через Router + ACK protocol
 - Автоматическая пауза при заполнении буфера
 
-### 4. Connection Reconnect
+### 5. Connection Reconnect
 - При дубликате node_id — закрыть старое подключение, принять новое (reconnect pattern)
-- Позволяет Streamlit обновлять страницу без HELLO_REJECT
+- NodeRPC: `_reconnecting` flag предотвращает Streamlit от создания нового экземпляра
 
-### 5. Hot-Reload Сервисов
+### 6. Hot-Reload Сервисов
 - `watchdog` мониторит директорию `services/`
 - Динамический re-import без перезапуска узла
 - Отмена pending RPC при reload
 
-### 6. Web Panel
+### 7. Web Panel
 - Streamlit на отдельном порту (8501), подключается к узлу как WS-клиент
 - Навигация по сервисам с группировкой и иконками
 - Управление любой нодой сети через mesh-маршрутизацию RPC
 - Динамический рендеринг `web_ui.py` каждого сервиса
 
-### 7. Сетевой деплой сертификатов
+### 8. Сетевой деплой сертификатов
 - CERT_SYNC: периодическая рассылка digest сертификатов в mesh
 - On-connect обмен при подключении нового узла
 - Сетевая установка с одноразовыми паролями и конфликтом по subject_cn
@@ -138,7 +145,7 @@ python main.py
 ### Запуск Node1 (вторичный узел)
 
 ```bash
-python main_node1.py
+python main_node1.py    # DEPRECATED — используйте config1.yaml + main.py
 ```
 
 - Загружает `config1.yaml` + `config1.local.yaml`
@@ -216,10 +223,10 @@ config.list_peers()                           # Список пиров
 | `REQUEST` | → | RPC вызов |
 | `RESPONSE` | ← | RPC ответ |
 | `FORWARDED` | ↔ | Пересылаемое сообщение (routing) |
-| `STREAM_OPEN` | → | Открытие стрима |
-| `STREAM_READY` | ← | Подтверждение стрима |
-| `STREAM_CHUNK` | → | Блок данных стрима |
-| `STREAM_ACK` | ← | Подтверждение получения блока |
+| `STREAM_OPEN` | → | Открытие mesh-стрима (path tracking) |
+| `STREAM_READY` | ← | Подтверждение стрима (route cached) |
+| `STREAM_CHUNK` | → | Блок данных стрима (via cached route) |
+| `STREAM_ACK` | ← | Подтверждение получения (via backward_path) |
 | `STREAM_EOF` | → | Конец стрима |
 | `ERROR` | ← | Ошибка |
 | `PING` / `PONG` | ↔ | Keepalive |
@@ -263,6 +270,10 @@ Node0 → Node1 → Node2
 
 RPC от WS-клиентов к удалённым узлам: Router сохраняет WS-transport в `_ws_pending[label]`, форвардит запрос. Ответ возвращается через `_ws_pending` напрямую в WS, минуя `_route_back`.
 
+### Loop detection
+
+При TTL=0 или обнаружении loop (node уже в path) — пакет дропается (return), дальнейший форвардинг не происходит.
+
 ---
 
 ## Обнаружение сервисов
@@ -292,14 +303,77 @@ class NeighborInfo:
 
 ---
 
-## Стриминг с backpressure
+## Mesh-стриминг с backpressure
 
-### Поток данных
+### Архитектура
 
 ```
-Generator → Dispatcher → [Pipe] → PipeTransport → Network (STREAM_CHUNK)
-                                                   ← STREAM_ACK
+Generator Node                   Intermediate Node(s)          Consumer Node
+  Generator ─→ Dispatcher          Route cache (StreamRoute)     StreamRegistry
+    ─→ Pipe ─→ PipeTransport ─→  Router._forward() ─→          Router.handle()
+                (via Router)       _forward_stream_data()         ─→ feed to Pipe
+                                   (fast path via cached route)   ─→ Consumer reads
+                                   _route_back() for ACK          ─→ send_stream_ack()
 ```
+
+### StreamRoute — кэшированный маршрут
+
+При открытии стрима маршрут кэшируется на всех узлах пути:
+
+```python
+@dataclass
+class StreamRoute:
+    label: str
+    source: str                     # узел-генератор
+    dst: str                        # узел-consumer
+    forward_path: list[str]         # source → dst
+    backward_path: list[str]        # dst → source
+    established_at: float           # TTL=300с
+```
+
+- Consumer кэширует при получении `STREAM_OPEN`
+- Generator кэширует при получении `STREAM_READY`
+- Intermediate кэширует при транзите `STREAM_OPEN`
+
+### PipeTransport — через Router
+
+PipeTransport отправляет пакеты через Router, а не напрямую через WebSocket:
+
+```python
+# Новая сигнатура
+PipeTransport(pipe, router, pack_template, timeout=30)
+
+# attach_transport
+ctx.memory.attach_transport(pipe, pack_template, router)
+```
+
+- `_handshake_and_pump()`: отправляет `STREAM_OPEN` через `router._forward()`
+- `_pump()`: отправляет `STREAM_CHUNK` / `STREAM_EOF` через `router._send_pack()`
+- Ждёт ACK через `router.sessions`
+
+### Consumer ACK через Router
+
+Consumer отправляет ACK генератору через mesh:
+
+```python
+router = self.ctx.network.router
+await router.send_stream_ack(label, buff)
+```
+
+ACK маршрутизируется по `backward_path` из кэша StreamRoute.
+
+### Публичный API стриминга
+
+```python
+# Открыть mesh-стрим и читать чанки
+async for chunk in await ctx.network.stream(
+    dst="Node2", service="compute_full", method="compute_ranges",
+    data={"count": 100}, timeout=30
+):
+    process(chunk)
+```
+
+Возвращает `_MeshStreamIterator` — async iterator с автоматическим ACK после каждого чанка.
 
 ### Компоненты
 
@@ -307,13 +381,14 @@ Generator → Dispatcher → [Pipe] → PipeTransport → Network (STREAM_CHUNK)
 |-----------|------|
 | **Pipe** | Async queue с `buff_len`, `low_watermark`, refill callback |
 | **Dispatcher** | Распределяет данные генератора по множеству pipes |
-| **PipeTransport** | Отправляет батчи по сети, ждёт ACK перед следующей партией |
+| **PipeTransport** | Отправка через Router батчами + ACK protocol |
+| **StreamRoute** | Кэшированный маршрут: forward_path + backward_path |
 | **MemoryModule** | Фабрика: `create_pipe()`, `create_dispatcher()`, `attach_transport()` |
 | **StreamRegistry** | Реестр inbound-стримов: label → Pipe |
 
 ### Spawner — распределённые вычисления
 
-Берёт генератор с локального сервиса, создаёт N Pipe + Dispatcher, подключает каждый Pipe к удалённому worker-узлу через PipeTransport.
+Берёт генератор с локального сервиса, создаёт N Pipe + Dispatcher, подключает каждый Pipe к удалённому worker-узлу через PipeTransport (mesh-маршрутизация).
 
 ---
 
@@ -330,18 +405,22 @@ class MyService(ModuleGeneric):
         return {"echo": data}
 
     @generator
-    def compute_ranges(self, start: int, end: int):
-        for i in range(start, end):
-            yield i
+    def compute_ranges(self, data: dict):
+        for i in range(data.get('count', 20)):
+            yield [i * 100, (i + 1) * 100]
 
     @stream_wrapper("my_stream")
-    def open_stream(self, context: dict):
-        pass
+    async def open_stream(self, data: dict):
+        return {"multiplier": data.get("multiplier", 1), "results": []}
 
     @stream_consumer("my_stream")
-    def run_range(self, pipe, context: dict):
+    async def run_range(self, pipe, ctx):
+        multiplier = ctx['multiplier']
         async for chunk in pipe:
-            process(chunk)
+            result = chunk[0] * multiplier
+            ctx['results'].append(result)
+            if ctx.get('label'):
+                await self.ctx.network.router.send_stream_ack(ctx['label'], pipe.buff_len)
 ```
 
 ### Вызов RPC
@@ -359,6 +438,12 @@ result = await ctx.network.call(
 # Локальный shortcut (dst = self)
 result = await ctx.network.call(dst=ctx.NODE, ...)
 
+# Mesh-стрим (async iterator)
+async for chunk in await ctx.network.stream(
+    dst="Node2", service="compute_full", method="compute_ranges", data={"count": 100}
+):
+    process(chunk)
+
 # Из Streamlit (синхронный)
 rpc.call('certstool', 'list_certificates', data={})
 rpc.call('certstool', 'network_certs', data={}, dst='Node1')
@@ -373,7 +458,7 @@ rpc.call('certstool', 'network_certs', data={}, dst='Node1')
 ```
 WebPanel (service.py)          — запускает Streamlit subprocess
   └── _streamlit_app.py        — entry point
-       ├── rpc_client.py       — NodeRPC: синхронный WS RPC в отдельном потоке
+       ├── rpc_client.py       — NodeRPC: синхронный WS RPC, reconnect-aware
        ├── RPCProxy            — подставляет dst из session_state['selected_node']
        ├── views/home.py       — главная: метрики + таблица соседей + сервисы
        └── views/service_view.py — динамический import web_ui.py → render(rpc)
@@ -397,16 +482,21 @@ def render(rpc):
 
 ### Реестр сервисов
 
+Определён в `services/webpanel/service_meta.py` (единственный источник):
+
 ```python
 SERVICE_META = {
     'certstool':    ('🔐', 'Сертификаты',  'Управление КриптоПро сертификатами'),
     'netinfo':      ('🌐', 'Сеть',         'Состояние сети и маршрутизация'),
     'compute_full': ('⚡', 'Вычисления',   'Генератор + консьюмер'),
     'generator':    ('📤', 'Вычисления',   'Генератор стримов'),
-    'compute':      ('⏳', 'Вычисления',   'Стрим-консьюмер'),
     'test':         ('🧪', 'Диагностика',  'Тестовый echo-сервис'),
 }
 ```
+
+### NodeRPC — reconnect
+
+При потере WS соединения NodeRPC ставит `_reconnecting=True`. Свойство `connected` возвращает True во время реконнекта, предотвращая Streamlit от создания нового экземпляра. `_recv_task` отменяется перед повторным подключением.
 
 ---
 
@@ -428,7 +518,6 @@ SERVICE_META = {
 | `export_certificates_by_subject` | Массовый экспорт по Subject |
 | `delete_certificate` | Удаление по thumbprint |
 | `install_pfx_from_base64` | Установка PFX из base64 |
-| `export_pfx_to_bytes` | Экспорт PFX в base64 (в памяти) |
 | `batch_install_pfx_from_bytes` | Пакетная установка со сменой пароля |
 | `get_dashboard_data` | Данные для веб-панели |
 | `get_certificate_info` | Информация по контейнеру или thumbprint |
@@ -448,7 +537,7 @@ SERVICE_META = {
 ```
 NodeA (источник)                      NodeB (целевой)
   1. get_certificate_info(thumbprint) →  ← RPC через mesh
-  2. export_pfx_to_bytes(container,     ← одноразовый пароль
+  2. export_certificate_pfx(container,  ← одноразовый пароль
      one_time_password)
   3. PFX + password →                  →  install_pfx_from_base64(pfx, otp)
                                             сменить пароль контейнера
@@ -477,7 +566,6 @@ NodeA (источник)                      NodeB (целевой)
 | **webpanel** | `services/webpanel/` | Веб-панель на Streamlit |
 | **compute_full** | `services/compute_full/` | Полный compute pipeline (генератор + консьюмер) |
 | **generator** | `services/generator/` | Простой генератор диапазонов |
-| **compute** | `services/compute/` | Consumer-only compute |
 | **test** | `services/test/` | Тестовый echo-сервис |
 | **spawner** | `src/internal_modules/spawner.py` | Распределённые вычисления |
 
@@ -532,7 +620,7 @@ def render(rpc):
 
 ### 4. Добавить в реестр
 
-В `services/webpanel/_streamlit_app.py` и `services/webpanel/views/service_view.py`:
+В `services/webpanel/service_meta.py`:
 
 ```python
 SERVICE_META = {
@@ -543,7 +631,7 @@ SERVICE_META = {
 
 ### 5. ServiceLoader
 
-Сервис будет автоматически обнаружен при запуске. Файлы с `_`-префиксом игнорируются.
+Сервис будет автоматически обнаружен и зарегистрирован через `ctx.register(instance)`. Файлы с `_`-префиксом игнорируются.
 
 ---
 
@@ -568,7 +656,7 @@ python debug_client.py
 | 5 | Service Lookup | Поиск узла по сервису |
 | 6 | Duplicate Rejection | Проверка отклонения дублирующего соединения |
 | 7 | Local Stream | Стриминг с backpressure на локальном узле |
-| 8 | Node-to-Node | Стриминг между узлами |
+| 8 | Node-to-Node | Стриминг между узлами через mesh |
 
 ---
 
@@ -577,7 +665,7 @@ python debug_client.py
 ```
 P2P_Core/
 ├── main.py                 # Точка входа Node0
-├── main_node1.py           # Точка входа Node1
+├── main_node1.py           # DEPRECATED — используйте config + main.py
 ├── debug_client.py         # Тестовый клиент
 ├── config.yaml             # Конфигурация Node0
 ├── config1.yaml            # Конфигурация Node1
@@ -600,17 +688,17 @@ P2P_Core/
 │   └── networking/
 │       ├── protocol.py     # PackType, MsgPack — сетевой протокол
 │       ├── transport.py    # WebSocketTransport — транспорт
-│       ├── network.py      # NetworkModule, NodesManager, ConnectionManager
-│       ├── router.py       # Router — маршрутизация сообщений
+│       ├── network.py      # NetworkModule, NodesManager
+│       ├── router.py       # Router, StreamRoute, _MeshStreamIterator, _PathAwareTransport
 │       ├── sessions.py     # SessionTable — tracking RPC futures
 │       ├── stream_registry.py # StreamRegistry — registry inbound стримов
 │       ├── neighbor_table.py  # NeighborTable — топология сети
 │       └── node_connector.py  # NodeConnector — исходящие соединения
 │
 ├── services/
-│   ├── loader.py           # ServiceLoader — динамическая загрузка
+│   ├── loader.py           # ServiceLoader — динамическая загрузка + ctx.register()
 │   ├── manager.py          # ServiceManager — реестр сервисов
-│   ├── rpc.py              # Декораторы @rpc, @generator, etc.
+│   ├── rpc.py              # Декораторы @rpc, @generator, @stream_wrapper, @stream_consumer
 │   │
 │   ├── certstool/          # 🔐 КриптоПро сертификаты
 │   │   ├── service.py      #   17 RPC-методов
@@ -622,6 +710,7 @@ P2P_Core/
 │   │
 │   ├── webpanel/           # Веб-панель управления
 │   │   ├── service.py      #   Запуск Streamlit subprocess
+│   │   ├── service_meta.py #   SERVICE_META — реестр иконок/групп сервисов
 │   │   ├── _streamlit_app.py #  Entry point: sidebar + роутинг
 │   │   ├── rpc_client.py   #   NodeRPC — синхронный WS RPC клиент
 │   │   └── views/
@@ -630,7 +719,6 @@ P2P_Core/
 │   │
 │   ├── compute_full/       # ⚡ Полный compute pipeline
 │   ├── generator/          # 📤 Генератор стримов
-│   ├── compute/            # ⏳ Стрим-консьюмер
 │   └── test/               # 🧪 Тестовый echo-сервис
 │
 ├── docs/                   # Документация

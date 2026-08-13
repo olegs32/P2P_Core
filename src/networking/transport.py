@@ -2,9 +2,7 @@
 
 import logging
 
-import websockets
-
-from src.networking.protocol import MsgPack, PackType
+from src.networking.protocol import MsgPack
 
 log = logging.getLogger('Transport')
 
@@ -29,14 +27,3 @@ class WebSocketTransport:
         log.debug(f'→ {pack.type} [{pack.label[:8]}] to {pack.dst}')
 
 
-async def send_ack(src: str, dst:str, ws: websockets, label: str, buff: int):
-    pack = MsgPack(
-        type=PackType.STREAM_ACK,
-        source=src,
-        dst=dst,
-        label=label,
-        data=buff,
-    )
-    transport = WebSocketTransport(ws)  # сам разберётся с типом
-    await transport.send(pack)
-    log.debug(f'ACK → {label[:8]} buff={buff}')
