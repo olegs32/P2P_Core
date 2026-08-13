@@ -2,8 +2,10 @@ import asyncio
 import logging
 from pathlib import Path
 
+
 from services.loader import ServiceLoader
 from services.netinfo.service import NetInfo
+from services.webpanel.service import WebPanel
 from src.internal_modules.config import load_config
 from src.internal_modules.context import AppContext, app_lifespan
 from src.internal_modules.memory import MemoryModule
@@ -46,10 +48,13 @@ async def main():
     ctx.spawn = ctx.register(Spawner(name='spawner', context=ctx))
 
     netinfo = NetInfo('netinfo', ctx)
+    webpanel = WebPanel('webpanel', ctx)
 
     # # регистрация сервисов
     ctx.services.register_service(netinfo)
     ctx.services.register_service(ctx.spawn)
+    ctx.services.register_service(webpanel)
+    ctx.register(webpanel)
     ctx.services.register_method(ctx.spawn, 'spawn', ctx.spawn.spawn)
     ctx.services.register_method(ctx.spawn, 'list_generators', ctx.spawn.list_generators)
 

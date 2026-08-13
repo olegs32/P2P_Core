@@ -20,3 +20,7 @@ requests~=2.33.0
 urllib3~=2.7.0
 
 pydantic-settings
+
+# Web panel
+streamlit~=1.40.0      # Streamlit dashboard
+pandas~=2.2.0          # DataFrames for web UI

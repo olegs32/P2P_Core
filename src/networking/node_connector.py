@@ -64,7 +64,7 @@ class NodeConnector(ModuleGeneric):
         Подключаться только если наш node_id лексикографически меньше.
         Исключает взаимоподключение.
         """
-        return self.ctx.NODE < self.peer_node_id
+        return self.ctx.NODE > self.peer_node_id
 
     def _already_connected(self) -> bool:
         return self.ctx.network.nodes_manager.get(self.peer_node_id) is not None
