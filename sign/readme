@@ -1,0 +1,1 @@
+put ca_cert.pem and ca_key.pem local to generate .pfx with sign code rights

@@ -10,27 +10,27 @@ colorama.init()
 # --- Frozen exe: streamlit subprocess mode ---
 # When the exe is launched with --streamlit <app_path>, run streamlit
 # directly instead of the full server. Used by WebPanel in frozen builds.
-if '--streamlit' in sys.argv:
-    idx = sys.argv.index('--streamlit')
-    _app_path = sys.argv[idx + 1]
-    _port = sys.argv[idx + 2] if idx + 2 < len(sys.argv) else '8501'
-
-    # В frozen exe файл лежит в _MEIPASS (благодаря --add-data)
-    if getattr(sys, 'frozen', False):
-        _meipass = Path(getattr(sys, '_MEIPASS', ''))
-        _app_path = str(_meipass / 'services' / 'webpanel' / '_streamlit_app.py')
-
-    from streamlit.web import cli as stcli
-    sys.argv = ['streamlit', 'run', _app_path,
-                '--server.port', _port,
-                '--server.headless', 'true',
-                '--global.developmentMode', 'false',
-                '--browser.gatherUsageStats', 'false']
-    try:
-        stcli.main_run()
-    except SystemExit:
-        pass
-    sys.exit(0)
+# if '--streamlit' in sys.argv:
+#     idx = sys.argv.index('--streamlit')
+#     _app_path = sys.argv[idx + 1]
+#     _port = sys.argv[idx + 2] if idx + 2 < len(sys.argv) else '8501'
+#
+#     # В frozen exe файл лежит в _MEIPASS (благодаря --add-data)
+#     if getattr(sys, 'frozen', False):
+#         _meipass = Path(getattr(sys, '_MEIPASS', ''))
+#         _app_path = str(_meipass / 'services' / 'webpanel' / '_streamlit_app.py')
+#
+#     from streamlit.web import cli as stcli
+#     sys.argv = ['streamlit', 'run', _app_path,
+#                 '--server.port', _port,
+#                 '--server.headless', 'true',
+#                 '--global.developmentMode', 'false',
+#                 '--browser.gatherUsageStats', 'false']
+#     try:
+#         stcli.main_run()
+#     except SystemExit:
+#         pass
+#     sys.exit(0)
 
 from services.loader import ServiceLoader
 from src.internal_modules.config import load_config
