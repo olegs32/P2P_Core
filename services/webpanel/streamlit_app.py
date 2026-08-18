@@ -20,7 +20,7 @@ from services.webpanel.service_meta import SERVICE_META, GROUP_ORDER
 # ------------------------------------------------------------------ #
 #  Директория сервисов
 # ------------------------------------------------------------------ #
-SERVICES_DIR = Path(__file__).parent.parent
+SERVICES_DIR = Path(__file__)
 
 
 # ------------------------------------------------------------------ #
@@ -78,11 +78,13 @@ st.set_page_config(
 # ------------------------------------------------------------------ #
 #  Sidebar
 # ------------------------------------------------------------------ #
+local_node, rpc = None, None
 with st.sidebar:
     try:
         rpc = get_rpc()
         local_node = rpc.node
     except Exception as e:
+        print('RPC gets failure')
         st.error(f"Ошибка подключения: {e}")
         st.stop()
 

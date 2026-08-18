@@ -100,7 +100,10 @@ class NodeConnector(ModuleGeneric):
             except websockets.exceptions.ConnectionClosedError as e:
                 self.log.warning(f'Connection to {self.peer_node_id} closed: {e}')
             except Exception as e:
-                self.log.error(f'Connector error ({self.peer_node_id}): {e}')
+                if isinstance(e, OSError) and getattr(e, 'winerror', None) == 1225:
+                    pass
+                else:
+                    self.log.error(f'Connector error ({self.peer_node_id}): {e}')
             finally:
                 self._ws = None
                 self.ctx.network.router.unregister_client_ws(self.peer_node_id)

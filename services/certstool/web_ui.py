@@ -95,10 +95,12 @@ def _render_cert_detail(cert: dict, idx: int):
         with col_title:
             st.markdown(f"**📋 Подробности: {cert.get('subject_cn', '?')}**")
 
+        thumbprint = cert.get('thumbprint', '')
+
         # Ключевые данные — крупно
-        c1, c2 = st.columns(2)
+        c1, c2, c3 = st.columns(3)
         with c1:
-            st.markdown(f"**Thumbprint:** `{cert.get('thumbprint', '—')}`")
+            st.markdown(f"**Thumbprint:** `{thumbprint or '—'}`")
             st.markdown(f"**Контейнер:** `{cert.get('container', '—')}`")
             st.markdown(f"**Серийный номер:** `{cert.get('serial', '—')}`")
         with c2:
@@ -106,6 +108,42 @@ def _render_cert_detail(cert: dict, idx: int):
             st.markdown(f"**Действует до:** {cert.get('valid_to', '—')}")
             exp_emoji, exp_label = _expiry_badge(cert.get('valid_to', ''))
             st.markdown(f"**Срок:** {exp_emoji} {exp_label}")
+        with c3:
+            # Кнопка "Починить" в деталях
+            if st.button("🔧 Починить связку", use_container_width=True,
+                         help="Перепривязать закрытый ключ к сертификату",
+                         key=f"fix_detail_{idx}"):
+                try:
+                    res = rpc.call('certstool', 'fix_certificate_link', {
+                        'thumbprint': thumbprint,
+                        'password': '00000000',
+                    })
+                    if res.get('success'):
+                        st.success("Связка починена ✓")
+                        st.session_state.pop(f'cert_detail_{idx}', None)
+                        st.session_state.pop('certs_dashboard', None)
+                        st.rerun()
+                    else:
+                        st.error(f"Ошибка: {res.get('error', 'не удалось')}")
+                except Exception as e:
+                    st.error(f"Ошибка: {e}")
+
+        # Чекбокс для массового удаления (в деталях)
+        batch_mode_active = st.session_state.get('certs_batch_mode_toggle', False)
+        if batch_mode_active and thumbprint:
+            st.divider()
+            is_selected = thumbprint in st.session_state.get('certs_batch_queue', [])
+            if st.checkbox(
+                "✓ Выбрано для массового удаления",
+                value=is_selected,
+                key=f"detail_select_{idx}",
+            ):
+                queue = st.session_state.certs_batch_queue
+                if thumbprint not in queue:
+                    queue.append(thumbprint)
+                else:
+                    queue.remove(thumbprint)
+                    st.session_state.certs_batch_queue = queue
 
         st.divider()
 
@@ -150,6 +188,7 @@ def render(rpc):
         with col_refresh:
             if st.button("🔄 Обновить", key="certs_refresh"):
                 st.session_state.pop('certs_dashboard', None)
+                st.session_state.pop('certs_batch_queue', None)
 
         if 'certs_dashboard' not in st.session_state:
             with st.spinner("Загрузка сертификатов..."):
@@ -168,6 +207,47 @@ def render(rpc):
         if not certs:
             st.info("Нет установленных сертификатов")
         else:
+            # --- Режим пакетного удаления ---
+            if 'certs_batch_queue' not in st.session_state:
+                st.session_state.certs_batch_queue = []
+
+            batch_mode = st.checkbox(
+                "🗂️ Режим массового удаления",
+                value=False,
+                key="certs_batch_mode_toggle",
+                help="Отметьте сертификаты галочками для пакетного удаления"
+            )
+
+            if batch_mode:
+                st.caption(f"Выбрано: {len(st.session_state.certs_batch_queue)} шт.")
+                cols_actions = st.columns([1, 4])
+                with cols_actions[0]:
+                    if st.button("🗑️ Удалить выбранные", use_container_width=True):
+                        deleted = 0
+                        failed = 0
+                        for thumbprint in list(st.session_state.certs_batch_queue):
+                            try:
+                                res = rpc.call('certstool', 'delete_certificate', {
+                                    'thumbprint': thumbprint,
+                                })
+                                if res.get('success'):
+                                    deleted += 1
+                                else:
+                                    failed += 1
+                                    st.warning(f"❌ {thumbprint[:16]}…: {res.get('error', '?')}")
+                            except Exception as e:
+                                failed += 1
+                                st.warning(f"❌ {thumbprint[:16]}…: {e}")
+                        st.session_state.certs_batch_queue = []
+                        st.session_state.pop('certs_dashboard', None)
+                        st.success(f"Готово: ✅ {deleted} удалено, ❌ {failed} ошибок")
+                        st.rerun()
+                with cols_actions[1]:
+                    if st.button("✕ Отменить выбор", use_container_width=True):
+                        st.session_state.certs_batch_queue = []
+                        st.rerun()
+                st.divider()
+
             for i, c in enumerate(certs):
                 cn = c.get('subject_cn', 'Неизвестно')
                 container = c.get('container', '')
@@ -180,36 +260,22 @@ def render(rpc):
                 exp_emoji, exp_label = _expiry_badge(valid_to)
 
                 with st.container():
-                    cols = st.columns([3, 2, 1, 1, 1, 1])
-                    with cols[0]:
-                        st.markdown(f"**{cn}**")
-                        st.caption(f"Контейнер: `{container or '—'}`")
-                    with cols[1]:
-                        st.caption(f"Удостоверяющий: {issuer_cn}")
-                        st.caption(f"Действует: {valid_from} → {valid_to}")
-                    with cols[2]:
-                        st.markdown(f"{exp_emoji} **{exp_label}**")
-                    with cols[3]:
-                        st.caption(f"`{thumbprint[:16]}…`")
-                    with cols[4]:
-                        if st.button("🗑️", key=f"del_{i}"):
-                            try:
-                                res = rpc.call('certstool', 'delete_certificate', {
-                                    'thumbprint': thumbprint,
-                                })
-                                if res.get('success'):
-                                    st.success("Удалён")
-                                    st.session_state.pop('certs_dashboard', None)
-                                    st.rerun()
-                                else:
-                                    st.error(f"Ошибка: {res.get('error', 'не удалось')}")
-                            except Exception as e:
-                                st.error(f"Ошибка: {e}")
-                    with cols[5]:
-                        if st.button("🔍", key=f"detail_{i}"):
-                            st.session_state[f'cert_detail_{i}'] = True
+                    # Чекбокс для массового удаления
+                    if batch_mode:
+                        is_selected = thumbprint in st.session_state.certs_batch_queue
+                        if st.checkbox(
+                            "✓",
+                            value=is_selected,
+                            key=f"cert_select_{i}",
+                            help=f"Выбрать {cn} для удаления"
+                        ):
+                            if thumbprint not in st.session_state.certs_batch_queue:
+                                st.session_state.certs_batch_queue.append(thumbprint)
+                        st.session_state[f'selected_{i}'] = True
+                    else:
+                        st.write("")  # Заполнитель для выравнивания
 
-                    # Диалог экспорта PFX / CER
+                    # Диалог экспорта PFX (для всех)
                     if st.session_state.get(f'pfx_trigger_{i}'):
                         pfx_pwd = st.text_input(
                             "Пароль PFX", value="00000000", type="password",
@@ -229,6 +295,7 @@ def render(rpc):
                                             st.session_state[f'pfx_dl_{i}'] = res['pfx_base64']
                                             st.session_state[f'pfx_name_{i}'] = cn
                                             st.session_state.pop(f'pfx_trigger_{i}', None)
+                                            st.rerun()
                                         else:
                                             st.error(f"PFX: {res.get('error', 'ошибка')}")
                                     except Exception as e:
@@ -237,13 +304,63 @@ def render(rpc):
                             if st.button("Отмена", key=f"pfx_cancel_{i}"):
                                 st.session_state.pop(f'pfx_trigger_{i}', None)
                                 st.rerun()
+                        st.divider()
                     else:
-                        export_cols = st.columns([1, 1])
-                        with export_cols[0]:
+                        cols = st.columns([3, 2, 1, 1, 1, 1, 1])
+                        with cols[0]:
+                            st.markdown(f"**{cn}**")
+                            st.caption(f"Контейнер: `{container or '—'}`")
+                        with cols[1]:
+                            st.caption(f"Удостоверяющий: {issuer_cn}")
+                            st.caption(f"Действует: {valid_from} → {valid_to}")
+                        with cols[2]:
+                            st.markdown(f"{exp_emoji} **{exp_label}**")
+                        with cols[3]:
+                            st.caption(f"`{thumbprint[:16]}…`")
+                        with cols[4]:
+                            # Кнопка "Починить" — перепривязка закрытого ключа
+                            if st.button("🔧", key=f"fix_{i}",
+                                         help="Починить связку сертификата с закрытым ключом"):
+                                try:
+                                    res = rpc.call('certstool', 'fix_certificate_link', {
+                                        'thumbprint': thumbprint,
+                                        'password': '00000000',
+                                    })
+                                    if res.get('success'):
+                                        st.success("Связка починена ✓")
+                                        st.session_state.pop('certs_dashboard', None)
+                                        st.rerun()
+                                    else:
+                                        st.error(f"Ошибка: {res.get('error', 'не удалось')}")
+                                except Exception as e:
+                                    st.error(f"Ошибка: {e}")
+                        with cols[5]:
+                            if st.button("🔍", key=f"detail_{i}"):
+                                st.session_state[f'cert_detail_{i}'] = True
+                                st.rerun()
+                        with cols[6]:
+                            if st.button("🗑️", key=f"del_{i}"):
+                                try:
+                                    res = rpc.call('certstool', 'delete_certificate', {
+                                        'thumbprint': thumbprint,
+                                    })
+                                    if res.get('success'):
+                                        st.success("Удалён")
+                                        st.session_state.pop('certs_dashboard', None)
+                                        st.rerun()
+                                    else:
+                                        st.error(f"Ошибка: {res.get('error', 'не удалось')}")
+                                except Exception as e:
+                                    st.error(f"Ошибка: {e}")
+
+
+                        # Кнопки экспорта — под основной строкой
+                        export_row = st.columns([1, 1, 4])
+                        with export_row[0]:
                             if has_container and st.button("📦 PFX", key=f"exp_pfx_{i}"):
                                 st.session_state[f'pfx_trigger_{i}'] = True
                                 st.rerun()
-                        with export_cols[1]:
+                        with export_row[1]:
                             if st.button("📄 CER", key=f"exp_cer_{i}"):
                                 with st.spinner("Экспорт CER..."):
                                     try:

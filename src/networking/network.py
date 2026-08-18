@@ -109,22 +109,24 @@ class NetworkModule(ModuleGeneric):
                     ))
                     return
 
-                # проверить дубликат — закрыть старое подключение, принять новое (reconnect)
-                if self.nodes_manager.get(node_id):
-                    old_node = self.nodes_manager.get(node_id)
-                    self.nodes_manager.remove(node_id)
-                    self.neighbor_table.mark_unreachable(node_id)
+                # проверить дубликат — заменить старое подключение на новое (reconnect)
+                old_node = self.nodes_manager.get(node_id)
+                if old_node:
+                    # Сначала регистрируем новое WS, чтобы избежать окна,
+                    # когда узел отсутствует в nodes_manager и ответы теряются
+                    self.nodes_manager.register(node_id, websocket)
+                    self.log.info(f'Reconnect: replacing connection for {node_id}')
                     try:
                         await old_node.ws.close()
                     except Exception:
                         pass
-                    self.log.info(f'Reconnect: closed old connection for {node_id}')
+                else:
+                    self.nodes_manager.register(node_id, websocket)
 
                 # принять
                 hello_data = pack.data or {}
                 session_id = str(uuid.uuid4())
 
-                self.nodes_manager.register(node_id, websocket)
                 self.neighbor_table.register_connected(
                     node_id    = node_id,
                     host       = hello_data.get('host', ''),
@@ -168,9 +170,15 @@ class NetworkModule(ModuleGeneric):
             except asyncio.TimeoutError:
                 self.log.warning(f'HELLO timeout from {node_id}')
             except WebSocketDisconnect:
-                self.nodes_manager.remove(node_id)
+                # Удалить только если это текущее (активное) WS для node_id,
+                # а не уже заменённое при reconnect
+                current = self.nodes_manager.get(node_id)
+                if current and current.ws is websocket:
+                    self.nodes_manager.remove(node_id)
+                    self.neighbor_table.mark_unreachable(node_id)
+                # Очистить pending-ответы для этого WS в любом случае
+                self.router.cleanup_ws_pending(websocket)
                 self.conn_manager.disconnect(websocket)
-                self.neighbor_table.mark_unreachable(node_id)
                 self.log.info(f'Node {node_id} disconnected')
 
     # ------------------------------------------------------------------ #

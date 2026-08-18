@@ -4,11 +4,15 @@
 import asyncio
 import logging
 import os
+import subprocess
 import sys
 from pathlib import Path
 
+import psutil
+
 from src.internal_modules.base import ModuleGeneric
 from services.rpc import rpc
+import streamlit.web.cli as stcli
 
 log = logging.getLogger('WebPanel')
 
@@ -19,14 +23,17 @@ SERVICES_DIR = Path(__file__).parent.parent
 class WebPanel(ModuleGeneric):
     def __init__(self, name, context):
         super().__init__(name, context)
-        self._process: asyncio.subprocess.Process | None = None
+        # self._process: asyncio.subprocess.Process | None = None
         self._panel_port = DEFAULT_PANEL_PORT
 
     async def start(self):
-        app_path = Path(__file__).parent / '_streamlit_app.py'
-        if not app_path.exists():
-            log.error(f'app.py not found: {app_path}')
-            return
+        # app_path = Path(__file__).parent / 'streamlit_app.py'
+        # if not app_path.exists():
+        #     log.error(f'streamlit_app.py not found: {app_path}')
+        #     return
+        log.info(
+            f'Streamlit booting... '
+        )
 
         env = {
             **os.environ,
@@ -38,28 +45,56 @@ class WebPanel(ModuleGeneric):
             'PYTHONWARNINGS': 'ignore::DeprecationWarning',
         }
 
-        self._process = await asyncio.create_subprocess_exec(
-            sys.executable, '-m', 'streamlit', 'run', str(app_path),
-            '--server.port', str(self._panel_port),
-            '--server.headless', 'true',
-            '--browser.gatherUsageStats', 'false',
-            env=env,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
+
+        # self._process = await asyncio.create_subprocess_exec(
+        #     sys.executable, '-m', 'streamlit', 'run', str(app_path),
+        #     '--server.port', str(self._panel_port),
+        #     '--server.headless', 'true',
+        #     '--browser.gatherUsageStats', 'false',
+        #     env=env,
+        #     stdout=asyncio.subprocess.PIPE,
+        #     stderr=asyncio.subprocess.PIPE,
+        # )
+
+        try:
+            # PyInstaller creates a temp folder and stores path in _MEIPASS
+            base_path = sys._MEIPASS / 'services' / 'webpanel'
+        except Exception:
+            base_path = os.path.abspath("./services/webpanel")
+
+        path = os.path.join(base_path, 'streamlit_app.py')
+
         log.info(
             f'Streamlit started on port {self._panel_port} '
-            f'(pid={self._process.pid})'
         )
 
+        args = [
+            "streamlit",
+            "run",
+            path,
+            "--global.developmentMode=false",
+            '--server.port', str(self._panel_port),
+
+            '--browser.gatherUsageStats', 'false',
+            # env,
+        ]
+        subprocess.Popen(args)
+
+        # sys.exit(stcli.main())
+
+    # async def stop(self):
+    #     if self._process:
+    #         self._process.terminate()
+    #         try:
+    #             await asyncio.wait_for(self._process.wait(), timeout=5)
+    #         except asyncio.TimeoutError:
+    #             self._process.kill()
+    #         log.info('Streamlit stopped')
+
     async def stop(self):
-        if self._process:
-            self._process.terminate()
-            try:
-                await asyncio.wait_for(self._process.wait(), timeout=5)
-            except asyncio.TimeoutError:
-                self._process.kill()
-            log.info('Streamlit stopped')
+        for p in psutil.process_iter():
+            if p.name() == 'streamlit.exe':
+                p.kill()
 
     # ------------------------------------------------------------------ #
     #  RPC методы для Streamlit UI

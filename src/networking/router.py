@@ -76,6 +76,21 @@ class Router:
         """Убрать client-side WS при disconnect."""
         self._client_ws.pop(node_id, None)
 
+    def cleanup_ws_pending(self, websocket):
+        """Удалить все _ws_pending записи, ссылающиеся на данный websocket.
+
+        Вызывается при disconnect WS-клиента, чтобы RESPONSE/ERROR
+        не пытались отправиться на уже закрытое соединение.
+        """
+        to_remove = [
+            label for label, transport in self._ws_pending.items()
+            if transport.ws is websocket
+        ]
+        for label in to_remove:
+            self._ws_pending.pop(label, None)
+        if to_remove:
+            log.debug(f'Cleaned {len(to_remove)} pending entries for disconnected WS')
+
     def get_transport_to(self, node_id: str) -> WebSocketTransport | None:
         """Получить транспорт к узлу (server-side или client-side)."""
         node = self._nodes_mgr.get(node_id)

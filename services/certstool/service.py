@@ -775,6 +775,100 @@ class CertsTool(ModuleGeneric):
                 return info
         return {}
 
+    @rpc
+    async def fix_certificate_link(self, data: dict) -> dict:
+        """Починить связку сертификата с закрытым ключом.
+
+        Проблема: при ручной установке PFX через КриптоПро, сертификат может
+        не связаться с закрытым ключом. Этот метод экспортирует PFX и устанавливает
+        его заново с явным указанием контейнера — это создаёт правильную связку.
+
+        Параметры:
+          thumbprint: str — идентификатор сертификата
+          password: str — текущий пароль контейнера (default='00000000')
+
+        Возвращает: {success, container, error}
+        """
+        thumbprint = data.get('thumbprint', '')
+        password = data.get('password', '00000000')
+
+        if not thumbprint:
+            return {'success': False, 'error': 'Thumbprint is required'}
+
+        # 1. Найти сертификат по thumbprint
+        certs = await self.list_certificates({})
+        cert_info = None
+        for info in certs.values():
+            if info.get('Thumbprint', '').lower() == thumbprint.lower():
+                cert_info = info
+                break
+
+        if not cert_info:
+            return {'success': False, 'error': 'Certificate not found'}
+
+        container = cert_info.get('Container', '')
+        if not container:
+            return {'success': False, 'error': 'No container for this certificate'}
+
+        self.log.info(f'Fixing link for {thumbprint[:8]}... (container={container})')
+
+        # 2. Экспортировать PFX с текущим паролем
+        export_result = await self.export_certificate_pfx({
+            'container_name': container,
+            'password': password,
+        })
+
+        if not export_result.get('success'):
+            return {
+                'success': False,
+                'error': f'Export failed: {export_result.get("error", "?")}',
+            }
+
+        pfx_b64 = export_result.get('pfx_base64', '')
+        if not pfx_b64:
+            return {'success': False, 'error': 'Empty PFX data'}
+
+        # 3. Удалить старый сертификат
+        del_result = await self.delete_certificate({'thumbprint': thumbprint})
+        if not del_result.get('success'):
+            self.log.warning(f'Delete old cert failed: {del_result.get("error", "?")}')
+            # Продолжить установку — может быть дубликат
+
+        # 4. Установить PFX заново с явным контейнером — это создаст связку
+        pfx_bytes = base64.b64decode(pfx_b64)
+
+        with tempfile.NamedTemporaryFile(suffix='.pfx', delete=False) as tmp:
+            tmp.write(pfx_bytes)
+            tmp_path = tmp.name
+
+        try:
+            cmd = (f'"{self.csp_path / "certmgr.exe"}" -install -store uMy '
+                   f'-file "{tmp_path}" -pfx -container "{container}" '
+                   f'-silent -keep_exportable -pin {password}')
+            output = await self._run_async(cmd)
+            error = self._extract_error_code(output)
+            result_container = self._extract_container(output)
+
+            if not result_container:
+                result_container = container
+
+            self.log.info(f'Fix link: error={error}, container={result_container}')
+
+            if error != '0x00000000':
+                return {
+                    'success': False,
+                    'error': f'Install failed: {error}',
+                    'error_code': error,
+                }
+
+            return {
+                'success': True,
+                'container': result_container,
+                'thumbprint': thumbprint,
+            }
+        finally:
+            Path(tmp_path).unlink(missing_ok=True)
+
     # ------------------------------------------------------------------ #
     #  История установки
     # ------------------------------------------------------------------ #
