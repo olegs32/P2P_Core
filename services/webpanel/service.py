@@ -58,9 +58,10 @@ class WebPanel(ModuleGeneric):
 
         try:
             # PyInstaller creates a temp folder and stores path in _MEIPASS
-            base_path = sys._MEIPASS / 'services' / 'webpanel'
-        except Exception:
+            base_path = Path(sys._MEIPASS) / 'services' / 'webpanel'
+        except Exception as e:
             base_path = os.path.abspath("./services/webpanel")
+            print(e)
 
         path = os.path.join(base_path, 'streamlit_app.py')
 
