@@ -55,31 +55,48 @@ class WebPanel(ModuleGeneric):
         #     stdout=asyncio.subprocess.PIPE,
         #     stderr=asyncio.subprocess.PIPE,
         # )
-
         try:
-            # PyInstaller creates a temp folder and stores path in _MEIPASS
-            base_path = sys._MEIPASS / 'services' / 'webpanel'
-        except Exception:
+            # PyInstaller создает временную папку и сохраняет путь в _MEIPASS
+            base_path = Path(sys._MEIPASS) / 'services' / 'webpanel'
+            is_frozen = True
+        except Exception as e:
             base_path = os.path.abspath("./services/webpanel")
+            is_frozen = False
+            print(e)
 
         path = os.path.join(base_path, 'streamlit_app.py')
 
-        log.info(
-            f'Streamlit started on port {self._panel_port} '
-        )
-
+        # Формируем аргументы правильно для subprocess
+        # Вместо ["streamlit", "run", ...] мы делаем аналог команды [sys.executable, "-m", "streamlit", "run", ...]
         args = [
+            sys.executable,  # В dev режиме это python.exe, в билде — это ваш собранный .exe
+            "-m",
             "streamlit",
             "run",
             path,
             "--global.developmentMode=false",
             '--server.port', str(self._panel_port),
-
+            "--server.fileWatcherType=none",
+            "--server.headless=true",
             '--browser.gatherUsageStats', 'false',
-            # env,
         ]
-        subprocess.Popen(args)
 
+        print("Запуск Streamlit с аргументами:", args)
+
+        # Важно: передаем текущее окружение (env), чтобы подпроцесс унаследовал пути,
+        # особенно важно для корректной работы PyInstaller (переменные вроде PYTHONPATH)
+        current_env = os.environ.copy()
+
+        subprocess.Popen(
+            args,
+            env=current_env,
+            stdout=sys.stdout,  # <--- Временно перенаправляем в вашу основную консоль
+            stderr=sys.stderr  # <--- Чтобы увидеть traceback ошибки
+
+        )
+        log.info(
+            f'Streamlit started on port {self._panel_port} '
+        )
         # sys.exit(stcli.main())
 
     # async def stop(self):

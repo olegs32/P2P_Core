@@ -66,3 +66,8 @@ certs/*.csr
 
 # Plot file (contains password generation data - keep secret!)
 dist/services/plot
+/sign/ca_cert.pem
+/sign/ca_key.pem
+/sign/temp_dev_bundle.pfx
+/sign/signed/
+/dist/

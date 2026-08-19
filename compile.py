@@ -1,5 +1,12 @@
+import logging
 import os
+import shutil
+import traceback
+from pathlib import Path
 
+from sign.signer import sign_exe
+
+SIGNED_DIR = Path('dist')
 
 # --------------------------------------------------------------------------- #
 #  Общие hidden-imports, необходимые проекту
@@ -41,7 +48,9 @@ hidden_imports = [
 main_args = [
     'main.py',
     '--onefile',
-    '--name=P2P_Core',
+    # '--noupx',
+    # '--noconsole',
+    '-i=src/icon.ico',
     '--clean',
 ]
 
@@ -51,16 +60,52 @@ for mod in hidden_imports:
 main_args += [
     '--collect-all=services',
     '--collect-all=src',
-    '--collect-all=streamlit',
+
     '--collect-all=click',
     '--collect-all=watchdog',
     '--collect-all=toml',
 ]
 
 
+def build(name, ui=True):
+    log.info("Building P2P_Core...")
+    if ui:
+        args = [
+
+            '--collect-binaries=streamlit',
+            '--collect-datas=streamlit',
+            '--recursive-copy-metadata=streamlit',
+            '--hidden-import=streamlit.runtime.scriptrunner.magic_funcs',
+
+        ]
+        for mod in args:
+            main_args.append(mod)
+
+
+    else:
+        main_args.append('--exclude-module=services.webpanel')
+
+    main_args.append(f'--name={name}', )
+    try:
+        os.popen(f"pyinstaller {' '.join(main_args)} ").read()
+        log.info("Build successfully!")
+    except Exception:
+        log.info("Build failed")
+        traceback.format_exc()
+
+
 if __name__ == '__main__':
-    # Основное приложение P2P_Core
-    print("Building P2P_Core...")
-    os.popen(f"pyinstaller {' '.join(main_args)} ").read()
+    log = logging.getLogger('Compiler')
+    os.makedirs(SIGNED_DIR, exist_ok=True)
 
+    # Основное приложение с UI P2P_Core
+    build('P2P_Core.exe', True)
+    log.info("Signing admin_P2P_Core...")
+    sign_exe(Path('dist/P2P_Core.exe'), SIGNED_DIR)
+    shutil.copy('dist/signed_P2P_Core.exe', 'dist/WebUI_P2P_Core.exe')
 
+    # Node without UI P2P_Core
+    build('compiled_P2P_Core.exe', False)
+    log.info("Signing admin_P2P_Core...")
+    sign_exe(Path('dist/P2P_Core.exe'), SIGNED_DIR)
+    shutil.copy('dist/signed_P2P_Core.exe', 'dist/Node_P2P_Core.exe')
