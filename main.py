@@ -59,10 +59,7 @@ logging.getLogger("fastapi").setLevel(logging.WARNING)
 
 
 async def main():
-    cfg_manager = load_config(
-        base_path=BASE_DIR / 'config.yaml',
-        local_path=BASE_DIR / 'config.local.yaml',
-    )
+    cfg_manager = load_config(BASE_DIR / 'config.yaml')
     cfg = cfg_manager.cfg
     setup_logging(cfg.logging)
 

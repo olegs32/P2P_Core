@@ -1,11 +1,21 @@
 # services/netinfo/web_ui.py — веб-интерфейс сервиса диагностики сети
 # Контракт: функция render(rpc) вызывается streamlit для рендеринга вкладки сервиса
+import logging
 
-import streamlit as st
+try:
+    import streamlit as st
+except ImportError:
+    # Если мы в режиме Node без UI, streamlit не доступен
+    st = None
 import pandas as pd
+
+logging.getLogger("streamlit.runtime.scriptrunner_utils.script_run_context").setLevel(logging.ERROR)
+logging.getLogger("streamlit.runtime.state.session_state_proxy").setLevel(logging.ERROR)
 
 
 def render(rpc):
+    if st is None:
+        return
     tab1, tab2, tab3 = st.tabs(["Соседи", "Узлы", "Поиск сервиса"])
 
     # ------------------------------------------------------------------ #

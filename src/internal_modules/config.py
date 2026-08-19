@@ -3,13 +3,17 @@
 import logging
 import socket
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Any
+
 import yaml
 from pydantic import BaseModel, field_validator
 
 log = logging.getLogger('Config')
 
 _HOSTNAME = socket.gethostname()
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+s.connect(("8.8.8.8", 80))
+_IP = s.getsockname()[0]
 
 
 # ------------------------------------------------------------------ #
@@ -26,9 +30,9 @@ class MemoryConfig(BaseModel):
 
 
 class LoggingConfig(BaseModel):
-    level:         str = 'DEBUG'
+    level: str = 'INFO'
     uvicorn_level: str = 'WARNING'
-    websockets_level:  str = 'WARNING'
+    websockets_level: str = 'WARNING'
 
 
 class ServicesConfig(BaseModel):
@@ -37,22 +41,22 @@ class ServicesConfig(BaseModel):
 
 class PeerConfig(BaseModel):
     node_id: str
-    uri:     str
+    uri: str
 
 
 class LocalConfig(BaseModel):
-    alias:  str              = _HOSTNAME
-    secret: Optional[str]   = None
-    peers:  list[PeerConfig] = []
+    alias: str = _HOSTNAME
+    secret: Optional[str] = None
+    peers: list[PeerConfig] = []
 
 
 class Config(BaseModel):
-    node:     str            = 'Node0'
-    network:  NetworkConfig  = NetworkConfig()
-    memory:   MemoryConfig   = MemoryConfig()
-    logging:  LoggingConfig  = LoggingConfig()
+    node: str = _IP
+    network: NetworkConfig = NetworkConfig()
+    memory: MemoryConfig = MemoryConfig()
+    logging: LoggingConfig = LoggingConfig()
     services: ServicesConfig = ServicesConfig()
-    local:    LocalConfig    = LocalConfig()
+    local: LocalConfig = LocalConfig()
 
     @field_validator('node')
     @classmethod
@@ -63,11 +67,11 @@ class Config(BaseModel):
 
 
 # ------------------------------------------------------------------ #
-#  Дефолтные файлы
+#  Дефолтный конфиг (объединённый)
 # ------------------------------------------------------------------ #
 
-_DEFAULT_BASE = """\
-node: Node0
+_DEFAULT_CONFIG = f"""\
+node: {_IP}
 
 network:
   host: 0.0.0.0
@@ -79,27 +83,26 @@ memory:
 logging:
   level: DEBUG
   uvicorn_level: WARNING
+  websockets_level: WARNING
 
 services:
   path: services/
+
+local:
+  alias: {_HOSTNAME}
+  secret: null
+  peers: []
+  # - node_id: Node1
+  #   uri: ws://192.168.1.10:9001/ws/Node1
 """
 
-_DEFAULT_LOCAL = """\
-alias: {hostname}
-secret: null
 
-peers: []
-#  - node_id: Node1
-#    uri: ws://192.168.1.10:9001/ws/Node0
-"""
-
-
-def _ensure_file(path: Path, template: str):
+def _ensure_config(path: Path):
     if not path.exists():
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(
-            template.format(hostname=_HOSTNAME),
-            encoding='utf-8'
+            _DEFAULT_CONFIG.format(hostname=_HOSTNAME),
+            encoding='utf-8',
         )
         log.info(f'Created default config: {path}')
 
@@ -118,8 +121,7 @@ def _load_yaml(path: Path) -> dict:
 def _save_yaml(path: Path, data: dict):
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, 'w', encoding='utf-8') as f:
-        yaml.dump(data, f, allow_unicode=True,
-                  default_flow_style=False, sort_keys=False)
+        yaml.dump(data, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
     log.debug(f'Saved config: {path}')
 
 
@@ -133,6 +135,21 @@ def _deep_merge(base: dict, override: dict) -> dict:
     return result
 
 
+def _set_nested(data: dict, keys: list[str], value: Any):
+    d = data
+    for k in keys[:-1]:
+        d = d.setdefault(k, {})
+    d[keys[-1]] = value
+
+
+def _get_nested(data: dict, keys: list[str]) -> tuple[Any, dict]:
+    """(value, parent_dict) для модификации на месте."""
+    d = data
+    for k in keys[:-1]:
+        d = d.setdefault(k, {})
+    return d.get(keys[-1]), d
+
+
 # ------------------------------------------------------------------ #
 #  ConfigManager
 # ------------------------------------------------------------------ #
@@ -140,26 +157,21 @@ def _deep_merge(base: dict, override: dict) -> dict:
 class ConfigManager:
     """
     Загрузка, хранение и обновление конфига.
-    Автосохранение при любой модификации.
+    Один файл — config.yaml. Автосохранение при любой модификации.
     """
 
-    def __init__(self,
-                 base_path:  Path = Path('config.yaml'),
-                 local_path: Path = Path('config.local.yaml')):
-        self._base_path  = base_path
-        self._local_path = local_path
+    def __init__(self, config_path: Path = Path('config.yaml')):
+        self._config_path = config_path
         self.cfg: Config = self._load()
 
+    # ------------------------------------------------------------------ #
+    #  Internal
+    # ------------------------------------------------------------------ #
+
     def _load(self) -> Config:
-        _ensure_file(self._base_path,  _DEFAULT_BASE)
-        _ensure_file(self._local_path, _DEFAULT_LOCAL)
-
-        base  = _load_yaml(self._base_path)
-        local = _load_yaml(self._local_path)
-
-        local_section = local.pop('local', local)
-        merged = _deep_merge(base, {'local': local_section})
-        cfg = Config(**merged)
+        _ensure_config(self._config_path)
+        raw = _load_yaml(self._config_path)
+        cfg = Config(**raw)
 
         log.info(
             f'Config loaded: node={cfg.node} '
@@ -170,92 +182,76 @@ class ConfigManager:
         return cfg
 
     def reload(self):
-        """Перечитать оба файла с диска."""
+        """Перечитать файл с диска."""
         self.cfg = self._load()
         log.info('Config reloaded')
 
+    def _save(self):
+        _save_yaml(self._config_path, _load_yaml(self._config_path))
+
     # ------------------------------------------------------------------ #
-    #  Обновление base конфига
+    #  Обновление конфига
     # ------------------------------------------------------------------ #
 
-    def update_base(self, **kwargs):
+    def update(self, **kwargs):
         """
-        Обновить поля base конфига и сохранить config.yaml.
-        Поддерживает вложенность через '__':
-            update_base(network__port=9001)
+        Обновить любое поле конфига и сохранить config.yaml.
+        Вложенность через '__':
+            update(network__port=9001, logging__level='INFO')
         """
-        data = _load_yaml(self._base_path)
+        data = _load_yaml(self._config_path)
         for key, value in kwargs.items():
             parts = key.split('__')
-            d = data
-            for part in parts[:-1]:
-                d = d.setdefault(part, {})
-            d[parts[-1]] = value
-
-        _save_yaml(self._base_path, data)
-        self.cfg = Config(**_deep_merge(
-            data,
-            {'local': _load_yaml(self._local_path)}
-        ))
-        log.info(f'Base config updated: {kwargs}')
+            _set_nested(data, parts, value)
+        _save_yaml(self._config_path, data)
+        self.cfg = Config(**data)
+        log.info(f'Config updated: {kwargs}')
 
     # ------------------------------------------------------------------ #
-    #  Обновление local конфига (пиры, секреты)
+    #  Удобные геттеры / сеттеры для local-полей
     # ------------------------------------------------------------------ #
 
-    def update_local(self, **kwargs):
-        """
-        Обновить поля local конфига и сохранить config.local.yaml.
-        Поддерживает вложенность через '__':
-            update_local(alias='my-node')
-        """
-        data = _load_yaml(self._local_path)
-        for key, value in kwargs.items():
-            parts = key.split('__')
-            d = data
-            for part in parts[:-1]:
-                d = d.setdefault(part, {})
-            d[parts[-1]] = value
+    def get_local(self, key: str, default=None) -> Any:
+        data = _load_yaml(self._config_path)
+        _, parent = _get_nested(data, ['local'])
+        return parent.get(key, default)
 
-        _save_yaml(self._local_path, data)
-        base = _load_yaml(self._base_path)
-        self.cfg = Config(**_deep_merge(base, {'local': data}))
-        log.info(f'Local config updated: {kwargs}')
+    def set_local(self, key: str, value: Any):
+        data = _load_yaml(self._config_path)
+        _set_nested(data, ['local', key], value)
+        _save_yaml(self._config_path, data)
+        self.cfg = Config(**data)
+        log.info(f'Local config updated: {key} = {value}')
 
     # ------------------------------------------------------------------ #
     #  Управление пирами
     # ------------------------------------------------------------------ #
 
     def add_peer(self, node_id: str, uri: str) -> bool:
-        """Добавить пир если его ещё нет."""
-        data = _load_yaml(self._local_path)
-        peers: list = data.get('peers', [])
+        data = _load_yaml(self._config_path)
+        peers_data = data.setdefault('local', {}).setdefault('peers', [])
 
-        if any(p.get('node_id') == node_id for p in peers):
+        if any(p.get('node_id') == node_id for p in peers_data):
             log.warning(f'Peer already exists: {node_id}')
             return False
 
-        peers.append({'node_id': node_id, 'uri': uri})
-        data['peers'] = peers
-        _save_yaml(self._local_path, data)
-
+        peers_data.append({'node_id': node_id, 'uri': uri})
+        _save_yaml(self._config_path, data)
         self.cfg.local.peers.append(PeerConfig(node_id=node_id, uri=uri))
         log.info(f'Peer added: {node_id} → {uri}')
         return True
 
     def remove_peer(self, node_id: str) -> bool:
-        """Удалить пир по node_id."""
-        data = _load_yaml(self._local_path)
-        peers = data.get('peers', [])
-        new_peers = [p for p in peers if p.get('node_id') != node_id]
+        data = _load_yaml(self._config_path)
+        peers_data = data.get('local', {}).get('peers', [])
+        new_peers = [p for p in peers_data if p.get('node_id') != node_id]
 
-        if len(new_peers) == len(peers):
+        if len(new_peers) == len(peers_data):
             log.warning(f'Peer not found: {node_id}')
             return False
 
-        data['peers'] = new_peers
-        _save_yaml(self._local_path, data)
-
+        data['local']['peers'] = new_peers
+        _save_yaml(self._config_path, data)
         self.cfg.local.peers = [
             p for p in self.cfg.local.peers if p.node_id != node_id
         ]
@@ -270,9 +266,5 @@ class ConfigManager:
 #  Shortcut
 # ------------------------------------------------------------------ #
 
-def load_config(base_path:  Path = Path('config.yaml'),
-                local_path: Path = Path('config.local.yaml')) -> ConfigManager:
-    return ConfigManager(base_path, local_path)
-
-
-
+def load_config(config_path: Path = Path('config.yaml')) -> ConfigManager:
+    return ConfigManager(config_path)

@@ -1,6 +1,6 @@
 # services/webpanel/_streamlit_app.py — Streamlit entry point
 # Единая панель управления: sidebar навигация + выбор ноды + динамический рендер
-
+import logging
 import os
 import sys
 from pathlib import Path
@@ -21,7 +21,8 @@ from services.webpanel.service_meta import SERVICE_META, GROUP_ORDER
 #  Директория сервисов
 # ------------------------------------------------------------------ #
 SERVICES_DIR = Path(__file__)
-
+logging.getLogger("streamlit.runtime.scriptrunner_utils.script_run_context").setLevel(logging.ERROR)
+logging.getLogger("streamlit.runtime.state.session_state_proxy").setLevel(logging.ERROR)
 
 # ------------------------------------------------------------------ #
 #  NodeRPC — singleton через session_state

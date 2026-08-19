@@ -4,7 +4,11 @@
 import base64
 from datetime import datetime, timezone
 
-import streamlit as st
+try:
+    import streamlit as st
+except ImportError:
+    # Если мы в режиме Node без UI, streamlit не доступен
+    st = None
 
 # Пороги для подсветки срока сертификата
 _WARN_DAYS = 30   # жёлтый — менее 30 дней
@@ -176,6 +180,8 @@ def _render_cert_detail(cert: dict, idx: int):
 
 
 def render(rpc):
+    if st is None:
+        return
     tab_list, tab_install, tab_net, tab_export, tab_search = st.tabs(
         ["Сертификаты", "Установка", "🌐 Сетевая установка", "Экспорт", "Поиск"]
     )
