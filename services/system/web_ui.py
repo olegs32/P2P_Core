@@ -153,6 +153,11 @@ def _render_ctx(rpc):
             if value is not None:
                 st.code(value, language='python')
 
+            # модели/списки (config, peers...) — текущие значения деревом
+            data = entry.get('data')
+            if data is not None:
+                st.json(data)
+
             registry = entry.get('registry')
             if registry:
                 rpc_rows, gen_rows = [], []

@@ -3,6 +3,9 @@
 import asyncio
 import inspect
 import subprocess
+from pathlib import Path
+
+from pydantic import BaseModel
 
 from services.rpc import rpc
 from src.internal_modules.base import ModuleGeneric
@@ -149,18 +152,47 @@ class System(ModuleGeneric):
         ctx = self.ctx
         entries = []
 
+        # ключи конфига, значения которых маскируются в UI
+        _SECRET_KEYS = {'secret', 'password', 'token', 'key'}
+
+        def to_jsonable(obj, key_name=''):
+            """Рекурсивно превратить значение в JSON-совместимую структуру.
+
+            pydantic-модели (Config, PeerConfig...) раскрываются в словари
+            значений — так в панели видно не только типы, но и текущий config.
+            Секретные поля маскируются.
+            """
+            if isinstance(obj, BaseModel):
+                return {k: ('***' if k.lower() in _SECRET_KEYS else to_jsonable(v, k))
+                        for k, v in obj}
+            if isinstance(obj, _SIMPLE_TYPES) or obj is None:
+                return obj
+            if isinstance(obj, dict):
+                return {str(k): to_jsonable(v, str(k)) for k, v in obj.items()}
+            if isinstance(obj, (list, tuple, set)):
+                return [to_jsonable(v, key_name) for v in obj]
+            if isinstance(obj, Path):
+                return str(obj)
+            return repr(obj)
+
         def describe(obj, name, doc=''):
             entry = {
                 'name': name,
                 'type': type(obj).__name__,
                 'doc': doc,
                 'value': None,
+                'data': None,
                 'methods': [],
                 'attrs': [],
                 'children': [],
             }
             if isinstance(obj, _SIMPLE_TYPES) or obj is None:
                 entry['value'] = repr(obj)
+                return entry
+
+            # модели/списки/словари (config, peers и т.п.) — показать значениями
+            if isinstance(obj, (BaseModel, list, tuple, dict)):
+                entry['data'] = to_jsonable(obj)
                 return entry
 
             for attr_name in sorted(dir(obj)):
