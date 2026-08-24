@@ -39,15 +39,7 @@ from src.networking.node_connector import NodeConnector
 
 BASE_DIR = Path(Path().resolve())
 
-try:
-    # PyInstaller creates a temp folder and stores path in _MEIPASS
-    SERVICES_DIR = Path(sys._MEIPASS) / 'services'
-except Exception as e:
-    SERVICES_DIR = os.path.abspath("./services")
-    print('Frozen services path not found:', e)
 
-if not os.path.exists(SERVICES_DIR):
-    os.makedirs(SERVICES_DIR)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -82,6 +74,22 @@ async def main():
     # пробрасываем ctx в роуты FastAPI
     ctx.network.app.state.ctx = ctx
 
+    try:
+        # PyInstaller creates a temp folder and stores path in _MEIPASS
+        SERVICES_DIR = Path(sys._MEIPASS) / 'services'
+        frozen_loader = ServiceLoader(
+            services_path=SERVICES_DIR,
+            context=ctx,
+            services_manager=ctx.services,
+        )
+        frozen_loader.scan()
+    except Exception as e:
+        SERVICES_DIR = os.path.abspath("./services")
+        print('Frozen services path not found:', e)
+
+    if not os.path.exists(SERVICES_DIR):
+        os.makedirs(SERVICES_DIR)
+
     if os.path.exists(BASE_DIR / 'services'):
         # автозагрузка всех сервисов из ./services/ (live editing available)
         loader = ServiceLoader(
@@ -93,12 +101,7 @@ async def main():
         loader.watch()  # hot reload local services
 
     # автозагрузка всех сервисов из MEI_/services/
-    frozen_loader = ServiceLoader(
-        services_path=SERVICES_DIR,
-        context=ctx,
-        services_manager=ctx.services,
-    )
-    frozen_loader.scan()
+
 
     for peer in cfg.local.peers:
         connector = ctx.register(NodeConnector(

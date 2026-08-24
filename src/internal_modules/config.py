@@ -1,6 +1,7 @@
 # src/internal_modules/config.py
 
 import logging
+import os
 import socket
 from pathlib import Path
 from typing import Optional, Any
@@ -21,8 +22,9 @@ _IP = s.getsockname()[0]
 # ------------------------------------------------------------------ #
 
 class NetworkConfig(BaseModel):
-    host: str = _HOSTNAME
+    host: str = '0.0.0.0'
     port: int = 9000
+    network_ip: str = _IP
 
 
 class MemoryConfig(BaseModel):
@@ -46,12 +48,18 @@ class PeerConfig(BaseModel):
 
 class LocalConfig(BaseModel):
     alias: str = _HOSTNAME
+    name: str = 'Core'
+    exe_name: str = 'Node_P2P_Core.exe'
     secret: Optional[str] = None
+    work_dir: Path = Path(r'C:\Core')
+    os.makedirs(work_dir, exist_ok=True)
+    full_path: Path = work_dir / exe_name
+    excluded_autoload_services: list = ['webpanel']
     peers: list[PeerConfig] = []
 
 
 class Config(BaseModel):
-    node: str = _IP
+    node: str = _HOSTNAME
     network: NetworkConfig = NetworkConfig()
     memory: MemoryConfig = MemoryConfig()
     logging: LoggingConfig = LoggingConfig()
@@ -66,44 +74,24 @@ class Config(BaseModel):
         return v
 
 
-# ------------------------------------------------------------------ #
-#  Дефолтный конфиг (объединённый)
-# ------------------------------------------------------------------ #
-
-_DEFAULT_CONFIG = f"""\
-node: {_IP}
-
-network:
-  host: 0.0.0.0
-  port: 9000
-
-memory:
-  default_buff: 10
-
-logging:
-  level: DEBUG
-  uvicorn_level: WARNING
-  websockets_level: WARNING
-
-services:
-  path: services/
-
-local:
-  alias: {_HOSTNAME}
-  secret: null
-  peers: []
-  # - node_id: Node1
-  #   uri: ws://192.168.1.10:9001/ws/Node1
-"""
-
-
 def _ensure_config(path: Path):
     if not path.exists():
+        default_model_instance = Config()
+
+        # 2. Переводим модель в Python-словарь (dict)
+        # mode='json' гарантирует, что специфичные типы (например, Path) превратятся в строки
+        config_dict = default_model_instance.model_dump(mode='json')
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(
-            _DEFAULT_CONFIG.format(hostname=_HOSTNAME),
-            encoding='utf-8',
-        )
+
+        with open(path, 'w', encoding='utf-8') as f:
+            yaml.dump(
+                config_dict,
+                f,
+                sort_keys=False,  # Сохраняет порядок полей из Pydantic-класса
+                allow_unicode=True,  # Корректно пишет кириллицу и спецсимволы
+                default_flow_style=False  # Генерирует красивый блочный YAML (не инлайн)
+            )
+
         log.info(f'Created default config: {path}')
 
 

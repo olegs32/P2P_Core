@@ -33,10 +33,13 @@ class LocalExecutor:
 
         log.debug(f'execute {pack.service}.{pack.method}')
 
-        if inspect.isasyncgenfunction(method):
-            return method(pack.data)
+        # метод может быть объявлен без параметра data — не подставлять лишний аргумент
+        args = (pack.data,) if inspect.signature(method).parameters else ()
 
-        result = await method(pack.data) if asyncio.iscoroutinefunction(method) else method(pack.data)
+        if inspect.isasyncgenfunction(method):
+            return method(*args)
+
+        result = await method(*args) if asyncio.iscoroutinefunction(method) else method(*args)
 
         return MsgPack(
             type=PackType.RESPONSE,

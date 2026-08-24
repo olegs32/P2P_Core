@@ -63,6 +63,7 @@ class WebPanel(ModuleGeneric):
         # особенно важно для корректной работы PyInstaller (переменные вроде PYTHONPATH)
         env = {
             **os.environ,
+            'RUNNING': 'True',
             'P2P_NODE_ID': self.ctx.NODE,
             'P2P_WS_PORT': str(self.ctx.config.network.port),
             'P2P_WS_HOST': self.ctx.config.network.host,
@@ -112,13 +113,13 @@ class WebPanel(ModuleGeneric):
     # ------------------------------------------------------------------ #
 
     @rpc
-    def node_status(self, data: dict):
+    def node_status(self):
         """Полное состояние узла — для главной страницы."""
         nt = self.ctx.network.neighbor_table
-        nm = self.ctx.network.nodes_manager
+        nm = self.ctx.network.nodes_manager #?!
         return {
             'node_id': self.ctx.NODE,
-            'host': self.ctx.config.network.host,
+            'host': self.ctx.config.network.network_ip,
             'port': self.ctx.config.network.port,
             'connected': [n.model_dump() for n in nt.connected()],
             'known': [n.model_dump() for n in nt.known()],

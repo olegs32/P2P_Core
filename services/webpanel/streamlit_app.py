@@ -1,11 +1,16 @@
 # services/webpanel/_streamlit_app.py — Streamlit entry point
 # Единая панель управления: sidebar навигация + выбор ноды + динамический рендер
+import asyncio
 import logging
 import os
 import sys
+import time
 from pathlib import Path
 
 import streamlit as st
+
+if not os.environ.get('RUNNING', 'False') == 'True':
+    raise ImportError("Этот модуль можно запускать только через подпроцесс.")
 
 # ------------------------------------------------------------------ #
 #  sys.path — чтобы импорты из корня проекта работали в subprocess
@@ -82,6 +87,7 @@ st.set_page_config(
 local_node, rpc = None, None
 with st.sidebar:
     try:
+        # time.sleep(4)
         rpc = get_rpc()
         local_node = rpc.node
     except Exception as e:

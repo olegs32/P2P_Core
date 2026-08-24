@@ -96,7 +96,7 @@ class NetworkModule(ModuleGeneric):
                         type=PackType.HELLO_REJECT,
                         source=self.ctx.NODE,
                         dst=node_id,
-                        data={'reason': f'Routing update required to reach {pack.dst}'},
+                        data={'reason': f'Routing update required to reach {pack.dst} from {self.ctx.NODE}'},
                     ))
                     return
 
