@@ -18,6 +18,7 @@ WebSocket-based P2P mesh network with RPC service discovery, multi-hop routing, 
 - [Сертификаты КриптоПро](#сертификаты-криптопро)
 - [Сервисы](#сервисы)
 - [Создание нового сервиса](#создание-нового-сервиса)
+- [Сборка дистрибутива](#сборка-дистрибутива)
 - [Тестирование](#тестирование)
 - [Структура проекта](#структура-проекта)
 - [Зависимости](#зависимости)
@@ -94,11 +95,12 @@ WebSocket-based P2P mesh network with RPC service discovery, multi-hop routing, 
 - Consumer отправляет ACK через `Router.send_stream_ack()` по backward_path
 - `_MeshStreamIterator` — публичный async iterator API
 
-### 3. Service Discovery
+### Service Discovery
 - **GOSSIP** (каждые 30s): обмен топологией сети
 - **ANNOUNCE** (каждые 60s): рассылка списка сервисов
 - `NeighborTable` хранит статус каждого узла: `CONNECTED`, `KNOWN`, `UNREACHABLE`
 - Поиск сервисов по имени across the network
+- `LocalIPResolver` (`src/internal_modules/local_ip.py`): узел сообщает соседям реальный IP своего сетевого интерфейса (приоритет: живые WS-подключения → UDP-trick к пиру из конфига → psutil fallback), кэш на `network.ip_ttl_sec`
 
 ### 4. Streaming с Backpressure
 - `Pipe`: async queue с `buff_len` и `low_watermark`
@@ -144,12 +146,7 @@ python main.py
 
 ### Запуск Node1 (вторичный узел)
 
-```bash
-python main_node1.py    # DEPRECATED — используйте config1.yaml + main.py
-```
-
-- Загружает `config1.yaml` + `config1.local.yaml`
-- Подключается к Node0 как outgoing peer
+Вторичный узел запускается тем же `main.py`, но со своим конфигом: скопируйте `config.yaml`, задайте уникальный `node` и добавьте в `local.peers` адрес основного узла — узел подключится к нему при старте. Подключиться к работающему узлу можно и через веб-панель (вкладка «Система» → «Подключение»).
 
 ### Веб-панель
 
@@ -169,9 +166,8 @@ python debug_client.py
 
 | Файл | Описание |
 |------|----------|
-| `config.yaml` | Базовая конфигурация (Node0) |
-| `config1.yaml` | Базовая конфигурация для Node1 |
-| `config1.local.yaml` | Локальные настройки Node1 (alias, peers) |
+| `config.yaml` | Базовая конфигурация; при отсутствии создаётся автоматически с дефолтами (`node` = hostname) |
+| `config.local.yaml` | Локальные override (.gitignore): alias, peers, параметры деплоя |
 
 ### Система конфигурации
 
@@ -185,6 +181,7 @@ node: Node0
 network:
   host: "0.0.0.0"
   port: 9000
+  ip_ttl_sec: 60          # TTL кэша LocalIPResolver
 
 memory:
   default_buff: 10
@@ -194,6 +191,14 @@ logging:
 
 services:
   path: "services/"
+
+local:                      # LocalConfig — деплой и автозапуск
+  name: Core                # имя задачи планировщика / ключа реестра
+  exe_name: Node_P2P_Core.exe
+  work_dir: "C:\\Core"
+  full_path: "C:\\Core\\Node_P2P_Core.exe"
+  excluded_autoload_services: [webpanel]
+  peers: []                 # [{node_id, uri}] — автоподключение при старте
 ```
 
 ### ConfigManager API
@@ -488,10 +493,13 @@ def render(rpc):
 SERVICE_META = {
     'certstool':    ('🔐', 'Сертификаты',  'Управление КриптоПро сертификатами'),
     'netinfo':      ('🌐', 'Сеть',         'Состояние сети и маршрутизация'),
+    'system':       ('⚙️', 'Система',      'Управление узлами и подключениями'),
     'compute_full': ('⚡', 'Вычисления',   'Генератор + консьюмер'),
     'generator':    ('📤', 'Вычисления',   'Генератор стримов'),
     'test':         ('🧪', 'Диагностика',  'Тестовый echo-сервис'),
 }
+
+GROUP_ORDER = ['Система', 'Сеть', 'Сертификаты', 'Вычисления', 'Диагностика']
 ```
 
 ### NodeRPC — reconnect
@@ -563,11 +571,20 @@ NodeA (источник)                      NodeB (целевой)
 |--------|------|----------|
 | **netinfo** | `services/netinfo/` | Диагностика сети: соседи, узлы, сервисы, поиск |
 | **certstool** | `services/certstool/` | Управление КриптоПро сертификатами с сетевым деплоем |
+| **system** | `services/system/` | Подключение к узлам, диагностика узла, автозапуск Windows (планировщик/реестр) |
 | **webpanel** | `services/webpanel/` | Веб-панель на Streamlit |
 | **compute_full** | `services/compute_full/` | Полный compute pipeline (генератор + консьюмер) |
 | **generator** | `services/generator/` | Простой генератор диапазонов |
 | **test** | `services/test/` | Тестовый echo-сервис |
 | **spawner** | `src/internal_modules/spawner.py` | Распределённые вычисления |
+
+### Сервис system
+
+RPC-методы: `connect_to_node` (исходящее подключение + сохранение пира в config.local.yaml), `list_connectors`, `node_detail`, `config_peers`.
+
+Веб-интерфейс: «Управление узлами» (метрики, таблицы соседей, RPC-консоль) и «Подключение» (форма подключения к удалённому узлу).
+
+Вспомогательные методы автозапуска Windows: задача планировщика (`schtasks /SC ONLOGON`) и ключ реестра `HKCU\...\Run`; имя и путь берутся из `LocalConfig`.
 
 ---
 
@@ -664,14 +681,17 @@ python debug_client.py
 
 ```
 P2P_Core/
-├── main.py                 # Точка входа Node0
-├── main_node1.py           # DEPRECATED — используйте config + main.py
+├── main.py                 # Точка входа (все узлы)
+├── compile.py              # PyInstaller-сборка двух exe + автоподпись
 ├── debug_client.py         # Тестовый клиент
-├── config.yaml             # Конфигурация Node0
-├── config1.yaml            # Конфигурация Node1
-├── config1.local.yaml      # Локальные настройки Node1
+├── config.yaml             # Конфигурация (создаётся автоматически при первом запуске)
+├── config.local.yaml       # Локальные настройки (.gitignore)
 ├── glm.md                  # База знаний для AI-ассистента
+├── roadmap.md              # TODO / планы развития
 ├── requirements.txt        # Зависимости
+│
+├── sign/                   # Подпись exe (osslsigncode; CA-ключи в .gitignore)
+│   └── signer.py
 │
 ├── src/
 │   ├── internal_modules/
@@ -681,6 +701,7 @@ P2P_Core/
 │   │   ├── context.py      # AppContext, app_lifespan — контекст приложения
 │   │   ├── exceptions.py   # Кастомные исключения
 │   │   ├── executor.py     # LocalExecutor — локальное выполнение RPC
+│   │   ├── local_ip.py     # LocalIPResolver — IP интерфейса mesh с TTL-кэшем
 │   │   ├── memory.py       # Pipe, Dispatcher, PipeTransport, MemoryModule
 │   │   ├── setup_logging.py # Настройка логирования
 │   │   └── spawner.py      # Spawner — распределённые вычисления
@@ -708,6 +729,10 @@ P2P_Core/
 │   │   ├── service.py      #   4 RPC-метода
 │   │   └── web_ui.py       #   3 вкладки: соседи, узлы, поиск
 │   │
+│   ├── system/             # ⚙️ Управление узлами и подключения
+│   │   ├── service.py      #   connect_to_node, list_connectors, node_detail, config_peers + автозапуск
+│   │   └── web_ui.py       #   Управление узлами + RPC-консоль + подключение
+│   │
 │   ├── webpanel/           # Веб-панель управления
 │   │   ├── service.py      #   Запуск Streamlit subprocess
 │   │   ├── service_meta.py #   SERVICE_META — реестр иконок/групп сервисов
@@ -721,9 +746,25 @@ P2P_Core/
 │   ├── generator/          # 📤 Генератор стримов
 │   └── test/               # 🧪 Тестовый echo-сервис
 │
-├── docs/                   # Документация
-└── legacy/                 # Legacy код (не используется)
+└── docs/                   # Документация
 ```
+
+---
+
+## Сборка дистрибутива
+
+```bash
+python compile.py
+```
+
+Собирает два PyInstaller onefile-бинаря и подписывает их через osslsigncode:
+
+| Бинарь | UI | Назначение |
+|--------|----|-----------|
+| `dist/WebUI_P2P_Core.exe` | Streamlit | Узел с веб-панелью |
+| `dist/Node_P2P_Core.exe` | нет | Headless-узел (webpanel/streamlit исключены) |
+
+Для подписи нужны `sign/ca_cert.pem` + `sign/ca_key.pem`. В frozen-режиме встроенные сервисы загружаются из `sys._MEIPASS/services`, локальные — из `./services`.
 
 ---
 

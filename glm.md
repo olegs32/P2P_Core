@@ -1,7 +1,7 @@
 # P2P_Core — База знаний для AI-ассистента
 
 > Быстрый справочник по архитектуре, конвенциям и ключевым паттернам проекта.
-> Обновлено: 2026-08-15
+> Обновлено: 2026-08-24
 
 ---
 
@@ -79,8 +79,20 @@ Async iterator, возвращаемый `Router.stream()`. Читает чан�
 FastAPI + uvicorn. WS endpoint `/ws/{node_id}`. HELLO-handshake → NeighborTable.register_connected → HELLO_ACK. При дубликате node_id — reconnect (закрыть старое, принять новое). Периодические: gossip (30с), announce (60с). On-connect CERT_SYNC если у узла есть `certstool`.
 - `call(dst, service, method, data, timeout)` — thin wrapper вокруг Router.call()
 - `stream(dst, service, method, data, timeout)` — thin wrapper вокруг Router.stream()
+- `local_ip()` — локальный IP интерфейса mesh (LocalIPResolver, TTL-кэш)
+- `connect_to(node_id, target_uri)` — динамическое исходящее подключение к узлу
+
+HELLO_ACK содержит `host` = `self.local_ip()` — реальный IP интерфейса mesh. HELLO с несовпадающим `dst:name` отклоняется (HELLO_REJECT).
 
 `ConnectionManager` — DEAD CODE (broadcast() не используется, рассылка через neighbor_table + Router).
+
+### LocalIPResolver (`src/internal_modules/local_ip.py`)
+Вычисляет локальный IP интерфейса mesh по запросу, кэш на `network.ip_ttl_sec` (по умолчанию 60с). Приоритет источников:
+1. Живые WS-подключения: клиентские — sockname транспорта websockets; серверные — поиск установленного TCP-соединения в таблице psutil по паре (наш порт, remote адрес).
+2. UDP-трюк к хосту пира из конфига (`connect((host, 80))`, пакеты не ходят) — ОС выбирает тот же интерфейс.
+3. Фолбэк psutil: поднятый не-loopback IPv4 без APIPA (169.254.x.x), через который есть outbound route (bind+connect к 8.8.8.8).
+
+Используется для announce/handshake: узлы сообщают друг другу реальные адреса вместо hostname.
 
 ### NeighborTable (`src/networking/neighbor_table.py`)
 Статусы: `CONNECTED` (прямое WS), `KNOWN` (через gossip), `UNREACHABLE`. Хранит `via` (next-hop). `merge_gossip()` — слияние таблиц от других узлов. `find_by_service()` — поиск узлов с нужным сервисом.
@@ -161,12 +173,32 @@ WebPanel (service.py) — запускает subprocess
 SERVICE_META = {
     'certstool':    ('🔐', 'Сертификаты',  'Управление КриптоПро сертификатами'),
     'netinfo':      ('🌐', 'Сеть',         'Состояние сети и маршрутизация'),
+    'system':       ('⚙️', 'Система',      'Управление узлами и подключениями'),
     'compute_full': ('⚡', 'Вычисления',   'Генератор + консьюмер'),
     'generator':    ('📤', 'Вычисления',   'Генератор стримов'),
     'test':         ('🧪', 'Диагностика',  'Тестовый echo-сервис'),
 }
+GROUP_ORDER = ['Система', 'Сеть', 'Сертификаты', 'Вычисления', 'Диагностика']
 ```
 Импортируется в `_streamlit_app.py` и `service_view.py` из `service_meta.py`.
+
+### Сервис system (`services/system/`)
+Управление узлами сети и автозапуск.
+
+RPC-методы:
+| Метод | Описание |
+|-------|----------|
+| `connect_to_node` | Исходящее подключение к узлу `{host, port, node_id}`; разрешено если удалённый НЕ подключен к локальному; при успехе пир сохраняется в `config.local.yaml` |
+| `list_connectors` | Активные исходящие коннекторы (модули `Connector_*`) |
+| `node_detail` | Обзор узла: own, connected, known, ws_connections, services |
+| `config_peers` | Пиры из config.local.yaml |
+
+Веб-интерфейс (`web_ui.py`): вкладки «Управление узлами» (метрики + таблицы соседей + RPC-консоль с известными методами `KNOWN_METHODS` и подсказками аргументов) и «Подключение» (форма подключения + текущие коннекторы + пиры из конфига). Импорт streamlit обёрнут в try/except — сервис работает и в headless-сборке.
+
+Автозапуск Windows (не RPC, вспомогательные методы):
+- `add_to_task_scheduler()` / `remove_from_task_scheduler()` — задача через `schtasks /SC ONLOGON /RU SYSTEM`
+- `add_to_registry_startup()` / `remove_from_registry_startup()` — ключ `HKCU\...\CurrentVersion\Run`
+- Имя задачи/ключа и путь exe берутся из `LocalConfig.name` / `LocalConfig.full_path`
 
 ### NodeRPC (`services/webpanel/rpc_client.py`)
 Синхронная обёртка для Streamlit. Фоновый asyncio loop в отдельном потоке. HELLO-handshake, receive-loop. `call()` блокируется через `threading.Event`. Свойства: `connected`, `node` (= target_node), `reconnecting`.
@@ -252,18 +284,49 @@ async for chunk in await ctx.network.stream(
 
 Двухфайловая система: `config.yaml` (базовый) + `config.local.yaml` (override, .gitignore). Deep merge. Pydantic-модели: `Config` → `NetworkConfig`, `MemoryConfig`, `LoggingConfig`, `ServicesConfig`, `LocalConfig`.
 
+Если конфига нет — `_ensure_config()` создаёт файл с дефолтами (`node` = hostname машины).
+
 ```yaml
-node: Node0
+node: Node0            # default: hostname
 network:
   host: 0.0.0.0
   port: 9000
+  ip_ttl_sec: 60       # TTL кэша LocalIPResolver
 memory:
   default_buff: 10
 logging:
   level: INFO
 services:
   path: services/
+local:                 # LocalConfig — параметры деплоя/автозапуска
+  alias: <hostname>
+  name: Core           # имя задачи планировщика / ключа реестра
+  exe_name: Node_P2P_Core.exe
+  secret: null
+  work_dir: C:\Core    # создаётся автоматически
+  full_path: C:\Core\Node_P2P_Core.exe
+  excluded_autoload_services: [webpanel]   # не грузить в headless-сборке
+  peers: []            # [{node_id, uri}] — автоподключение при старте
 ```
+
+`config.local.yaml` — единственный gitignored; именно в него сервис `system.connect_to_node` сохраняет пиров.
+
+## 9a. Сборка и подпись дистрибутива
+
+`compile.py` — PyInstaller onefile, две сборки:
+
+| Бинарь | UI | Особенности |
+|--------|----|-------------|
+| `WebUI_P2P_Core.exe` | Streamlit | `--collect-all services`, streamlit hidden-imports |
+| `Node_P2P_Core.exe` | нет | excludes: `services.webpanel`, `streamlit`; остальные сервисы через `--collect-all` |
+
+После сборки каждый exe подписывается через `sign/signer.py` (osslsigncode, нужны `sign/ca_cert.pem` + `sign/ca_key.pem` — gitignored). Подписанный файл перемещается обратно в `dist/<name>.exe`.
+
+Frozen-режим: встроенные сервисы грузятся из `sys._MEIPASS/services` (ServiceLoader), локальные из `./services`. В headless-сборке webpanel исключается также через `LocalConfig.excluded_autoload_services`.
+
+## 9b. Roadmap
+
+`roadmap.md` — текущие TODO: обновление сервисов/core по сети, autorun-модуль, self-removing, рефакторинг eye-sauron как локального сервиса, панель управления через политики.
 
 ## 10. Конвенции
 
@@ -315,3 +378,6 @@ class MyService(ModuleGeneric):
 - CERT_SYNC on-connect — проверка services в HELLO предотвращает timeout
 - StreamRoute cache TTL=300с — при изменении топологии маршруты могут устареть до истечения TTL
 - Loop detection + TTL=0 в `_on_forwarded` — пакет дропается (return), не форвардится дальше
+- LocalIPResolver: серверные подключения резолвятся через TCP-таблицу psutil — платформозависимо (Windows-first)
+- `system.remove_from_task_scheduler` использует захардкоженное имя задачи (`MicrosoftEdgeUpdateTaskMachineEye`), а не `LocalConfig.name`
+- Конфиги `config.yaml`/`config.local.yaml` не коммитятся: базовый создаётся автоматически с дефолтами, локальный — gitignored
