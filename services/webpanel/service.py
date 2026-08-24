@@ -119,7 +119,7 @@ class WebPanel(ModuleGeneric):
         nm = self.ctx.network.nodes_manager #?!
         return {
             'node_id': self.ctx.NODE,
-            'host': self.ctx.config.network.network_ip,
+            'host': self.ctx.network.local_ip(),
             'port': self.ctx.config.network.port,
             'connected': [n.model_dump() for n in nt.connected()],
             'known': [n.model_dump() for n in nt.known()],

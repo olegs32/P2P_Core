@@ -12,9 +12,6 @@ from pydantic import BaseModel, field_validator
 log = logging.getLogger('Config')
 
 _HOSTNAME = socket.gethostname()
-s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-s.connect(("8.8.8.8", 80))
-_IP = s.getsockname()[0]
 
 
 # ------------------------------------------------------------------ #
@@ -24,7 +21,7 @@ _IP = s.getsockname()[0]
 class NetworkConfig(BaseModel):
     host: str = '0.0.0.0'
     port: int = 9000
-    network_ip: str = _IP
+    ip_ttl_sec: int = 60
 
 
 class MemoryConfig(BaseModel):

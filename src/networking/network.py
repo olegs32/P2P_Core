@@ -9,6 +9,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from typing import Dict
 
 from src.internal_modules.base import ModuleGeneric
+from src.internal_modules.local_ip import LocalIPResolver
 from src.networking.neighbor_table import PROTOCOL_VERSION, NeighborTable
 from src.networking.protocol import MsgPack, PackType
 from src.networking.router import Router
@@ -72,6 +73,7 @@ class NetworkModule(ModuleGeneric):
         self.nodes_manager: NodesManager = NodesManager()
         self.neighbor_table = NeighborTable(own_node_id=context.NODE)
         self.router = Router(self.nodes_manager, context)
+        self.ip_resolver = LocalIPResolver(context)
         self._server        = None
         self._task          = None
         self._gossip_task   = None
@@ -91,21 +93,32 @@ class NetworkModule(ModuleGeneric):
                 raw  = await asyncio.wait_for(websocket.receive_json(), timeout=10)
                 pack = MsgPack(**raw)
 
-                if pack.dst != self.ctx.NODE:
-                    await transport.send(MsgPack(
-                        type=PackType.HELLO_REJECT,
-                        source=self.ctx.NODE,
-                        dst=node_id,
-                        data={'reason': f'Routing update required to reach {pack.dst} from {self.ctx.NODE}'},
-                    ))
-                    return
-
                 if pack.type != PackType.HELLO:
+                    reason = f'expected HELLO, got {pack.type.value}'
+                    self.log.info(f'Handshake rejected from {node_id}: {reason}')
                     await transport.send(MsgPack(
                         type   = PackType.HELLO_REJECT,
                         source = self.ctx.NODE,
                         dst    = node_id,
-                        data   = {'reason': 'expected HELLO'},
+                        data   = {'reason': reason},
+                    ))
+                    return
+
+                if pack.dst != self.ctx.NODE:
+                    reason = (
+                        f'HELLO addressed to {pack.dst!r}, '
+                        f'this node is {self.ctx.NODE!r} — check peer URI/node_id'
+                    )
+                    self.log.info(f'Handshake rejected from {node_id}: {reason}')
+                    await transport.send(MsgPack(
+                        type=PackType.HELLO_REJECT,
+                        source=self.ctx.NODE,
+                        dst=node_id,
+                        data={
+                            'reason':   reason,
+                            'expected': self.ctx.NODE,
+                            'got':      pack.dst,
+                        },
                     ))
                     return
 
@@ -142,7 +155,7 @@ class NetworkModule(ModuleGeneric):
                     source = self.ctx.NODE,
                     dst    = node_id,
                     data   = {
-                        'host':       self.host,
+                        'host':       self.local_ip(),
                         'port':       self.port,
                         'version':    PROTOCOL_VERSION,
                         'session_id': session_id,
@@ -292,6 +305,10 @@ class NetworkModule(ModuleGeneric):
     # ------------------------------------------------------------------ #
     #  Public API
     # ------------------------------------------------------------------ #
+
+    def local_ip(self) -> str:
+        """Локальный IP интерфейса mesh (по запросу, с TTL-кэшем)."""
+        return self.ip_resolver.get()
 
     async def connect_to(self, node_id: str, target_uri: str):
         """Динамически создать и запустить исходящее подключение к узлу.

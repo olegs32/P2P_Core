@@ -119,7 +119,7 @@ class NodeConnector(ModuleGeneric):
             dst    = self.peer_node_id,
             data   = {
                 'node_id':    self.ctx.NODE,
-                'host':       cfg.network.host,
+                'host':       self.ctx.network.local_ip(),
                 'port':       cfg.network.port,
                 'version':    PROTOCOL_VERSION,
                 'session_id': str(uuid.uuid4()),
