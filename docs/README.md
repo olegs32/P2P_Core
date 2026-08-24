@@ -186,6 +186,11 @@ memory:
 logging:
   level: "INFO"
 
+logs:                       # буфер логов для веб-панели (сервис logs)
+  buffer_size: 2000         # ёмкость кольцевого буфера
+  max_msg_len: 4000         # обрезка одного сообщения
+  max_traceback_len: 2000   # обрезка traceback (берётся хвост)
+
 services:
   path: "services/"
 
@@ -581,7 +586,7 @@ NodeA (источник)                      NodeB (целевой)
 
 ### Сервис logs
 
-`RingBufferHandler` цепляется к root logger и копит записи в памяти (deque, 2000 записей, сквозной id). RPC: `get_logs` — инкрементальный поллинг (`since_id`) с серверными фильтрами (levels, search, regex, loggers, период, limit), `get_loggers`, `clear_buffer`. Веб-интерфейс: live-лента (фрагмент с автообновлением 2 сек), цветные уровни, экспорт CSV/TXT. Ограничение: только записи, доходящие до root logger.
+`RingBufferHandler` цепляется к root logger и копит записи в памяти (кольцевой буфер; параметры — `config.yaml` → секция `logs`: `buffer_size`, `max_msg_len`, `max_traceback_len`). RPC: `get_logs` — инкрементальный поллинг (`since_id`) с серверными фильтрами (levels, search, regex, loggers, период, limit), `get_loggers`, `clear_buffer`. Веб-интерфейс: live-лента (фрагмент с автообновлением 2 сек), цветные уровни, экспорт CSV/TXT. Ограничение: только записи, доходящие до root logger.
 
 ### Сервис system
 

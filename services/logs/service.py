@@ -26,20 +26,22 @@ from collections import deque
 from services.rpc import rpc
 from src.internal_modules.base import ModuleGeneric
 
-_MAX_MSG = 4000        # обрезка одного сообщения
-_MAX_TB = 2000         # обрезка traceback (хвост, чтобы сохранить исключение)
-
 
 class RingBufferHandler(logging.Handler):
     """Кольцевой буфер лог-записей фиксированной ёмкости.
 
     Каждая запись получает сквозной монотонный id (itertools.count) —
     по нему клиент делает инкрементальный поллинг.
+
+    Ёмкость буфера и обрезки сообщений/traceback задаются при создании
+    из config.yaml → logs (LogsConfig).
     """
 
-    def __init__(self, maxlen: int = 2000):
+    def __init__(self, maxlen: int, max_msg_len: int, max_traceback_len: int):
         super().__init__()
         self.buffer = deque(maxlen=maxlen)
+        self.max_msg_len = max_msg_len
+        self.max_tb_len = max_traceback_len
         self._ids = itertools.count()
         # Handler.emit вызывается под внутренним lock'ом logging,
         # но читают буфер и из RPC-потока — страхуемся своим замком
@@ -52,12 +54,12 @@ class RingBufferHandler(logging.Handler):
                 'ts': record.created,          # epoch float
                 'level': record.levelname,
                 'logger': record.name,
-                'msg': record.getMessage()[:_MAX_MSG],
+                'msg': record.getMessage()[:self.max_msg_len],
             }
             if record.exc_info:
                 tb = self.formatException(record.exc_info)
-                if len(tb) > _MAX_TB:
-                    tb = '...' + tb[-_MAX_TB:]
+                if len(tb) > self.max_tb_len:
+                    tb = '...' + tb[-self.max_tb_len:]
                 entry['msg'] += '\n' + tb
 
             with self._lock:
@@ -75,13 +77,27 @@ class RingBufferHandler(logging.Handler):
 
 
 class Logs(ModuleGeneric):
-    """Просмотр консольных логов узла через веб-панель."""
+    """Просмотр консольных логов узла через веб-панель.
 
-    MAXLEN = 2000
+    Параметры берутся из config.yaml → logs:
+      buffer_size        — ёмкость кольцевого буфера
+      max_msg_len        — обрезка одного сообщения
+      max_traceback_len  — обрезка traceback (хвост)
+    Применяются при подключении обработчика (start), т.е. после
+    изменения конфига нужен перезапуск узла или hot-reload сервиса.
+    """
 
     def __init__(self, name, context):
         super().__init__(name, context)
         self._handler: RingBufferHandler | None = None
+
+    def _log_cfg(self):
+        cfg = getattr(self.ctx.config, 'logs', None)
+        return {
+            'maxlen': int(getattr(cfg, 'buffer_size', None) or 2000),
+            'max_msg_len': int(getattr(cfg, 'max_msg_len', None) or 4000),
+            'max_traceback_len': int(getattr(cfg, 'max_traceback_len', None) or 2000),
+        }
 
     # ------------------------------------------------------------------ #
     #  Жизненный цикл: подключение/отключение обработчика к root logger
@@ -90,10 +106,15 @@ class Logs(ModuleGeneric):
     async def start(self):
         root = logging.getLogger()
         if self._handler is None:
-            self._handler = RingBufferHandler(maxlen=self.MAXLEN)
+            cfg = self._log_cfg()
+            self._handler = RingBufferHandler(**cfg)
         if self._handler not in root.handlers:
             root.addHandler(self._handler)
-            self.log.info(f'Log buffer attached (cap={self.MAXLEN})')
+            self.log.info(
+                f"Log buffer attached (cap={self._handler.buffer.maxlen}, "
+                f"msg<={self._handler.max_msg_len}, "
+                f"tb<={self._handler.max_tb_len})"
+            )
 
     async def stop(self):
         if self._handler:
