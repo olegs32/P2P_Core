@@ -183,6 +183,9 @@ GROUP_ORDER = ['Система', 'Сеть', 'Сертификаты', 'Вычи
 ```
 Импортируется в `_streamlit_app.py` и `service_view.py` из `service_meta.py`.
 
+### Сервис logs (`services/logs/`) — просмотр логов консоли
+`RingBufferHandler` (deque maxlen=2000, сквозной id записей) цепляется к root logger в `start()`; RPC: `get_logs({since_id, levels, search, regex, loggers, since_ts/until_ts, limit})` — инкрементальный поллинг по since_id + серверные фильтры, ответ несёт `last_id`/`gap` (обрыв буфера между опросами), `get_loggers`, `clear_buffer`. UI: лента в `st.fragment(run_every=2s)` с тумблером автообновления; смена фильтров меняет сигнатуру `lv_sig` и сбрасывает накопленную ленту (`session_state.lv_rows`, новые записи сверху); экспорт CSV/TXT через download_button. Ограничение: видны только записи, доходящие до root logger (уровень = logging.level из конфига); propagate=False и логи Streamlit-процесса не попадают.
+
 ### Сервис demo (`services/demo/`) — эталонный пример
 Учебный сервис с подробными пояснениями в комментариях. Демонстрирует: жизненный цикл (start/stop), @rpc sync/async, mesh-RPC из кода (find_by_service + network.call), @generator, push-стрим (Pipe + Dispatcher + attach_transport), приём стрима (@stream_wrapper/@stream_consumer + ACK prefetch), вызов Spawner'а через локальный шорткат. UI: три вкладки (проверка связи, стрим, распределённые вычисления). Новые сервисы делать по его образцу.
 

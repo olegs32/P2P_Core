@@ -575,8 +575,13 @@ NodeA (источник)                      NodeB (целевой)
 | **compute_full** | `services/compute_full/` | Полный compute pipeline (генератор + консьюмер) |
 | **generator** | `services/generator/` | Простой генератор диапазонов |
 | **test** | `services/test/` | Тестовый echo-сервис |
+| **logs** | `services/logs/` | 📜 Логи консоли узла в панели: кольцевой буфер + фильтры severity/поиск/regex/период, live-режим, экспорт |
 | **demo** | `services/demo/` | 🎓 Эталонный сервис с пояснениями — образец для разработки |
 | **spawner** | `src/internal_modules/spawner.py` | Распределённые вычисления |
+
+### Сервис logs
+
+`RingBufferHandler` цепляется к root logger и копит записи в памяти (deque, 2000 записей, сквозной id). RPC: `get_logs` — инкрементальный поллинг (`since_id`) с серверными фильтрами (levels, search, regex, loggers, период, limit), `get_loggers`, `clear_buffer`. Веб-интерфейс: live-лента (фрагмент с автообновлением 2 сек), цветные уровни, экспорт CSV/TXT. Ограничение: только записи, доходящие до root logger.
 
 ### Сервис system
 
