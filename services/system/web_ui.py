@@ -129,20 +129,22 @@ def _render_ctx(rpc):
                 st.caption("Атрибуты: " + " · ".join(attrs))
 
             for child in entry.get('children', []):
-                with st.expander(f"↳ ctx.{child['name']} · {child.get('type', '?')}"):
-                    if child.get('doc'):
-                        st.caption(child['doc'])
-                    child_methods = child.get('methods', [])
-                    if child_methods:
-                        st.dataframe(
-                            pd.DataFrame([
-                                {'Метод': f".{m['name']}", 'Сигнатура': m['sig']}
-                                for m in child_methods
-                            ]),
-                            use_container_width=True, hide_index=True,
-                        )
-                    if child.get('attrs'):
-                        st.caption("Атрибуты: " + " · ".join(child['attrs']))
+                # Streamlit не разрешает expander внутри expander —
+                # вложенные подсистемы рендерим как подзаголовок с таблицей
+                st.markdown(f"**↳ `ctx.{child['name']}` · {child.get('type', '?')}**")
+                if child.get('doc'):
+                    st.caption(child['doc'])
+                child_methods = child.get('methods', [])
+                if child_methods:
+                    st.dataframe(
+                        pd.DataFrame([
+                            {'Метод': f".{m['name']}", 'Сигнатура': m['sig']}
+                            for m in child_methods
+                        ]),
+                        use_container_width=True, hide_index=True,
+                    )
+                if child.get('attrs'):
+                    st.caption("Атрибуты: " + " · ".join(child['attrs']))
 
 
 # ------------------------------------------------------------------ #
