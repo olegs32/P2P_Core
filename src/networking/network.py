@@ -91,12 +91,12 @@ class NetworkModule(ModuleGeneric):
                 raw  = await asyncio.wait_for(websocket.receive_json(), timeout=10)
                 pack = MsgPack(**raw)
 
-                if pack.dst != self.ctx.NODE:
+                if str(pack.dst).lower() != str(self.ctx.NODE).lower():
                     await transport.send(MsgPack(
                         type=PackType.HELLO_REJECT,
                         source=self.ctx.NODE,
                         dst=node_id,
-                        data={'reason': f'Routing update required to reach {pack.dst} from {self.ctx.NODE}'},
+                        data={'reason': f'Incorrect destination. Recieved {pack.dst}, but local: {self.ctx.NODE}'},
                     ))
                     return
 
