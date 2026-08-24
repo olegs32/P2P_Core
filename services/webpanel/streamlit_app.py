@@ -56,8 +56,11 @@ class RPCProxy:
     def __init__(self, rpc: NodeRPC):
         self._rpc = rpc
 
-    def call(self, service: str, method: str, data=None, timeout: int = 10):
-        dst = st.session_state.get('selected_node')
+    def call(self, service: str, method: str, data=None, timeout: int = 10,
+             dst=None):
+        # явный dst имеет приоритет (RPC-консоль), иначе — узел из сайдбара
+        if dst is None:
+            dst = st.session_state.get('selected_node')
         local_node = self._rpc.node
         if dst is None or dst == local_node:
             dst = None

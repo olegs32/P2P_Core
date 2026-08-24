@@ -70,12 +70,48 @@ CTX_ICONS = {
 }
 
 
+def _pick_into_console(service: str, method: str):
+    """Клик по методу: отложить подстановку в RPC-консоль и перерисовать."""
+    st.session_state['ctx_pick'] = {
+        'dst': st.session_state.get('selected_node'),
+        'service': service,
+        'method': method,
+    }
+    st.rerun()
+
+
+def _methods_table(methods: list, rpc_service, widget_key: str):
+    """Таблица методов объекта. Если методы доступны по RPC — клик по строке
+    подставляет сервис/метод в консоль на вкладке «Управление узлами»."""
+    if not methods:
+        return
+    df = pd.DataFrame([
+        {'Метод': m['name'], 'Сигнатура': m['sig']}
+        for m in methods
+    ])
+
+    if rpc_service:
+        st.markdown(f"**Методы ({len(methods)})** — кликните строку для вызова:")
+        event = st.dataframe(
+            df, use_container_width=True, hide_index=True,
+            on_select='rerun', selection_mode='single-row', key=widget_key,
+        )
+        rows = event.selection.rows
+        if rows:
+            _pick_into_console(rpc_service, methods[rows[0]]['name'])
+    else:
+        st.caption(f"Методы ({len(methods)}, внутренние — по сети не вызываются):")
+        st.dataframe(df, use_container_width=True, hide_index=True)
+
+
 def _render_ctx(rpc):
     st.subheader("Карта контекста приложения")
     st.caption(
         "Что лежит в `self.ctx` любого сервиса или модуля и какие методы у него "
         "вызываются. Источник — RPC `system.ctx_map()`; описания атрибутов "
-        "заданы в `services/system/service.py` (CTX_ATTR_DOCS)."
+        "заданы в `services/system/service.py` (CTX_ATTR_DOCS). "
+        "Клик по строке с методом сервиса подставляет его в RPC-консоль "
+        "(вкладка «Управление узлами»)."
     )
 
     try:
@@ -103,26 +139,33 @@ def _render_ctx(rpc):
 
             registry = entry.get('registry')
             if registry:
-                rows = []
+                rpc_rows, gen_rows = [], []
                 for svc_name, info in sorted(registry.items()):
-                    rows.append({
-                        'Сервис': svc_name,
-                        'RPC-методы': ', '.join(info['methods']) or '—',
-                        '@generator': ', '.join(info['generators']) or '—',
-                    })
-                st.markdown("**Зарегистрированные сервисы:**")
-                st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+                    for m in info['methods']:
+                        rpc_rows.append({'Сервис': svc_name, 'Метод': m})
+                    for g in info['generators']:
+                        gen_rows.append(f"{svc_name}.{g}")
 
-            methods = entry.get('methods', [])
-            if methods:
-                st.markdown(f"**Методы ({len(methods)}):**")
-                st.dataframe(
-                    pd.DataFrame([
-                        {'Метод': f".{m['name']}", 'Сигнатура': m['sig']}
-                        for m in methods
-                    ]),
-                    use_container_width=True, hide_index=True,
-                )
+                if rpc_rows:
+                    st.markdown("**RPC-методы сервисов** — кликните строку для вызова:")
+                    event = st.dataframe(
+                        pd.DataFrame(rpc_rows),
+                        use_container_width=True, hide_index=True,
+                        on_select='rerun', selection_mode='single-row',
+                        key=f"sel_reg_{entry['name']}",
+                    )
+                    rows = event.selection.rows
+                    if rows:
+                        row = rpc_rows[rows[0]]
+                        _pick_into_console(row['Сервис'], row['Метод'])
+
+                if gen_rows:
+                    st.caption("@generator (вызываются через Spawner): "
+                               + ", ".join(f"`{g}`" for g in gen_rows))
+
+            _methods_table(entry.get('methods', []),
+                           entry.get('rpc_service'),
+                           f"sel_{entry['name']}")
 
             attrs = entry.get('attrs', [])
             if attrs:
@@ -134,15 +177,9 @@ def _render_ctx(rpc):
                 st.markdown(f"**↳ `ctx.{child['name']}` · {child.get('type', '?')}**")
                 if child.get('doc'):
                     st.caption(child['doc'])
-                child_methods = child.get('methods', [])
-                if child_methods:
-                    st.dataframe(
-                        pd.DataFrame([
-                            {'Метод': f".{m['name']}", 'Сигнатура': m['sig']}
-                            for m in child_methods
-                        ]),
-                        use_container_width=True, hide_index=True,
-                    )
+                _methods_table(child.get('methods', []),
+                               child.get('rpc_service'),
+                               f"sel_{child['name']}")
                 if child.get('attrs'):
                     st.caption("Атрибуты: " + " · ".join(child['attrs']))
 
@@ -230,6 +267,13 @@ def _render_node_panel(rpc):
             seen.add(nid)
             unique_nodes.append(nid)
 
+    # ---- Подстановка из вкладки «Контекст» (клик по методу) ----
+    # ctx_pick кладётся в session_state таблицей методов, значения
+    # применяются к виджетам ниже ДО их создания в этом ране
+    pick = st.session_state.pop('ctx_pick', None)
+    if pick and pick.get('dst') in unique_nodes:
+        st.session_state['rpc_dst_node'] = pick['dst']
+
     dst_node = st.selectbox(
         "Целевой узел",
         unique_nodes,
@@ -253,6 +297,11 @@ def _render_node_panel(rpc):
 
     svc_options = available_services if available_services else list(KNOWN_METHODS.keys())
 
+    if pick and pick.get('service'):
+        if pick['service'] not in svc_options:
+            svc_options.append(pick['service'])
+        st.session_state['rpc_service'] = pick['service']
+
     selected_svc = st.selectbox(
         "Сервис",
         svc_options,
@@ -263,6 +312,16 @@ def _render_node_panel(rpc):
     method_options = KNOWN_METHODS.get(selected_svc, [])
     if not method_options:
         method_options = ["(ввести вручную)"]
+
+    if pick and pick.get('service') == selected_svc and pick.get('method'):
+        if pick['method'] in method_options:
+            st.session_state['rpc_method'] = pick['method']
+        else:
+            if '(ввести вручную)' not in method_options:
+                method_options.append('(ввести вручную)')
+            st.session_state['rpc_method'] = '(ввести вручную)'
+            st.session_state['rpc_method_manual'] = pick['method']
+        st.toast(f"Подставлено в консоль: {selected_svc}.{pick['method']}")
 
     selected_method = st.selectbox(
         "Метод",
@@ -301,7 +360,7 @@ def _render_node_panel(rpc):
             try:
                 with st.spinner(f"Вызов {selected_svc}.{selected_method} → {dst_node}..."):
                     result = rpc.call(selected_svc, selected_method, call_data,
-                                     timeout=timeout)
+                                      timeout=timeout, dst=target)
                 st.session_state.sys_last_result = result
                 st.session_state.sys_last_call = f"{selected_svc}.{selected_method} → {dst_node}"
                 st.success("✅ Успешно")

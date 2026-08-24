@@ -188,6 +188,21 @@ class System(ModuleGeneric):
 
             return entry
 
+        def resolve_rpc_service(obj):
+            """Какому сервису из реестра соответствует объект (если соответствует).
+
+            Например self.ctx.spawn — это сервис 'spawner': его методы можно
+            вызвать по сети. Router/NeighborTable — внутренние объекты,
+            напрямую через RPC их не дёрнешь.
+            """
+            try:
+                for svc_name, bucket in self.ctx.services.services.items():
+                    if bucket.get('self') is obj:
+                        return svc_name
+            except Exception:
+                pass
+            return None
+
         # порядок: сначала задокументированные атрибуты, потом остальные
         known = [n for n in CTX_ATTR_DOCS if hasattr(ctx, n)]
         extra = [n for n in dir(ctx)
@@ -196,14 +211,17 @@ class System(ModuleGeneric):
         for attr_name in known + extra:
             obj = getattr(ctx, attr_name, None)
             entry = describe(obj, attr_name, CTX_ATTR_DOCS.get(attr_name, ''))
+            entry['rpc_service'] = resolve_rpc_service(obj)
 
             # вложенные подсистемы (например network.router)
             for (parent, child), child_doc in CTX_CHILD_DOCS.items():
                 if parent == attr_name and obj is not None:
                     child_obj = getattr(obj, child, None)
                     if child_obj is not None:
-                        entry['children'].append(
-                            describe(child_obj, f'{attr_name}.{child}', child_doc))
+                        child_entry = describe(child_obj, f'{attr_name}.{child}',
+                                               child_doc)
+                        child_entry['rpc_service'] = resolve_rpc_service(child_obj)
+                        entry['children'].append(child_entry)
 
             # ServiceManager — вместо методов показываем реестр сервисов
             if attr_name == 'services':
