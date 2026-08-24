@@ -1,6 +1,7 @@
 # services/system/service.py — управление системой: подключение к узлам, диагностика
 
 import asyncio
+import inspect
 import subprocess
 
 from services.rpc import rpc
@@ -10,6 +11,36 @@ try:
     import winreg
 except ImportError:
     winreg = None
+
+
+# ------------------------------------------------------------------ #
+#  Карта контекста приложения (для разработчика сервисов)
+#  Описание атрибутов AppContext — см. src/internal_modules/context.py
+# ------------------------------------------------------------------ #
+
+CTX_ATTR_DOCS = {
+    'NODE':            'Имя этого узла в mesh-сети (config.yaml → node)',
+    'config':          'Config — pydantic-модель конфигурации: .network.port, .local.peers, ...',
+    'config_manager':  'ConfigManager — чтение/запись конфига: .get("network.port"), .update({...}), .add_peer(node_id, uri), .list_peers()',
+    'peers':           'Список пиров из config.local.yaml (автоподключение при старте)',
+    'services':        'ServiceManager — реестр локальных сервисов и их RPC-методов',
+    'certs_index':     'CertsIndex — сводка сертификатов всей сети (обмен CERT_SYNC)',
+    '_modules':        'Зарегистрированные модули; порядок в списке = порядок start()',
+    'network':         'NetworkModule — WS-сервер узла, mesh-RPC и стримы, топология',
+    'memory':          'MemoryModule — фабрика стримов: create_pipe(), create_dispatcher(), attach_transport()',
+    'spawn':           'Spawner — распределённые вычисления: раздаёт @generator удалённым воркерам',
+}
+
+# Вложенные объекты уровня 2, которые полезно показать отдельно
+CTX_CHILD_DOCS = {
+    ('network', 'router'):         'Router — маршрутизация всех пакетов: RPC, стримы, кэш маршрутов',
+    ('network', 'neighbor_table'): 'NeighborTable — кто в сети: .connected(), .known(), .find_by_service(name)',
+    ('network', 'nodes_manager'):  'NodesManager — прямые WS-подключения других узлов к этому',
+}
+
+# Простой тип → показываем значение вместо списка методов
+_SIMPLE_TYPES = (str, int, float, bool)
+
 
 class System(ModuleGeneric):
     def __init__(self, name, context):
@@ -102,6 +133,95 @@ class System(ModuleGeneric):
         """Список пиров из config.local.yaml."""
         peers = self.ctx.config_manager.list_peers()
         return [{'node_id': p.node_id, 'uri': p.uri} for p in peers]
+
+    # ------------------------------------------------------------------ #
+    #  Интроспекция AppContext — подсказка разработчику «что доступно»
+    # ------------------------------------------------------------------ #
+
+    @rpc
+    def ctx_map(self):
+        """Карта контекста приложения (self.ctx) для разработчика сервисов.
+
+        По каждому атрибуту AppContext возвращает: тип, назначение,
+        публичные методы с сигнатурами. Ключевые подсистемы (router,
+        neighbor_table и т.п.) раскрыты на уровень глубже.
+        """
+        ctx = self.ctx
+        entries = []
+
+        def describe(obj, name, doc=''):
+            entry = {
+                'name': name,
+                'type': type(obj).__name__,
+                'doc': doc,
+                'value': None,
+                'methods': [],
+                'attrs': [],
+                'children': [],
+            }
+            if isinstance(obj, _SIMPLE_TYPES) or obj is None:
+                entry['value'] = repr(obj)
+                return entry
+
+            for attr_name in sorted(dir(obj)):
+                if attr_name.startswith('_'):
+                    continue
+                try:
+                    attr = getattr(obj, attr_name)
+                except Exception:
+                    continue
+
+                if callable(attr):
+                    try:
+                        sig = str(inspect.signature(attr))
+                        sig = f'({sig[1:-1]})' if sig.startswith('(') else sig
+                    except (TypeError, ValueError):
+                        sig = '(...)'
+                    if len(sig) > 140:
+                        sig = sig[:137] + '...'
+                    entry['methods'].append({'name': attr_name, 'sig': sig})
+                elif isinstance(attr, type):
+                    entry['attrs'].append(f'{attr_name}: class {attr.__name__}')
+                else:
+                    entry['attrs'].append(
+                        f"{attr_name}: {type(attr).__name__}")
+
+            return entry
+
+        # порядок: сначала задокументированные атрибуты, потом остальные
+        known = [n for n in CTX_ATTR_DOCS if hasattr(ctx, n)]
+        extra = [n for n in dir(ctx)
+                 if not n.startswith('_') and n not in CTX_ATTR_DOCS]
+
+        for attr_name in known + extra:
+            obj = getattr(ctx, attr_name, None)
+            entry = describe(obj, attr_name, CTX_ATTR_DOCS.get(attr_name, ''))
+
+            # вложенные подсистемы (например network.router)
+            for (parent, child), child_doc in CTX_CHILD_DOCS.items():
+                if parent == attr_name and obj is not None:
+                    child_obj = getattr(obj, child, None)
+                    if child_obj is not None:
+                        entry['children'].append(
+                            describe(child_obj, f'{attr_name}.{child}', child_doc))
+
+            # ServiceManager — вместо методов показываем реестр сервисов
+            if attr_name == 'services':
+                registry = {}
+                for svc_name, methods in getattr(ctx.services, 'services', {}).items():
+                    registry[svc_name] = {
+                        'methods': sorted(
+                            m for m in methods
+                            if m != 'self' and not m.startswith('__gen__')),
+                        'generators': sorted(
+                            m[len('__gen__'):] for m in methods
+                            if m.startswith('__gen__')),
+                    }
+                entry['registry'] = registry
+
+            entries.append(entry)
+
+        return {'node': ctx.NODE, 'entries': entries}
 
     def add_to_task_scheduler(self):
         """Добавляет задачу в планировщик"""

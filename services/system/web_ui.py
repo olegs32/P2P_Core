@@ -26,7 +26,7 @@ KNOWN_METHODS = {
         'export_certificate_cer', 'delete_certificate',
         'install_pfx_from_base64', 'fix_certificate_link',
     ],
-    'system':        ['connect_to_node', 'list_connectors', 'node_detail', 'config_peers'],
+    'system':        ['connect_to_node', 'list_connectors', 'node_detail', 'config_peers', 'ctx_map'],
     'webpanel':      ['node_status', 'discover_ui_services'],
     'compute_full':  ['start_stream', 'compute_ranges', 'compute_squares', 'run_range'],
     'generator':     ['start_stream'],
@@ -38,13 +38,111 @@ KNOWN_METHODS = {
 def render(rpc):
     if st is None:
         return
-    tab_nodes, tab_connect = st.tabs(["Управление узлами", "Подключение"])
+    tab_nodes, tab_connect, tab_ctx = st.tabs(
+        ["Управление узлами", "Подключение", "🧭 Контекст (ctx)"]
+    )
 
     with tab_nodes:
         _render_node_panel(rpc)
 
     with tab_connect:
         _render_connect(rpc)
+
+    with tab_ctx:
+        _render_ctx(rpc)
+
+
+# ------------------------------------------------------------------ #
+#  Вкладка 3: карта контекста приложения (self.ctx)
+# ------------------------------------------------------------------ #
+
+CTX_ICONS = {
+    'NODE':            '🏷️',
+    'config':          '🗄️',
+    'config_manager':  '🗄️',
+    'peers':           '🔗',
+    'services':        '📦',
+    'certs_index':     '🔐',
+    '_modules':        '🧩',
+    'network':         '🌐',
+    'memory':          '🧠',
+    'spawn':           '⚡',
+}
+
+
+def _render_ctx(rpc):
+    st.subheader("Карта контекста приложения")
+    st.caption(
+        "Что лежит в `self.ctx` любого сервиса или модуля и какие методы у него "
+        "вызываются. Источник — RPC `system.ctx_map()`; описания атрибутов "
+        "заданы в `services/system/service.py` (CTX_ATTR_DOCS)."
+    )
+
+    try:
+        data = rpc.call('system', 'ctx_map')
+    except Exception as e:
+        st.error(f"Ошибка получения карты контекста: {e}")
+        return
+
+    entries = (data or {}).get('entries', [])
+    if not entries:
+        st.info("Контекст пуст")
+        return
+
+    for entry in entries:
+        icon = CTX_ICONS.get(entry.get('name'), '📦')
+        header = f"{icon} ctx.{entry['name']} · {entry.get('type', '?')}"
+        with st.expander(header):
+            doc = entry.get('doc')
+            if doc:
+                st.caption(doc)
+
+            value = entry.get('value')
+            if value is not None:
+                st.code(value, language='python')
+
+            registry = entry.get('registry')
+            if registry:
+                rows = []
+                for svc_name, info in sorted(registry.items()):
+                    rows.append({
+                        'Сервис': svc_name,
+                        'RPC-методы': ', '.join(info['methods']) or '—',
+                        '@generator': ', '.join(info['generators']) or '—',
+                    })
+                st.markdown("**Зарегистрированные сервисы:**")
+                st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+            methods = entry.get('methods', [])
+            if methods:
+                st.markdown(f"**Методы ({len(methods)}):**")
+                st.dataframe(
+                    pd.DataFrame([
+                        {'Метод': f".{m['name']}", 'Сигнатура': m['sig']}
+                        for m in methods
+                    ]),
+                    use_container_width=True, hide_index=True,
+                )
+
+            attrs = entry.get('attrs', [])
+            if attrs:
+                st.caption("Атрибуты: " + " · ".join(attrs))
+
+            for child in entry.get('children', []):
+                with st.expander(f"↳ ctx.{child['name']} · {child.get('type', '?')}"):
+                    if child.get('doc'):
+                        st.caption(child['doc'])
+                    child_methods = child.get('methods', [])
+                    if child_methods:
+                        st.dataframe(
+                            pd.DataFrame([
+                                {'Метод': f".{m['name']}", 'Сигнатура': m['sig']}
+                                for m in child_methods
+                            ]),
+                            use_container_width=True, hide_index=True,
+                        )
+                    if child.get('attrs'):
+                        st.caption("Атрибуты: " + " · ".join(child['attrs']))
 
 
 # ------------------------------------------------------------------ #

@@ -196,6 +196,7 @@ RPC-методы:
 | `list_connectors` | Активные исходящие коннекторы (модули `Connector_*`) |
 | `node_detail` | Обзор узла: own, connected, known, ws_connections, services |
 | `config_peers` | Пиры из config.local.yaml |
+| `ctx_map` | Интроспекция AppContext для разработчика: по каждому атрибуту — тип, назначение (CTX_ATTR_DOCS в service.py), публичные методы с сигнатурами; router/neighbor_table/nodes_manager раскрыты на уровень глубже; для services — реестр сервисов с методами и @generator |
 
 Веб-интерфейс (`web_ui.py`): вкладки «Управление узлами» (метрики + таблицы соседей + RPC-консоль с известными методами `KNOWN_METHODS` и подсказками аргументов) и «Подключение» (форма подключения + текущие коннекторы + пиры из конфига). Импорт streamlit обёрнут в try/except — сервис работает и в headless-сборке.
 
