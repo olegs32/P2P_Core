@@ -70,8 +70,23 @@ CTX_ICONS = {
 }
 
 
-def _pick_into_console(service: str, method: str):
-    """Клик по методу: отложить подстановку в RPC-консоль и перерисовать."""
+def _clear_selection(widget_key: str):
+    """Сбросить выделение строки датафрейма.
+
+    Выделение живёт в session_state, поэтому без сброса клик «срабатывает»
+    заново при каждом реране страницы (повторные подстановки и toast'ы).
+    """
+    try:
+        st.session_state[widget_key] = {'selection': {'rows': [], 'columns': []}}
+    except Exception:
+        pass
+
+
+def _pick_into_console(service: str, method: str, widget_key: str | None = None):
+    """Клик по методу: сбросить выделение, отложить подстановку в RPC-консоль
+    и перерисовать страницу."""
+    if widget_key:
+        _clear_selection(widget_key)
     st.session_state['ctx_pick'] = {
         'dst': st.session_state.get('selected_node'),
         'service': service,
@@ -98,7 +113,8 @@ def _methods_table(methods: list, rpc_service, widget_key: str):
         )
         rows = event.selection.rows
         if rows:
-            _pick_into_console(rpc_service, methods[rows[0]]['name'])
+            _pick_into_console(rpc_service, methods[rows[0]]['name'],
+                               widget_key=widget_key)
     else:
         st.caption(f"Методы ({len(methods)}, внутренние — по сети не вызываются):")
         st.dataframe(df, use_container_width=True, hide_index=True)
@@ -157,7 +173,8 @@ def _render_ctx(rpc):
                     rows = event.selection.rows
                     if rows:
                         row = rpc_rows[rows[0]]
-                        _pick_into_console(row['Сервис'], row['Метод'])
+                        _pick_into_console(row['Сервис'], row['Метод'],
+                                           widget_key=f"sel_reg_{entry['name']}")
 
                 if gen_rows:
                     st.caption("@generator (вызываются через Spawner): "
