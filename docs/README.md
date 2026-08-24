@@ -186,6 +186,11 @@ memory:
 logging:
   level: "INFO"
 
+logs:                       # буфер логов для веб-панели (сервис logs)
+  buffer_size: 2000         # ёмкость кольцевого буфера
+  max_msg_len: 4000         # обрезка одного сообщения
+  max_traceback_len: 2000   # обрезка traceback (берётся хвост)
+
 services:
   path: "services/"
 
@@ -575,8 +580,13 @@ NodeA (источник)                      NodeB (целевой)
 | **compute_full** | `services/compute_full/` | Полный compute pipeline (генератор + консьюмер) |
 | **generator** | `services/generator/` | Простой генератор диапазонов |
 | **test** | `services/test/` | Тестовый echo-сервис |
+| **logs** | `services/logs/` | 📜 Логи консоли узла в панели: кольцевой буфер + фильтры severity/поиск/regex/период, live-режим, экспорт |
 | **demo** | `services/demo/` | 🎓 Эталонный сервис с пояснениями — образец для разработки |
 | **spawner** | `src/internal_modules/spawner.py` | Распределённые вычисления |
+
+### Сервис logs
+
+`RingBufferHandler` цепляется к root logger и копит записи в памяти (кольцевой буфер; параметры — `config.yaml` → секция `logs`: `buffer_size`, `max_msg_len`, `max_traceback_len`). RPC: `get_logs` — инкрементальный поллинг (`since_id`) с серверными фильтрами (levels, search, regex, loggers, период, limit), `get_loggers`, `clear_buffer`. Веб-интерфейс: live-лента (фрагмент с автообновлением 2 сек), цветные уровни, экспорт CSV/TXT. Ограничение: только записи, доходящие до root logger.
 
 ### Сервис system
 

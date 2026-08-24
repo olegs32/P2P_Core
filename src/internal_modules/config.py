@@ -34,6 +34,13 @@ class LoggingConfig(BaseModel):
     websockets_level: str = 'WARNING'
 
 
+class LogsConfig(BaseModel):
+    """Буфер логов для веб-панели (сервис logs)."""
+    buffer_size: int = 2000        # ёмкость кольцевого буфера
+    max_msg_len: int = 4000        # обрезка одного сообщения
+    max_traceback_len: int = 2000  # обрезка traceback (берётся хвост)
+
+
 class ServicesConfig(BaseModel):
     path: Path = Path('services')
 
@@ -60,6 +67,7 @@ class Config(BaseModel):
     network: NetworkConfig = NetworkConfig()
     memory: MemoryConfig = MemoryConfig()
     logging: LoggingConfig = LoggingConfig()
+    logs: LogsConfig = LogsConfig()
     services: ServicesConfig = ServicesConfig()
     local: LocalConfig = LocalConfig()
 

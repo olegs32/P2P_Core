@@ -27,6 +27,7 @@ KNOWN_METHODS = {
         'install_pfx_from_base64', 'fix_certificate_link',
     ],
     'system':        ['connect_to_node', 'list_connectors', 'node_detail', 'config_peers', 'ctx_map'],
+    'logs':          ['get_logs', 'get_loggers', 'clear_buffer'],
     'webpanel':      ['node_status', 'discover_ui_services'],
     'compute_full':  ['start_stream', 'compute_ranges', 'compute_squares', 'run_range'],
     'generator':     ['start_stream'],
