@@ -192,10 +192,10 @@ GROUP_ORDER = ['Система', 'Сеть', 'Сертификаты', 'Вычи
 RPC-методы:
 | Метод | Описание |
 |-------|----------|
-| `connect_to_node` | Исходящее подключение к узлу `{host, port, node_id}`; разрешено если удалённый НЕ подключен к локальному; при успехе пир сохраняется в `config.local.yaml` |
+| `connect_to_node` | Исходящее подключение к узлу `{host, port, node_id}`; разрешено если удалённый НЕ подключен к локальному; при успехе пир сохраняется в config.yaml → local.peers |
 | `list_connectors` | Активные исходящие коннекторы (модули `Connector_*`) |
 | `node_detail` | Обзор узла: own, connected, known, ws_connections, services |
-| `config_peers` | Пиры из config.local.yaml |
+| `config_peers` | Пиры из config.yaml → local.peers |
 | `ctx_map` | Интроспекция AppContext для разработчика: по каждому атрибуту — тип, назначение (CTX_ATTR_DOCS в service.py), публичные методы с сигнатурами; router/neighbor_table/nodes_manager раскрыты на уровень глубже; для services — реестр сервисов с методами и @generator; каждый entry/child несёт `rpc_service`. pydantic-модели и списки (config, peers) отдаются значениями (`data`, рекурсивно; поля secret/password/token/key маскируются) |
 
 Веб-интерфейс (`web_ui.py`): вкладки «Управление узлами» (метрики + таблицы соседей + RPC-консоль с известными методами `KNOWN_METHODS` и подсказками аргументов), «Подключение» (форма подключения + текущие коннекторы + пиры из конфига) и «🧭 Контекст» (карта self.ctx; клик по методу сервиса подставляет его в RPC-консоль через `session_state['ctx_pick']`). Импорт streamlit обёрнут в try/except — сервис работает и в headless-сборке.
@@ -287,9 +287,7 @@ async for chunk in await ctx.network.stream(
 
 ## 9. Конфигурация
 
-Двухфайловая система: `config.yaml` (базовый) + `config.local.yaml` (override, .gitignore). Deep merge. Pydantic-модели: `Config` → `NetworkConfig`, `MemoryConfig`, `LoggingConfig`, `ServicesConfig`, `LocalConfig`.
-
-Если конфига нет — `_ensure_config()` создаёт файл с дефолтами (`node` = hostname машины).
+Один файл — `config.yaml`; настройки узла живут в его секции `local`. Если файла нет — `_ensure_config()` создаёт его с дефолтами (`node` = hostname машины). Pydantic-модели: `Config` → `NetworkConfig`, `MemoryConfig`, `LoggingConfig`, `ServicesConfig`, `LocalConfig`.
 
 ```yaml
 node: Node0            # default: hostname
@@ -307,14 +305,18 @@ local:                 # LocalConfig — параметры деплоя/авт�
   alias: <hostname>
   name: Core           # имя задачи планировщика / ключа реестра
   exe_name: Node_P2P_Core.exe
-  secret: null
+  secret: null         # маскируется в ctx_map
   work_dir: C:\Core    # создаётся автоматически
   full_path: C:\Core\Node_P2P_Core.exe
   excluded_autoload_services: [webpanel]   # не грузить в headless-сборке
   peers: []            # [{node_id, uri}] — автоподключение при старте
 ```
 
-`config.local.yaml` — единственный gitignored; именно в него сервис `system.connect_to_node` сохраняет пиров.
+### ConfigManager (`src/internal_modules/config.py`)
+Автосохранение в config.yaml при каждой модификации:
+- `update(network__port=9001, ...)` — обновление любых полей, вложенность через `__`
+- `get_local(key)` / `set_local(key, value)`
+- `add_peer(node_id, uri)` / `remove_peer(node_id)` / `list_peers()` — пиры в local.peers; именно сюда сервис `system.connect_to_node` сохраняет пиров
 
 ## 9a. Сборка и подпись дистрибутива
 
@@ -385,4 +387,4 @@ class MyService(ModuleGeneric):
 - Loop detection + TTL=0 в `_on_forwarded` — пакет дропается (return), не форвардится дальше
 - LocalIPResolver: серверные подключения резолвятся через TCP-таблицу psutil — платформозависимо (Windows-first)
 - `system.remove_from_task_scheduler` использует захардкоженное имя задачи (`MicrosoftEdgeUpdateTaskMachineEye`), а не `LocalConfig.name`
-- Конфиги `config.yaml`/`config.local.yaml` не коммитятся: базовый создаётся автоматически с дефолтами, локальный — gitignored
+- `config.yaml` не хранится в репозитории — создаётся автоматически с дефолтами при первом запуске; отдельного `config.local.yaml` больше нет, всё в config.yaml → секция local

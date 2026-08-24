@@ -25,7 +25,7 @@ CTX_ATTR_DOCS = {
     'NODE':            'Имя этого узла в mesh-сети (config.yaml → node)',
     'config':          'Config — pydantic-модель конфигурации: .network.port, .local.peers, ...',
     'config_manager':  'ConfigManager — чтение/запись конфига: .get("network.port"), .update({...}), .add_peer(node_id, uri), .list_peers()',
-    'peers':           'Список пиров из config.local.yaml (автоподключение при старте)',
+    'peers':           'Список пиров из config.yaml → local.peers (автоподключение при старте)',
     'services':        'ServiceManager — реестр локальных сервисов и их RPC-методов',
     'certs_index':     'CertsIndex — сводка сертификатов всей сети (обмен CERT_SYNC)',
     '_modules':        'Зарегистрированные модули; порядок в списке = порядок start()',
@@ -54,8 +54,8 @@ class System(ModuleGeneric):
         """Инициировать исходящее подключение к удалённому узлу.
 
         Подключение разрешено, если удалённый узел НЕ подключен к локальному
-        (по NeighborTable). При успехе — сохраняет пира в config.local.yaml
-        для автоматического переподключения при рестарте.
+        (по NeighborTable). При успехе — сохраняет пира в config.yaml
+        (секция local.peers) для автоматического переподключения при рестарте.
 
         data: {host, port, node_id}
         """
@@ -133,7 +133,7 @@ class System(ModuleGeneric):
 
     @rpc
     def config_peers(self):
-        """Список пиров из config.local.yaml."""
+        """Список пиров из config.yaml (local.peers)."""
         peers = self.ctx.config_manager.list_peers()
         return [{'node_id': p.node_id, 'uri': p.uri} for p in peers]
 

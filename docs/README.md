@@ -166,14 +166,11 @@ python debug_client.py
 
 | Файл | Описание |
 |------|----------|
-| `config.yaml` | Базовая конфигурация; при отсутствии создаётся автоматически с дефолтами (`node` = hostname) |
-| `config.local.yaml` | Локальные override (.gitignore): alias, peers, параметры деплоя |
+| `config.yaml` | Единственный файл конфигурации; при отсутствии создаётся автоматически с дефолтами (`node` = hostname) |
 
 ### Система конфигурации
 
-Двухфайловая система с deep merge:
-- `config.yaml` — shared настройки
-- `config.local.yaml` — локальные override (в .gitignore)
+Один файл — `config.yaml`; настройки узла и деплоя живут в его секции `local`. Любая модификация через ConfigManager автосохраняется в файл.
 
 ```yaml
 node: Node0
@@ -201,16 +198,17 @@ local:                      # LocalConfig — деплой и автозапус
   peers: []                 # [{node_id, uri}] — автоподключение при старте
 ```
 
-### ConfigManager API
+### ConfigManager API (`src/internal_modules/config.py`)
 
 ```python
 from src.internal_modules.config import ConfigManager
 
 config = ConfigManager()
-config.get("network.port")                    # Получить значение
-config.update({"network.port": 9002})         # Обновить с автосохранением
-config.add_peer(...)                          # Добавить пира
-config.remove_peer("Node1")                   # Удалить пира
+config.update(network__port=9002)             # Обновить с автосохранением (вложенность через '__')
+config.get_local('name')                      # Поле из секции local
+config.set_local('name', 'MyNode')            # Изменить поле в local
+config.add_peer('Node1', 'ws://host:9000/ws/')# Добавить пира (local.peers)
+config.remove_peer('Node1')                   # Удалить пира
 config.list_peers()                           # Список пиров
 ```
 
@@ -582,7 +580,7 @@ NodeA (источник)                      NodeB (целевой)
 
 ### Сервис system
 
-RPC-методы: `connect_to_node` (исходящее подключение + сохранение пира в config.local.yaml), `list_connectors`, `node_detail`, `config_peers`, `ctx_map` (интроспекция AppContext: типы, назначения, сигнатуры методов — подсказка разработчику).
+RPC-методы: `connect_to_node` (исходящее подключение + сохранение пира в config.yaml → local.peers), `list_connectors`, `node_detail`, `config_peers`, `ctx_map` (интроспекция AppContext: типы, назначения, сигнатуры методов — подсказка разработчику).
 
 Веб-интерфейс: «Управление узлами» (метрики, таблицы соседей, RPC-консоль), «Подключение» (форма подключения к удалённому узлу) и «🧭 Контекст» (карта `self.ctx`: атрибуты, их методы и реестр сервисов).
 
@@ -688,8 +686,7 @@ P2P_Core/
 ├── main.py                 # Точка входа (все узлы)
 ├── compile.py              # PyInstaller-сборка двух exe + автоподпись
 ├── debug_client.py         # Тестовый клиент
-├── config.yaml             # Конфигурация (создаётся автоматически при первом запуске)
-├── config.local.yaml       # Локальные настройки (.gitignore)
+├── config.yaml             # Единственный конфиг (создаётся автоматически при первом запуске; local.* — настройки узла)
 ├── glm.md                  # База знаний для AI-ассистента
 ├── roadmap.md              # TODO / планы развития
 ├── requirements.txt        # Зависимости
