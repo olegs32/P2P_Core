@@ -32,12 +32,14 @@
 #  Хеш считается лениво (первый stat/serve) и кэшируется по (size, mtime_ns).
 # =============================================================================
 
+import asyncio
 import fnmatch
 import hashlib
 import os
 import shutil
 import time
 import uuid
+from collections import deque
 from pathlib import Path
 
 from src.internal_modules.base import ModuleGeneric
@@ -47,6 +49,7 @@ from services.rpc import rpc, stream_wrapper, stream_consumer
 
 STREAM_NAME = 'file_in'   # имя стрима-приёмника (@stream_wrapper/consumer)
 DEFAULT_BUFF = 8          # чанков в полёте (pipe buff)
+SPEED_WINDOW = 10         # сек — окно расчёта скорости
 
 
 # ------------------------------------------------------------------ #
@@ -141,7 +144,11 @@ class Files(ModuleGeneric):
     # ------------------------------------------------------------------ #
 
     def _cfg(self):
-        return getattr(self.ctx.config, 'files', None)
+        cm = getattr(self.ctx, 'config_manager', None)
+        root = getattr(cm, 'cfg', None) if cm else None
+        # менеджер конфига первичен: update() создаёт новый объект,
+        # и ctx.config может отставать (подстраховка — см. _persist_shares)
+        return getattr(root or self.ctx.config, 'files', None)
 
     def _download_dir(self) -> Path:
         cfg = self._cfg()
@@ -263,8 +270,15 @@ class Files(ModuleGeneric):
         return {'ok': True, 'shares': out}
 
     @rpc
-    def find(self, data: dict) -> dict:
-        """Поиск файлов по шаре(-ам): {share?, pattern?} → записи каталога."""
+    async def find(self, data: dict) -> dict:
+        """Поиск файлов по шаре(-ам): {share?, pattern?} → записи каталога.
+
+        ФС-обход в отдельном потоке — не блокирует event loop узла
+        (медленные/сетевые каталоги).
+        """
+        return await asyncio.to_thread(self._find_sync, data or {})
+
+    def _find_sync(self, data: dict) -> dict:
         pattern = data.get('pattern') or '*'
         want_share = data.get('share')
         rows = []
@@ -280,14 +294,156 @@ class Files(ModuleGeneric):
         return {'ok': True, 'entries': rows}
 
     @rpc
-    def stat(self, data: dict) -> dict:
-        """Манифест файла: {id, share, path, size, mtime, chunk_size}."""
+    async def stat(self, data: dict) -> dict:
+        """Манифест файла: {id, share, path, size, mtime, chunk_size}.
+
+        Хеширование (может быть долго для больших файлов) — в потоке.
+        """
+        return await asyncio.to_thread(self._stat_impl, data or {})
+
+    def _stat_impl(self, data: dict) -> dict:
         share, abspath = self._resolve_ref(data)
         if share is None:
             return {'ok': False, 'error': abspath}
         cs = min(int(data.get('chunk_size') or share.chunk_size),
                  int(getattr(self._cfg(), 'max_chunk', 4 * 1024 * 1024)))
         return {'ok': True, 'manifest': self._manifest(share, abspath, cs)}
+
+    # ------------------------------------------------------------------ #
+    #  RPC: управление шарами (расшаривание из UI)
+    # ------------------------------------------------------------------ #
+
+    @rpc
+    async def list_local_dirs(self, data: dict) -> dict:
+        """Абсолютные пути подкаталогов — для браузера расшаривания в UI.
+
+        {path: ''} → корневые точки (диски Windows / корень ФС).
+        Вся ФС-работа — в отдельном потоке: перебор каталогов и тем более
+        опрос дисков может быть медленным, синхронный вариант блокировал
+        event loop узла до таймаута RPC.
+
+        ВНИМАНИЕ: доступно любому подключенному узлу (до появления
+        аутентификации узлов mesh считается доверенной сетью).
+        """
+        return await asyncio.to_thread(self._list_dirs_sync,
+                                       (data or {}).get('path') or '')
+
+    @staticmethod
+    def _win_drives() -> list[str]:
+        """Логические диски через GetLogicalDrives — мгновенно, без I/O
+        (Path.exists() на отключенных сетевых дисках вешает секунды)."""
+        try:
+            import ctypes
+            mask = ctypes.windll.kernel32.GetLogicalDrives()
+        except (ImportError, AttributeError):
+            return []
+        out = []
+        for i in range(26):
+            if mask >> i & 1:
+                out.append(f'{chr(65 + i)}:\\')
+        return out
+
+    def _list_dirs_sync(self, raw: str) -> dict:
+        try:
+            if not raw:
+                if os.name == 'nt':
+                    roots = self._win_drives()
+                    if not roots:                      # winapi недоступен
+                        roots = [str(Path(d).resolve())
+                                 for d in ('C:\\', '/')
+                                 if Path(d).exists()]
+                else:
+                    roots = ['/']
+                return {'ok': True, 'path': '', 'parent': None,
+                        'dirs': sorted(roots)}
+            p = Path(raw)
+            if not p.is_dir():
+                return {'ok': False, 'error': f'каталог не найден: {raw}'}
+            dirs = sorted(str(d) for d in p.iterdir() if d.is_dir())
+            parent = str(p.parent) if p.parent != p else None
+            return {'ok': True, 'path': str(p), 'parent': parent, 'dirs': dirs}
+        except (OSError, ValueError) as e:
+            return {'ok': False, 'error': str(e)}
+
+    def _persist_shares(self, entries: list[dict]) -> bool:
+        """Записать список шар в конфиг и свести обе ссылки на него.
+
+        ConfigManager.update() создаёт НОВЫЙ объект cfg — после него
+        ctx.config может указывать на устаревший экземпляр, поэтому
+        синхронизируем files.shares на месте у обоих.
+        """
+        cm = getattr(self.ctx, 'config_manager', None)
+        if cm is None:
+            self.log.error('config_manager недоступен — шару не сохранить')
+            return False
+        try:
+            cm.update(**{'files__shares': entries})
+        except Exception as e:
+            self.log.error(f'ошибка записи конфига: {e}')
+            return False
+        try:
+            self.ctx.config.files.shares = list(cm.cfg.files.shares)
+        except Exception:
+            pass
+        return True
+
+    @rpc
+    async def add_share(self, data: dict) -> dict:
+        """Расшарить каталог этого узла.
+
+        data: {path: абсолютный путь каталога, name?: имя шары
+               (по умолчанию — имя папки), allow?: [node_id],
+               chunk_size?: байт}
+        """
+        raw_path = (data or {}).get('path') or ''
+        if not raw_path:
+            return {'ok': False, 'error': 'укажите path'}
+        p = Path(raw_path)
+        try:
+            real = p.resolve()
+        except OSError:
+            real = p
+        if not real.is_dir():
+            return {'ok': False, 'error': f'каталог не найден: {raw_path}'}
+
+        name = ((data.get('name') or '').strip() or real.name)
+        if '/' in name or '\\' in name:
+            return {'ok': False, 'error': 'имя шары не должно содержать / и \\'}
+        allow = [str(x) for x in (data.get('allow') or [])]
+        max_chunk = int(getattr(self._cfg(), 'max_chunk', 4 * 1024 * 1024))
+        cs = max(1024, min(int(data.get('chunk_size') or 262144), max_chunk))
+
+        current = self._shares()
+        if any(s.name == name for s in current):
+            return {'ok': False, 'error': f'шара с именем {name!r} уже есть'}
+        for s in current:
+            try:
+                if Path(s.path).resolve() == real:
+                    return {'ok': False,
+                            'error': f'{real} уже расшарена как {s.name!r}'}
+            except OSError:
+                pass
+
+        entry = {'name': name, 'path': str(real),
+                 'allow': allow, 'chunk_size': cs}
+        new_list = [s.model_dump() for s in current] + [entry]
+        if not self._persist_shares(new_list):
+            return {'ok': False, 'error': 'не удалось записать конфиг'}
+        self.log.info(f'share added: {name!r} → {real} (allow={allow or "все"})')
+        return {'ok': True, 'share': entry}
+
+    @rpc
+    async def remove_share(self, data: dict) -> dict:
+        """Убрать шару по имени: {name}."""
+        name = (data or {}).get('name')
+        current = self._shares()
+        new_list = [s.model_dump() for s in current if s.name != name]
+        if len(new_list) == len(current):
+            return {'ok': False, 'error': f'шара {name!r} не найдена'}
+        if not self._persist_shares(new_list):
+            return {'ok': False, 'error': 'не удалось записать конфиг'}
+        self.log.info(f'share removed: {name!r}')
+        return {'ok': True}
 
     # ------------------------------------------------------------------ #
     #  RPC: передача (источник)
@@ -409,6 +565,9 @@ class Files(ModuleGeneric):
             'status': 'running', 'error': '',
             'started_at': time.time(), 'finished_at': 0,
         }
+        # окно скорости: (ts, received) — deque живёт только на узле-приёмнике
+        self._downloads[label]['speed_win'] = deque(maxlen=64)
+        self._downloads[label]['speed_win'].append((time.time(), offset))
 
         # локальный шорткат: файл уже на этом узле — просто скопировать
         if dst == self.ctx.NODE:
@@ -494,21 +653,39 @@ class Files(ModuleGeneric):
 
     @rpc
     def downloads(self, data: dict = None) -> dict:
-        """Статусы приёмок для UI (свежие сверху)."""
+        """Статусы приёмок для UI (свежие сверху) + текущая скорость.
+
+        speed_bps — байт/с по скользящему окну SPEED_WINDOW секунд.
+        """
+        now = time.time()
         rows = sorted(self._downloads.values(),
                       key=lambda d: d['started_at'], reverse=True)
         out = []
         for d in rows:
             pct = round(100 * d['received'] / d['size']) if d['size'] else 0
-            out.append({**d, 'pct': min(pct, 100)})
+
+            speed_bps = 0
+            if d['status'] == 'running':
+                win = [s for s in d.get('speed_win', ())
+                       if now - s[0] <= SPEED_WINDOW]
+                if len(win) >= 2:
+                    dt = win[-1][0] - win[0][0]
+                    if dt > 0:
+                        speed_bps = max(0, (win[-1][1] - win[0][1]) / dt)
+
+            row = {k: v for k, v in d.items() if k != 'speed_win'}
+            row.update(pct=min(pct, 100), speed_bps=round(speed_bps))
+            out.append(row)
         return {'ok': True, 'downloads': out}
 
     # ------------------------------------------------------------------ #
     #  Приём push-стрима (STREAM_OPEN method='file_in' приходит сюда)
     # ------------------------------------------------------------------ #
+    #  ВАЖНО: имена методов БЕЗ ведущего '_' — get_stream_handlers()
+    #  игнорирует приватные имена, и стрим не регистрировался бы.
 
     @stream_wrapper(STREAM_NAME)
-    async def _prepare_incoming(self, data: dict) -> dict:
+    async def prepare_file_in(self, data: dict) -> dict:
         """STREAM_OPEN: найти состояние загрузки по label из template.data."""
         info = (data or {})
         st = self._downloads.get(info.get('label'))
@@ -520,7 +697,7 @@ class Files(ModuleGeneric):
         return {'st': st, 'buff': DEFAULT_BUFF}
 
     @stream_consumer(STREAM_NAME)
-    async def _consume_file(self, pipe: Pipe, ctx: dict):
+    async def consume_file_in(self, pipe: Pipe, ctx: dict):
         router = self.ctx.network.router
         label = ctx.get('label')
         st = ctx.get('st')
@@ -548,6 +725,7 @@ class Files(ModuleGeneric):
                 fh.write(chunk)
                 received += len(chunk)
                 st['received'] = received
+                st['speed_win'].append((time.time(), received))
                 if label and pipe.size < buff:
                     await router.send_stream_ack(label, buff)
 

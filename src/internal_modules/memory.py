@@ -92,9 +92,16 @@ class PipeTransport:
         await self.router._forward(open_pack)
 
         try:
-            await asyncio.wait_for(future, timeout=self.timeout)
+            res = await asyncio.wait_for(future, timeout=self.timeout)
         except asyncio.TimeoutError:
             log.error(f'[pipe_transport] handshake timeout {self.template.label[:8]}')
+            return
+        if isinstance(res, Exception):
+            # resolve() кладёт ERROR-пакет как ЗНАЧЕНИЕ, не как исключение:
+            # без этой проверки «handshake ok» печатался даже при отказе,
+            # и чанки уходили в никуда (ACK timeout через N секунд)
+            log.error(f'[pipe_transport] handshake rejected '
+                      f'{self.template.label[:8]}: {res}')
             return
 
         log.info(f'[pipe_transport] handshake ok, buff_size={self.buff_size}')
@@ -174,18 +181,36 @@ class Dispatcher:
 
         _producer_failed = False
 
+        def _put_threadsafe(item) -> bool:
+            """Положить в очередь без вечного блокирования: если Dispatcher
+            остановлен, а очередь полна (потребитель умер/остановлен),
+            отменяем put и выходим — иначе поток-продюсер виснет навсегда,
+            а процесс на выходе джойнит его (не-daemon executor)."""
+            fut = asyncio.run_coroutine_threadsafe(gen_queue.put(item), loop)
+            while True:
+                try:
+                    fut.result(timeout=0.25)
+                    return True
+                except TimeoutError:
+                    if not self._running:
+                        fut.cancel()
+                        return False
+
         def _produce():
             try:
                 for item in generator():
                     if not self._running:
                         break
-                    asyncio.run_coroutine_threadsafe(gen_queue.put(item), loop).result()
+                    if not _put_threadsafe(item):
+                        break
             except Exception as e:
-                log.error(f'[dispatcher] generator error: {e}')
+                log.error(f'[dispatcher] generator error: '
+                          f'{type(e).__name__}: {e}')
                 nonlocal _producer_failed
                 _producer_failed = True
             finally:
-                asyncio.run_coroutine_threadsafe(gen_queue.put(_SENTINEL), loop).result()
+                if self._running:
+                    _put_threadsafe(_SENTINEL)
 
         producer_future = loop.run_in_executor(None, _produce)
         log.info(f'[dispatcher] started → {len(self.pipes)} pipes')
