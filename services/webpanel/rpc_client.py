@@ -3,7 +3,6 @@
 # Автоматический reconnect при разрыве соединения
 
 import asyncio
-import json
 import logging
 import os
 import threading
@@ -11,7 +10,14 @@ import uuid
 
 import websockets
 
-from src.networking.protocol import MsgPack, PackType
+from src.networking.protocol import (
+    MAX_FRAME_SIZE,
+    MsgPack,
+    PackType,
+    UnknownPackTypeError,
+    decode_pack,
+    encode_pack,
+)
 from src.networking.neighbor_table import PROTOCOL_VERSION
 
 log = logging.getLogger('NodeRPC')
@@ -70,7 +76,7 @@ class NodeRPC:
 
     async def _connect(self):
         uri = f"ws://{self.host}:{self.port}/ws/{self.node_id}"
-        self._ws = await websockets.connect(uri)
+        self._ws = await websockets.connect(uri, max_size=MAX_FRAME_SIZE)
 
         dst = self.target_node or 'Node0'
         hello = MsgPack(
@@ -84,12 +90,13 @@ class NodeRPC:
                 "version": PROTOCOL_VERSION,
                 "session_id": str(uuid.uuid4()),
                 "services": [],
+                "enc": "msgpack",
             },
         )
-        await self._ws.send(hello.model_dump_json())
+        await self._ws.send(encode_pack(hello))
 
         raw = await asyncio.wait_for(self._ws.recv(), timeout=5)
-        pack = MsgPack(**json.loads(raw))
+        pack = decode_pack(raw)
 
         if pack.type == PackType.HELLO_ACK:
             self.target_node = pack.source
@@ -143,8 +150,11 @@ class NodeRPC:
     async def _receive_loop(self):
         try:
             async for raw in self._ws:
-                data = json.loads(raw)
-                pack = MsgPack(**data)
+                try:
+                    pack = decode_pack(raw)
+                except UnknownPackTypeError as e:
+                    log.warning(f"Unknown pack type {e.type_value!r} — dropped")
+                    continue
 
                 if pack.type == PackType.RESPONSE:
                     self._resolve(pack.label, pack.data)
@@ -159,7 +169,7 @@ class NodeRPC:
                         dst=pack.source,
                         label=pack.label,
                     )
-                    await self._ws.send(pong.model_dump_json())
+                    await self._ws.send(encode_pack(pong))
 
         except asyncio.CancelledError:
             pass  # отменён при reconnect — не запускать новый
@@ -215,7 +225,7 @@ class NodeRPC:
         )
 
         asyncio.run_coroutine_threadsafe(
-            self._ws.send(pack.model_dump_json()),
+            self._ws.send(encode_pack(pack)),
             self._loop,
         ).result(timeout=5)
 

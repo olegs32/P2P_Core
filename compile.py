@@ -24,6 +24,7 @@ BASE_HIDDEN_IMPORTS = [
     'watchdog',
     'cryptography',
     'msgpack',
+    'msgpack.fallback',
     'yaml',
     'pyparsing',
     'click',

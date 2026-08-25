@@ -1,7 +1,6 @@
 # GRID/node_connector.py
 
 import asyncio
-import json
 import logging
 import time
 import uuid
@@ -10,7 +9,14 @@ import websockets
 
 from src.internal_modules.base import ModuleGeneric
 from src.networking.neighbor_table import PROTOCOL_VERSION
-from src.networking.protocol import MsgPack, PackType
+from src.networking.protocol import (
+    MAX_FRAME_SIZE,
+    MsgPack,
+    PackType,
+    UnknownPackTypeError,
+    decode_pack,
+    encode_pack,
+)
 from src.networking.transport import WebSocketTransport
 log = logging.getLogger('NodeConnector')
 
@@ -84,7 +90,11 @@ class NodeConnector(ModuleGeneric):
                 await asyncio.sleep(5)
                 continue
             try:
-                async with websockets.connect(self.target_uri) as ws:
+                # max_size обязателен: дефолт websockets (1 МБ) уронит
+                # соединение на больших чанках
+                async with websockets.connect(
+                    self.target_uri, max_size=MAX_FRAME_SIZE
+                ) as ws:
                     self._ws = ws
                     # Регистрируем client-side WS в Router для ACK и маршрутизации
                     self.ctx.network.router.register_client_ws(self.peer_node_id, ws)
@@ -99,8 +109,14 @@ class NodeConnector(ModuleGeneric):
                     self.log.info(f'Connected to {self.peer_node_id}')
 
                     async for raw in ws:
-                        data = json.loads(raw)
-                        pack = MsgPack(**data)
+                        try:
+                            pack = decode_pack(raw)
+                        except UnknownPackTypeError as e:
+                            self.log.warning(
+                                f'Unknown pack type {e.type_value!r} '
+                                f'from {self.peer_node_id} — dropped'
+                            )
+                            continue
 
                         # обновить last_ts при любом входящем трафике
                         self.ctx.network.neighbor_table.touch(pack.source)
@@ -137,13 +153,14 @@ class NodeConnector(ModuleGeneric):
                 'version':    PROTOCOL_VERSION,
                 'session_id': str(uuid.uuid4()),
                 'services':   list(self.ctx.services.services.keys()),
+                'enc':        'msgpack',  # информационное поле
             }
         )
-        await ws.send(hello.model_dump_json())
+        await ws.send(encode_pack(hello))
 
         try:
             raw  = await asyncio.wait_for(ws.recv(), timeout=10)
-            pack = MsgPack(**json.loads(raw))
+            pack = decode_pack(raw)
 
             if pack.type == PackType.HELLO_ACK:
                 await self._on_hello_ack(pack)

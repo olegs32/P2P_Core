@@ -11,38 +11,31 @@ from typing import Dict
 from src.internal_modules.base import ModuleGeneric
 from src.internal_modules.local_ip import LocalIPResolver
 from src.networking.neighbor_table import PROTOCOL_VERSION, NeighborTable
-from src.networking.protocol import MsgPack, PackType
+from src.networking.protocol import (
+    MAX_FRAME_SIZE,
+    MsgPack,
+    PackType,
+    UnknownPackTypeError,
+    decode_pack,
+    hexdump_head,
+)
 from src.networking.router import Router
 from src.networking.transport import WebSocketTransport
 
 log = logging.getLogger('Network')
+
+WS_CLOSE_PROTOCOL_ERROR = 1002
+
+
+class FrameDecodeError(Exception):
+    """Кадр нарушает протокол (text вместо binary / битый msgpack) —
+    граница доверия: соединение закрывается."""
 
 
 class Node:
     def __init__(self, node_id: str, ws: WebSocket):
         self.node_id = node_id
         self.ws = ws
-
-
-class ConnectionManager:
-    # DEAD CODE / заготовка: класс не используется для рассылки.
-    # broadcast() никогда не вызывается — gossip/announce используют
-    # neighbor_table.connected() + nodes_manager.get().
-    # При необходимости массовой рассылки — реализовать через Router.
-    def __init__(self):
-        self.active_connections: list[WebSocket] = []
-
-    async def connect(self, websocket: WebSocket):
-        await websocket.accept()
-        self.active_connections.append(websocket)
-
-    def disconnect(self, websocket: WebSocket):
-        if websocket in self.active_connections:
-            self.active_connections.remove(websocket)
-
-    async def broadcast(self, pack: MsgPack):
-        for ws in self.active_connections:
-            await ws.send_json(pack.model_dump())
 
 
 class NodesManager:
@@ -69,7 +62,6 @@ class NetworkModule(ModuleGeneric):
         self.host = host
         self.port = port
         self.app = FastAPI()
-        self.conn_manager = ConnectionManager()
         self.nodes_manager: NodesManager = NodesManager()
         self.neighbor_table = NeighborTable(own_node_id=context.NODE)
         self.router = Router(self.nodes_manager, context)
@@ -85,13 +77,41 @@ class NetworkModule(ModuleGeneric):
 
         @app.websocket("/ws/{node_id}")
         async def websocket_endpoint(websocket: WebSocket, node_id: str):
-            await self.conn_manager.connect(websocket)
+            await websocket.accept()
             transport = WebSocketTransport(websocket)
 
             try:
-                # ждём HELLO первым пакетом
-                raw  = await asyncio.wait_for(websocket.receive_json(), timeout=10)
-                pack = MsgPack(**raw)
+                # ждём HELLO первым кадром — строго binary msgpack
+                first = await asyncio.wait_for(websocket.receive(), timeout=10)
+
+                if first.get('bytes') is None:
+                    # text-кадр = легаси JSON-клиент; протокол теперь msgpack-only
+                    reason = (
+                        'upgrade required: this node speaks msgpack '
+                        f'binary frames (protocol {PROTOCOL_VERSION})'
+                    )
+                    self.log.info(
+                        f'Handshake rejected from {node_id}: '
+                        f'text frame (legacy JSON client)'
+                    )
+                    await transport.send(MsgPack(
+                        type   = PackType.HELLO_REJECT,
+                        source = self.ctx.NODE,
+                        dst    = node_id,
+                        data   = {'reason': reason},
+                    ))
+                    await websocket.close(reason='upgrade required')
+                    return
+
+                try:
+                    pack = decode_pack(first['bytes'])
+                except Exception as e:
+                    self.log.warning(
+                        f'Malformed HELLO frame from {node_id}: {e} '
+                        f'head={hexdump_head(first["bytes"])}'
+                    )
+                    await websocket.close(code=WS_CLOSE_PROTOCOL_ERROR)
+                    return
 
                 if pack.type != PackType.HELLO:
                     reason = f'expected HELLO, got {pack.type.value}'
@@ -102,6 +122,7 @@ class NetworkModule(ModuleGeneric):
                         dst    = node_id,
                         data   = {'reason': reason},
                     ))
+                    await websocket.close(reason='handshake rejected')
                     return
 
                 if pack.dst != self.ctx.NODE:
@@ -120,6 +141,7 @@ class NetworkModule(ModuleGeneric):
                             'got':      pack.dst,
                         },
                     ))
+                    await websocket.close(reason='handshake rejected')
                     return
 
                 # проверить дубликат — заменить старое подключение на новое (reconnect)
@@ -163,17 +185,31 @@ class NetworkModule(ModuleGeneric):
                         'neighbors':  self.neighbor_table.to_gossip(),
                     }
                 ))
-                self.log.info(f'Node {node_id} accepted (session={session_id[:8]})')
+                self.log.info(
+                    f'Node {node_id} accepted (session={session_id[:8]}, '
+                    f'enc={hello_data.get("enc", "?")})'
+                )
 
                 # Запросить CERT_SYNC у нового узла (если у него есть certstool)
                 hello_services = hello_data.get('services', [])
                 if 'certstool' in hello_services:
                     asyncio.create_task(self._request_cert_sync(node_id))
 
-                # основной цикл
+                # основной цикл — только binary msgpack-кадры
                 while True:
-                    data = await websocket.receive_json()
-                    pack = MsgPack(**data)
+                    try:
+                        pack = await self._recv_pack(websocket)
+                    except UnknownPackTypeError as e:
+                        # forward-compat: будущие PackType не рвут соединение
+                        self.log.warning(
+                            f'Unknown pack type {e.type_value!r} '
+                            f'from {node_id} — dropped'
+                        )
+                        continue
+                    except FrameDecodeError as e:
+                        self.log.warning(f'{e} — closing connection')
+                        await websocket.close(code=WS_CLOSE_PROTOCOL_ERROR)
+                        break
 
                     # обновить last_ts при любом трафике
                     self.neighbor_table.touch(pack.source)
@@ -183,16 +219,38 @@ class NetworkModule(ModuleGeneric):
             except asyncio.TimeoutError:
                 self.log.warning(f'HELLO timeout from {node_id}')
             except WebSocketDisconnect:
+                pass
+            finally:
                 # Удалить только если это текущее (активное) WS для node_id,
                 # а не уже заменённое при reconnect
                 current = self.nodes_manager.get(node_id)
-                if current and current.ws is websocket:
+                was_active = bool(current and current.ws is websocket)
+                if was_active:
                     self.nodes_manager.remove(node_id)
                     self.neighbor_table.mark_unreachable(node_id)
                 # Очистить pending-ответы для этого WS в любом случае
                 self.router.cleanup_ws_pending(websocket)
-                self.conn_manager.disconnect(websocket)
-                self.log.info(f'Node {node_id} disconnected')
+                if was_active:
+                    self.log.info(f'Node {node_id} disconnected')
+
+    async def _recv_pack(self, websocket: WebSocket) -> MsgPack:
+        """Принять один пакет: binary-кадр → decode_pack."""
+        msg = await websocket.receive()
+        raw = msg.get('bytes')
+        if raw is None:
+            text = msg.get('text')
+            head = text[:80] if isinstance(text, str) else repr(text)
+            raise FrameDecodeError(
+                f'text frame in msgpack-only mode from peer: {head!r}'
+            )
+        try:
+            return decode_pack(raw)
+        except UnknownPackTypeError:
+            raise
+        except Exception as e:
+            raise FrameDecodeError(
+                f'malformed frame: {e} head={hexdump_head(raw)}'
+            ) from e
 
     # ------------------------------------------------------------------ #
     #  Lifecycle
@@ -200,7 +258,8 @@ class NetworkModule(ModuleGeneric):
 
     async def start(self):
         config = uvicorn.Config(
-            self.app, host=self.host, port=self.port, log_level="warning"
+            self.app, host=self.host, port=self.port, log_level="warning",
+            ws_max_size=MAX_FRAME_SIZE,
         )
         self._server = uvicorn.Server(config)
         self._task   = asyncio.create_task(self._server.serve())
@@ -336,5 +395,3 @@ class NetworkModule(ModuleGeneric):
                      data=None, timeout: int = 30):
         """Открыть mesh-стрим и вернуть async iterator по чанкам."""
         return await self.router.stream(dst, service, method, data, timeout)
-
-

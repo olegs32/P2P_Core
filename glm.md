@@ -1,20 +1,20 @@
 # P2P_Core — База знаний для AI-ассистента
 
 > Быстрый справочник по архитектуре, конвенциям и ключевым паттернам проекта.
-> Обновлено: 2026-08-24
+> Обновлено: 2026-08-25
 
 ---
 
 ## 1. Суть проекта
 
-P2P mesh-сеть на WebSocket + MsgPack. Узлы соединяются, формируют топологию через gossip, маршрутизируют RPC и стримы через промежуточные хопы. Сервисы загружаются динамически из `services/`. Веб-панель на Streamlit подключается к узлу как WS-клиент.
+P2P mesh-сеть на WebSocket + бинарный MessagePack. Узлы соединяются, формируют топологию через gossip, маршрутизируют RPC и стримы через промежуточные хопы. Сервисы загружаются динамически из `services/`. Веб-панель на Streamlit подключается к узлу как WS-клиент.
 
 ## 2. Стек
 
 | Слой | Технология |
 |------|-----------|
 | Transport | WebSocket (FastAPI server + websockets client) |
-| Protocol | MsgPack (Pydantic-модель), сериализация JSON |
+| Protocol | MessagePack (binary WS frames), PROTOCOL_VERSION 2.0; JSON — только legacy у необновлённых узлов |
 | RPC | Встроенный: `@rpc` декоратор, `LocalExecutor`, `Router` |
 | Streaming | Mesh: StreamRoute cache, PipeTransport через Router, ACK через backward_path |
 | Web UI | Streamlit subprocess на порту 8501, подключается как WS-клиент |
@@ -40,6 +40,20 @@ ServiceLoader.scan() вызывает `ctx.register(instance)` — ручная 
 ### MsgPack + PackType (`src/networking/protocol.py`)
 Единый формат пакета. PackType — enum: `HELLO`, `HELLO_ACK`, `HELLO_REJECT`, `REQUEST`, `RESPONSE`, `FORWARDED`, `STREAM_OPEN/READY/CHUNK/ACK/EOF`, `ERROR`, `PING/PONG`, `GOSSIP`, `ANNOUNCE`, `CERT_SYNC`.
 MsgPack: `type`, `source`, `dst`, `service`, `method`, `data`, `label` (UUID), `path: list[str]`, `ttl: int=16`.
+
+Сериализация — только через хелперы `encode_pack(pack) -> bytes` / `decode_pack(raw) -> bytes` (прямые `msgpack.packb/unpackb` в других модулях запрещены). `MAX_FRAME_SIZE` = 32 МБ. **Запрещён `model_dump(mode='json')`** для wire-кадров — он не представит `bytes`. В `data` допустимы msgpack-натуральные типы: dict/list/str/int/float/bool/None/**bytes**; ExtType/datetime/timestamps — нет (нужен timestamp → float epoch, как `ts`). str-enum'ы пакуются своим строковым значением, pydantic восстанавливает enum при decode.
+
+### Wire-формат
+- Фрейминг: **1 binary WS frame = 1 msgpack-словарь** `MsgPack.model_dump()`. Префиксы длины не нужны — WS message-oriented.
+- Кодирование: `encode_pack` = `msgpack.packb(model_dump(), use_bin_type=True)`; декодирование = `msgpack.unpackb(raw, raw=False)` → `MsgPack(**d)`. Пара `use_bin_type/raw=False` обязательна: `bytes ↔ bin-type`, строки всегда UTF-8.
+- Режим один: **msgpack-only** (`PROTOCOL_VERSION 2.0`). Сервер читает сырой `websocket.receive()`: text-кадр (легаси JSON-клиент) → binary `HELLO_REJECT` «upgrade required» + закрытие; битый кадр → лог + hexdump первых 64 байт + `close(1002)` (граница доверия). Неопознанный `type` → `UnknownPackTypeError`: пакет дропается, соединение живёт (forward-compat).
+- HELLO.data несёт информационное `"enc": "msgpack"`.
+- Лимиты кадров обязательны на обеих сторонах: `uvicorn.Config(ws_max_size=MAX_FRAME_SIZE)` и `websockets.connect(..., max_size=MAX_FRAME_SIZE)` (дефолт websockets 1 МБ уронит большие чанки).
+- Совместимость: узлы до обновления говорят JSON и с новыми не соединяются (получают понятный HELLO_REJECT); после обновления всей сети сеть полностью msgpack.
+- debug_client.py — legacy: остался на JSON, против новых узлов не работает.
+
+### Конвенции для сервисов
+Если метод кладёт `bytes` в `data`/чанки стрима — укажи это в докстринге. UI-слой сам решает вопрос отображения (base64 и т.п.) уже вне протокола.
 
 ### Router (`src/networking/router.py`)
 Центральный маршрутизатор. `handle(pack, transport)` — диспетчер по PackType.
@@ -388,6 +402,8 @@ class MyService(ModuleGeneric):
 
 ## 12. Известные проблемы / TODO
 
+- **Переходный период wire-протокола**: необновлённые узлы (JSON, протокол 1.0) не соединяются с новыми (msgpack-only, протокол 2.0) — получают HELLO_REJECT «upgrade required». Смешанные пары работают только после обновления обеих сторон
+- `debug_client.py` — legacy на JSON: против msgpack-узлов не работает (перевести отдельной задачей)
 - `_PathAwareTransport` — composition (не наследует WebSocketTransport), используется для path-aware ответов на FORWARDED-пакеты
 - Удалённые сервисы в webpanel: web_ui.py проверяется локально, при отсутствии — fallback-сообщение
 - CERT_SYNC on-connect — проверка services в HELLO предотвращает timeout

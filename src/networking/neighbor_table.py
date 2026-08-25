@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 
 log = logging.getLogger('NeighborTable')
 
-PROTOCOL_VERSION = "1.0"
+PROTOCOL_VERSION = "2.0"
 
 
 class NeighborStatus(str, Enum):
