@@ -199,9 +199,10 @@ RPC-методы:
 | `list_connectors` | Активные исходящие коннекторы (модули `Connector_*`) |
 | `node_detail` | Обзор узла: own, connected, known, ws_connections, services |
 | `config_peers` | Пиры из config.yaml → local.peers |
+| `sessions` | Все сессии узла: записи NeighborTable любого статуса (connected/known/unreachable) + session_id из HELLO-рукопожатия (тот же, что в логе «Node X accepted (session=…)»), direction (inbound по nodes_manager / outbound по Router.has_client_ws), age_sec, counts |
 | `ctx_map` | Интроспекция AppContext для разработчика: по каждому атрибуту — тип, назначение (CTX_ATTR_DOCS в service.py), публичные методы с сигнатурами; router/neighbor_table/nodes_manager раскрыты на уровень глубже; для services — реестр сервисов с методами и @generator; каждый entry/child несёт `rpc_service`. pydantic-модели и списки (config, peers) отдаются значениями (`data`, рекурсивно; поля secret/password/token/key маскируются) |
 
-Веб-интерфейс (`web_ui.py`): вкладки «Управление узлами» (метрики + таблицы соседей + RPC-консоль с известными методами `KNOWN_METHODS` и подсказками аргументов), «Подключение» (форма подключения + текущие коннекторы + пиры из конфига) и «🧭 Контекст» (карта self.ctx; клик по методу сервиса подставляет его в RPC-консоль через `session_state['ctx_pick']`). Импорт streamlit обёрнут в try/except — сервис работает и в headless-сборке.
+Веб-интерфейс (`web_ui.py`): вкладки «Управление узлами» (метрики + таблицы соседей + RPC-консоль с известными методами `KNOWN_METHODS` и подсказками аргументов), «Подключение» (форма подключения + текущие коннекторы + пиры из конфига), «🧵 Сессии» (таблица всех сессий узла с session_id/направлением/возрастом, автообновление через st.fragment, полный JSON в expander) и «🧭 Контекст» (карта self.ctx; клик по методу сервиса подставляет его в RPC-консоль через `session_state['ctx_pick']`). Импорт streamlit обёрнут в try/except — сервис работает и в headless-сборке.
 
 Автозапуск Windows (не RPC, вспомогательные методы):
 - `add_to_task_scheduler()` / `remove_from_task_scheduler()` — задача через `schtasks /SC ONLOGON /RU SYSTEM`

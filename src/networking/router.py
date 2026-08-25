@@ -76,6 +76,10 @@ class Router:
         """Убрать client-side WS при disconnect."""
         self._client_ws.pop(node_id, None)
 
+    def has_client_ws(self, node_id: str) -> bool:
+        """Есть ли активное исходящее (client-side, от NodeConnector) WS к узлу."""
+        return self._client_ws.get(node_id) is not None
+
     def cleanup_ws_pending(self, websocket):
         """Удалить все _ws_pending записи, ссылающиеся на данный websocket.
 

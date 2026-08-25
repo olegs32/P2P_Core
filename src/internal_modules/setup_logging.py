@@ -20,10 +20,17 @@ class ColorFormatter(logging.Formatter):
 
     def format(self, record):
         color = COLORS.get(record.levelname, RESET)
-        record.levelname = f"{color}{record.levelname}{RESET}"
-        record.name      = f"{BOLD}{record.name}{RESET}"
-        record.msg       = f"{color}{record.msg}{RESET}"
-        return super().format(record)
+        # LogRecord общий для всех хендлеров логгера — мутировать его нельзя,
+        # иначе следующие хендлеры получают запись с ANSI-кодами внутри
+        # levelname/name/msg. Красим на время форматирования, потом откатываем.
+        orig = (record.levelname, record.name, record.msg)
+        try:
+            record.levelname = f"{color}{record.levelname}{RESET}"
+            record.name      = f"{BOLD}{record.name}{RESET}"
+            record.msg       = f"{color}{record.msg}{RESET}"
+            return super().format(record)
+        finally:
+            record.levelname, record.name, record.msg = orig
 
 def setup_logging(cfg: LoggingConfig = None):
     handler = logging.StreamHandler()

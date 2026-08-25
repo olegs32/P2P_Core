@@ -3,6 +3,7 @@
 import asyncio
 import inspect
 import subprocess
+import time
 from pathlib import Path
 
 from pydantic import BaseModel
@@ -136,6 +137,61 @@ class System(ModuleGeneric):
         """Список пиров из config.yaml (local.peers)."""
         peers = self.ctx.config_manager.list_peers()
         return [{'node_id': p.node_id, 'uri': p.uri} for p in peers]
+
+    @rpc
+    def sessions(self, data: dict = None):
+        """Все сессии узла — записи NeighborTable любого статуса.
+
+        Сессия выдаётся при HELLO-рукопожатии: сервер генерирует session_id,
+        пишет в лог «Node X accepted (session=...)» и возвращает в HELLO_ACK;
+        дальше он хранится в NeighborTable.session_id.
+
+        По каждой записи: node_id, host, port, status
+        (connected/known/unreachable), session_id, version, services,
+        last_ts + age_sec, direction:
+          inbound          — входящее WS (принято WS-сервером этого узла)
+          outbound         — исходящее (NodeConnector, client-side WS)
+          inbound+outbound — есть оба канала
+          ''               — живого WS нет (known/unreachable)
+        """
+        nt = self.ctx.network.neighbor_table
+        nm = self.ctx.network.nodes_manager
+        router = self.ctx.network.router
+
+        now = time.time()
+        rows = []
+        for n in nt.all():
+            d = n.model_dump()
+            # локальный model_dump отдаёт NeighborStatus-enum — нормализуем
+            status = d.get('status')
+            d['status'] = getattr(status, 'value', status)
+            outbound = router.has_client_ws(n.node_id)
+            inbound = nm.get(n.node_id) is not None
+            if outbound and inbound:
+                d['direction'] = 'inbound+outbound'
+            elif outbound:
+                d['direction'] = 'outbound'
+            elif inbound:
+                d['direction'] = 'inbound'
+            else:
+                d['direction'] = ''
+            last = d.get('last_ts')
+            d['age_sec'] = round(now - last) if last else None
+            rows.append(d)
+
+        order = {'connected': 0, 'known': 1, 'unreachable': 2}
+        rows.sort(key=lambda r: (order.get(r.get('status'), 3), r.get('node_id', '')))
+
+        counts = {
+            'total': len(rows),
+            'connected': sum(1 for r in rows if r['status'] == 'connected'),
+            'known': sum(1 for r in rows if r['status'] == 'known'),
+            'unreachable': sum(1 for r in rows if r['status'] == 'unreachable'),
+            'inbound': sum(1 for r in rows if 'inbound' in r['direction']),
+            'outbound': sum(1 for r in rows if 'outbound' in r['direction']),
+        }
+        return {'ok': True, 'own': self.ctx.NODE, 'counts': counts,
+                'sessions': rows}
 
     # ------------------------------------------------------------------ #
     #  Интроспекция AppContext — подсказка разработчику «что доступно»

@@ -10,7 +10,9 @@
 #      идентификатор последней уже полученной записи, поэтому по сети ходит
 #      только дельта, а не весь буфер;
 #    * id сквозной и монотонный: по нему же детектируется «обрыв» буфера
-#      (если между опросами записей пришло больше, чем влезло в deque).
+#      (если между опросами записей пришло больше, чем влезло в deque);
+#    * при сборе запись чистится от ANSI-кодов раскраски консоли и прочих
+#      управляющих символов — иначе ломаются фильтры по уровню/источнику.
 #
 #  Ограничение: видны только записи, доходящие до root logger (уровень
 #  задаётся config.yaml → logging.level). Логгеры с propagate=False и логи
@@ -25,6 +27,17 @@ from collections import deque
 
 from services.rpc import rpc
 from src.internal_modules.base import ModuleGeneric
+
+# Мусор, из-за которого не работают фильтры по уровню/источнику:
+# ANSI escape-последовательности раскраски консоли (\x1b[32m и т.п.) и прочие
+# управляющие символы. Вычищаются на этапе сбора записи в буфер.
+_ANSI_RE = re.compile(r'\x1b(?:\[[0-?]*[ -/]*[@-~]|[@-Z\\-_])')
+_CTRL_RE = re.compile(r'[\x00-\x08\x0b-\x1f\x7f]')
+
+
+def _sanitize(value: str) -> str:
+    """Убрать ANSI-коды и управляющие символы (кроме \\t и \\n)."""
+    return _CTRL_RE.sub('', _ANSI_RE.sub('', value))
 
 
 class RingBufferHandler(logging.Handler):
@@ -52,9 +65,12 @@ class RingBufferHandler(logging.Handler):
             entry = {
                 'id': next(self._ids),
                 'ts': record.created,          # epoch float
-                'level': record.levelname,
-                'logger': record.name,
-                'msg': record.getMessage()[:self.max_msg_len],
+                # level/logger/msg чистим: консольный Formatter может
+                # раскрасить record ANSI-кодами до того, как запись дойдёт
+                # до этого хендлера (LogRecord у всех хендлеров общий)
+                'level': _sanitize(record.levelname),
+                'logger': _sanitize(record.name),
+                'msg': _sanitize(record.getMessage())[:self.max_msg_len],
             }
             if record.exc_info:
                 tb = self.formatException(record.exc_info)

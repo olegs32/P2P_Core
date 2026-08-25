@@ -1,5 +1,5 @@
 # services/system/web_ui.py — веб-интерфейс вкладки «Система»
-# Две подвкладки: Управление узлами + Подключение
+# Подвкладки: Управление узлами + Подключение + Сессии + Контекст (ctx)
 
 import json
 import logging
@@ -26,7 +26,7 @@ KNOWN_METHODS = {
         'export_certificate_cer', 'delete_certificate',
         'install_pfx_from_base64', 'fix_certificate_link',
     ],
-    'system':        ['connect_to_node', 'list_connectors', 'node_detail', 'config_peers', 'ctx_map'],
+    'system':        ['connect_to_node', 'list_connectors', 'node_detail', 'config_peers', 'sessions', 'ctx_map'],
     'logs':          ['get_logs', 'get_loggers', 'clear_buffer'],
     'webpanel':      ['node_status', 'discover_ui_services'],
     'compute_full':  ['start_stream', 'compute_ranges', 'compute_squares', 'run_range'],
@@ -39,8 +39,8 @@ KNOWN_METHODS = {
 def render(rpc):
     if st is None:
         return
-    tab_nodes, tab_connect, tab_ctx = st.tabs(
-        ["Управление узлами", "Подключение", "🧭 Контекст (ctx)"]
+    tab_nodes, tab_connect, tab_sessions, tab_ctx = st.tabs(
+        ["Управление узлами", "Подключение", "🧵 Сессии", "🧭 Контекст (ctx)"]
     )
 
     with tab_nodes:
@@ -48,6 +48,9 @@ def render(rpc):
 
     with tab_connect:
         _render_connect(rpc)
+
+    with tab_sessions:
+        _render_sessions(rpc)
 
     with tab_ctx:
         _render_ctx(rpc)
@@ -556,3 +559,104 @@ def _render_connect(rpc):
         st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
     else:
         st.caption("Нет сохранённых пиров")
+
+
+# ------------------------------------------------------------------ #
+#  Вкладка 3: сессии узла
+# ------------------------------------------------------------------ #
+STATUS_ICON = {'connected': '🟢', 'known': '🟡', 'unreachable': '🔴'}
+DIRECTION_ICON = {
+    'inbound': '⬅ входящая',
+    'outbound': '➡ исходящая',
+    'inbound+outbound': '⬅➡ обе',
+}
+
+
+def _fmt_age(sec) -> str:
+    """Возраст последней активности в человеческом виде."""
+    if sec is None:
+        return '-'
+    sec = int(sec)
+    if sec < 60:
+        return f"{sec}с назад"
+    if sec < 3600:
+        return f"{sec // 60}м {sec % 60}с назад"
+    return f"{sec // 3600}ч {(sec % 3600) // 60}м назад"
+
+
+def _render_sessions(rpc):
+    st.subheader("Сессии узла")
+    st.caption(
+        "Все WS-подключения выбранного узла и их `session_id` из "
+        "HELLO-рукопожатия (те же id, что в логе "
+        "`Node … accepted (session=…)`). Источник — RPC `system.sessions()`."
+    )
+
+    auto = st.toggle("Автообновление (3 сек)", key="sys_sess_auto", value=True)
+
+    if auto:
+        @st.fragment(run_every="3s")
+        def sess_view():
+            _draw_sessions(rpc)
+    else:
+        @st.fragment
+        def sess_view():
+            _draw_sessions(rpc)
+
+    sess_view()
+
+
+def _draw_sessions(rpc):
+    try:
+        res = rpc.call('system', 'sessions')
+    except Exception as e:
+        st.error(f"Ошибка получения сессий: {e}")
+        return
+
+    if not isinstance(res, dict) or not res.get('ok'):
+        st.error(f"Узел ответил ошибкой: {(res or {}).get('error', 'нет данных')}")
+        return
+
+    counts = res.get('counts', {})
+    c1, c2, c3, c4, c5 = st.columns(5)
+    c1.metric("Всего", counts.get('total', 0))
+    c2.metric("Подключено", counts.get('connected', 0))
+    c3.metric("Входящие", counts.get('inbound', 0))
+    c4.metric("Исходящие", counts.get('outbound', 0))
+    c5.metric("Известно (gossip)", counts.get('known', 0))
+
+    sessions = res.get('sessions', [])
+    if not sessions:
+        st.info("Нет ни одной сессии")
+        return
+
+    rows = []
+    for s in sessions:
+        status = s.get('status', '?')
+        direction = s.get('direction') or ''
+        sid = s.get('session_id') or ''
+        rows.append({
+            'Статус': f"{STATUS_ICON.get(status, '⚪')} {status}",
+            'Node ID': s.get('node_id', '?'),
+            'Session': f"{sid[:8]}…" if sid else '-',
+            'Направление': DIRECTION_ICON.get(direction, direction or '-'),
+            'Адрес': f"{s.get('host', '?')}:{s.get('port', '?')}",
+            'Версия': s.get('version', '-'),
+            'Активность': _fmt_age(s.get('age_sec')),
+            'Сервисы': ', '.join(s.get('services', [])) or '-',
+        })
+
+    st.dataframe(
+        pd.DataFrame(rows),
+        use_container_width=True, hide_index=True,
+        column_config={
+            'Статус': st.column_config.TextColumn(width='small'),
+            'Session': st.column_config.TextColumn(width='small'),
+            'Направление': st.column_config.TextColumn(width='small'),
+            'Активность': st.column_config.TextColumn(width='small'),
+            'Сервисы': st.column_config.TextColumn(width='large'),
+        },
+    )
+
+    with st.expander(f"Полные данные ({len(sessions)} записей, JSON)"):
+        st.json(sessions)
