@@ -9,14 +9,32 @@ except ImportError:
     st = None
 import pandas as pd
 
+try:
+    from streamlit_agraph import agraph, Config, Edge, Node
+except ImportError:
+    # компонент может отсутствовать (headless/старое окружение) — фолбэк на таблицу
+    agraph = None
+
 logging.getLogger("streamlit.runtime.scriptrunner_utils.script_run_context").setLevel(logging.ERROR)
 logging.getLogger("streamlit.runtime.state.session_state_proxy").setLevel(logging.ERROR)
+
+# цвета карты
+_MAP_NODE_COLORS = {
+    'connected':   '#2ecc71',   # зелёный — живой mesh-узел
+    'known':       '#f1c40f',   # жёлтый — известен через gossip
+    'unreachable': '#e74c3c',   # красный — считался недоступным
+}
+_ROOT_COLOR = '#3498db'         # синий — узел, к которому подключена панель
+_CLIENT_COLOR = '#95a5a6'       # серый — служебный WS-клиент (webpanel и т.п.)
+_EDGE_OK = '#2ecc71'
+_EDGE_BAD = '#e74c3c'
+_EDGE_GOSSIP = '#f1c40f'
 
 
 def render(rpc):
     if st is None:
         return
-    tab1, tab2, tab3 = st.tabs(["Соседи", "Узлы", "Поиск сервиса"])
+    tab1, tab2, tab3, tab4 = st.tabs(["Соседи", "Узлы", "Поиск сервиса", "🗺 Карта сети"])
 
     # ------------------------------------------------------------------ #
     #  Tab 1: Таблица соседей
@@ -114,3 +132,189 @@ def render(rpc):
                 st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
             else:
                 st.warning(f"Сервис `{service_name}` не найден ни на одном узле")
+
+    # ------------------------------------------------------------------ #
+    #  Tab 4: Карта сети
+    # ------------------------------------------------------------------ #
+    with tab4:
+        _render_network_map(rpc)
+
+
+# ------------------------------------------------------------------ #
+#  Карта сети (направленные физические WS-связи)
+# ------------------------------------------------------------------ #
+
+def _render_network_map(rpc):
+    st.subheader("Карта сети")
+    st.caption(
+        "Направленные **физические WS-связи** всей сети (не логические "
+        "маршруты): стрелка `A → B` означает «A держит outbound WS к B». "
+        "Источник — рекурсивный BFS через RPC `netinfo.topology()`.  \n"
+        f"🟢 подтверждено обоими концами · 🔴 half-open (видно с одной "
+        f"стороны — возможен зомби-сокет) · 🟡 gossip-пунктир (известен "
+        f"через via, направления нет) · ⚪ клиент панели · "
+        f"🔵 узел, к которому подключена панель"
+    )
+
+    auto = st.toggle("Автообновление (5 сек)", value=True, key="net_map_auto")
+
+    if auto:
+        @st.fragment(run_every="5s")
+        def map_view():
+            _draw_network_map(rpc)
+    else:
+        @st.fragment
+        def map_view():
+            _draw_network_map(rpc)
+
+    map_view()
+
+
+def _draw_network_map(rpc):
+    if st.button("🔄 Обновить карту", key="net_map_refresh"):
+        pass  # клик перезапускает fragment — данные ниже запросятся заново
+
+    try:
+        with st.spinner("Опрос узлов сети..."):
+            topo = rpc.call('netinfo', 'topology', {}, timeout=30)
+    except Exception as e:
+        st.error(f"Ошибка получения карты: {e}")
+        return
+
+    if not isinstance(topo, dict) or not topo.get('ok'):
+        st.error(f"Узел ответил ошибкой: {(topo or {}).get('error', 'нет данных')}")
+        return
+
+    root = topo.get('root', '?')
+    nodes_data = topo.get('nodes', [])
+    clients = topo.get('clients', [])
+    edges_data = topo.get('edges', [])
+    errors = topo.get('errors', {}) or {}
+    cache_age = topo.get('cache_age_sec')
+
+    # метрики (half-open считается без клиентских рёбер — они всегда
+    # неподтверждённые по определению)
+    client_ids = {c['node_id'] for c in clients}
+    half_open = sum(
+        1 for e in edges_data if not e.get('verified')
+        and e.get('src') not in client_ids and e.get('dst') not in client_ids)
+    m1, m2, m3, m4, m5 = st.columns(5)
+    m1.metric("Узлы", len(nodes_data))
+    m2.metric("Связи", len(edges_data))
+    m3.metric("Half-open", half_open)
+    m4.metric("Клиенты", len(clients))
+    age = f"{cache_age:.0f}с" if cache_age is not None else "0с"
+    m5.metric("Кэш", age, help="Возраст снимка на опрашиваемом узле")
+
+    all_records = nodes_data + clients
+    by_id = {n['node_id']: n for n in all_records}
+
+    if agraph is None:
+        st.info("Компонент streamlit-agraph недоступен — карта таблицей")
+        _edges_table(edges_data, {c['node_id'] for c in clients})
+        return
+
+    a_nodes, a_edges = [], []
+
+    # узлы mesh
+    for n in nodes_data:
+        nid = n['node_id']
+        if nid == root:
+            color, size = _ROOT_COLOR, 34
+        else:
+            color = _MAP_NODE_COLORS.get(n.get('status'), _CLIENT_COLOR)
+            size = 26
+        tooltip = (f"{nid}\n{n.get('host', '?')}:{n.get('port', '?')} · "
+                   f"{n.get('status', '?')}")
+        a_nodes.append(Node(
+            id=nid, label=nid, size=size, color=color,
+            shape='dot', title=tooltip,
+        ))
+
+    # клиенты панели — серые
+    for c in clients:
+        cid = c['node_id']
+        a_nodes.append(Node(
+            id=cid, label=cid, size=18, color=_CLIENT_COLOR,
+            shape='dot', title=f"{cid} (клиент панели)",
+        ))
+
+    # физические рёбра: verified — зелёное, half-open — красное,
+    # рёбра с участием клиента панели — серые (клиент не отвечает на
+    # topology, поэтому они всегда «неподтверждены» — это норма)
+    for e in edges_data:
+        rep = ', '.join(e.get('reported_by', []))
+        if e['src'] in client_ids or e['dst'] in client_ids:
+            a_edges.append(Edge(
+                source=e['src'], target=e['dst'],
+                color=_CLIENT_COLOR, width=1.5, label='client',
+                title=f"{e['src']} → {e['dst']} · клиент панели",
+            ))
+            continue
+        ok = bool(e.get('verified'))
+        a_edges.append(Edge(
+            source=e['src'],
+            target=e['dst'],
+            color=_EDGE_OK if ok else _EDGE_BAD,
+            width=2.5 if ok else 1.5,
+            label='' if ok else 'half-open?',
+            title=f"{e['src']} → {e['dst']} · "
+                  f"{'подтверждено обоими' if ok else 'half-open'}"
+                  f" (докладчики: {rep})",
+        ))
+
+    # gossip-пунктир для known-узлов (не физическая связь!)
+    for n in nodes_data:
+        via = n.get('via')
+        if n.get('status') == 'known' and via in by_id:
+            a_edges.append(Edge(
+                source=via,
+                target=n['node_id'],
+                color=_EDGE_GOSSIP,
+                width=1,
+                label='gossip',
+                title=f"{n['node_id']} известен через {via} (gossip)",
+            ))
+
+    config = Config(
+        height=480,
+        width=900,
+        directed=True,
+        physics=True,
+        hierarchical=False,
+        nodeHighlightBehavior=True,
+        highlightColor='#F7A7A6',
+        collapsible=False,
+        node={'labelProperty': 'label'},
+        link={'labelProperty': 'label', 'renderLabel': True},
+    )
+
+    selected = agraph(nodes=a_nodes, edges=a_edges, config=config)
+
+    # клик по узлу — карточка с деталями из снимка топологии
+    if selected:
+        info = by_id.get(selected)
+        if info:
+            st.markdown(f"**Узел `{selected}`**")
+            st.json(info)
+
+
+def _edges_table(edges_data, client_ids=frozenset()):
+    rows = []
+    for e in edges_data:
+        if e.get('src') in client_ids or e.get('dst') in client_ids:
+            status = '⚪ клиент'
+        elif e.get('verified'):
+            status = '✅ подтверждено'
+        else:
+            status = '⚠️ half-open'
+        rows.append({
+            'Откуда': e.get('src', '?'),
+            'Куда': e.get('dst', '?'),
+            'Статус': status,
+            'Докладчики': ', '.join(e.get('reported_by', [])),
+        })
+    if rows:
+        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+    else:
+        st.info("Нет связей")

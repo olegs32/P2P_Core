@@ -90,6 +90,7 @@ class NodeRPC:
                 "version": PROTOCOL_VERSION,
                 "session_id": str(uuid.uuid4()),
                 "services": [],
+                "role": "client",   # не mesh-узел: в карте сети рисуется серым, BFS не опрашивает
                 "enc": "msgpack",
             },
         )

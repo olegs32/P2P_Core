@@ -75,6 +75,9 @@ class StreamEchoService(ModuleGeneric):
         if label:
             await router.send_stream_ack(label, buff)
 
+        # батчевый кумулятивный ACK: раз на buff чанков
+        since_ack = 0
+
         async for chunk in pipe:
             c = self.collector
             c.count += 1
@@ -82,8 +85,11 @@ class StreamEchoService(ModuleGeneric):
             if c.first_chunk is None:
                 c.first_chunk = chunk
             c.last_chunk = chunk
-            if label and pipe.size < buff:
-                await router.send_stream_ack(label, buff)
+            if label:
+                since_ack += 1
+                if since_ack >= buff:
+                    await router.send_stream_ack(label, buff)
+                    since_ack = 0
 
         self.collector.done.set()
 

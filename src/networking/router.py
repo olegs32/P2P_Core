@@ -62,19 +62,31 @@ class Router:
         self.stream_registry = StreamRegistry()
         self.executor = LocalExecutor(context.services, self.stream_registry, router_ref=self)
         # WS transports для ответов удалённым WS-клиентам (webpanel и т.д.)
-        self._ws_pending: dict[str, WebSocketTransport] = {}
+        # значение: (transport, created_ts) — ts для TTL-чистки (R3)
+        self._ws_pending: dict[str, tuple[WebSocketTransport, float]] = {}
         # Client-side WS маппинг: node_id → websocket (от NodeConnector)
         self._client_ws: dict[str, Any] = {}
         # Кэш маршрутов стримов: label → StreamRoute
         self._stream_routes: dict[str, StreamRoute] = {}
+        # Кэш транспортов: node_id → WebSocketTransport (создание объекта на
+        # каждую отправку было расточительно); инвалидируется при смене сокета
+        self._transport_cache: dict[str, WebSocketTransport] = {}
 
     def register_client_ws(self, node_id: str, ws):
         """Зарегистрировать client-side WS (от NodeConnector)."""
         self._client_ws[node_id] = ws
+        # сокет сменился — кэшированный транспорт невалиден
+        self.invalidate_transport(node_id)
 
     def unregister_client_ws(self, node_id: str):
         """Убрать client-side WS при disconnect."""
         self._client_ws.pop(node_id, None)
+        self.invalidate_transport(node_id)
+
+    def invalidate_transport(self, node_id: str):
+        """Сбросить кэшированный транспорт узла (при reconnect/disconnect)."""
+        if self._transport_cache.pop(node_id, None) is not None:
+            log.debug(f'Transport cache invalidated for {node_id}')
 
     def has_client_ws(self, node_id: str) -> bool:
         """Есть ли активное исходящее (client-side, от NodeConnector) WS к узлу."""
@@ -87,7 +99,7 @@ class Router:
         не пытались отправиться на уже закрытое соединение.
         """
         to_remove = [
-            label for label, transport in self._ws_pending.items()
+            label for label, (transport, _) in self._ws_pending.items()
             if transport.ws is websocket
         ]
         for label in to_remove:
@@ -95,14 +107,45 @@ class Router:
         if to_remove:
             log.debug(f'Cleaned {len(to_remove)} pending entries for disconnected WS')
 
+    def sweep_ws_pending(self, max_age: float = 180.0):
+        """R3: TTL-чистка _ws_pending — записи по неотвеченным запросам
+        WS-клиентов раньше оставались в таблице навсегда (утечка)."""
+        now = time.monotonic()
+        expired = [
+            label for label, (_, created) in self._ws_pending.items()
+            if now - created > max_age
+        ]
+        for label in expired:
+            self._ws_pending.pop(label, None)
+        if expired:
+            log.warning(
+                f'Swept {len(expired)} stale ws_pending entries '
+                f'(no RESPONSE within {max_age:.0f}s)'
+            )
+
     def get_transport_to(self, node_id: str) -> WebSocketTransport | None:
-        """Получить транспорт к узлу (server-side или client-side)."""
+        """Получить транспорт к узлу (server-side или client-side).
+
+        Транспорты кэшируются по node_id — инвалидируются при
+        register/unregister_client_ws и при смене server-side сокета
+        (websocket_endpoint вызывает invalidate_transport).
+        """
+        cached = self._transport_cache.get(node_id)
+        if cached is not None:
+            return cached
+
         node = self._nodes_mgr.get(node_id)
         if node:
-            return WebSocketTransport(node.ws)
+            transport = WebSocketTransport(node.ws)
+            self._transport_cache[node_id] = transport
+            return transport
+
         client_ws = self._client_ws.get(node_id)
         if client_ws:
-            return WebSocketTransport(client_ws)
+            transport = WebSocketTransport(client_ws)
+            self._transport_cache[node_id] = transport
+            return transport
+
         return None
 
     # ------------------------------------------------------------------ #
@@ -122,11 +165,11 @@ class Router:
                 if pack.dst and pack.dst != self.context.NODE:
                     await self._on_remote_request(pack, transport)
                 else:
-                    await self._on_request(pack, transport)
+                    await self._on_request(pack)
 
             case PackType.RESPONSE:
                 if pack.label in self._ws_pending:
-                    ws_transport = self._ws_pending.pop(pack.label)
+                    ws_transport, _ = self._ws_pending.pop(pack.label)
                     await ws_transport.send(pack)
                 elif pack.path:
                     await self._route_back(pack)
@@ -174,8 +217,13 @@ class Router:
             # --- /Stream --- #
 
             case PackType.ERROR:
-                if pack.label in self._ws_pending:
-                    ws_transport = self._ws_pending.pop(pack.label)
+                # B4: ERROR для активного стрима = упал producer на удалённом
+                # узле — роняем inbound pipe с исключением у консьюмера
+                if self.stream_registry.get(pack.label) is not None:
+                    self.stream_registry.fail(
+                        pack.label, Exception(pack.error or 'producer failed'))
+                elif pack.label in self._ws_pending:
+                    ws_transport, _ = self._ws_pending.pop(pack.label)
                     await ws_transport.send(pack)
                 elif pack.path:
                     await self._route_back(pack)
@@ -210,7 +258,7 @@ class Router:
                     source = self.context.NODE,
                     dst    = pack.source,
                     label  = pack.label,
-                    path   = list(reversed(pack.path)) if pack.path else [],
+                    path   = list(pack.path),
                 )
                 await self._send_back(response, pack)
 
@@ -241,8 +289,7 @@ class Router:
 
         if pack.dst == self.context.NODE:
             pack.type = PackType.REQUEST
-            transport = self._make_transport_back(pack)
-            await self._on_request(pack, transport)
+            await self._on_request(pack)
             return
 
         await self._forward(pack)
@@ -253,7 +300,7 @@ class Router:
 
     async def _on_remote_request(self, pack: MsgPack, transport: WebSocketTransport):
         """Маршрутизация REQUEST от WS-клиента к удалённому узлу через mesh."""
-        self._ws_pending[pack.label] = transport
+        self._ws_pending[pack.label] = (transport, time.monotonic())
         try:
             pack.path.append(self.context.NODE)
             pack.ttl -= 1
@@ -269,7 +316,7 @@ class Router:
             )
             await transport.send(err)
 
-    async def _on_request(self, pack: MsgPack, transport):
+    async def _on_request(self, pack: MsgPack):
         try:
             result = await self.executor.execute(pack)
 
@@ -281,7 +328,7 @@ class Router:
                         dst     = pack.source,
                         label   = pack.label,
                         data    = chunk,
-                        path    = list(reversed(pack.path)) if pack.path else [],
+                        path    = list(pack.path),
                     )
                     await self._send_pack(chunk_pack)
                 eof_pack = MsgPack(
@@ -289,11 +336,11 @@ class Router:
                     source = self.context.NODE,
                     dst    = pack.source,
                     label  = pack.label,
-                    path   = list(reversed(pack.path)) if pack.path else [],
+                    path   = list(pack.path),
                 )
                 await self._send_pack(eof_pack)
             else:
-                result.path = list(reversed(pack.path)) if pack.path else []
+                result.path = list(pack.path)
                 await self._send_pack(result)
 
         except MethodNotFound as e:
@@ -303,13 +350,31 @@ class Router:
                 dst    = pack.source,
                 label  = pack.label,
                 error  = str(e),
-                path   = list(reversed(pack.path)) if pack.path else [],
+                path   = list(pack.path),
+            )
+            await self._send_pack(err)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            # B3: исключение сервиса не должно ронять WS-соединение —
+            # возвращаем caller'у ERROR-пакет
+            log.exception(f'request {pack.service}.{pack.method} failed '
+                          f'label={pack.label[:8]}')
+            err = MsgPack(
+                type   = PackType.ERROR,
+                source = self.context.NODE,
+                dst    = pack.source,
+                label  = pack.label,
+                error  = f'{type(e).__name__}: {e}',
+                path   = list(pack.path),
             )
             await self._send_pack(err)
 
     async def _on_stream_open(self, pack: MsgPack) -> MsgPack:
+        # D7: buff из конфига вместо хардкода
+        default_buff = self.context.config.memory.default_buff
         try:
-            return await self.executor.open_stream(pack)
+            return await self.executor.open_stream(pack, buff_len=default_buff)
         except MethodNotFound as e:
             return MsgPack(
                 type   = PackType.ERROR,
@@ -318,21 +383,38 @@ class Router:
                 label  = pack.label,
                 error  = str(e),
             )
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            log.exception(f'stream open {pack.service}.{pack.method} failed '
+                          f'label={pack.label[:8]}')
+            return MsgPack(
+                type   = PackType.ERROR,
+                source = self.context.NODE,
+                dst    = pack.source,
+                label  = pack.label,
+                error  = f'{type(e).__name__}: {e}',
+            )
 
     # ------------------------------------------------------------------ #
     #  Stream route caching
     # ------------------------------------------------------------------ #
 
     def _cache_stream_route_on_open(self, pack: MsgPack):
-        """На consumer-узле: кэшировать маршрут из STREAM_OPEN."""
+        """На generator-узле (dst STREAM_OPEN): кэшировать маршрут.
+
+        pack.path = [consumer,…,генератор] →
+        forward_path (source→dst)  = генератор→consumer,
+        backward_path (dst→source) = consumer→генератор.
+        """
         if not pack.path or not pack.source or not pack.dst:
             return
         route = StreamRoute(
             label=pack.label,
             source=pack.source,
             dst=pack.dst or self.context.NODE,
-            forward_path=list(pack.path) + [self.context.NODE],
-            backward_path=[self.context.NODE] + list(reversed(pack.path)),
+            forward_path=list(reversed(pack.path)),
+            backward_path=list(pack.path),
         )
         self._stream_routes[pack.label] = route
         log.debug(
@@ -460,10 +542,21 @@ class Router:
         log.error(f'[mesh] no route to {dst} label={pack.label[:8]}')
         raise NoRouteToHost(dst)
 
+    def _resolve_payload(self, pack: MsgPack):
+        """Значение для sessions.resolve при локальном завершении обратного
+        маршрута: ERROR доставляется как исключение (как в прямой ветке)."""
+        if pack.type == PackType.ERROR:
+            return Exception(pack.error or 'unknown error')
+        return pack.data
+
     async def _route_back(self, pack: MsgPack):
-        """Вернуть пакет по обратному маршруту из pack.path."""
+        """Вернуть пакет по обратному маршруту из pack.path.
+
+        Конвенция: path = [origin,…,текущий узел] — каждый хоп выталкивает
+        себя с хвоста и шлёт новому хвосту. Ответные пакеты НЕ разворачиваются.
+        """
         if not pack.path:
-            self.sessions.resolve(pack.label, pack.data)
+            self.sessions.resolve(pack.label, self._resolve_payload(pack))
             return
 
         path = pack.path
@@ -471,7 +564,7 @@ class Router:
             path = path[:-1]
 
         if not path:
-            self.sessions.resolve(pack.label, pack.data)
+            self.sessions.resolve(pack.label, self._resolve_payload(pack))
             return
 
         next_hop = path[-1]
@@ -494,7 +587,8 @@ class Router:
     async def _send_back(self, response: MsgPack, original: MsgPack):
         """Отправить ответ: по path если был форвардинг, иначе напрямую."""
         if original.path:
-            response.path = list(reversed(original.path))
+            # path уже [origin,…,мы] — каждый хоп выталкивает себя с хвоста
+            response.path = list(original.path)
             await self._route_back(response)
         else:
             transport = self.get_transport_to(response.dst)
@@ -511,15 +605,6 @@ class Router:
             transport = self.get_transport_to(pack.dst)
             if transport:
                 await transport.send(pack)
-
-    def _make_transport_back(self, pack: MsgPack):
-        """Создать transport для ответа на пакет через форвардинг."""
-        if pack.path:
-            return _PathAwareTransport(pack, self)
-        transport = self.get_transport_to(pack.source)
-        if transport:
-            return transport
-        raise NoRouteToHost(pack.source)
 
     # ------------------------------------------------------------------ #
     #  Stream ACK — отправка через mesh (Вариант A)
@@ -612,20 +697,27 @@ class Router:
 
         ready_future = self.sessions.register_single(label, service, method)
 
+        # R2: pipe регистрируется ДО READY — ранние CHUNK больше не дропаются
+        # в stream_registry.feed('unknown stream')
+        # D7: buff из конфига вместо хардкода
+        buff = self.context.config.memory.default_buff
+        pipe = Pipe(pipe_id=f'mesh_{label[:8]}', buff_len=buff)
+        self.stream_registry.register(label, pipe)
+
         try:
             await self._forward(open_pack)
         except NoRouteToHost:
             self.sessions.cancel(label)
+            self.stream_registry.remove(label)
             raise
 
         try:
             await asyncio.wait_for(ready_future, timeout=timeout)
         except asyncio.TimeoutError:
             self.sessions.cancel(label)
+            self.stream_registry.remove(label)
+            self._stream_routes.pop(label, None)
             raise RPCTimeout(label, timeout)
-
-        pipe = Pipe(pipe_id=f'mesh_{label[:8]}', buff_len=10)
-        self.stream_registry.register(label, pipe)
 
         return _MeshStreamIterator(self, label, pipe)
 
@@ -635,12 +727,18 @@ class Router:
 # ------------------------------------------------------------------ #
 
 class _MeshStreamIterator:
-    """Итератор по чанкам mesh-стрима с автоматическим ACK."""
+    """Итератор по чанкам mesh-стрима с кумулятивным ACK.
+
+    ACK отправляется раз на buff_len потреблённых чанков (окно совпадает
+    с размером батча producer'а в PipeTransport._pump) — раньше ACK летел
+    на КАЖДЫЙ чанк: по пакету туда-обратно на чанк без пользы.
+    """
 
     def __init__(self, router: Router, label: str, pipe: Pipe):
         self.router = router
         self.label = label
         self._pipe = pipe
+        self._since_ack = 0
 
     def __aiter__(self):
         return self
@@ -649,24 +747,8 @@ class _MeshStreamIterator:
         chunk = await self._pipe.get()
         if chunk is _SENTINEL:
             raise StopAsyncIteration
-        await self.router.send_stream_ack(self.label, self._pipe.buff_len)
+        self._since_ack += 1
+        if self._since_ack >= self._pipe.buff_len:
+            await self.router.send_stream_ack(self.label, self._pipe.buff_len)
+            self._since_ack = 0
         return chunk
-
-
-# ------------------------------------------------------------------ #
-#  PathAwareTransport — транспорт для path-aware ответов
-# ------------------------------------------------------------------ #
-
-class _PathAwareTransport:
-    """
-    Используется когда пакет пришёл через форвардинг.
-    send() направляет ответ через _route_back вместо прямого WS.
-    """
-    def __init__(self, original_pack: MsgPack, router: Router):
-        self._original = original_pack
-        self._router   = router
-        self.ws        = None
-
-    async def send(self, pack: MsgPack):
-        pack.path = list(reversed(self._original.path))
-        await self._router._route_back(pack)

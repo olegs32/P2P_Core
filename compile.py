@@ -47,7 +47,6 @@ BASE_HIDDEN_IMPORTS = [
     'uvicorn',
     'websockets',
     'pydantic',
-    'pydantic_settings',
     'watchdog',
     'cryptography',
     'msgpack',
@@ -91,7 +90,7 @@ def build(name, ui=True):
     # Создаем КОПИЮ базовых аргументов для текущей сборки
     current_args = BASE_ARGS.copy()
 
-    # version.txt внутрь бандла (читает src.internal_modules.app_version)
+    # version.txt внутрь bundle (читает src.internal_modules.app_version)
     version_txt = ROOT / 'version.txt'
     if version_txt.exists():
         current_args.extend(['--add-data', f'{version_txt};.'])
@@ -112,6 +111,7 @@ def build(name, ui=True):
         # Собираем нужные части services и streamlit отдельно
         ui_args = [
             '--collect-all', 'services',
+            '--collect-all', 'streamlit_agraph',   # граф карты сети (netinfo)
             '--collect-binaries', 'streamlit',
             '--collect-datas', 'streamlit',
             '--recursive-copy-metadata', 'streamlit',
@@ -131,8 +131,12 @@ def build(name, ui=True):
         for p in Path("./services").glob("*/"):
             if p.is_dir() and p.name != 'webpanel' and p.name != '__pycache__':
                 current_args.extend(['--collect-all', f'services.{p.name}'])
-            if os.path.exists(Path(f"./services/{p}/web_ui.py")):
-                exclude_args.extend(['--exclude-module', f"./services/{p}/web_ui.py", ])
+                # D8: было f"./services/{p}/web_ui.py" — p уже содержит 'services/',
+                # путь удваивался и exclude никогда не срабатывал; плюс exclude
+                # ожидает ИМЯ МОДУЛЯ, а не файловый путь
+                if (Path("./services") / p.name / "web_ui.py").exists():
+                    exclude_args.extend(
+                        ['--exclude-module', f'services.{p.name}.web_ui'])
 
         current_args.extend(exclude_args)
 

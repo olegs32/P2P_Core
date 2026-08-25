@@ -1,4 +1,4 @@
-# services/certs_tool/service.py — управление КриптоПро сертификатами
+﻿# services/certs_tool/service.py — управление КриптоПро сертификатами
 # Переработано из legacy/dist/services/certs_tool под текущую архитектуру:
 #   BaseService → ModuleGeneric, @service_method → @rpc, proxy_client → ctx
 
@@ -9,11 +9,9 @@ import secrets
 import tempfile
 from datetime import datetime
 from pathlib import Path
-from typing import Any
 
 from src.internal_modules.base import ModuleGeneric
 from src.networking.protocol import MsgPack, PackType
-from src.networking.transport import WebSocketTransport
 from services.rpc import rpc
 
 
@@ -32,12 +30,18 @@ class CertsTool(ModuleGeneric):
 
     _CARRIER = '\\\\.\\HDIMAGE'
 
+    # Признаки отсутствия КриптоПро в выводе certmgr/csptest
+    _CSP_MISSING_MARKERS = (
+        'Не удалось получить контекст',
+        'Тип поставщика не определен',
+    )
+
     def __init__(self, name: str, context):
         super().__init__(name, context)
         self.csp_path = Path(__file__).parent
         self._cert_sync_task: asyncio.Task | None = None
-        self._local_sync_counter: int = 0
         self._install_history: list[dict] = []
+        self._terminated: bool = False
 
     async def start(self):
         self._validate_csp_path()
@@ -48,6 +52,23 @@ class CertsTool(ModuleGeneric):
         if self._cert_sync_task:
             self._cert_sync_task.cancel()
         self.log.info('CertsTool stopped')
+
+    async def _terminate_no_csp(self):
+        """КриптоПро отсутствует на ПК — завершить certstool
+        (установка ГОСТ сертификатов не требуется)."""
+        if self._terminated:
+            return
+        self._terminated = True
+        self.log.error(
+            'CryptoPro CSP not available (provider context error) — '
+            'terminating certstool: GOST certificate management is not required'
+        )
+        if self._cert_sync_task and not self._cert_sync_task.done():
+            self._cert_sync_task.cancel()
+        try:
+            self.ctx.services.remove_service(self)
+        except Exception as e:
+            self.log.warning(f'Failed to unregister certstool service: {e}')
 
     # ------------------------------------------------------------------ #
     #  CERT_SYNC — периодическая рассылка digest сертификатов
@@ -61,13 +82,13 @@ class CertsTool(ModuleGeneric):
                 await asyncio.sleep(60)
 
                 # 1. Обновить локальные сертификаты в индексе
+                # (update_local инкрементирует certs_index.sync_version — D3)
                 certs = await self.list_certificates({})
                 self.ctx.certs_index.update_local(certs)
-                self._local_sync_counter += 1
 
                 # 2. Подготовить digest для рассылки
                 digest = self.ctx.certs_index.get_digest_for_sync()
-                sync_version = self._local_sync_counter
+                sync_version = self.ctx.certs_index.sync_version
 
                 # 3. Рассылать CERT_SYNC всем connected соседям
                 pack = MsgPack(
@@ -78,14 +99,17 @@ class CertsTool(ModuleGeneric):
                         'sync_version': sync_version,
                     },
                 )
-                for neighbor in self.ctx.network.neighbor_table.connected():
-                    node = self.ctx.network.nodes_manager.get(neighbor.node_id)
-                    if node:
-                        transport = WebSocketTransport(node.ws)
-                        try:
-                            await transport.send(pack)
-                        except Exception as e:
-                            self.log.warning(f'CERT_SYNC to {neighbor.node_id} failed: {e}')
+                transports = [
+                    self.ctx.network.router.get_transport_to(n.node_id)
+                    for n in self.ctx.network.neighbor_table.connected()
+                    # get_transport_to умеет в server-side И client-side WS
+                    # (B8: через nodes_manager.get() client-side соседи
+                    # вообще не получали CERT_SYNC)
+                ]
+                await asyncio.gather(
+                    *[t.send(pack) for t in transports if t],
+                    return_exceptions=True,
+                )
 
                 self.log.debug(f'CERT_SYNC broadcast: {len(digest)} certs, v{sync_version}')
 
@@ -109,6 +133,8 @@ class CertsTool(ModuleGeneric):
             self.log.warning(f'Missing CSP tools: {missing}')
 
     async def _run_async(self, command: str) -> str:
+        if self._terminated:
+            return ''
         try:
             # chcp 1251 в том же shell-контексте, что и основная команда
             full_command = f'chcp 1251 && {command}'
@@ -128,8 +154,14 @@ class CertsTool(ModuleGeneric):
                 except UnicodeDecodeError:
                     err_text = stderr.decode('utf-8', errors='ignore')
                 if err_text.strip():
+                    if any(m in err_text for m in self._CSP_MISSING_MARKERS):
+                        await self._terminate_no_csp()
+                        return ''
                     self.log.warning(f'certmgr stderr: {err_text[:500]}')
                     out += '\n' + err_text
+            if any(m in out for m in self._CSP_MISSING_MARKERS):
+                await self._terminate_no_csp()
+                return ''
             return out
         except Exception as e:
             self.log.error(f'Command error: {e}')
@@ -289,8 +321,7 @@ class CertsTool(ModuleGeneric):
                   'container': ''}
 
         # 1. Install PFX
-        import secrets as _s
-        auto_container = f'{self._CARRIER}\\p2p_{_s.token_hex(4)}'
+        auto_container = f'{self._CARRIER}\\p2p_{secrets.token_hex(4)}'
         cmd = (f'"{self.csp_path / "certmgr.exe"}" -install -store uMy '
                f'-file "{pfx_path}" -pfx -container "{auto_container}" '
                f'-silent -keep_exportable -pin {pin}')
@@ -420,26 +451,6 @@ class CertsTool(ModuleGeneric):
         return {'pfx': pfx_result, 'cer': cer_result}
 
     @rpc
-    async def export_certificates_by_subject(self, data: dict) -> list:
-        """Массовый экспорт всех сертификатов по Subject (base64)."""
-        pattern = data.get('subject_pattern', '')
-        password = data.get('password', '00000000')
-
-        certs = await self.find_certificates_by_subject({'subject_pattern': pattern})
-        results = []
-        for cert in certs:
-            container = cert.get('Container', '')
-            thumbprint = cert.get('Thumbprint', '')
-            pfx_r = {'success': False, 'error': 'No container', 'pfx_base64': ''}
-            if container:
-                pfx_r = await self.export_certificate_pfx(
-                    {'container_name': container, 'password': password})
-            cer_r = await self.export_certificate_cer(
-                {'container_name': container, 'thumbprint': thumbprint})
-            results.append({'subject_cn': cert.get('Subject_CN', ''), 'pfx': pfx_r, 'cer': cer_r})
-        return results
-
-    @rpc
     async def delete_certificate(self, data: dict) -> dict:
         """Удалить сертификат по thumbprint."""
         thumbprint = data.get('thumbprint', '')
@@ -475,8 +486,7 @@ class CertsTool(ModuleGeneric):
             # Генерируем имя контейнера, если не задано.
             container_name = data.get('container_name', '')
             if not container_name:
-                import secrets as _s
-                container_name = f'{self._CARRIER}\\p2p_{_s.token_hex(4)}'
+                        container_name = f'{self._CARRIER}\\p2p_{secrets.token_hex(4)}'
 
             cmd = (f'"{self.csp_path / "certmgr.exe"}" -install -store uMy '
                    f'-file "{tmp_path}" -pfx -container "{container_name}" '
@@ -526,8 +536,7 @@ class CertsTool(ModuleGeneric):
                 tmp_path = tmp.name
 
             try:
-                import secrets as _s
-                auto_container = f'{self._CARRIER}\\p2p_{_s.token_hex(4)}'
+                auto_container = f'{self._CARRIER}\\p2p_{secrets.token_hex(4)}'
 
                 cmd = (f'"{self.csp_path / "certmgr.exe"}" -install -store uMy '
                        f'-file "{tmp_path}" -pfx -container "{auto_container}" '
@@ -754,7 +763,7 @@ class CertsTool(ModuleGeneric):
         digest = self.ctx.certs_index.get_digest_for_sync()
         return {
             'certs': digest,
-            'sync_version': self._local_sync_counter,
+            'sync_version': self.ctx.certs_index.sync_version,
         }
 
     @rpc

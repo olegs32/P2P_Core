@@ -174,8 +174,8 @@ class Demo(ModuleGeneric):
 
         if not target or target == self.ctx.NODE:
             return {'ok': False, 'error': 'укажите target — другой узел сети'}
-        if not self.ctx.network.nodes_manager.get(target):
-            return {'ok': False, 'error': f'узел {target} недоступен напрямую'}
+        if not self.ctx.network.router.get_transport_to(target):
+            return {'ok': False, 'error': f'узел {target} недоступен'}
 
         pipe = self.ctx.memory.create_pipe(buff=buff)
         dispatcher = self.ctx.memory.create_dispatcher([pipe])

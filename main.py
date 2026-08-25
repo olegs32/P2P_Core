@@ -37,7 +37,45 @@ from src.internal_modules.spawner import Spawner
 from src.networking.network import NetworkModule
 from src.networking.node_connector import NodeConnector
 
-BASE_DIR = Path(Path().resolve())
+# Каталог развёртывания. У frozen-узла — каталог exe: планировщик
+# (особенно /SC ONSTART под SYSTEM) запускает процесс с cwd=System32,
+# и привязка к cwd унесла бы config.yaml/services в Windows-каталоги.
+if getattr(sys, 'frozen', False):
+    BASE_DIR = Path(sys.executable).parent
+else:
+    BASE_DIR = Path(__file__).resolve().parent
+
+# хендл мьютекса единственной инстанции — держим ссылку, иначе GC
+# освободит мьютекс и защита исчезнет
+_single_instance_handle = None
+
+
+def acquire_single_instance(node_name: str) -> bool:
+    """Запрет второй инстанции узла на хосте через именованный mutex.
+
+    Задача планировщика (SYSTEM) и ключ реестра Run (пользователь) срабатывают
+    оба — без защиты второй процесс становился зомби без сети (порт занят,
+    а uvicorn гасит свой serve-таск изнутри через sys.exit).
+    Global\\ — один namespace на все сессии, включая session 0 SYSTEM'а.
+    """
+    global _single_instance_handle
+    import ctypes
+
+    handle = ctypes.windll.kernel32.CreateMutexW(
+        None, False, f'Global\\P2P_Core_{node_name}')
+    if not handle:
+        # мьютекс создать не удалось — безопаснее не стартовать вовсе
+        logging.error(f'CreateMutexW failed: {ctypes.GetLastError()}')
+        return False
+    _single_instance_handle = handle
+    ERROR_ALREADY_EXISTS = 183
+    exists = ctypes.windll.kernel32.GetLastError() == ERROR_ALREADY_EXISTS
+    if exists:
+        logging.warning(
+            f'Узел "{node_name}" уже запущен на этой машине — '
+            f'второй инстанс не стартует')
+        return False
+    return True
 
 
 
@@ -53,6 +91,10 @@ logging.getLogger("fastapi").setLevel(logging.WARNING)
 async def main():
     cfg_manager = load_config(BASE_DIR / 'config.yaml')
     cfg = cfg_manager.cfg
+
+    # единственная инстанция на хосте (двойной автозапуск: планировщик + реестр)
+    if not acquire_single_instance(cfg.local.name):
+        return
     setup_logging(cfg.logging)
 
     ctx = AppContext(cfg)
@@ -90,6 +132,7 @@ async def main():
     if not os.path.exists(SERVICES_DIR):
         os.makedirs(SERVICES_DIR)
 
+    loader = None
     if os.path.exists(BASE_DIR / 'services'):
         # автозагрузка всех сервисов из ./services/ (live editing available)
         loader = ServiceLoader(
@@ -102,7 +145,6 @@ async def main():
 
     # автозагрузка всех сервисов из MEI_/services/
 
-
     for peer in cfg.local.peers:
         connector = ctx.register(NodeConnector(
             name=f'Connector_{peer.node_id}',
@@ -111,9 +153,15 @@ async def main():
             target_uri=f'{peer.uri}{ctx.NODE}',
         ))
 
-    async with app_lifespan(ctx):
-        # всё поднято — основной цикл
-        await asyncio.Event().wait()  # бесконечное ожидание
+    try:
+        async with app_lifespan(ctx):
+            # всё поднято — основной цикл
+            await asyncio.Event().wait()  # бесконечное ожидание
+    finally:
+        # watchdog обязан останавливаться при shutdown (иначе поток Observer
+        # не даёт процессу завершиться)
+        if loader:
+            loader.stop_watch()
 
 
 if __name__ == "__main__":

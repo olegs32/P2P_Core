@@ -8,8 +8,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-import psutil
-
 from src.internal_modules.base import ModuleGeneric
 from services.rpc import rpc
 import streamlit.web.cli as stcli

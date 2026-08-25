@@ -10,11 +10,6 @@ from src.networking.protocol import MsgPack, PackType
 from  src.internal_modules.memory import Pipe
 
 log = logging.getLogger('Executor')
-
-
-
-
-
 class LocalExecutor:
     def __init__(self, services, stream_registry, router_ref=None):
         self.services        = services
@@ -39,7 +34,18 @@ class LocalExecutor:
         if inspect.isasyncgenfunction(method):
             return method(*args)
 
-        result = await method(*args) if asyncio.iscoroutinefunction(method) else method(*args)
+        if asyncio.iscoroutinefunction(method):
+            result = await method(*args)
+        else:
+            # D6 контракт: sync @rpc выполняется В ОТДЕЛЬНОМ ПОТОКЕ
+            # (asyncio.to_thread), чтобы не блокировать event loop ноды.
+            # Правила для авторов методов:
+            #   - CPU-тяжёлый код → выносить в ProcessPoolExecutor вручную
+            #     (to_thread не обходит GIL);
+            #   - блокирующий I/O → разрешён в sync-методе благодаря to_thread;
+            #   - async-методы: никаких time.sleep/блокирующих вызовов — только
+            #     await-able API.
+            result = await asyncio.to_thread(method, *args)
 
         return MsgPack(
             type=PackType.RESPONSE,
@@ -53,7 +59,7 @@ class LocalExecutor:
 
     # GRID/executor.py — open_stream передаёт ws и label в ctx
 
-    async def open_stream(self, pack: MsgPack) -> MsgPack:
+    async def open_stream(self, pack: MsgPack, buff_len: int = 10) -> MsgPack:
         service_obj = self.services.get_service(pack.service)
         if not service_obj:
             raise MethodNotFound(pack.service, pack.method)
@@ -68,7 +74,7 @@ class LocalExecutor:
         wrapper = handler.get('wrapper')
         consumer = handler['consumer']
 
-        pipe = Pipe(pipe_id=f'inbound_{pack.label[:8]}', buff_len=10)
+        pipe = Pipe(pipe_id=f'inbound_{pack.label[:8]}', buff_len=buff_len)
         inbound = self.stream_registry.register(pack.label, pipe)
 
         # label для ACK через Router.send_stream_ack()
@@ -94,7 +100,6 @@ class LocalExecutor:
         # пробросить label в ctx для ACK через Router
         if isinstance(ctx, dict):
             ctx['label'] = label
-            ctx['eof'] = False
 
         inbound.ready.set()
         try:

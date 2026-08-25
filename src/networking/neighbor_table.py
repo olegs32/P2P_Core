@@ -11,6 +11,11 @@ log = logging.getLogger('NeighborTable')
 
 PROTOCOL_VERSION = "2.0"
 
+# Роль участника: 'node' — полноценный узел mesh, 'client' — служебный
+# WS-клиент (webpanel и т.п.): в карту сети попадает серым, BFS его не опрашивает
+ROLE_NODE = 'node'
+ROLE_CLIENT = 'client'
+
 
 class NeighborStatus(str, Enum):
     CONNECTED   = "connected"    # прямое WS соединение
@@ -28,6 +33,7 @@ class NeighborInfo(BaseModel):
     session_id: Optional[str]   = None
     version:    str             = PROTOCOL_VERSION
     services:   List[str]       = []       # сервисы на этой ноде
+    role:       str             = ROLE_NODE
 
     # UNUSED: свойство uri не используется в проекте.
     # При необходимости: ws://{host}:{port}/ws/{node_id}
@@ -47,7 +53,8 @@ class NeighborTable:
 
     def register_connected(self, node_id: str, host: str, port: int,
                            session_id: str, version: str = PROTOCOL_VERSION,
-                           services: List[str] = None) -> NeighborInfo:
+                           services: List[str] = None,
+                           role: str = ROLE_NODE) -> NeighborInfo:
         info = NeighborInfo(
             node_id    = node_id,
             host       = host,
@@ -58,6 +65,7 @@ class NeighborTable:
             session_id = session_id,
             version    = version,
             services   = services or [],
+            role       = role,
         )
         self._table[node_id] = info
         log.info(f'Registered connected: {node_id} ({host}:{port})')
@@ -65,7 +73,8 @@ class NeighborTable:
 
     def register_known(self, node_id: str, host: str, port: int,
                        via: str, version: str = PROTOCOL_VERSION,
-                       services: List[str] = None) -> NeighborInfo:
+                       services: List[str] = None,
+                       role: str = ROLE_NODE) -> NeighborInfo:
         # не перезаписывать connected более слабым known
         existing = self._table.get(node_id)
         if existing and existing.status == NeighborStatus.CONNECTED:
@@ -80,6 +89,7 @@ class NeighborTable:
             last_ts  = time.time(),
             version  = version,
             services = services or [],
+            role     = role,
         )
         self._table[node_id] = info
         log.debug(f'Registered known: {node_id} via {via}')
@@ -101,23 +111,11 @@ class NeighborTable:
             info.status = NeighborStatus.UNREACHABLE
             log.warning(f'Marked unreachable: {node_id}')
 
-    def mark_connected(self, node_id: str, session_id: str):
-        info = self._table.get(node_id)
-        if info:
-            info.status     = NeighborStatus.CONNECTED
-            info.session_id = session_id
-            info.last_ts    = time.time()
-            info.via        = None
-
     def update_services(self, node_id: str, services: List[str]):
         info = self._table.get(node_id)
         if info:
             info.services = services
             log.debug(f'Services updated for {node_id}: {services}')
-
-    def remove(self, node_id: str):
-        self._table.pop(node_id, None)
-        log.info(f'Removed neighbor: {node_id}')
 
     # ------------------------------------------------------------------ #
     #  Запросы
@@ -125,9 +123,6 @@ class NeighborTable:
 
     def get(self, node_id: str) -> Optional[NeighborInfo]:
         return self._table.get(node_id)
-
-    def has(self, node_id: str) -> bool:
-        return node_id in self._table
 
     def connected(self) -> List[NeighborInfo]:
         return [n for n in self._table.values()
@@ -158,22 +153,45 @@ class NeighborTable:
         ]
 
     def merge_gossip(self, neighbors: List[dict], from_node: str):
-        """Смержить входящую таблицу соседей."""
+        """Смержить входящую таблицу соседей.
+
+        Новые узлы добавляются как KNOWN via=from_node. Уже известные
+        non-CONNECTED записи обновляются из свежего gossip (R5): via/host/
+        port/services актуализируются, UNREACHABLE реанимируется в KNOWN.
+        Свои CONNECTED-записи никогда не перезаписываются.
+        """
         added = 0
+        updated = 0
         for entry in neighbors:
             node_id = entry.get('node_id')
             if not node_id or node_id == self.own_node_id:
                 continue
-            if node_id in self._table:
-                continue  # уже знаем — не перезаписываем
-            self.register_known(
-                node_id  = node_id,
-                host     = entry.get('host', ''),
-                port     = entry.get('port', 9000),
-                via      = from_node,
-                version  = entry.get('version', PROTOCOL_VERSION),
-                services = entry.get('services', []),
-            )
-            added += 1
-        if added:
-            log.info(f'Gossip from {from_node}: +{added} new neighbors')
+
+            existing = self._table.get(node_id)
+            if existing and existing.status == NeighborStatus.CONNECTED:
+                continue  # своё прямое соединение не трогаем
+
+            if existing is None:
+                self._table[node_id] = NeighborInfo(
+                    node_id=node_id,
+                    host=entry.get('host', ''),
+                    port=entry.get('port', 9000),
+                    status=NeighborStatus.KNOWN,
+                    via=from_node,
+                    version=entry.get('version', PROTOCOL_VERSION),
+                    services=entry.get('services', []),
+                )
+                added += 1
+            else:
+                existing.host = entry.get('host', existing.host)
+                existing.port = entry.get('port', existing.port)
+                existing.via = from_node
+                existing.version = entry.get('version', existing.version)
+                existing.services = entry.get('services', existing.services)
+                existing.last_ts = time.time()
+                if existing.status == NeighborStatus.UNREACHABLE:
+                    existing.status = NeighborStatus.KNOWN
+                updated += 1
+
+        if added or updated:
+            log.info(f'Gossip from {from_node}: +{added} new, ~{updated} refreshed')

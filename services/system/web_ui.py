@@ -18,7 +18,7 @@ logging.getLogger("streamlit.runtime.state.session_state_proxy").setLevel(loggin
 #  Известные RPC-методы по сервисам (для выпадающих списков)
 # ------------------------------------------------------------------ #
 KNOWN_METHODS = {
-    'netinfo':       ['neighbors', 'nodes', 'services', 'find_service'],
+    'netinfo':       ['neighbors', 'nodes', 'services', 'find_service', 'topology'],
     'certstool':     [
         'get_dashboard_data', 'list_certificates', 'network_certs',
         'install_from_node', 'get_install_history',
@@ -28,6 +28,7 @@ KNOWN_METHODS = {
     ],
     'system':        ['connect_to_node', 'list_connectors', 'node_detail', 'config_peers', 'sessions', 'ctx_map'],
     'updater':       ['status', 'check', 'download', 'apply', 'clear_state'],
+    'purge':         ['plan', 'purge'],
     'logs':          ['get_logs', 'get_loggers', 'clear_buffer'],
     'webpanel':      ['node_status', 'discover_ui_services'],
     'compute_full':  ['start_stream', 'compute_ranges', 'compute_squares', 'run_range'],
@@ -413,11 +414,14 @@ def _get_arg_hint(service: str, method: str) -> str:
     """Подсказка по аргументам для известных методов."""
     hints = {
         'netinfo.find_service':    '{"service": "certstool"}',
+        'netinfo.topology':        '{"ttl": 4}',
         'system.connect_to_node':  '{"host": "192.168.1.10", "port": 9000, "node_id": "Node1"}',
+        'purge.purge':             '{"items": ["autorun_task", "work_dir"], "confirm": true}',
         'certstool.find_certificates_by_subject': '{"subject_pattern": "CN=Иванов"}',
-        'certstool.install_from_node': '{"thumbprint": "...", "node_id": "Node1"}',
+        'certstool.install_from_node': '{"thumbprint": "...", "source_node": "Node1"}',
         'test.echo':               '{"message": "hello"}',
-        'spawner.spawn':           '{"dst": "Node1", "service": "generator", "method": "start_stream"}',
+        'spawner.spawn':           ('{"generator_service": "...", "generator": "...", '
+                                   '"service": "...", "method": "...", "workers_count": 1}'),
     }
     return hints.get(f"{service}.{method}", "")
 
@@ -430,9 +434,21 @@ def _render_connect(rpc):
 
     st.markdown(
         "Инициировать исходящее WebSocket-подключение к удалённому узлу.  \n"
-        "Подключение разрешено, если удалённый узел **не подключен** к локальному.  \n"
+        "Подключение разрешено, если удалённый узел **не подключен** к локальному "
+        "и соблюдено лексикографическое правило (пару инициирует больший узел).  \n"
         "При успехе узел сохраняется в конфиг для автоматического переподключения."
     )
+
+    # ---- Результат последней попытки подключения ----
+    # Показывается после st.rerun(): реран перезапрашивает все таблицы ниже,
+    # поэтому они отражают состояние уже ПОСЛЕ попытки подключения.
+    last = st.session_state.pop('sys_connect_result', None)
+    if last:
+        kind, text = last
+        (st.success if kind == 'success' else st.error)(text)
+        note = st.session_state.pop('sys_connect_note', None)
+        if note:
+            st.info(note)
 
     # ---- Текущие подключения ----
     try:
@@ -466,53 +482,68 @@ def _render_connect(rpc):
                             placeholder="Node1", key="connect_node_id")
 
     # Подсказка: подстановка из известных узлов
+    # B9: значения пишутся в on_click-колбэке — он выполняется ДО рендера
+    # виджетов connect_* в следующем ране; прямое присвоение st.session_state.*
+    # после инстанцирования виджетов кидает StreamlitAPIException
     known = detail.get('known', [])
     if known:
         st.markdown("**Известные узлы (для справки):**")
+        connected_ids = [c.get('node_id') for c in connected]
         for n in known:
             nid = n.get('node_id', '?')
             h = n.get('host', '?')
             p = n.get('port', '?')
-            is_conn = nid in [c.get('node_id') for c in connected]
-            badge = "🟢" if is_conn else "🟡"
-            if st.button(f"{badge} {nid} — {h}:{p}", key=f"fill_{nid}"):
+            badge = "🟢" if nid in connected_ids else "🟡"
+
+            def _fill_node(nid=nid, h=h, p=p):
                 st.session_state.connect_host = h if h != '?' else ''
                 st.session_state.connect_port = int(p) if p != '?' else 9000
                 st.session_state.connect_node_id = nid
-                st.rerun()
+
+            st.button(f"{badge} {nid} — {h}:{p}",
+                      key=f"fill_{nid}", on_click=_fill_node)
 
     st.divider()
 
     if st.button("🔌 Подключиться", type="primary", key="connect_btn"):
         if not host or not node_id:
             st.warning("Укажите хост и Node ID")
-            return
-
-        # Проверяем, не подключен ли уже
-        already = any(n.get('node_id') == node_id for n in connected)
-        if already:
-            st.warning(f"Узел `{node_id}` уже подключен")
-            return
-
-        try:
-            with st.spinner(f"Подключение к {node_id} ({host}:{port})..."):
-                result = rpc.call('system', 'connect_to_node', {
-                    'host': host,
-                    'port': int(port),
-                    'node_id': node_id,
-                })
-
-            if result.get('ok'):
-                if result.get('saved'):
-                    st.success(f"✅ Подключен → `{node_id}` (сохранено в конфиг)")
-                else:
-                    st.success(f"✅ Подключение инициировано → `{node_id}`")
-                    if result.get('note'):
-                        st.info(result['note'])
+        else:
+            # Проверяем, не подключен ли уже
+            already = any(n.get('node_id') == node_id for n in connected)
+            if already:
+                st.warning(f"Узел `{node_id}` уже подключен")
             else:
-                st.error(f"❌ {result.get('error', 'Неизвестная ошибка')}")
-        except Exception as e:
-            st.error(f"❌ Ошибка: {e}")
+                try:
+                    with st.spinner(f"Подключение к {node_id} ({host}:{port})..."):
+                        result = rpc.call('system', 'connect_to_node', {
+                            'host': host,
+                            'port': int(port),
+                            'node_id': node_id,
+                        })
+                except Exception as e:
+                    result = {'ok': False, 'error': str(e)}
+
+                # Сообщение показываем после рерана (см. блок выше) —
+                # таблицы подключений/коннекторов/пиров при этом перезапросятся
+                if result.get('ok'):
+                    if result.get('saved'):
+                        st.session_state['sys_connect_result'] = (
+                            'success', f"✅ Подключен → `{node_id}` (сохранено в конфиг)")
+                    else:
+                        st.session_state['sys_connect_result'] = (
+                            'success', f"✅ Подключение инициировано → `{node_id}`")
+                        if result.get('note'):
+                            st.session_state['sys_connect_note'] = result['note']
+                    st.toast(f"Подключено: {node_id}", icon="✅")
+                else:
+                    # в т.ч. отказ по лексикографическому правилу:
+                    # коннектор/пир не созданы, записи «в ожидании» не будет
+                    err = result.get('error', 'Неизвестная ошибка')
+                    st.session_state['sys_connect_result'] = ('error', f"❌ {err}")
+                    st.toast(err, icon="❌")
+
+                st.rerun()
 
     # ---- Активные коннекторы ----
     st.divider()

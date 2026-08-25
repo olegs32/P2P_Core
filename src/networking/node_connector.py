@@ -85,6 +85,7 @@ class NodeConnector(ModuleGeneric):
     # ------------------------------------------------------------------ #
 
     async def _connect_loop(self):
+        backoff = 5  # R8: экспоненциальный отступ при повторных отказах handshake
         while True:
             if self._already_connected():
                 await asyncio.sleep(5)
@@ -102,11 +103,17 @@ class NodeConnector(ModuleGeneric):
                     # handshake
                     accepted = await self._handshake(ws)
                     if not accepted:
-                        self.log.warning(f'Handshake rejected by {self.peer_node_id}')
-                        await asyncio.sleep(10)
+                        # R8: перманентный отказ не должен долбить каждые ~15с
+                        backoff = min(backoff * 2, 300)
+                        self.log.warning(
+                            f'Handshake rejected by {self.peer_node_id} '
+                            f'(retry in {backoff}s)'
+                        )
+                        await asyncio.sleep(backoff)
                         continue
 
                     self.log.info(f'Connected to {self.peer_node_id}')
+                    backoff = 5
 
                     async for raw in ws:
                         try:
@@ -118,11 +125,18 @@ class NodeConnector(ModuleGeneric):
                             )
                             continue
 
-                        # обновить last_ts при любом входящем трафике
-                        self.ctx.network.neighbor_table.touch(pack.source)
+                        # D4: touch делается в router.handle() для всех типов
+                        # пакетов — дубли здесь давали тройное обновление last_ts
 
                         transport = WebSocketTransport(ws)
-                        await self.ctx.network.router.handle(pack, transport)
+                        # B3: сбой обработки пакета не рвёт соединение
+                        try:
+                            await self.ctx.network.router.handle(pack, transport)
+                        except Exception:
+                            self.log.exception(
+                                f'handle() failed for {pack.type.value} '
+                                f'from {self.peer_node_id} label={pack.label[:8]}'
+                            )
 
             except websockets.exceptions.ConnectionClosedError as e:
                 self.log.warning(f'Connection to {self.peer_node_id} closed: {e}')
@@ -203,6 +217,15 @@ class NodeConnector(ModuleGeneric):
     #  Keepalive
     # ------------------------------------------------------------------ #
 
+    async def _close_local_ws(self):
+        """R7: закрыть полумёртвый client-side сокет — иначе connect_loop
+        висит в приёме, а reconnect идёт параллельно со старым соединением."""
+        if self._ws:
+            try:
+                await self._ws.close()
+            except Exception:
+                pass
+
     async def _keepalive_loop(self):
         while True:
             await asyncio.sleep(KEEPALIVE_INTERVAL)
@@ -225,6 +248,7 @@ class NodeConnector(ModuleGeneric):
                         f'{self.peer_node_id} no traffic {elapsed:.0f}s → unreachable'
                     )
                     self.ctx.network.neighbor_table.mark_unreachable(self.peer_node_id)
+                    await self._close_local_ws()
                 continue
 
             self.log.debug(f'Ping {self.peer_node_id} (no traffic {elapsed:.0f}s)')
@@ -238,3 +262,4 @@ class NodeConnector(ModuleGeneric):
                 self.log.error(f'Keepalive ping failed: {e}')
                 if elapsed > DEAD_TIMEOUT:
                     self.ctx.network.neighbor_table.mark_unreachable(self.peer_node_id)
+                    await self._close_local_ws()

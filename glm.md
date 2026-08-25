@@ -23,7 +23,7 @@ P2P mesh-сеть на WebSocket + бинарный MessagePack. Узлы сое
 
 ## 3. Точка входа
 
-`main.py` → `load_config()` → `AppContext(cfg)` → регистрация модулей → `ServiceLoader.scan()` → `app_lifespan(ctx)` → `asyncio.Event().wait()`
+`main.py` → `load_config()` → **`acquire_single_instance()`** (Global-mutex `P2P_Core_<name>`: второй инстанс узла на хосте немедленно выходит; защищает от срабатывания обоих каналов автозапуска) → `AppContext(cfg)` → регистрация модулей → `ServiceLoader.scan()` → `app_lifespan(ctx)` → `asyncio.Event().wait()`
 
 Порядок регистрации модулей в `AppContext._modules` = порядок `start()`. Обратный порядок для `stop()`.
 
@@ -95,8 +95,9 @@ FastAPI + uvicorn. WS endpoint `/ws/{node_id}`. HELLO-handshake → NeighborTabl
 - `stream(dst, service, method, data, timeout)` — thin wrapper вокруг Router.stream()
 - `local_ip()` — локальный IP интерфейса mesh (LocalIPResolver, TTL-кэш)
 - `connect_to(node_id, target_uri)` — динамическое исходящее подключение к узлу
+- `local_sessions()` — снапшот сессий узла с направлением каналов (`direction`: inbound/outbound/inbound+outbound/'' и `age_sec`); единый источник для `system.sessions()` и `netinfo.topology()`
 
-HELLO_ACK содержит `host` = `self.local_ip()` — реальный IP интерфейса mesh. HELLO с несовпадающим `dst:name` отклоняется (HELLO_REJECT).
+HELLO_ACK содержит `host` = `self.local_ip()` — реальный IP интерфейса mesh. HELLO с несовпадающим `dst:name` отклоняется (HELLO_REJECT). HELLO.data несёт `role`: `'node'` (дефолт) или `'client'` (webpanel и др. служебные WS-клиенты) — сохраняется в NeighborInfo.role.
 
 `ConnectionManager` — DEAD CODE (broadcast() не используется, рассылка через neighbor_table + Router).
 
@@ -109,7 +110,7 @@ HELLO_ACK содержит `host` = `self.local_ip()` — реальный IP и
 Используется для announce/handshake: узлы сообщают друг другу реальные адреса вместо hostname.
 
 ### NeighborTable (`src/networking/neighbor_table.py`)
-Статусы: `CONNECTED` (прямое WS), `KNOWN` (через gossip), `UNREACHABLE`. Хранит `via` (next-hop). `merge_gossip()` — слияние таблиц от других узлов. `find_by_service()` — поиск узлов с нужным сервисом.
+Статусы: `CONNECTED` (прямое WS), `KNOWN` (через gossip), `UNREACHABLE`. Хранит `via` (next-hop) и `role` ('node'/'client', из HELLO.data; клиенты в карту сети попадают серым, BFS их не опрашивает). `merge_gossip()` — слияние таблиц от других узлов (role переносится). `find_by_service()` — поиск узлов с нужным сервисом.
 
 ### NodeConnector (`src/networking/node_connector.py`)
 Исходящее подключение. Лексикографическое правило: соединяется только если `self.NODE > peer_node_id`. HELLO-handshake, receive-loop → Router, keepalive ping. При connect — `router.register_client_ws()`, при disconnect — `router.unregister_client_ws()`.
@@ -166,6 +167,26 @@ class MyService(ModuleGeneric):
         ...
 ```
 
+### Контракт выполнения (D6) и ошибок (D9)
+
+**Выполнение (D6):**
+- async @rpc — выполняются в event loop; внутри ЗАПРЕЩЕНЫ блокирующие вызовы
+  (`time.sleep`, sync-сокеты, тяжёлые файловые операции) — только await-able API.
+- sync @rpc — автоматически выполняются через `asyncio.to_thread` (не блокируют loop);
+  блокирующий I/O в них разрешён. CPU-тяжёлый код → `ProcessPoolExecutor` вручную
+  (`to_thread` не обходит GIL). Внимание: `asyncio.create_task(sync_call)` НЕ спасает —
+  task исполняется в том же loop-потоке.
+
+**Ошибки (D9) — два уровня, это разные виды отказов:**
+
+| Вид | Механизм | Примеры | Что видит caller |
+|-----|----------|---------|------------------|
+| Транспорт/система | **ERROR-пакет** → исключение на вызывающей стороне | MethodNotFound, no route, упал producer стрима, необработанное исключение метода | `await call(...)` кидает Exception |
+| Бизнес-отказ сервиса | **RESPONSE с `'error'` в data** (`{'ok': False, 'error': ...}` или `{'error': ...}`) | «узел не найден», валидация параметров, отказ по политике | call() возвращается нормально; проверять data |
+
+Правило: если транспорт исправен и сервис осознанно отвечает отказом — это RESPONSE с
+`error` в данных. Если сломался маршрут/метод отсутствует/сервис упал — ERROR-пакет.
+
 ## 6. Веб-панель
 
 ### Архитектура
@@ -190,6 +211,7 @@ SERVICE_META = {
     'files':        ('🗂️', 'Сеть',         'Файловый транспорт между узлами'),
     'system':       ('⚙️', 'Система',      'Управление узлами и подключениями'),
     'updater':      ('⬆️', 'Система',      'Обновление узла по mesh'),
+    'purge':        ('☢️', 'Система',      'Аварийное удаление узла с хоста'),
     'compute_full': ('⚡', 'Вычисления',   'Генератор + консьюмер'),
     'generator':    ('📤', 'Вычисления',   'Генератор стримов'),
     'test':         ('🧪', 'Диагностика',  'Тестовый echo-сервис'),
@@ -240,22 +262,45 @@ Boot-confirm/rollback: новая версия инкрементирует `att
 RPC-методы:
 | Метод | Описание |
 |-------|----------|
-| `connect_to_node` | Исходящее подключение к узлу `{host, port, node_id}`; разрешено если удалённый НЕ подключен к локальному; при успехе пир сохраняется в config.yaml → local.peers |
+| `connect_to_node` | Исходящее подключение к узлу `{host, port, node_id}`; разрешено если удалённый НЕ подключен к локальному И соблюдено лексикографическое правило (`NODE > node_id`, иначе `{ok: False, lex_rule: True}` без создания коннектора); при успехе пир сохраняется в config.yaml → local.peers |
 | `list_connectors` | Активные исходящие коннекторы (модули `Connector_*`) |
 | `node_detail` | Обзор узла: own, connected, known, ws_connections, services |
 | `config_peers` | Пиры из config.yaml → local.peers |
-| `sessions` | Все сессии узла: записи NeighborTable любого статуса (connected/known/unreachable) + session_id из HELLO-рукопожатия (тот же, что в логе «Node X accepted (session=…)»), direction (inbound по nodes_manager / outbound по Router.has_client_ws), age_sec, counts |
+| `sessions` | Все сессии узла: записи NeighborTable любого статуса (connected/known/unreachable) + session_id из HELLO-рукопожатия (тот же, что в логе «Node X accepted (session=…)»), direction (inbound по nodes_manager / outbound по Router.has_client_ws), age_sec, counts. Строки строит общий `NetworkModule.local_sessions()` |
 | `ctx_map` | Интроспекция AppContext для разработчика: по каждому атрибуту — тип, назначение (CTX_ATTR_DOCS в service.py), публичные методы с сигнатурами; router/neighbor_table/nodes_manager раскрыты на уровень глубже; для services — реестр сервисов с методами и @generator; каждый entry/child несёт `rpc_service`. pydantic-модели и списки (config, peers) отдаются значениями (`data`, рекурсивно; поля secret/password/token/key маскируются) |
 
-Веб-интерфейс (`web_ui.py`): вкладки «Управление узлами» (метрики + таблицы соседей + RPC-консоль с известными методами `KNOWN_METHODS` и подсказками аргументов), «Подключение» (форма подключения + текущие коннекторы + пиры из конфига), «🧵 Сессии» (таблица всех сессий узла с session_id/направлением/возрастом, автообновление через st.fragment, полный JSON в expander) и «🧭 Контекст» (карта self.ctx; клик по методу сервиса подставляет его в RPC-консоль через `session_state['ctx_pick']`). Импорт streamlit обёрнут в try/except — сервис работает и в headless-сборке.
+Веб-интерфейс (`web_ui.py`): вкладки «Управление узлами» (метрики + таблицы соседей + RPC-консоль с известными методами `KNOWN_METHODS` и подсказками аргументов), «Подключение» (форма подключения + текущие коннекторы + пиры из конфига; после попытки подключения — `st.rerun()` с перезапросом всех таблиц, результат попытки показывается после рерана из `session_state['sys_connect_result']`), «🧵 Сессии» (таблица всех сессий узла с session_id/направлением/возрастом, автообновление через st.fragment, полный JSON в expander) и «🧭 Контекст» (карта self.ctx; клик по методу сервиса подставляет его в RPC-консоль через `session_state['ctx_pick']`). Импорт streamlit обёрнут в try/except — сервис работает и в headless-сборке.
 
 Автозапуск Windows (не RPC, вспомогательные методы):
-- `add_to_task_scheduler()` / `remove_from_task_scheduler()` — задача через `schtasks /SC ONLOGON /RU SYSTEM`
-- `add_to_registry_startup()` / `remove_from_registry_startup()` — ключ `HKCU\...\CurrentVersion\Run`
-- Имя задачи/ключа и путь exe берутся из `LocalConfig.name` / `LocalConfig.full_path`
+- `add_to_task_scheduler()` / `remove_from_task_scheduler()` — задача автозапуска при **старте хоста**: `schtasks /SC ONSTART /RU SYSTEM` (до логина пользователя, имя = LocalConfig.name, bool-результат)
+- `remove_from_registry_startup()` — [legacy] зачистка HKCU Run-ключей от старых версий; реестровый канал автозапуска упразднён (пользовательская сессия не нужна)
+- Двойной запуск не страшен: main.py держит Global-mutex (`P2P_Core_<name>`) — второй инстанс сразу выходит; плюс NetworkModule.start() fail-fast: если WS-порт не поднялся за ~3с (занят/ошибка bind) — RuntimeError, узел завершается
+- BASE_DIR: у frozen-узла = каталог exe (планировщик запускает процесс с cwd=System32 — привязка к cwd унесла бы config.yaml в системный каталог), в dev — корень репозитория, а не живёт зомби без сети
+
+### Сервис purge (`services/purge/`) — аварийное удаление узла с хоста
+Полное снятие узла: автозапуск, конфиг, данные, образ exe, процесс. По умолчанию ВЫКЛЮЧЕН (`config.yaml → purge.enabled: false`) — включать осознанно.
+
+RPC:
+| Метод | Описание |
+|-------|----------|
+| `plan` | Сухой прогон: перечень целей с id/группой/путём/размером/present + `enabled`, `frozen`, `pid`. Единственный источник допустимых id |
+| `purge({items, confirm})` | Исполнение по id из плана; обязателен `confirm: true`; выбор `exe`/`process` останавливает узел (~3с после RESPONSE, как в updater) |
+
+Безопасность: пути снаружи не принимаются вовсе (только id из `plan()`); отказ на опасные цели (корень диска, Windows, Program Files, ProgramData); в dev-режиме (не frozen) образ exe не удаляется; очистка work_dir пропускает живой образ exe.
+
+Механика self-destruct (выбор `exe`): rename-trick `exe → exe.purging` (запущенный образ можно переименовать) + detached cmd-стартер (`timeout 3s & del & rd /q` — rd без /s удаляет только ПУСТОЙ каталог), затем `os._exit(0)`. Пункты: `autorun_task` (schtasks по LocalConfig.name), `autorun_registry` (HKCU Run), `config` (config.yaml через `config_manager.config_path`), `work_dir` (весь, кроме живого exe), `update_leftovers` (.old/.failed/.purging + updates/), `exe`, `process`.
+
+UI (`web_ui.py`): таблица целей с мультивыбором (st.dataframe on_select multi-row), кнопки «🗑 Удалить выбранное» и «☢️ Удалить ВСЁ» (все present-пункты), обязательный checkbox-подтверждение; предупреждение при выборе фатальных пунктов; потеря связи с узлом трактуется как ожидаемый исход. Результат показывается после st.rerun из `session_state['purge_result']`.
+
+### Сервис netinfo (`services/netinfo/`) — диагностика сети и карта топологии
+RPC: `neighbors`, `nodes`, `services`, `find_service`, `topology`.
+
+`topology({ttl=4, visited?})` — карта сети: рекурсивный BFS по connected-узлам (параллельный gather, timeout 6с/узел; клиенты role='client' не опрашиваются). Каждое ребро `{src → dst}` = «src держит outbound WS к dst» (канонизация из `direction` через `NetworkModule.local_sessions()`: outbound даёт ребро own→peer, inbound — peer→own; dual-канал = два встречных ребра). Ребро `verified=True` только если его сообщили ОБА конца (иначе half-open — признак зомби-сокета). Ответ: `{ok, root, nodes[], clients[], edges[], errors{}}`; ошибки отдельных узлов попадают в `errors`, не валия карту. Полный снимок (ttl=4, без visited) кэшируется на узле на 4с (`cache_age_sec`). known-only узлы приходят со status='known' + via — физических рёбер у них нет.
+
+UI (вкладка «🗺 Карта сети» в `web_ui.py`): streamlit-agraph (force-graph, directed) — зелёные рёбра verified, красные half-open, жёлтый пунктир «gossip» от via для known-узлов, серые клиенты панели, синий корневой узел; автообновление st.fragment(5s) с тумблером + кнопка; клик по узлу — карточка JSON из снимка. Фолбэки: нет компонента → таблица рёбер. Зависимость только WebUI-сборки: `streamlit-agraph` (+ `--collect-all streamlit_agraph` в compile.py); Node-сборка не меняется (web_ui.py исключается).
 
 ### NodeRPC (`services/webpanel/rpc_client.py`)
-Синхронная обёртка для Streamlit. Фоновый asyncio loop в отдельном потоке. HELLO-handshake, receive-loop. `call()` блокируется через `threading.Event`. Свойства: `connected`, `node` (= target_node), `reconnecting`.
+Синхронная обёртка для Streamlit. Фоновый asyncio loop в отдельном потоке. HELLO-handshake (с `"role": "client"` в data — узел хранит панель как клиента, не mesh-узла), receive-loop. `call()` блокируется через `threading.Event`. Свойства: `connected`, `node` (= target_node), `reconnecting`.
 
 **Reconnect:** при потере WS — `_reconnecting=True`, `connected` возвращает True во время реконнекта (предотвращает Streamlit от создания нового NodeRPC). `_recv_task` отменяется при реконнекте.
 
@@ -365,6 +410,8 @@ update:                  # UpdateConfig — обновление узла (се�
   require_signed: true     # WinVerifyTrust перед применением
   allow_downgrade: false   # иначе только apply({force:true})
   health_confirm_sec: 90   # время до boot_ok после апдейта
+purge:
+  enabled: false           # аварийное удаление узла (сервис purge) — ВКЛЮЧАТЬ ОСОЗНАННО
 services:
   path: services/
 local:                 # LocalConfig — параметры деплоя/автозапуска
@@ -390,7 +437,7 @@ local:                 # LocalConfig — параметры деплоя/авт�
 
 | Бинарь | UI | Особенности |
 |--------|----|-------------|
-| `WebUI_P2P_Core.exe` | Streamlit | `--collect-all services`, streamlit hidden-imports |
+| `WebUI_P2P_Core.exe` | Streamlit | `--collect-all services`, `--collect-all streamlit_agraph`, streamlit hidden-imports |
 | `Node_P2P_Core.exe` | нет | excludes: `services.webpanel`, `streamlit`; остальные сервисы через `--collect-all` |
 
 После сборки каждый exe подписывается через `sign/signer.py` (osslsigncode, нужны `sign/ca_cert.pem` + `sign/ca_key.pem` — gitignored). Подписанный файл перемещается обратно в `dist/<name>.exe`.
@@ -399,7 +446,7 @@ Frozen-режим: встроенные сервисы грузятся из `sy
 
 ## 9b. Roadmap
 
-`roadmap.md` — текущие TODO: обновление сервисов/core по сети, autorun-модуль, self-removing, рефакторинг eye-sauron как локального сервиса, панель управления через политики.
+`roadmap.md` — текущие TODO: обновление сервисов/core по сети, autorun-модуль, self-removing, рефакторинг eye-sauron как локального сервиса (анализ проекта и план интеграции — **`docs/eyeSauron.md`**), панель управления через политики.
 
 ## 10. Конвенции
 
@@ -454,5 +501,5 @@ class MyService(ModuleGeneric):
 - StreamRoute cache TTL=300с скользящий (продлевается обращениями через get_stream_route) — устаревание возможно только при простое стрима дольше TTL
 - Loop detection + TTL=0 в `_on_forwarded` — пакет дропается (return), не форвардится дальше
 - LocalIPResolver: серверные подключения резолвятся через TCP-таблицу psutil — платформозависимо (Windows-first)
-- `system.remove_from_task_scheduler` использует захардкоженное имя задачи (`MicrosoftEdgeUpdateTaskMachineEye`), а не `LocalConfig.name`
+- Автозапуск: задача планировщика создаётся с `/TR "{exe_path}"` без внутреннего экранирования кавычек — путь к exe с пробелами может обрезаться (актуально при нестандартном work_dir)
 - `config.yaml` не хранится в репозитории — создаётся автоматически с дефолтами при первом запуске; отдельного `config.local.yaml` больше нет, всё в config.yaml → секция local

@@ -1,11 +1,5 @@
 TODO 
-- accept only local handshake
-- modify service system
-  - design update functional
-    - update services in local services directory
-    - update core module
-  - integrate autorun modulo
-- add self-removing
+
 - refactor eye-sauron as local service
 - create control panel via politics
   - design arch politics

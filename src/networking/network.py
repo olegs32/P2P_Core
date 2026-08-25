@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import time
 import uuid
 
 import uvicorn
@@ -169,6 +170,9 @@ class NetworkModule(ModuleGeneric):
                         pass
                 else:
                     self.nodes_manager.register(node_id, websocket)
+                # сокет сменился (новое подключение/reconnect) — кэш транспортов
+                # для этого node_id невалиден
+                self.router.invalidate_transport(node_id)
 
                 # принять
                 hello_data = pack.data or {}
@@ -181,6 +185,7 @@ class NetworkModule(ModuleGeneric):
                     session_id = session_id,
                     version    = hello_data.get('version', PROTOCOL_VERSION),
                     services   = hello_data.get('services', []),
+                    role       = hello_data.get('role', 'node'),
                 )
 
                 # ответить HELLO_ACK с текущей таблицей соседей и сервисами
@@ -223,10 +228,17 @@ class NetworkModule(ModuleGeneric):
                         await _safe_close(websocket, code=WS_CLOSE_PROTOCOL_ERROR)
                         break
 
-                    # обновить last_ts при любом трафике
-                    self.neighbor_table.touch(pack.source)
+                    # D4: touch делается в router.handle() — здесь был дубль
 
-                    await self.router.handle(pack, transport)
+                    # B3: сбой обработки одного пакета (исключение сервиса,
+                    # баг маршрутизации) не должен убивать соединение целиком
+                    try:
+                        await self.router.handle(pack, transport)
+                    except Exception:
+                        self.log.exception(
+                            f'handle() failed for {pack.type.value} '
+                            f'from {node_id} label={pack.label[:8]}'
+                        )
 
             except asyncio.TimeoutError:
                 self.log.warning(f'HELLO timeout from {node_id}')
@@ -240,6 +252,7 @@ class NetworkModule(ModuleGeneric):
                 if was_active:
                     self.nodes_manager.remove(node_id)
                     self.neighbor_table.mark_unreachable(node_id)
+                    self.router.invalidate_transport(node_id)
                 # Очистить pending-ответы для этого WS в любом случае
                 self.router.cleanup_ws_pending(websocket)
                 if was_active:
@@ -280,6 +293,19 @@ class NetworkModule(ModuleGeneric):
         )
         self._server = uvicorn.Server(config)
         self._task   = asyncio.create_task(self._server.serve())
+
+        # fail-fast: при занятом порте uvicorn гасит serve-таск изнутри
+        # (sys.exit(1) в startup) — без проверки узел продолжал бы жить
+        # зомби без сети. Ждём до ~3с фактического бинда.
+        for _ in range(30):
+            await asyncio.sleep(0.1)
+            if self._server.started or self._server.should_exit:
+                break
+        if not self._server.started:
+            raise RuntimeError(
+                f'WS-сервер не поднялся на {self.host}:{self.port} '
+                f'(порт занят или ошибка bind) — узел завершается')
+
         self._gossip_task   = asyncio.create_task(self._gossip_loop())
         self._announce_task = asyncio.create_task(self._announce_loop())
         self.log.info(f'Started on {self.host}:{self.port}')
@@ -302,6 +328,8 @@ class NetworkModule(ModuleGeneric):
         """Каждые 30с рассылать таблицу соседей всем connected нодам."""
         while True:
             await asyncio.sleep(30)
+            # R3: TTL-чистка ws_pending заодно с циклом
+            self.router.sweep_ws_pending()
             neighbors = self.neighbor_table.to_gossip()
             if not neighbors:
                 continue
@@ -310,13 +338,14 @@ class NetworkModule(ModuleGeneric):
                 source = self.ctx.NODE,
                 data   = {'neighbors': neighbors, 'from': self.ctx.NODE},
             )
-            for node in self.neighbor_table.connected():
-                transport = self.router.get_transport_to(node.node_id)
-                if transport:
-                    try:
-                        await transport.send(pack)
-                    except Exception as e:
-                        self.log.error(f'Gossip to {node.node_id} failed: {e}')
+            transports = [
+                (node.node_id, self.router.get_transport_to(node.node_id))
+                for node in self.neighbor_table.connected()
+            ]
+            await asyncio.gather(
+                *[t.send(pack) for _, t in transports if t],
+                return_exceptions=True,
+            )
 
     async def _announce_loop(self):
         """Каждые 60с рассылать список сервисов всем connected нодам."""
@@ -328,13 +357,14 @@ class NetworkModule(ModuleGeneric):
                 source = self.ctx.NODE,
                 data   = {'services': services, 'from': self.ctx.NODE},
             )
-            for node in self.neighbor_table.connected():
-                transport = self.router.get_transport_to(node.node_id)
-                if transport:
-                    try:
-                        await transport.send(pack)
-                    except Exception as e:
-                        self.log.error(f'Announce to {node.node_id} failed: {e}')
+            transports = [
+                self.router.get_transport_to(node.node_id)
+                for node in self.neighbor_table.connected()
+            ]
+            await asyncio.gather(
+                *[t.send(pack) for t in transports if t],
+                return_exceptions=True,
+            )
 
     # ------------------------------------------------------------------ #
     #  CERT_SYNC on-connect
@@ -367,7 +397,10 @@ class NetworkModule(ModuleGeneric):
             pack = MsgPack(
                 type=PackType.CERT_SYNC,
                 source=self.ctx.NODE,
-                data={'certs': digest, 'sync_version': 0},
+                # D3: реальная версия, а не хардкод 0 — иначе merge по
+                # строгому '>' игнорировал обновления метаданных
+                data={'certs': digest,
+                      'sync_version': self.ctx.certs_index.sync_version},
             )
             transport = self.router.get_transport_to(node_id)
             if transport:
@@ -382,6 +415,40 @@ class NetworkModule(ModuleGeneric):
     def local_ip(self) -> str:
         """Локальный IP интерфейса mesh (по запросу, с TTL-кэшем)."""
         return self.ip_resolver.get()
+
+    def local_sessions(self) -> list[dict]:
+        """Снапшот сессий этого узла с направлением каналов.
+
+        Общий источник для system.sessions() (таблица в панели) и
+        netinfo.topology() (карта сети): по каждой записи NeighborTable —
+        нормализованный статус, direction
+        (inbound / outbound / inbound+outbound / '' — живого WS нет),
+        role и возраст активности.
+        """
+        nt = self.neighbor_table
+        nm = self.nodes_manager
+
+        now = time.time()
+        rows = []
+        for n in nt.all():
+            d = n.model_dump()
+            # локальный model_dump отдаёт NeighborStatus-enum — нормализуем
+            status = d.get('status')
+            d['status'] = getattr(status, 'value', status)
+            outbound = self.router.has_client_ws(n.node_id)
+            inbound = nm.get(n.node_id) is not None
+            if outbound and inbound:
+                d['direction'] = 'inbound+outbound'
+            elif outbound:
+                d['direction'] = 'outbound'
+            elif inbound:
+                d['direction'] = 'inbound'
+            else:
+                d['direction'] = ''
+            last = d.get('last_ts')
+            d['age_sec'] = round(now - last) if last else None
+            rows.append(d)
+        return rows
 
     async def connect_to(self, node_id: str, target_uri: str):
         """Динамически создать и запустить исходящее подключение к узлу.

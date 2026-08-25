@@ -47,3 +47,12 @@ class StreamRegistry:
             stream.pipe.close()
             self.remove(label)
             log.debug(f'inbound stream closed: {label[:8]}')
+
+    def fail(self, label: str, error: Exception):
+        """B4: аварийное завершение стрима (ошибка producer на удалённом узле):
+        консьюмер получит исключение вместо «успешного» конца потока."""
+        stream = self._streams.get(label)
+        if stream:
+            stream.pipe.fail(error)
+            self.remove(label)
+            log.warning(f'inbound stream failed: {label[:8]} ({error})')

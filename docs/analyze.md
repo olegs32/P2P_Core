@@ -22,7 +22,18 @@
 
 ## 1. Критические логические баги
 
-### B1. Обратная маршрутизация ломается на маршрутах из ≥3 узлов
+### B1. ✅ РЕШЁН — Обратная маршрутизация ломается на маршрутах из ≥3 узлов
+
+> **Исправлено (2026-08-25):** все ответные пакеты строятся без разворота —
+> `path = list(pack.path)` (RESPONSE/ERROR/STREAM_CHUNK/EOF в `_on_request`,
+> PONG, `_send_back`, `_PathAwareTransport.send`). Зафиксирована конвенция
+> `_route_back` в docstring: path = [origin,…,текущий узел], каждый хоп
+> выталкивает себя с хвоста. `_cache_stream_route_on_open` приведён к той же
+> конвенции (forward_path = генератор→consumer, backward_path = consumer→генератор,
+> без дублей узла). Бонус: ERROR, вернувшийся по chain, резолвится на origin
+> как Exception (`Router._resolve_payload`) — раньше текст ошибки терялся.
+> Регрессионный тест: `tests/test_multihop_routing.py` (цепочка A←B←C,
+> RPC + ERROR через промежуточный хоп).
 
 Самая серьёзная находка. Возвращаемые пакеты строятся как `path = reversed(pack.path)`:
 
@@ -51,7 +62,15 @@
 «работает». Любая настоящая multi-hop топология (3+ узла) теряет RESPONSE / ERROR /
 STREAM_READY / PONG. `STREAM_CHUNK/EOF/ACK` частично живы из-за fallback на `_forward`.
 
-### B2. Гонка ACK в PipeTransport: future регистрируется после отправки батча
+### B2. ✅ РЕШЁН — Гонка ACK в PipeTransport: future регистрируется после отправки батча
+
+> **Исправлено (2026-08-25):** `_pump` (`memory.py`) регистрирует ack-future
+> **до** отправки батча и перерегистрирует сразу после получения ACK — быстрый
+> консьюмер больше не может ответить в незарегистрированную сессию. Дополнительно:
+> перед EOF незакрытая ack-сессия отменяется через `sessions.cancel()` (раньше
+> после timeout запись навсегда оставалась в SessionTable — утечка). Регрессионный
+> тест: `tests/test_b2_ack_race.py` (fake-router отвечает ACK на первый чанк
+> батча; старый код детерминированно умирал после 1-го батча, новый проходит).
 
 `src/internal_modules/memory.py:103-128`: `_pump` отправляет все `buff_size` чанков и
 только потом (`:121`) делает `register_single(ack_label)`. Консьюмер
@@ -64,7 +83,18 @@ STREAM_READY / PONG. `STREAM_CHUNK/EOF/ACK` частично живы из-за 
 (`services/compute_full/service.py:114` — `sleep(0.1)`).
 Лечится регистрацией future **до** отправки батча.
 
-### B3. Необработанное исключение в @rpc убивает WS-соединение целиком
+### B3. ✅ РЕШЁН — Необработанное исключение в @rpc убивает WS-соединение целиком
+
+> **Исправлено (2026-08-25):** три слоя защиты.
+> 1. `Router._on_request` / `_on_stream_open` ловят **любое** исключение сервиса:
+>    лог с traceback + ERROR-пакет caller'у (`type(e).__name__: e`) вместо падения;
+> 2. приёмные циклы `network.py` и `node_connector.py` обёрнуты per-packet
+>    try/except вокруг `router.handle()` — сбой обработки одного пакета
+>    не рвёт соединение и оставляет узел живым;
+> 3. ERROR, вернувшийся по chain, резолвит сессию исключением
+>    (`Router._resolve_payload`, сделано в рамках B1).
+> Тест: `tests/test_multihop_routing.py` — сценарий `boom`: исключение доходит
+> до origin как исключение, последующий RPC по той же цепочке проходит.
 
 - `executor.execute` (`executor.py:24-49`) не ловит ничего;
 - `_on_request` ловит только `MethodNotFound` (`router.py:295`);
@@ -75,7 +105,16 @@ STREAM_READY / PONG. `STREAM_CHUNK/EOF/ACK` частично живы из-за 
   90с), `_ws_pending` не чистится; `MsgPack(**data)` с невалидным payload
   (`network.py:163`) убивает соединение так же.
 
-### B4. Ошибка producer неотличима от нормального завершения стрима
+### B4. ✅ РЕШЁН — Ошибка producer неотличима от нормального завершения стрима
+
+> **Исправлено (2026-08-25):** `Pipe.fail(error)` — аварийный конец с сохранением
+> причины; `Pipe.__anext__` бросает исходное исключение вместо StopAsyncIteration.
+> `Dispatcher` при падении генератора вызывает `pipe.fail(исходное исключение)`
+> для всех pipes. `PipeTransport._pump` при упавшем pipe шлёт ERROR-пакет вместо
+> «успешного» STREAM_EOF; `Router.handle(ERROR)` для известного стрима вызывает
+> `StreamRegistry.fail()` — удалённый консьюмер получает исключение. Комментарий
+> «прервать цепочку» теперь соответствует поведению. Тесты:
+> `tests/test_b4_producer_error.py` (локальный консьюмер + wire-уровень).
 
 `memory.py:213-217`: при ошибке генератора Dispatcher делает `pipe.close()` **без
 sentinel** — но `Pipe.__anext__` (`memory.py:51-57`) бросает `StopAsyncIteration` когда
@@ -83,7 +122,11 @@ sentinel** — но `Pipe.__anext__` (`memory.py:51-57`) бросает `StopAsy
 (`memory.py:130`). Консьюмер получает «успешное» завершение при оборванных данных.
 Комментарий «прервать цепочку» и описание в glm.md не соответствуют реальному поведению.
 
-### B5. RPC-консоль в system/web_ui игнорирует выбранный узел
+### B5. ✅ РЕШЁН — RPC-консоль в system/web_ui игнорирует выбранный узел
+
+> **Исправлено:** вызов передаёт `dst=target` (system/web_ui.py:386-390,
+> `target = dst_node if dst_node != own else None`). Удалённые вызовы уходят
+> по назначению.
 
 `services/system/web_ui.py:200-204`: `target` вычисляется, но в вызов **не передаётся**:
 `rpc.call(selected_svc, selected_method, call_data, timeout=timeout)` — аргумент
@@ -112,7 +155,14 @@ sentinel** — но `Pipe.__anext__` (`memory.py:51-57`) бросает `StopAsy
 дубликаты инстансов в `ctx._modules` (у certstool стартовали **два** `_cert_sync_loop`,
 webpanel пытался поднять второй Streamlit на порту 8501).
 
-### B8. Broadcast'ы не доходят до client-side соседей
+### B8. ✅ РЕШЁН — Broadcast'ы не доходят до client-side соседей
+
+> **Исправлено (2026-08-25):** `_gossip_loop`/`_announce_loop` (network.py) уже
+> были переведены на `Router.get_transport_to()`; добиты остальные места —
+> `_cert_sync_loop` certstool, проверка цели в `compute_full.start_stream` и
+> `demo.start_stream` теперь тоже работают с client-side соседями через
+> `get_transport_to()`. Сервис spawner удалён из проекта — пункт к нему
+> неприменим.
 
 `_gossip_loop` / `_announce_loop` (`network.py:224-231, 243-250`) и `_cert_sync_loop`
 (`certstool/service.py:81-88`) берут `neighbor_table.connected()`, но отправляют только
@@ -121,7 +171,12 @@ webpanel пытался поднять второй Streamlit на порту 85
 cert_sync вообще. То же в `spawner.py:36` и `compute_full/service.py:40` — client-side
 таргеты считаются «not found», хотя `Router.get_transport_to` умеет в оба направления.
 
-### B9. Подсказки-кнопки в system/web_ui пишут в session_state виджетов после их создания
+### B9. ✅ РЕШЁН — Подсказки-кнопки в system/web_ui пишут в session_state виджетов после их создания
+
+> **Исправлено (2026-08-25):** присвоения `st.session_state.connect_*` перенесены
+> в `on_click`-колбэк кнопки подстановки — колбэки выполняются до рендера
+> виджетов в следующем ране, StreamlitAPIException невозможен; лишний `st.rerun()`
+> убран.
 
 `system/web_ui.py:292-296`: кнопки «подстановки» ниже по коду, чем виджеты
 `connect_host/port/node_id` (`:271-280`) — присвоение `st.session_state.connect_host=...`
@@ -133,17 +188,17 @@ cert_sync вообще. То же в `spawner.py:36` и `compute_full/service.py
 
 | # | Место | Суть |
 |---|-------|------|
-| R1 | `node_connector.py` | После удаления лексикографического правила возможен **mutual-dial**: A→B и B→A одновременно → двойные соединения (server-side + client-side) без дедупликации. Старое правило это исключало |
-| R2 | `router.py:611-614` | `Router.stream()` регистрирует pipe **после** READY — ранние CHUNK дропаются в `stream_registry.feed` (малое окно) |
-| R3 | `router.py:65` | `_ws_pending` без TTL — утечка записей по неотвеченным запросам WS-клиентов (чистка только на disconnect) |
-| R4 | `sessions.py:36-44` | `resolve()` не удаляет `_meta[label]` → вечный рост dict (утечка на каждый RPC); `cancel()` — удаляет. Несимметрично |
-| R5 | `neighbor_table.py:167-168` | `merge_gossip`: `if node_id in self._table: continue` — `via`/статусы **никогда** не обновляются из свежего gossip: устаревший маршрут через умерший узел не чинится, UNREACHABLE не реанимируется в KNOWN; записи не удаляются никогда |
+| R1 | ✅ `node_connector.py` | **НЕАКТУАЛЬНО (2026-08-25):** лексикографическое правило восстановлено — dial инициирует только лексикографически больший узел (`start()`: `if self.ctx.NODE > self.peer_node_id`), mutual-dial исключён; `_already_connected()` дедуплицирует по обоим каналам |
+| R2 | ✅ `router.py` | **РЕШЁН (2026-08-25):** `Router.stream()` регистрирует pipe в StreamRegistry **до** отправки OPEN/ожидания READY (с чисткой при NoRouteToHost/timeout) — ранние CHUNK буферизуются вместо молчаливого дропа |
+| R3 | ✅ `router.py` | **РЕШЁН (2026-08-25):** `_ws_pending` хранит `(transport, created_ts)`; `sweep_ws_pending(TTL=180s)` вызывается из `_gossip_loop` каждые 30с — записи по неотвеченным запросам больше не текут |
+| R4 | ✅ `sessions.py` | **РЕШЁН (2026-08-25):** `resolve()` для Future-сессий удаляет и `_meta[label]`; queue-сессии сохраняют meta до `cancel()` (осознанно) |
+| R5 | ✅ `neighbor_table.py` | **РЕШЁН (2026-08-25):** `merge_gossip` обновляет non-CONNECTED записи из свежего gossip (`via`/host/port/services/last_ts), реанимирует UNREACHABLE→KNOWN; CONNECTED не трогается. TTL-удаление записей не введено — осознанное решение (таблица маленькая) |
 | R6 | ✅ `node_connector.py:122` | **РЕШЁН (2026-08-24):** HELLO теперь шлёт `local_ip()` вместо `cfg.network.host`; то же в HELLO_ACK (`network.py:158`) — коммит 5fc1062. Реальный хост в таблице соседей и UI. Было: advertised `host = cfg.network.host` (обычно `0.0.0.0`) → мусорный хост |
-| R7 | `node_connector.py:185-189` | DEAD_TIMEOUT помечает unreachable, но WS не закрывается — полумёртвый сокет; reconnect пойдёт параллельно со старым |
-| R8 | `node_connector.py:85` | HELLO_REJECT → бесконечный retry каждые ~15с при перманентном отказе |
-| R9 | `rpc_client.py:139-141` | После исчерпания reconnect старый NodeRPC не `close()` — утекают поток+loop+сокет; Streamlit создаст новый поверх |
-| R10 | `memory.py:203-208` | Классический lost-wakeup: `_resume.clear()` между проверкой и ожиданием — теоретический стоп (лечится `asyncio.Condition`/очередью) |
-| R11 | `streamlit_app.py:34` | `host='127.0.0.1'` захардкожен, `P2P_WS_HOST` из env игнорируется |
+| R7 | ✅ `node_connector.py` | **РЕШЁН (2026-08-25):** при DEAD_TIMEOUT вместе с `mark_unreachable` вызывается `_close_local_ws()` — полумёртвый client-side сокет закрывается, connect_loop пересоединяется без дублей |
+| R8 | ✅ `node_connector.py` | **РЕШЁН (2026-08-25):** повторные отказы handshake идут с экспоненциальным backoff 5→300с (cap); после успеха backoff сбрасывается |
+| R9 | ✅ `rpc_client.py` | **РЕШЁН (2026-08-25):** `NodeRPC.close()` уже существовал — подключён в `streamlit_app.get_rpc()`: заменяемый экземпляр закрывает recv-task, WS, loop и поток |
+| R10 | ✅ `memory.py` | **РЕШЁН (2026-08-25):** классический test-and-wait — `_resume.clear()` перенесён **до** проверки свободных pipe'ов; lost-wakeup окно устранено |
+| R11 | ✅ `webpanel/streamlit_app.py` | **НЕАКТУАЛЬНО:** `get_rpc()` читает `P2P_WS_HOST`/`P2P_WS_PORT`/`P2P_NODE_ID` из env — захардкоженного host нет |
 
 ---
 
@@ -151,87 +206,87 @@ cert_sync вообще. То же в `spawner.py:36` и `compute_full/service.py
 
 ### Целые конструкции
 
-- `ConnectionManager` (`network.py:26-44`) — сам класс помечен DEAD, но
-  `conn_manager.connect/disconnect` всё равно вызываются впустую;
-- `_PathAwareTransport` + `_make_transport_back` (`router.py:506-513, 644-656`) —
-  результат `_make_transport_back` передаётся в `_on_request`, который параметр
-  `transport` **игнорирует** (ответ уходит через `_send_pack`). Фактически мёртв
-  (glm.md описывает его как живой — устарело);
-- `exceptions.NodeNotFound`, `exceptions.NoRouteToHost` (`exceptions.py:7,17`) —
-  дубликаты локальных классов `router.py:27,31`;
-- `layers/`, `methods/` — только `__pycache__` от удалённого legacy;
-  `services/services_metadata.json` — пустой, ссылок ноль.
+- ✅ `ConnectionManager` — **удалён ранее** (запись устарела: класса и бесполезных
+  вызовов `conn_manager.*` в коде больше нет);
+- ✅ `_PathAwareTransport` + `_make_transport_back` (`router.py`) — **УДАЛЕНЫ
+  (2026-08-25)**, `_on_request` освобождён от игнорируемого параметра `transport`;
+- ✅ `exceptions.NodeNotFound`, `exceptions.NoRouteToHost` — **УДАЛЕНЫ (2026-08-25)**
+  (дубликаты локальных классов router.py);
+- ✅ `layers/`, `methods/` (только `__pycache__` legacy) и пустой
+  `services/services_metadata.json` — **УДАЛЕНЫ (2026-08-25)**.
 
 ### Отдельные методы (callers отсутствуют)
 
-- `NeighborTable`: `mark_connected`, `has`, `remove` (`neighbor_table.py:104,129,118`);
-- `SessionTable`: `register_stream`, `close_stream`, `has` (`sessions.py:28,46,33`) —
-  вытеснены StreamRegistry;
-- `MemoryModule`: `pipe_from_stream`, `feed_chunk`, `close_stream`, `create_pipes`
-  (`memory.py:293-310,267`) — Router ходит напрямую в StreamRegistry;
-- `ServiceManager`: `remove_service`, `remove_method`, `register_generator`
-  (`manager.py:28,42,49`);
-- `CertsIndex`: `get_all`, `get_by_subject_cn` (`certs_index.py:141,145`); механизм
-  `sync_version` фактически не работает (см. D3);
-- `ConfigManager`: `_deep_merge`, `_save`, `get_local`, `set_local`
-  (`config.py:128,189,214,219`) — остались от двухфайловой эпохи;
-- `loader.stop_watch` (`loader.py:45`) — не вызывается: watchdog не останавливается при
-  shutdown;
-- certstool: `deploy_certificate` (`service.py:276`), `export_certificates_by_subject`
-  (`service.py:423`) — RPC без единого вызывающего (UI их не дёргает);
-- импорты: `asyncio` в `rpc.py:3`, `Any` в `certstool/service.py:12`, `psutil` в
-  `webpanel/service.py:11` (импорт без использования), троекратный локальный
-  `import secrets as _s` при уже импортированном `secrets`;
+- ✅ `NeighborTable`: `mark_connected`, `has`, `remove` — **УДАЛЕНЫ (2026-08-25)**
+  (`register_known` оставлен как публичный API с поддержкой role);
+- ✅ `SessionTable`: `register_stream`, `close_stream`, `has` — **УДАЛЕНЫ (2026-08-25)**
+  (вытеснены StreamRegistry);
+- ✅ `MemoryModule`: `pipe_from_stream`, `feed_chunk`, `close_stream`, `create_pipes`
+  — **УДАЛЕНЫ (2026-08-25)** (Router ходит напрямую в StreamRegistry);
+- ✅ `ServiceManager`: `remove_method`, `register_generator` — **УДАЛЕНЫ (2026-08-25)**;
+  `remove_service` теперь ЖИВОЙ — используется certstool при отсутствии КриптоПро;
+  добавлен `replace_service()` для hot-reload (D5);
+- ✅ `CertsIndex`: `get_all`, `get_by_subject_cn` — **УДАЛЕНЫ (2026-08-25)**;
+- ✅ `ConfigManager`: `_deep_merge`, `_save`, `get_local`, `set_local` — **УДАЛЕНЫ
+  (2026-08-25)**;
+- ✅ `loader.stop_watch` — **ПОДКЛЮЧЁН (2026-08-25)**: вызывается в `finally` main.py,
+  watchdog останавливается при shutdown;
+- certstool RPC без вызывающих: ✅ `export_certificates_by_subject` **УДАЛЁН
+  (2026-08-25)** — агрегатор над find_certificates_by_subject + export_*; 
+  `deploy_certificate` **ОСТАВЛЕН** — уникальный сценарий (файловая пара PFX+CER,
+  автоконтейнер, смена пароля), не покрывается другими методами;
+- ✅ импорты: `asyncio` в rpc.py, `Any` в certstool/service.py, неиспользуемый
+  `psutil` в webpanel/service.py, локальные `import secrets as _s` ×3 — **УДАЛЕНЫ
+  (2026-08-25)**;
 - `NeighborInfo.uri` — уже честно закомментирован как unused.
 
 ### Мёртвые зависимости
 
-В `requirements.txt`, но не импортируются нигде: `lz4`, `aiohttp`, `requests`, `httpx`,
-`PyJWT`, `cachetools`, `python-dotenv`, `msgpack` (+ stale `--hidden-import msgpack` в
-`compile.py:26`). Раздувает билд.
+✅ **ОЧИЩЕНО (2026-08-25):** из `requirements.txt` удалены `lz4`, `aiohttp`,
+`requests`, `httpx`, `PyJWT`, `cachetools`, `python-dotenv`, `urllib3`,
+`pydantic-settings` (не импортируются нигде; stale hidden-import убран и из
+compile.py). Запись про `msgpack` устарела — msgpack теперь **основной wire-формат**.
+Добавлен отсутствовавший, но используемый `colorama`. Подтверждено живыми:
+`psutil` (local_ip.py), `cryptography` (sign/signer.py), `watchdog`, `pyyaml`.
 
 ### Неверные подсказки UI
 
-`_get_arg_hint` (`system/web_ui.py:228-236`) описывает несуществующие параметры
-`spawner.spawn` (`dst/service/method` вместо `generator_service/generator/...`) и
-`install_from_node` (`node_id` вместо `source_node`).
+✅ **ИСПРАВЛЕНО (2026-08-25):** `_get_arg_hint` обновлён — `spawner.spawn` описывает
+реальные параметры (`generator_service/generator/service/method/workers_count`),
+`install_from_node` — `source_node` вместо `node_id`.
 
 ---
 
 ## 4. Отклонения от архитектуры / несоответствия
 
-- **D1. Протокол называется MsgPack, а является JSON.** Везде
-  `model_dump_json`/`receive_json` (`transport.py:22-26`, `network.py:91`,
-  `node_connector.py:91`). Название класса `MsgPack` вводит в заблуждение; msgpack даже
-  не в зависимостях.
-- **D2. `transport.py:22`** — `model_dump_json()` вычисляется всегда, но для FastAPI-пути
-  тут же выбрасывается и сериализация делается заново через `send_json(model_dump())`.
-  Двойная работа на каждый пакет.
-- **D3. CERT_SYNC `sync_version` расходится**: `certstool` шлёт счётчик
-  (`service.py:70,757`), `network.py:283` — хардкод `0`; merge обновляет метаданные
-  только при строгом `>` (`certs_index.py:79`) → push-обновления метаданных фактически
-  не работают, работает только refresh `last_updated`/`available_on`.
-- **D4. Дублирование `touch()`**: `router.handle:111` и приёмные циклы
-  (`network.py:166`, `node_connector.py:95`) — тройное обновление `last_ts` на пакет.
-- **D5. Hot-reload ломает lifecycle**: `loader._register_from_module:103` добавляет новый
-  instance в `ctx._modules`, но `start()` нового инстанса **не вызывается** (startup уже
-  прошёл), старый не `stop()` — сервисы с логикой в `start()` после правки работают
-  иначе, чем при старте.
-- **D6. `executor.execute:29`**: sync @rpc выполняются инлайн в event loop — тяжёлый
-  синхронный метод заблокирует всю ноду (сейчас все «тяжёлые» в certstool асинхронные
-  через `create_subprocess_shell` — но контракт нигде не зафиксирован).
-- **D7. `executor.open_stream:68`**: `buff_len=10` захардкожен; `memory.default_buff` из
-  конфига игнорируется (как и в `router.py:611`).
-- **D8. `compile.py:101`**: путь `f"./services/{p}/web_ui.py"` даёт
-  `./services/services/<name>/web_ui.py` (p уже содержит `services/`) → exclude никогда
-  не срабатывает → web_ui модули попадают в Node-сборку (лишний вес + ошибки импорта в
-  лог при старте Node).
-- **D9. Контракт ошибок**: часть сервисов возвращает `{'error': ...}` в data
-  (`spawner.py:29`, `compute_full/service.py:42`), часть — ERROR-пакетом. Два механизма
-  ошибок без соглашения.
-- **D10. `setup_logging.py:21-26`** мутирует `record.msg/levelname/name`, вшивая
-  ANSI-коды — при добавлении второго handler'а (файл) получим двойное окрашивание и
-  мусор в логах.
+- ✅ **D1. УСТАРЕЛО** — протокол теперь **настоящий msgpack** (binary WS frames,
+  `encode_pack`/`decode_pack` в protocol.py); название класса MsgPack соответствует.
+- ✅ **D2. УСТАРЕЛО** — `transport.py` сериализует один раз (`encode_pack` →
+  `send_bytes`/`send`), двойной работы нет.
+- ✅ **D3. РЕШЁН (2026-08-25):** единый источник версии — `certs_index.sync_version`
+  (инкрементируется при каждом `update_local`); certstool и `_request_cert_sync`
+  шлют её вместо счётчика/хардкода `0`; merge по строгому `>` теперь осмыслен.
+- ✅ **D4. РЕШЁН (2026-08-25):** touch остался только в `router.handle()`; дубли
+  в приёмных циклах network.py/node_connector.py убраны.
+- ✅ **D5. РЕШЁН (2026-08-25):** hot-reload выполняет полный swap — `stop()`
+  старого инстанса → замена в `ctx._modules` → `replace_service()` + перерегистрация
+  методов → `start()` нового. Планирование через `ctx.loop` (run_coroutine_threadsafe
+  из потока watchdog) или create_task. Тест: `tests/test_d5_hotreload.py`.
+- ✅ **D6. РЕШЁН (2026-08-25):** контракт зафиксирован (glm.md «Контракт выполнения»,
+  docs/README.md). Sync @rpc выполняются через `asyncio.to_thread` — loop не блокируется
+  (`create_task` НЕ помог бы: task крутится в том же потоке; для CPU-heavy —
+  ProcessPoolExecutor вручную, to_thread не обходит GIL).
+- ✅ **D7. РЕШЁН (2026-08-25):** `memory.default_buff` из конфига используется в
+  `Router.stream()` и прокидывается в `executor.open_stream()`.
+- ✅ **D8. РЕШЁН (2026-08-25):** путь исключения web_ui исправлен
+  (`services/<name>/web_ui.py`), exclude получает имя модуля `services.<name>.web_ui`.
+- ✅ **D9. РЕШЁН (2026-08-25):** соглашение зафиксировано (glm.md + docs/README.md) —
+  это разные виды отказов: ERROR-пакет = транспорт/система (нет метода/маршрута,
+  исключение метода, упал producer → caller получает исключение); `'error'` в RESPONSE
+  data = бизнес-отказ при исправном транспорте (caller проверяет data). Существующее
+  разделение кода соответствует конвенции — унификация не требуется.
+- ✅ **D10. УСТАРЕЛО** — `ColorFormatter.format` восстанавливает record.* в finally,
+  второй handler безопасен.
 - **D11. `_get_arg_hint`/`KNOWN_METHODS`** — ручной реестр, дрейфующий от кода — источник
   «лживой» документации.
 
@@ -251,55 +306,59 @@ cert_sync вообще. То же в `spawner.py:36` и `compute_full/service.py
 
 ### Стриминг
 
-- `Dispatcher._produce` (`memory.py:182,188`): `run_coroutine_threadsafe(...).result()`
-  **на каждый элемент** — кросс-потоковый переключатель на item. Замена: потоковый
-  `queue.Queue` + один async-мост (или `janus`), либо батчирование. Даёт порядок
-  ускорения генераторного тракта при высоких частотах чанков.
-- ACK-шторм: консьюмер шлёт ACK на **каждый** чанк (`router.py:636`) — по mesh-пакету на
-  чанк в обе стороны. Достаточно ACK раз на `low_watermark`/батч (как и задумано
-  `buff_size`-батчами в `_pump`).
+- ✅ `Dispatcher._produce`: **РЕШЁН (2026-08-25)** — поток-продюсер кладёт в
+  потокобезопасную `queue.Queue` (блокирующий put с проверкой `_running`), async-сторона
+  вычитывает через `run_in_executor(get, timeout=0.25)`. Кросс-поточный
+  `run_coroutine_threadsafe(...).result()` на каждый item и `_resume`/lost-wakeup
+  механика удалены полностью.
+- ✅ ACK-шторм: **РЕШЁН (2026-08-25)** — кумулятивный ACK раз на `buff_len`
+  потреблённых чанков (`_MeshStreamIterator`, окно = батчу producer'а); встроенные
+  консьюмеры (compute_full, тестовый сервис) переведены на тот же паттерн.
 - `_MeshStreamIterator` не обрабатывает ранний выход (`break`): pipe остаётся в
   StreamRegistry, генератор виснет до ACK-таймаута. Нужен `aclose()` → отмена/EOF-сигнал.
+  **Отложено.**
 
 ### Сеть
 
-- `Router.get_transport_to` создаёт новый `WebSocketTransport` на **каждую отправку**
-  (`router.py:98,101,415,429`…) — кэшировать транспорт на node_id (инвалидация на
-  disconnect/reconnect).
+- ✅ `Router.get_transport_to`: **РЕШЁН (2026-08-25)** — транспорты кэшируются по
+  node_id; инвалидация при register/unregister client-side WS и при смене/удалении
+  server-side сокета в `websocket_endpoint`.
 - `_gossip_loop`/`_announce_loop` шлют соседям **последовательно** (`await` в цикле,
   `network.py:229,248`) — медленный пир задерживает рассылку всем.
-  `asyncio.gather(..., return_exceptions=True)`.
-- `WebSocketTransport.send` — убрать двойную сериализацию (см. D2).
+  ✅ **РЕШЁНО (2026-08-25):** `asyncio.gather(..., return_exceptions=True)` — в
+  `_gossip_loop`, `_announce_loop` и `_cert_sync_loop` certstool.
+- ✅ `WebSocketTransport.send` — **УСТАРЕЛО** (двойной сериализации больше нет, см. D2).
 - `certstool._cert_sync_loop`: `list_certificates` (spawn `certmgr.exe`) каждые 60с на
   узел — можно кэшировать digest и инвалировать по событию установки/удаления (сами
-  методы уже знают точки изменения).
+  методы уже знают точки изменения). **Отложено.**
 
 ### Прочее
 
-- `Pipe.get` дёргает refill-callback на каждый get ниже watermark (`memory.py:31`) — спам
-  `_resume.set()`; достаточно одноразового сигнала «появился слот».
-- `_already_connected()` (`node_connector.py:63-64`) — двойной lookup таблицы.
+- ✅ Refill-callback спам: **РЕШЁН (2026-08-25)** — механизм callback'ов удалён
+  полностью; Dispatcher опрашивает свободные pipe'ы с sleep(5мс) только когда ВСЕ полные,
+  producer блокируется на thread-safe queue. R10-lost-wakeup исчез вместе с механизмом.
+- `_already_connected()` (`node_connector.py:63-64`) — двойной lookup таблицы. **Отложено** (косметика).
 - `ServiceLoader` на каждое изменение файла перезагружает **весь** файл и создаёт новый
   instance — ок для dev, но watchdog триггерится и на `views/`, и дважды
-  (created+modified) — фильтр по `service.py` и debounce.
+  (created+modified) — фильтр по `service.py` и debounce. **Отложено.**
 
 ---
 
 ## 6. Мелочи
 
-- `loader.py:104`: лог `Registered {service_name}.{method_name}` печатает только
-  **последний** метод (утечка переменной цикла).
+- ✅ `loader.py:104`: **РЕШЁН (2026-08-25)** — лог печатает сервис и число методов,
+  утечка переменной цикла исчезла.
 - ✅ `config.py:104`: **РЕШЁН (2026-08-24)** — `_ensure_config` переписан на
   `model_dump(mode='json')` + `yaml.dump` (config.py:74-92): no-op `.format(hostname=...)`
   исчез, дефолты унифицированы (шаблон генерируется из самой модели `Config`).
   Было: `.format(hostname=...)` по строке без плейсхолдеров — no-op;
   `NetworkConfig.host` дефолт `_HOSTNAME`, а шаблон писал `0.0.0.0` — рассинхрон дефолтов.
-- `netinfo.nodes` (`service.py:26-29`) возвращает `{id: {'node_id': id}}` — бесполезная
-  структура.
-- `compute_full/service.py:111`: проверка `ctx.get('eof')` — флаг никем не выставляется,
-  всегда False (мёртвое условие).
+- ✅ `netinfo.nodes`: **РЕШЁН (2026-08-25)** — возвращает host/port/version/services из
+  таблицы соседей вместо `{id: {'node_id': id}}`.
+- ✅ `compute_full/service.py:111`: **РЕШЁН (2026-08-25)** — мёртвое условие
+  `ctx.get('eof')` и его присвоение в executor удалены.
 - `spawner.spawn` выбирает «первые N узлов» без учёта нагрузки; `buff` по умолчанию 3 при
-  `default_buff=10` в конфиге.
+  `default_buff=10` в конфиге (**отложено** — изменение API-дефолтов).
 - `main.py:49-50`: `os.makedirs(SERVICES_DIR)` создаст `./services` в dev, если его нет —
   раньше маскировал B7 (теперь B7 ✅ решён, строка безвредна).
 - `debug_client.py` и `docs/README.md` не проверены построчно (TUI-клиент и docs), но по
@@ -309,12 +368,11 @@ cert_sync вообще. То же в `spawner.py:36` и `compute_full/service.py
 
 ## 7. Итог: топ-5 по важности
 
-1. **B1** — разворот path в ответах: multi-hop RPC/стримы не работают на 3+ узлах
-   (сейчас маскируется малыми топологиями).
-2. **B2** — ACK-гонка PipeTransport: стрим умирает после первого батча при быстром
-   консьюмере.
-3. **B3** — исключения сервисов роняют WS-соединение и оставляют «призраков» в
-   nodes_manager.
-4. ~~B7~~ (✅ решён) + **B8** — client-side соседи без gossip/announce/cert_sync.
-5. **Оптимизация**: msgpack вместо JSON + батчевые ACK + кэш транспортов — самый большой
-   выигрыш без изменения замысла.
+1. ~~**B1**~~ (✅ решён 2026-08-25) — разворот path в ответах: multi-hop RPC/стримы не работали на 3+ узлах
+2. ~~**B2**~~ (✅ решён 2026-08-25) — ACK-гонка PipeTransport: стрим умирал после первого батча при быстром консьюмере.
+3. ~~**B3**~~ (✅ решён 2026-08-25) — исключения сервисов больше не роняют WS-соединение и не оставляют «призраков».
+4. ~~B7~~ (✅ решён) + ~~**B8**~~ (✅ решён 2026-08-25) — client-side соседи получают gossip/announce/cert_sync.
+5. ~~Оптимизация~~ — msgpack внедрён ✅; **батчевые ACK ✅, кэш транспортов ✅,
+   queue-мост в Dispatcher ✅, refill-callback спам ✅** (2026-08-25). Осталось
+   отложенным: `aclose()` для раннего выхода консьюмера, кэш digest certstool,
+   watchdog debounce, TTL записей соседей, API-дефолты spawner.

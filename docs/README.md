@@ -85,7 +85,8 @@ WebSocket-based P2P mesh network with RPC service discovery, multi-hop routing, 
 - Multi-hop маршрутизация через промежуточные узлы
 - TTL-based предотвращение бесконечных циклов (TTL=16)
 - Path tracking: каждый узел добавляет себя в `pack.path`
-- Обратная маршрутизация по reversed path для ответов
+- Обратная маршрутизация: path хранится как `[origin,…,текущий узел]`, каждый хоп
+  выталкивает себя с хвоста (`_route_back`) — ответы НЕ разворачиваются
 - Loop detection: TTL=0 или loop → packet dropped
 
 ### 2. Mesh Streaming
@@ -103,9 +104,11 @@ WebSocket-based P2P mesh network with RPC service discovery, multi-hop routing, 
 - `LocalIPResolver` (`src/internal_modules/local_ip.py`): узел сообщает соседям реальный IP своего сетевого интерфейса (приоритет: живые WS-подключения → UDP-trick к пиру из конфига → psutil fallback), кэш на `network.ip_ttl_sec`
 
 ### 4. Streaming с Backpressure
-- `Pipe`: async queue с `buff_len` и `low_watermark`
-- `Dispatcher`: распределяет данные по множеству pipes; при ошибке producer — close() без sentinel
-- `PipeTransport`: отправка батчами через Router + ACK protocol
+- `Pipe`: async queue с `buff_len` и `low_watermark`; ошибка producer → исключение
+  у консьюмера (`pipe.fail()`), а не «успешный» конец потока
+- `Dispatcher`: распределяет данные генератора по множеству pipes; поток-продюсер
+  работает через потокобезопасную очередь (без кросс-поточного планирования на item)
+- `PipeTransport`: отправка батчами через Router + кумулятивный ACK protocol
 - Автоматическая пауза при заполнении буфера
 
 ### 5. Connection Reconnect
@@ -152,11 +155,15 @@ python main.py
 
 Откройте `http://localhost:8501` после запуска узла.
 
-### Тестовый клиент
+### Тестовый клиент (LEGACY)
 
 ```bash
 python debug_client.py
 ```
+
+> ⚠️ `debug_client.py` — **LEGACY, не сопровождается** (времена JSON-протокола).
+> Основной UI — веб-панель. При необходимости использования привести к актуальному
+> msgpack wire-формату.
 
 ---
 
@@ -210,8 +217,6 @@ from src.internal_modules.config import ConfigManager
 
 config = ConfigManager()
 config.update(network__port=9002)             # Обновить с автосохранением (вложенность через '__')
-config.get_local('name')                      # Поле из секции local
-config.set_local('name', 'MyNode')            # Изменить поле в local
 config.add_peer('Node1', 'ws://host:9000/ws/')# Добавить пира (local.peers)
 config.remove_peer('Node1')                   # Удалить пира
 config.list_peers()                           # Список пиров
@@ -220,6 +225,13 @@ config.list_peers()                           # Список пиров
 ---
 
 ## Сетевой протокол
+
+### Wire-формат
+
+**1 binary WS frame = 1 msgpack-дикт** (`encode_pack`/`decode_pack` в `protocol.py`).
+Text-кадры (legacy JSON) отклоняются: узел отвечает `HELLO_REJECT` с причиной
+`upgrade required`. Неизвестный `type` — пакет дропается, соединение живёт
+(forward-compat).
 
 ### Типы сообщений (`PackType`)
 
@@ -236,7 +248,7 @@ config.list_peers()                           # Список пиров
 | `STREAM_CHUNK` | → | Блок данных стрима (via cached route) |
 | `STREAM_ACK` | ← | Подтверждение получения (via backward_path) |
 | `STREAM_EOF` | → | Конец стрима |
-| `ERROR` | ← | Ошибка |
+| `ERROR` | ← | Ошибка транспорта/системы (нет метода, нет маршрута, исключение сервиса, упал producer) |
 | `PING` / `PONG` | ↔ | Keepalive |
 | `GOSSIP` | ↔ | Обмен топологией |
 | `ANNOUNCE` | ↔ | Объявление сервисов |
@@ -272,7 +284,8 @@ Node0 → Node1 → Node2
 1. Node0 отправляет `REQUEST` с `path=["Node0"]`, `ttl=16`
 2. Node1 принимает, decrement TTL, добавляет себя в `path`, пересылает `FORWARDED`
 3. Node2 выполняет вызов локально через `LocalExecutor`
-4. Ответ идёт обратно по reversed `path`: Node2 → Node1 → Node0
+4. Ответ несёт тот же path `[Node0, Node1, Node2]`: каждый хоп выталкивает себя
+   с хвоста — Node2 → Node1 → Node0 (пакеты не разворачиваются)
 
 ### WS-клиенты (webpanel)
 
@@ -381,18 +394,19 @@ async for chunk in await ctx.network.stream(
     process(chunk)
 ```
 
-Возвращает `_MeshStreamIterator` — async iterator с автоматическим ACK после каждого чанка.
+Возвращает `_MeshStreamIterator` — async iterator с кумулятивным ACK: одно
+подтверждение на `buff_len` потреблённых чанков (окно совпадает с батчем producer'а).
 
 ### Компоненты
 
 | Компонент | Роль |
 |-----------|------|
-| **Pipe** | Async queue с `buff_len`, `low_watermark`, refill callback |
-| **Dispatcher** | Распределяет данные генератора по множеству pipes |
-| **PipeTransport** | Отправка через Router батчами + ACK protocol |
+| **Pipe** | Async queue с `buff_len`, `low_watermark`; `fail(error)` — аварийный конец с исключением у консьюмера |
+| **Dispatcher** | Распределяет данные генератора по множеству pipes (поток-продюсер → thread-safe queue → async-раздача) |
+| **PipeTransport** | Отправка через Router батчами + кумулятивный ACK; при упавшем producer шлёт ERROR вместо EOF |
 | **StreamRoute** | Кэшированный маршрут: forward_path + backward_path |
 | **MemoryModule** | Фабрика: `create_pipe()`, `create_dispatcher()`, `attach_transport()` |
-| **StreamRegistry** | Реестр inbound-стримов: label → Pipe |
+| **StreamRegistry** | Реестр inbound-стримов: label → Pipe (+ `fail()` по ERROR от producer) |
 
 ### Spawner — распределённые вычисления
 
@@ -457,6 +471,20 @@ rpc.call('certstool', 'list_certificates', data={})
 rpc.call('certstool', 'network_certs', data={}, dst='Node1')
 ```
 
+### Контракты выполнения и ошибок
+
+**Выполнение (D6):** async @rpc — только await-able API внутри; sync @rpc автоматически
+выполняются через `asyncio.to_thread` (не блокируют event loop). CPU-тяжёлый код —
+в `ProcessPoolExecutor` вручную. Важно: `asyncio.create_task(sync_fn)` не помогает —
+task исполняется в том же loop-потоке.
+
+**Ошибки (D9) — два уровня:**
+
+| Вид | Механизм | Caller видит |
+|-----|----------|--------------|
+| Транспорт/система (нет метода/маршрута, исключение метода, упал producer) | ERROR-пакет | Exception из `call()` |
+| Бизнес-отказ сервиса (валидация, «узел не найден», политика) | RESPONSE с `'error'` в data | Обычный результат — проверять data |
+
 ---
 
 ## Веб-панель управления
@@ -516,27 +544,30 @@ GROUP_ORDER = ['Система', 'Сеть', 'Сертификаты', 'Вычи
 
 ### CertsTool — управление сертификатами
 
-Сервис `certstool` предоставляет 17 RPC-методов:
+Сервис `certstool` предоставляет 16 RPC-методов:
 
 | Метод | Описание |
 |-------|----------|
 | `list_certificates` | Список установленных сертификатов |
 | `find_certificate_by_subject` | Поиск по Subject |
 | `find_certificates_by_subject` | Поиск всех по Subject |
-| `deploy_certificate` | Развертывание из PFX + CER |
+| `deploy_certificate` | Развертывание из файловой пары PFX + CER (автоконтейнер, смена пароля) |
 | `export_certificate_pfx` | Экспорт закрытого ключа в PFX (base64) |
 | `export_certificate_cer` | Экспорт открытого ключа в CER (base64) |
-| `export_certificate_by_subject` | Экспорт по Subject (PFX + CER) |
-| `export_certificates_by_subject` | Массовый экспорт по Subject |
+| `export_certificate_by_subject` | Экспорт первого найденного по Subject (PFX + CER) |
 | `delete_certificate` | Удаление по thumbprint |
 | `install_pfx_from_base64` | Установка PFX из base64 |
 | `batch_install_pfx_from_bytes` | Пакетная установка со сменой пароля |
 | `get_dashboard_data` | Данные для веб-панели |
 | `get_certificate_info` | Информация по контейнеру или thumbprint |
 | `network_certs` | Сертификаты из сети, не установленные локально |
-| `install_from_node` | Сетевая установка с удалённого узла |
+| `install_from_node` | Сетевая установка с удалённого узла (`source_node`) |
 | `get_cert_sync_digest` | Digest для CERT_SYNC |
 | `get_install_history` | История сетевых установок |
+
+При отсутствии КриптоПро на узле (ошибка «Тип поставщика не определен») сервис
+однократно логирует причину и саморазрегистрируется — спам в логах и бесполезные
+запуски certmgr прекращаются.
 
 ### CERT_SYNC — сетевая синхронизация
 
@@ -666,7 +697,19 @@ SERVICE_META = {
 
 ## Тестирование
 
-### Debug Client
+### Тесты (pytest-совместимые, в `tests/`)
+
+| Файл | Покрывает |
+|------|-----------|
+| `test_integration_msgpack.py` | Wire-протокол: HELLO, RPC с bytes, 10k-чанковый стрим с backpressure, GOSSIP/CERT_SYNC, robustness |
+| `test_multihop_routing.py` | B1/B3: multi-hop RPC/ERROR через промежуточный узел, живучесть соединения |
+| `test_b2_ack_race.py` | B2: ACK-future регистрируется до батча |
+| `test_b4_producer_error.py` | B4: ошибка producer = исключение у консьюмера / ERROR вместо EOF |
+| `test_d5_hotreload.py` | D5: hot-reload — stop старого → start нового |
+
+Запуск: `$env:PYTHONPATH='.'; python tests/<name>.py`
+
+### Debug Client (LEGACY)
 
 `debug_client.py` — standalone WebSocket тест клиент:
 
@@ -721,7 +764,7 @@ P2P_Core/
 │       ├── protocol.py     # PackType, MsgPack — сетевой протокол
 │       ├── transport.py    # WebSocketTransport — транспорт
 │       ├── network.py      # NetworkModule, NodesManager
-│       ├── router.py       # Router, StreamRoute, _MeshStreamIterator, _PathAwareTransport
+│       ├── router.py       # Router, StreamRoute, _route_back, _MeshStreamIterator
 │       ├── sessions.py     # SessionTable — tracking RPC futures
 │       ├── stream_registry.py # StreamRegistry — registry inbound стримов
 │       ├── neighbor_table.py  # NeighborTable — топология сети
@@ -733,7 +776,7 @@ P2P_Core/
 │   ├── rpc.py              # Декораторы @rpc, @generator, @stream_wrapper, @stream_consumer
 │   │
 │   ├── certstool/          # 🔐 КриптоПро сертификаты
-│   │   ├── service.py      #   17 RPC-методов
+│   │   ├── service.py      #   16 RPC-методов
 │   │   └── web_ui.py       #   5 вкладок: сертификаты, установка, сетевая, экспорт, поиск
 │   │
 │   ├── netinfo/            # 🌐 Диагностика сети
@@ -786,13 +829,16 @@ python compile.py
 |-------|-----------|
 | `fastapi`, `uvicorn`, `starlette` | Web framework и сервер |
 | `websockets` | WebSocket клиент для исходящих соединений |
-| `pydantic`, `pydantic-settings` | Валидация данных и настройки |
+| `msgpack` | Binary wire-формат (1 WS-кадр = 1 msgpack-дикт) |
+| `pydantic` | Валидация данных (Config, MsgPack) |
 | `pyyaml` | YAML конфигурация |
-| `lz4` | LZ4 сжатие для gossip |
 | `watchdog` | Hot-reload сервисов |
-| `streamlit` | Веб-панель управления |
-| `pandas` | DataFrames для веб-интерфейса |
-| `cryptography` | SSL/TLS сертификаты |
-| `psutil` | Системная информация |
-| `pyjwt` | Аутентификация |
-| `cachetools` | Кеширование |
+| `colorama` | ANSI-цвета логов в Windows-консоли |
+| `psutil` | LocalIPResolver: TCP-таблица + сетевые интерфейсы |
+| `cryptography` | Подпись/генерация сертификатов (`sign/signer.py`) |
+| `streamlit`, `pandas`, `streamlit-agraph` | Веб-панель и карта сети |
+| `pyinstaller` | Сборка дистрибутива |
+
+Устаревшие зависимости (`lz4`, `aiohttp`, `requests`, `httpx`, `PyJWT`,
+`cachetools`, `python-dotenv`, `urllib3`, `pydantic-settings`) удалены —
+нигде не импортировались.

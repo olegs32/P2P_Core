@@ -74,6 +74,14 @@ class UpdateConfig(BaseModel):
     health_confirm_sec: int = 90        # сколько ждать до boot_ok после апдейта
 
 
+class PurgeConfig(BaseModel):
+    """Аварийное удаление узла со всеми данными (сервис purge).
+
+    По умолчанию ВЫКЛЮЧЕН — включается явно в config.yaml.
+    """
+    enabled: bool = False
+
+
 class ServicesConfig(BaseModel):
     path: Path = Path('services')
 
@@ -103,6 +111,7 @@ class Config(BaseModel):
     logs: LogsConfig = LogsConfig()
     files: FilesConfig = FilesConfig()
     update: UpdateConfig = UpdateConfig()
+    purge: PurgeConfig = PurgeConfig()
     services: ServicesConfig = ServicesConfig()
     local: LocalConfig = LocalConfig()
 
@@ -153,16 +162,6 @@ def _save_yaml(path: Path, data: dict):
     log.debug(f'Saved config: {path}')
 
 
-def _deep_merge(base: dict, override: dict) -> dict:
-    result = base.copy()
-    for key, value in override.items():
-        if key in result and isinstance(result[key], dict) and isinstance(value, dict):
-            result[key] = _deep_merge(result[key], value)
-        else:
-            result[key] = value
-    return result
-
-
 def _set_nested(data: dict, keys: list[str], value: Any):
     d = data
     for k in keys[:-1]:
@@ -192,6 +191,11 @@ class ConfigManager:
         self._config_path = config_path
         self.cfg: Config = self._load()
 
+    @property
+    def config_path(self) -> Path:
+        """Путь к config.yaml (нужен сервису purge для аварийного удаления)."""
+        return self._config_path
+
     # ------------------------------------------------------------------ #
     #  Internal
     # ------------------------------------------------------------------ #
@@ -214,9 +218,6 @@ class ConfigManager:
         self.cfg = self._load()
         log.info('Config reloaded')
 
-    def _save(self):
-        _save_yaml(self._config_path, _load_yaml(self._config_path))
-
     # ------------------------------------------------------------------ #
     #  Обновление конфига
     # ------------------------------------------------------------------ #
@@ -234,22 +235,6 @@ class ConfigManager:
         _save_yaml(self._config_path, data)
         self.cfg = Config(**data)
         log.info(f'Config updated: {kwargs}')
-
-    # ------------------------------------------------------------------ #
-    #  Удобные геттеры / сеттеры для local-полей
-    # ------------------------------------------------------------------ #
-
-    def get_local(self, key: str, default=None) -> Any:
-        data = _load_yaml(self._config_path)
-        _, parent = _get_nested(data, ['local'])
-        return parent.get(key, default)
-
-    def set_local(self, key: str, value: Any):
-        data = _load_yaml(self._config_path)
-        _set_nested(data, ['local', key], value)
-        _save_yaml(self._config_path, data)
-        self.cfg = Config(**data)
-        log.info(f'Local config updated: {key} = {value}')
 
     # ------------------------------------------------------------------ #
     #  Управление пирами

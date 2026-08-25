@@ -1,3 +1,4 @@
+import asyncio
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 from typing import TYPE_CHECKING
@@ -29,12 +30,16 @@ class AppContext:
         self.memory: MemoryModule | None = None
         self.spawn: Spawner | None =  None
 
+        # главный event loop (для планирования из потоков watchdog и т.п.)
+        self.loop: asyncio.AbstractEventLoop | None = None
+
     def register(self, module: ModuleGeneric):
         """Регистрация в порядке вызова = порядок startup."""
         self._modules.append(module)
         return module  # чтобы можно было присваивать в одну строку
 
     async def startup(self):
+        self.loop = asyncio.get_running_loop()
         for module in self._modules:
             module.log.info('Starting...')
             await module.start()

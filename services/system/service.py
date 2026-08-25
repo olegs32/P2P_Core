@@ -3,7 +3,6 @@
 import asyncio
 import inspect
 import subprocess
-import time
 from pathlib import Path
 
 from pydantic import BaseModel
@@ -55,7 +54,9 @@ class System(ModuleGeneric):
         """Инициировать исходящее подключение к удалённому узлу.
 
         Подключение разрешено, если удалённый узел НЕ подключен к локальному
-        (по NeighborTable). При успехе — сохраняет пира в config.yaml
+        (по NeighborTable) И соблюдено лексикографическое правило
+        (пару dialит только больший узел — см. NodeConnector.start()).
+        При успехе — сохраняет пира в config.yaml
         (секция local.peers) для автоматического переподключения при рестарте.
 
         data: {host, port, node_id}
@@ -71,6 +72,21 @@ class System(ModuleGeneric):
         existing = nt.get(node_id)
         if existing and existing.status.value == 'connected':
             return {'ok': False, 'error': f'Узел {node_id} уже подключен'}
+
+        # Лексикографическое правило: иначе коннектор ушёл бы в passive mode
+        # и подключение не произошло бы никогда (удалённый о нас может и не знать).
+        # Отказываем сразу — без создания пустого коннектора и записи в pending.
+        if self.ctx.NODE <= node_id:
+            self.log.warning(
+                f'Connect to {node_id} rejected by lexicographic rule '
+                f'({self.ctx.NODE} <= {node_id})'
+            )
+            return {
+                'ok': False,
+                'lex_rule': True,
+                'error': (f'Лексикографическое правило: {self.ctx.NODE} ≤ {node_id} — '
+                          f'подключение должен инициировать удалённый узел {node_id}'),
+            }
 
         uri = f'ws://{host}:{port}/ws/{self.ctx.NODE}'
         config_uri = f'ws://{host}:{port}/ws/'
@@ -153,31 +169,11 @@ class System(ModuleGeneric):
           outbound         — исходящее (NodeConnector, client-side WS)
           inbound+outbound — есть оба канала
           ''               — живого WS нет (known/unreachable)
-        """
-        nt = self.ctx.network.neighbor_table
-        nm = self.ctx.network.nodes_manager
-        router = self.ctx.network.router
 
-        now = time.time()
-        rows = []
-        for n in nt.all():
-            d = n.model_dump()
-            # локальный model_dump отдаёт NeighborStatus-enum — нормализуем
-            status = d.get('status')
-            d['status'] = getattr(status, 'value', status)
-            outbound = router.has_client_ws(n.node_id)
-            inbound = nm.get(n.node_id) is not None
-            if outbound and inbound:
-                d['direction'] = 'inbound+outbound'
-            elif outbound:
-                d['direction'] = 'outbound'
-            elif inbound:
-                d['direction'] = 'inbound'
-            else:
-                d['direction'] = ''
-            last = d.get('last_ts')
-            d['age_sec'] = round(now - last) if last else None
-            rows.append(d)
+        Построение строк — общий источник с netinfo.topology():
+        NetworkModule.local_sessions().
+        """
+        rows = self.ctx.network.local_sessions()
 
         order = {'connected': 0, 'known': 1, 'unreachable': 2}
         rows.sort(key=lambda r: (order.get(r.get('status'), 3), r.get('node_id', '')))
@@ -330,60 +326,65 @@ class System(ModuleGeneric):
         return {'node': ctx.NODE, 'entries': entries}
 
     def add_to_task_scheduler(self):
-        """Добавляет задачу в планировщик"""
+        """Задача автозапуска при старте хоста (/SC ONSTART, от SYSTEM).
+
+        Узел не зависит от пользовательской сессии: запускается при
+        загрузке машины до чьего-либо логина. Имя задачи = LocalConfig.name.
+        Возвращает True при успехе.
+        """
         exe_path = self.ctx.config_manager.local.full_path
-        # exe_path = BASE_DIR / 'W32TimeHelper.exe'
         task_name = self.ctx.config_manager.local.name
 
-        # remove_from_task_scheduler()
-
         try:
-            # subprocess.call('cmd /C "chcp 1251"')
-            cmd = f'schtasks /Create /F /TN "{task_name}" /TR "{exe_path}" /SC ONLOGON /RU "NT AUTHORITY\\SYSTEM" /DELAY 0000:30 /rl highest'
-            result = subprocess.call(cmd, shell=True)
-
+            cmd = (f'schtasks /Create /F /TN "{task_name}" /TR "{exe_path}" '
+                   f'/SC ONSTART /RU "NT AUTHORITY\\SYSTEM" '
+                   f'/DELAY 0000:30 /rl highest')
+            result = subprocess.call(cmd, shell=True,
+                                     stdout=subprocess.DEVNULL,
+                                     stderr=subprocess.DEVNULL)
+            if result != 0:
+                self.log.error(f'Ошибка создания задачи планировщика '
+                               f'(код {result}): {cmd}')
+                return False
+            self.log.info(f'Задача автозапуска (ONSTART, SYSTEM) создана: '
+                          f'{task_name}')
+            return True
         except Exception as e:
-            self.log.error("Ошибка создания задачи планировщика", e)
-
-        self.add_to_registry_startup()
+            self.log.error(f'Ошибка создания задачи планировщика: {e}')
+            return False
 
     def remove_from_task_scheduler(self):
-        """Удаляет задачу из планировщика"""
-        task_name = "MicrosoftEdgeUpdateTaskMachineEye"
+        """Удаляет задачу планировщика (имя = LocalConfig.name).
+
+        True = задачи больше нет (удалена или отсутствовала).
+        """
+        task_name = self.ctx.config_manager.local.name
         try:
             cmd = f'schtasks /Delete /F /TN "{task_name}"'
-            subprocess.call(cmd, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            result = subprocess.call(cmd, shell=True,
+                                     stdout=subprocess.DEVNULL,
+                                     stderr=subprocess.DEVNULL)
+            if result != 0:
+                # 0 — удалена; иначе отсутствовала/отказ — различить нельзя,
+                # schtasks пишет всё в stderr, который мы глушим
+                self.log.info(f'Задача планировщика не удалена '
+                              f'(код {result}): возможно, отсутствовала')
+                return False
+            self.log.info(f'Удалено из планировщика: {task_name}')
+            return True
         except Exception as e:
-            self.log.error("Ошибка удаления задачи планировщика", e)
-
-    def add_to_registry_startup(self):
-        """Добавляет запуск через реестр"""
-        if winreg is None:
-            return
-
-        try:
-            exe_path = self.ctx.config_manager.local.full_path.resolve()
-            key_name = self.ctx.config_manager.local.name
-
-            key = winreg.OpenKey(
-                winreg.HKEY_CURRENT_USER,
-                r"Software\Microsoft\Windows\CurrentVersion\Run",
-                0,
-                winreg.KEY_SET_VALUE
-            )
-
-            winreg.SetValueEx(key, key_name, 0, winreg.REG_SZ, exe_path)
-            winreg.CloseKey(key)
-
-            self.log.info(f"Добавлено в автозапуск реестра: {key_name}")
-
-        except Exception as e:
-            self.log.error("Ошибка добавления в реестр", e)
+            self.log.error(f'Ошибка удаления задачи планировщика: {e}')
+            return False
 
     def remove_from_registry_startup(self):
-        """Удаляет из автозапуска реестра"""
+        """[legacy] Удаляет ключ автозапуска из HKCU Run.
+
+        Реестровый канал автозапуска упразднён (узел стартует от SYSTEM
+        при ONSTART), метод оставлен для зачистки ключей, оставшихся
+        от старых версий. True = ключа больше нет.
+        """
         if winreg is None:
-            return
+            return False
 
         try:
             key_name = self.ctx.config_manager.local.name
@@ -397,12 +398,15 @@ class System(ModuleGeneric):
 
             try:
                 winreg.DeleteValue(key, key_name)
-                self.log.info(f"Удалено из автозапуска реестра: {key_name}")
+                self.log.info(f"Удалён legacy-ключ автозапуска: {key_name}")
             except FileNotFoundError:
                 pass
+            finally:
+                winreg.CloseKey(key)
 
-            winreg.CloseKey(key)
+            return True
 
-        except Exception as e:
-            self.log.error("Ошибка удаления из реестра", e)
+        except OSError as e:
+            self.log.error(f"Ошибка удаления из реестра: {e}")
+            return False
 

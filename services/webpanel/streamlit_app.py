@@ -36,6 +36,12 @@ def get_rpc() -> NodeRPC:
     rpc_exists = 'rpc' in st.session_state
     if rpc_exists and (st.session_state.rpc.connected or st.session_state.rpc.reconnecting):
         return st.session_state.rpc
+    if rpc_exists:
+        # R9: заменяемый экземпляр не должен течь (поток + loop + сокет)
+        try:
+            st.session_state.rpc.close()
+        except Exception:
+            pass
     host = os.environ.get('P2P_WS_HOST', '127.0.0.1')
     port = int(os.environ.get('P2P_WS_PORT', 9000))
     target = os.environ.get('P2P_NODE_ID', 'Node0')

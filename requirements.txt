@@ -1,26 +1,17 @@
-cachetools~=5.5.2
-httpx~=0.28.1
 fastapi~=0.121.1
 pydantic~=2.10.6
 starlette~=0.50.0
 uvicorn~=0.38.0
-PyJWT~=2.12.0
-psutil~=7.0.0
+colorama~=0.4.6             # ANSI-цвета логов в Windows-консоли (main.py)
+psutil~=7.0.0               # LocalIPResolver: TCP-таблица + интерфейсы
 pyinstaller
-python-dotenv~=1.2.2
 websockets
 msgpack~=1.2.1             # binary wire-формат (MsgPack → msgpack frames)
-# New dependencies for refactored features
 pyyaml~=6.0.2              # YAML configuration
-lz4~=4.3.3                 # LZ4 compression for gossip
-cryptography~=46.0.7       # SSL/TLS certificate generation
-watchdog~=6.0.0
-aiohttp~=3.13.4
-requests~=2.33.0
-urllib3~=2.7.0
-
-pydantic-settings
+cryptography~=46.0.7       # SSL/TLS certificate generation (sign/signer.py)
+watchdog~=6.0.0            # hot-reload сервисов
 
 # Web panel
-streamlit~=1.40.0      # Streamlit dashboard
-pandas~=2.2.0          # DataFrames for web UI
+streamlit~=1.54.0      # Streamlit dashboard
+pandas~=2.2.3         # DataFrames for web UI
+streamlit-agraph   # интерактивный граф карты сети (только WebUI-сборка)

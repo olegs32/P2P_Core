@@ -28,9 +28,15 @@ class ServiceManager:
     def remove_service(self, service: ModuleGeneric):
         self.services.pop(service.name, None)
 
-        # ------------------------------------------------------------------ #
-        #  RPC methods
-        # ------------------------------------------------------------------ #
+    def replace_service(self, service: ModuleGeneric):
+        """Полная перерегистрация (hot-reload): старые методы/генераторы
+        сервиса затираются, регистрируются только актуальные."""
+        self.services[service.name] = {}
+        self.register_service(service)
+
+    # ------------------------------------------------------------------ #
+    #  RPC methods
+    # ------------------------------------------------------------------ #
 
     def register_method(self, service: ModuleGeneric, method_name: str,
                         method: Callable):
@@ -39,16 +45,9 @@ class ServiceManager:
     def get_method(self, service: str, method: str) -> Callable | None:
         return self._get(service, method)
 
-    def remove_method(self, service: ModuleGeneric, method_name: str):
-        self.services.get(service.name, {}).pop(method_name, None)
-
     # ------------------------------------------------------------------ #
     #  Generators
     # ------------------------------------------------------------------ #
-
-    def register_generator(self, service: ModuleGeneric, name: str,
-                           method: Callable):
-        self._set(service.name, f'__gen__{name}', method)
 
     def get_generator(self, service: str, name: str) -> Callable | None:
         return self._get(service, f'__gen__{name}')
