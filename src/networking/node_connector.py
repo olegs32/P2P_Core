@@ -36,12 +36,17 @@ class NodeConnector(ModuleGeneric):
     # ------------------------------------------------------------------ #
 
     async def start(self):
-        if self._already_connected():
+        # Пару соединяет только лексикографически больший узел:
+        # обоюдный dial даёт два параллельных соединения (петля).
+        # Keepalive нужен в любом случае — он обслуживает и входящий канал.
+        if self.ctx.NODE > self.peer_node_id:
+            if not self._already_connected():
+                self._connect_task = asyncio.create_task(self._connect_loop())
+        else:
             self.log.info(
-                f'Skip connect to {self.peer_node_id} (already connected)'
+                f'Passive mode ({self.ctx.NODE} vs {self.peer_node_id}): '
+                f'inbound connection expected'
             )
-            return
-        self._connect_task   = asyncio.create_task(self._connect_loop())
         self._keepalive_task = asyncio.create_task(self._keepalive_loop())
         self.log.info(f'Connector started → {self.target_uri}')
 
@@ -59,9 +64,15 @@ class NodeConnector(ModuleGeneric):
     # ------------------------------------------------------------------ #
 
     def _already_connected(self) -> bool:
-        """Узел уже подключен — не пытаться подключиться повторно."""
-        return self.ctx.network.neighbor_table.get(self.peer_node_id) is not None and \
-               self.ctx.network.neighbor_table.get(self.peer_node_id).status.value == 'connected'
+        """Узел уже подключен — клиентским или серверным каналом.
+
+        Проверяем и статус таблицы, и фактический транспорт в Router:
+        запись может быть CONNECTED при уже отвалившемся сокете и наоборот.
+        """
+        info = self.ctx.network.neighbor_table.get(self.peer_node_id)
+        if info and info.status.value == 'connected':
+            return True
+        return self.ctx.network.router.get_transport_to(self.peer_node_id) is not None
 
     # ------------------------------------------------------------------ #
     #  Подключение
@@ -107,7 +118,9 @@ class NodeConnector(ModuleGeneric):
             finally:
                 self._ws = None
                 self.ctx.network.router.unregister_client_ws(self.peer_node_id)
-                self.ctx.network.neighbor_table.mark_unreachable(self.peer_node_id)
+                # пир может оставаться подключенным входящим каналом
+                if not self.ctx.network.router.get_transport_to(self.peer_node_id):
+                    self.ctx.network.neighbor_table.mark_unreachable(self.peer_node_id)
                 await asyncio.sleep(5)
 
     async def _handshake(self, ws) -> bool:
@@ -181,21 +194,30 @@ class NodeConnector(ModuleGeneric):
                 continue
 
             elapsed = time.time() - info.last_ts
+            if elapsed <= KEEPALIVE_TIMEOUT:
+                continue
 
-            if elapsed > DEAD_TIMEOUT:
-                self.log.warning(
-                    f'{self.peer_node_id} no traffic {elapsed:.0f}s → unreachable'
-                )
-                self.ctx.network.neighbor_table.mark_unreachable(self.peer_node_id)
+            # соединение с пиром может обслуживаться его входящим каналом
+            # (WS-сервер), а не этим коннектором — проверяем оба пути через
+            # Router, иначе можно похоронить живого соседа
+            transport = self.ctx.network.router.get_transport_to(self.peer_node_id)
 
-            elif elapsed > KEEPALIVE_TIMEOUT and self._ws:
-                self.log.debug(f'Ping {self.peer_node_id} (no traffic {elapsed:.0f}s)')
-                try:
-                    transport = WebSocketTransport(self._ws)
-                    await transport.send(MsgPack(
-                        type   = PackType.PING,
-                        source = self.ctx.NODE,
-                        dst    = self.peer_node_id,
-                    ))
-                except Exception as e:
-                    self.log.error(f'Keepalive ping failed: {e}')
+            if not transport:
+                if elapsed > DEAD_TIMEOUT:
+                    self.log.warning(
+                        f'{self.peer_node_id} no traffic {elapsed:.0f}s → unreachable'
+                    )
+                    self.ctx.network.neighbor_table.mark_unreachable(self.peer_node_id)
+                continue
+
+            self.log.debug(f'Ping {self.peer_node_id} (no traffic {elapsed:.0f}s)')
+            try:
+                await transport.send(MsgPack(
+                    type   = PackType.PING,
+                    source = self.ctx.NODE,
+                    dst    = self.peer_node_id,
+                ))
+            except Exception as e:
+                self.log.error(f'Keepalive ping failed: {e}')
+                if elapsed > DEAD_TIMEOUT:
+                    self.ctx.network.neighbor_table.mark_unreachable(self.peer_node_id)

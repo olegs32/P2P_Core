@@ -5,6 +5,7 @@
 import asyncio
 import json
 import logging
+import os
 import threading
 import uuid
 
@@ -78,8 +79,8 @@ class NodeRPC:
             dst=dst,
             data={
                 "node_id": self.node_id,
-                "host": "localhost",
-                "port": 0,
+                "host": os.environ.get('P2P_PANEL_HOST', '127.0.0.1'),
+                "port": int(os.environ.get('P2P_PANEL_PORT', '8501')),
                 "version": PROTOCOL_VERSION,
                 "session_id": str(uuid.uuid4()),
                 "services": [],

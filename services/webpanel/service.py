@@ -61,12 +61,14 @@ class WebPanel(ModuleGeneric):
 
         # Важно: передаем текущее окружение (env), чтобы подпроцесс унаследовал пути,
         # особенно важно для корректной работы PyInstaller (переменные вроде PYTHONPATH)
+        panel_host = self.ctx.network.local_ip()
         env = {
             **os.environ,
             'RUNNING': 'True',
             'P2P_NODE_ID': self.ctx.NODE,
             'P2P_WS_PORT': str(self.ctx.config.network.port),
-            'P2P_WS_HOST': self.ctx.config.network.host,
+            'P2P_WS_HOST': panel_host,
+            'P2P_PANEL_HOST': panel_host,
             'P2P_PANEL_PORT': str(self._panel_port),
             'P2P_PROJECT_ROOT': str(Path(__file__).parent.parent.parent),
             'PYTHONWARNINGS': 'ignore::DeprecationWarning',

@@ -235,9 +235,8 @@ class NetworkModule(ModuleGeneric):
                 data   = {'neighbors': neighbors, 'from': self.ctx.NODE},
             )
             for node in self.neighbor_table.connected():
-                ws_node = self.nodes_manager.get(node.node_id)
-                if ws_node:
-                    transport = WebSocketTransport(ws_node.ws)
+                transport = self.router.get_transport_to(node.node_id)
+                if transport:
                     try:
                         await transport.send(pack)
                     except Exception as e:
@@ -254,9 +253,8 @@ class NetworkModule(ModuleGeneric):
                 data   = {'services': services, 'from': self.ctx.NODE},
             )
             for node in self.neighbor_table.connected():
-                ws_node = self.nodes_manager.get(node.node_id)
-                if ws_node:
-                    transport = WebSocketTransport(ws_node.ws)
+                transport = self.router.get_transport_to(node.node_id)
+                if transport:
                     try:
                         await transport.send(pack)
                     except Exception as e:
@@ -295,9 +293,8 @@ class NetworkModule(ModuleGeneric):
                 source=self.ctx.NODE,
                 data={'certs': digest, 'sync_version': 0},
             )
-            node = self.nodes_manager.get(node_id)
-            if node:
-                transport = WebSocketTransport(node.ws)
+            transport = self.router.get_transport_to(node_id)
+            if transport:
                 await transport.send(pack)
         except Exception as e:
             self.log.warning(f'On-connect CERT_SYNC send to {node_id} failed: {e}')
