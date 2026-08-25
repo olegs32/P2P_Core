@@ -41,6 +41,21 @@ class LogsConfig(BaseModel):
     max_traceback_len: int = 2000  # обрезка traceback (берётся хвост)
 
 
+class ShareConfig(BaseModel):
+    """Раздаваемый каталог файлового транспорта (сервис files)."""
+    name: str                       # публичное имя шары в mesh
+    path: Path                      # локальный каталог
+    allow: list[str] = []           # node_id, кому можно; пусто = всем подключенным
+    chunk_size: int = 262144        # размер чанка чтения, байт (256 KB)
+
+
+class FilesConfig(BaseModel):
+    """Файловый транспорт (сервис files)."""
+    shares: list[ShareConfig] = []
+    download_dir: Path = Path('downloads')  # куда класть полученные файлы
+    max_chunk: int = 4 * 1024 * 1024        # потолок chunk_size из запросов
+
+
 class ServicesConfig(BaseModel):
     path: Path = Path('services')
 
@@ -68,6 +83,7 @@ class Config(BaseModel):
     memory: MemoryConfig = MemoryConfig()
     logging: LoggingConfig = LoggingConfig()
     logs: LogsConfig = LogsConfig()
+    files: FilesConfig = FilesConfig()
     services: ServicesConfig = ServicesConfig()
     local: LocalConfig = LocalConfig()
 

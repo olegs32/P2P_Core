@@ -187,6 +187,7 @@ WebPanel (service.py) — запускает subprocess
 SERVICE_META = {
     'certstool':    ('🔐', 'Сертификаты',  'Управление КриптоПро сертификатами'),
     'netinfo':      ('🌐', 'Сеть',         'Состояние сети и маршрутизация'),
+    'files':        ('🗂️', 'Сеть',         'Файловый транспорт между узлами'),
     'system':       ('⚙️', 'Система',      'Управление узлами и подключениями'),
     'compute_full': ('⚡', 'Вычисления',   'Генератор + консьюмер'),
     'generator':    ('📤', 'Вычисления',   'Генератор стримов'),
@@ -199,6 +200,24 @@ GROUP_ORDER = ['Система', 'Сеть', 'Сертификаты', 'Вычи
 
 ### Сервис logs (`services/logs/`) — просмотр логов консоли
 `RingBufferHandler` (сквозной id записей) цепляется к root logger в `start()`; параметры — из config.yaml → `logs` (buffer_size / max_msg_len / max_traceback_len, применяются при подключении). RPC: `get_logs({since_id, levels, search, regex, loggers, since_ts/until_ts, limit})` — инкрементальный поллинг по since_id + серверные фильтры, ответ несёт `last_id`/`gap` (обрыв буфера между опросами), `get_loggers`, `clear_buffer`. UI: лента в `st.fragment(run_every=2s)` с тумблером автообновления; смена фильтров меняет сигнатуру `lv_sig` и сбрасывает накопленную ленту (`session_state.lv_rows`, новые записи сверху); экспорт CSV/TXT через download_button. Ограничение: видны только записи, доходящие до root logger (уровень = logging.level из конфига); propagate=False и логи Streamlit-процесса не попадают.
+
+### Сервис files (`services/files/`) — файловый транспорт между узлами
+Передача файлов поверх mesh-стриминга **push-механизмом** (Dispatcher + PipeTransport + @stream_consumer, как в demo) — работает через промежуточные хопы, с ACK/backpressure. `router.stream()` сознательно не используется.
+
+Протокол загрузки (инициатор — получатель B, источник A):
+1. B: `files.download({dst:'A', ref})` → RPC `stat` к A → манифест `{id=sha256, share, path(отн.), size, chunk_size}`
+2. B регистрирует состояние приёма по `label`, RPC `serve({label, reply_to, ref, offset})` к A
+3. A: pipe+dispatcher, sync-генератор читает файл чанками (`_chunk_file`), пушит STREAM_OPEN(method=`file_in`) к B
+4. B: @stream_wrapper(`file_in`) находит состояние по label; @stream_consumer пишет в `<final>.part` с prefetch-ACK; на EOF — сверка размера и sha256, атомарный `os.replace(.part → final)`
+
+Адресация: `ref = {share, path}` или content-addressed `{id}` (sha256 считается лениво, кэш по size+mtime_ns). Resume: докачка `.part` через `offset`; повторный download целого файла мгновенно отвечает done. Локальный шорткат dst=self → shutil.copyfile.
+
+RPC-методы: `list_shares` (имена/объём, без локальных путей), `find({share?, pattern?, limit})`, `stat({share,path}|{id})`, `serve`, `download({dst, ref, save_as?, resume?})`, `downloads()` (статусы для UI), `cancel_download({label})`.
+
+Безопасность: path traversal закрыт `_safe_join` (только относительные пути внутри корня шары); ACL шары `allow: [node_id]` ([] = всем), проверяется по `reply_to` из запроса (до появления аутентификации узлов — защита от ошибок, не от злонамеренных узлов); наружу никогда не отдаются абсолютные пути узла.
+
+Конфиг (config.yaml → `files`, модели `FilesConfig/ShareConfig`): `shares: [{name, path, allow[], chunk_size=256KB}]`, `download_dir` (относительный резолвится от `local.work_dir`), `max_chunk=4МБ`. UI: выбор источника из подключенных, каталог шары с маской, скачивание выделенного, лента загрузок с прогрессом (`st.fragment(run_every=3s)`). Ограничение MVP: обрыв передачи детектится получателем по размеру/hash (источник останавливается по таймауту ACK); потоковое воспроизведение media (kind=stream) — следующий этап.
+
 
 ### Сервис demo (`services/demo/`) — эталонный пример
 Учебный сервис с подробными пояснениями в комментариях. Демонстрирует: жизненный цикл (start/stop), @rpc sync/async, mesh-RPC из кода (find_by_service + network.call), @generator, push-стрим (Pipe + Dispatcher + attach_transport), приём стрима (@stream_wrapper/@stream_consumer + ACK prefetch), вызов Spawner'а через локальный шорткат. UI: три вкладки (проверка связи, стрим, распределённые вычисления). Новые сервисы делать по его образцу.
@@ -321,6 +340,10 @@ logs:                    # LogsConfig — буфер логов для веб-п
   buffer_size: 2000      # ёмкость кольцевого буфера
   max_msg_len: 4000      # обрезка одного сообщения
   max_traceback_len: 2000  # обрезка traceback (берётся хвост)
+files:                   # FilesConfig — файловый транспорт (сервис files)
+  download_dir: downloads  # куда класть полученное (отн. → от local.work_dir)
+  max_chunk: 4194304       # потолок chunk_size из запросов
+  shares: []               # [{name, path, allow: [], chunk_size: 262144}]
 services:
   path: services/
 local:                 # LocalConfig — параметры деплоя/автозапуска
