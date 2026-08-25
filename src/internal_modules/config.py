@@ -56,6 +56,24 @@ class FilesConfig(BaseModel):
     max_chunk: int = 4 * 1024 * 1024        # потолок chunk_size из запросов
 
 
+class UpdateSource(BaseModel):
+    """Узел-источник релизов для сервиса обновлений."""
+    node: str                       # имя узла в mesh
+    share: str = 'releases'         # имя шары с релизами на этом узле
+
+
+class UpdateConfig(BaseModel):
+    """Обновление узла (сервис updater)."""
+    enabled: bool = True
+    sources: list[UpdateSource] = []
+    auto_check: bool = True             # периодический check по расписанию
+    check_interval_min: int = 60
+    auto_apply: bool = False            # применять без подтверждения из панели
+    require_signed: bool = True         # WinVerifyTrust перед применением
+    allow_downgrade: bool = False       # понижение версии через apply(force)
+    health_confirm_sec: int = 90        # сколько ждать до boot_ok после апдейта
+
+
 class ServicesConfig(BaseModel):
     path: Path = Path('services')
 
@@ -84,6 +102,7 @@ class Config(BaseModel):
     logging: LoggingConfig = LoggingConfig()
     logs: LogsConfig = LogsConfig()
     files: FilesConfig = FilesConfig()
+    update: UpdateConfig = UpdateConfig()
     services: ServicesConfig = ServicesConfig()
     local: LocalConfig = LocalConfig()
 

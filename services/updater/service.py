@@ -1,0 +1,465 @@
+# services/updater/service.py
+# =============================================================================
+#  Обновление узла по mesh.
+#
+#  Поток: check (манифесты релизов с узлов-источников через files.read)
+#         → download (files.download: resume + sha256)
+#         → apply (verify подписи+hash → rename-trick → detached-рестарт)
+#         → boot confirm (новая версия N сек живая → boot_ok; иначе rollback)
+#
+#  Rename-trick: Windows позволяет переименовать запущенный exe.
+#    running.exe → running.exe.old; новый файл на место старого;
+#    detached cmd ждёт наш exit и стартует новый exe.
+#
+#  Откат (boot-marker): state-файл фиксирует pending_boot_confirm. Новая
+#  версия после health_confirm_sec здоровой работы ставит boot_ok. Если
+#  процесс упал до подтверждения — при следующем старте attempts++ и после
+#  MAX_ATTEMPTS возвращается .old, версия блокируется.
+#
+#  В dev-режиме (не frozen) apply/rollback запрещены — обновлять нечего.
+# =============================================================================
+
+import asyncio
+import hashlib
+import json
+import os
+import shutil
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+from src.internal_modules.app_version import (
+    compare_versions,
+    is_newer,
+    parse_version,
+    read_version,
+)
+from src.internal_modules.base import ModuleGeneric
+from services.rpc import rpc
+from services.updater import verify
+
+STATE_FILE = 'update_state.json'
+MANIFEST_NAME = 'manifest.json'
+MAX_ATTEMPTS = 2            # неудачных загрузок новой версии до отката
+RESTART_DELAY_SEC = 3       # пауза detached-стартера перед запуском нового exe
+EXIT_DELAY_SEC = 4          # сколько живём после запуска стартера
+
+
+def _sha256(path: Path) -> str:
+    h = hashlib.sha256()
+    with open(path, 'rb') as f:
+        for block in iter(lambda: f.read(1024 * 1024), b''):
+            h.update(block)
+    return h.hexdigest()
+
+
+class Updater(ModuleGeneric):
+    def __init__(self, name, context):
+        super().__init__(name, context)
+        self._known: dict[str, dict] = {}   # version -> {manifest, node, share, exe_rel}
+        self._last_check: dict | None = None
+        self._tasks: list[asyncio.Task] = []
+
+    # ------------------------------------------------------------------ #
+    #  Пути и состояние
+    # ------------------------------------------------------------------ #
+
+    def _work_dir(self) -> Path:
+        work = getattr(self.ctx.config.local, 'work_dir', None)
+        return Path(work) if work else Path('.')
+
+    def _updates_dir(self) -> Path:
+        return self._work_dir() / 'updates'
+
+    def _state_path(self) -> Path:
+        return self._work_dir() / STATE_FILE
+
+    def _is_frozen(self) -> bool:
+        return getattr(sys, 'frozen', False)
+
+    def _exe_path(self):
+        return Path(sys.executable) if self._is_frozen() else None
+
+    def _load_state(self) -> dict:
+        try:
+            return json.loads(self._state_path().read_text(encoding='utf-8'))
+        except (OSError, ValueError):
+            return {}
+
+    def _save_state(self, st: dict):
+        p = self._state_path()
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(
+            json.dumps(st, ensure_ascii=False, indent=2), encoding='utf-8')
+
+    @staticmethod
+    def _validate_transition(current: str, target: str,
+                             allow_downgrade: bool, force: bool = False):
+        """(ok, error). Целевая версия должна быть новее (или разрешён откат)."""
+        if compare_versions(target, current) == 0:
+            return False, f'версия {target} уже установлена'
+        if is_newer(target, current):
+            return True, ''
+        if allow_downgrade or force:
+            return True, ''
+        return False, (f'понижение версии {current} → {target} запрещено '
+                       f'(allow_downgrade=false; для ручного даунгрейда '
+                       f'передайте force=true)')
+
+    # ------------------------------------------------------------------ #
+    #  Lifecycle
+    # ------------------------------------------------------------------ #
+
+    async def start(self):
+        self._updates_dir().mkdir(parents=True, exist_ok=True)
+        cfg = getattr(self.ctx.config, 'update', None)
+        st = self._load_state()
+
+        if st.get('pending_boot_confirm') and not st.get('boot_ok'):
+            # мы — новая версия, поставленная apply(): подтверждаем здоровье
+            st['attempts'] = int(st.get('attempts', 0)) + 1
+            st['attempt_started_at'] = time.time()
+            self._save_state(st)
+            if st['attempts'] > MAX_ATTEMPTS:
+                self.log.error(
+                    f"версия {st.get('to')} не подтвердила запуск "
+                    f"{st['attempts']} раз — ОТКАТ на {st.get('from')}")
+                await self._do_rollback(st)
+                return
+            self.log.info(
+                f'boot confirm: попытка {st["attempts"]}/{MAX_ATTEMPTS} '
+                f'для версии {st.get("to")}, подтверждение через '
+                f'{cfg.health_confirm_sec}с')
+            t = asyncio.create_task(self._confirm_boot_later(cfg))
+            self._tasks.append(t)
+
+        if cfg.auto_check and cfg.enabled and cfg.sources and self._is_frozen():
+            t = asyncio.create_task(self._check_loop())
+            self._tasks.append(t)
+
+        self.log.info(f'Updater started: v{read_version()}, '
+                      f'frozen={self._is_frozen()}, '
+                      f'sources={[s.node for s in cfg.sources]}')
+
+    async def stop(self):
+        for t in self._tasks:
+            t.cancel()
+        self.log.info('Updater stopped')
+
+    async def _confirm_boot_later(self, cfg):
+        await asyncio.sleep(max(5, int(cfg.health_confirm_sec)))
+        st = self._load_state()
+        if not st.get('pending_boot_confirm') or st.get('boot_ok'):
+            return
+        st['boot_ok'] = True
+        st['confirmed_at'] = time.time()
+        self._save_state(st)
+        self.log.info(f"boot OK: версия {st.get('to')} подтверждена "
+                      f"(была {st.get('from')})")
+
+    async def _check_loop(self):
+        cfg = self.ctx.config.update
+        while True:
+            try:
+                await self.check({})
+            except Exception as e:
+                self.log.warning(f'auto-check failed: {e}')
+            await asyncio.sleep(max(5, cfg.check_interval_min) * 60)
+
+    # ------------------------------------------------------------------ #
+    #  RPC: статус / проверка наличия
+    # ------------------------------------------------------------------ #
+
+    @rpc
+    def status(self, data: dict = None) -> dict:
+        """Сводка для панели: версия, состояние апдейта, конфиг."""
+        cfg = self.ctx.config.update
+        st = self._load_state()
+        staged = self._find_staged_file(st.get('to')) \
+            if st.get('to') else None
+        return {
+            'ok': True,
+            'current': read_version(),
+            'frozen': self._is_frozen(),
+            'state': st or None,
+            'last_check': self._last_check,
+            'downloaded': staged is not None,
+            'config': {
+                'sources': [s.node for s in cfg.sources],
+                'auto_apply': cfg.auto_apply,
+                'require_signed': cfg.require_signed,
+                'allow_downgrade': cfg.allow_downgrade,
+            },
+        }
+
+    def _find_staged_file(self, version: str):
+        """Скачанный exe версии в download_dir files-сервиса."""
+        name = f'{version}_{self.ctx.config.local.exe_name}'
+        p = self._files_download_dir() / name
+        return p if p.is_file() else None
+
+    def _files_download_dir(self) -> Path:
+        raw = Path(getattr(self.ctx.config.files, 'download_dir',
+                           'downloads') or 'downloads')
+        if raw.is_absolute():
+            return raw
+        work = getattr(self.ctx.config.local, 'work_dir', None)
+        return (Path(work) / raw) if work else raw
+
+    @rpc
+    async def check(self, data: dict = None) -> dict:
+        """Опросить источники: доступные версии из манифестов releases."""
+        cfg = self.ctx.config.update
+        sources = list(cfg.sources)
+        wanted = (data or {}).get('node')
+        if wanted:
+            sources = [s for s in sources if s.node == wanted]
+        if not sources:
+            return {'ok': False, 'error': 'в update.sources нет источников'}
+
+        current = read_version()
+        available = []
+        errors = {}
+        for s in sources:
+            try:
+                found = await self.ctx.network.call(
+                    dst=s.node, service='files', method='find',
+                    data={'share': s.share,
+                          'pattern': f'*/{MANIFEST_NAME}'},
+                    timeout=20)
+                if not isinstance(found, dict) or not found.get('ok'):
+                    raise RuntimeError((found or {}).get('error',
+                                                         'files.find failed')
+                                       if isinstance(found, dict) else 'нет ответа')
+                for entry in found.get('entries', []):
+                    man_res = await self.ctx.network.call(
+                        dst=s.node, service='files', method='read',
+                        data={'share': s.share, 'path': entry['path']},
+                        timeout=15)
+                    if not (isinstance(man_res, dict) and man_res.get('ok')):
+                        continue
+                    try:
+                        man = json.loads(man_res['data'].decode('utf-8'))
+                    except (ValueError, UnicodeDecodeError):
+                        continue
+                    ver = man.get('version', '')
+                    if parse_version(ver) is None:
+                        continue
+                    rel_dir = str(Path(entry['path']).parent).replace('\\', '/')
+                    exe_rel = f'{rel_dir}/{man.get("exe_name") or self.ctx.config.local.exe_name}'\
+                        .replace('//', '/')
+                    self._known[ver] = {
+                        'manifest': man, 'node': s.node, 'share': s.share,
+                        'exe_rel': exe_rel,
+                    }
+                    available.append({
+                        'version': ver,
+                        'node': s.node,
+                        'size': man.get('size'),
+                        'notes': man.get('notes', ''),
+                        'min_compatible': man.get('min_compatible', ''),
+                        'newer': is_newer(ver, current),
+                    })
+            except Exception as e:
+                errors[s.node] = str(e)
+
+        seen, uniq = set(), []
+        for a in sorted(available, key=lambda x: x['version'], reverse=True):
+            if a['version'] in seen:
+                continue
+            seen.add(a['version'])
+            uniq.append(a)
+
+        self._last_check = {'at': time.time(),
+                            'available': uniq, 'errors': errors}
+        return {'ok': True, 'current': current,
+                'available': uniq, 'errors': errors}
+
+    # ------------------------------------------------------------------ #
+    #  RPC: скачивание / установка / откат
+    # ------------------------------------------------------------------ #
+
+    @rpc
+    async def download(self, data: dict) -> dict:
+        """Скачать exe указанной версии с источника (files.download)."""
+        version = (data or {}).get('version')
+        info = self._known.get(version)
+        if info is None:
+            chk = await self.check({})
+            if chk.get('errors') and not chk.get('available'):
+                return {'ok': False,
+                        'error': f'check не удался: {chk["errors"]}'}
+            info = self._known.get(version)
+        if info is None:
+            return {'ok': False, 'error': f'версия {version} не найдена у источников'}
+
+        res = await self.ctx.network.call(
+            dst=self.ctx.NODE, service='files', method='download',
+            data={'dst': info['node'], 'ref': {'share': info['share'],
+                                               'path': info['exe_rel']},
+                  'save_as': f'{version}_{self.ctx.config.local.exe_name}'},
+            timeout=60)
+        if not isinstance(res, dict) or not res.get('ok'):
+            err = (res or {}).get('error', 'download failed')
+            return {'ok': False, 'error': err}
+
+        staged = self._find_staged_file(version)
+        expected = (info['manifest'].get('exe_sha256')
+                    or info['manifest'].get('id'))
+        if staged and expected and _sha256(staged) != expected:
+            staged.unlink(missing_ok=True)
+            return {'ok': False, 'error': 'sha256 скачанного файла не совпал'}
+        return {'ok': True, 'version': version, 'path': str(staged)}
+
+    @rpc
+    async def apply(self, data: dict) -> dict:
+        """Установить версию: verify → stage (rename-trick) → рестарт.
+
+        data: {version, force?: bool}
+        """
+        version = (data or {}).get('version')
+        force = bool((data or {}).get('force'))
+        cfg = self.ctx.config.update
+
+        if not cfg.enabled:
+            return {'ok': False, 'error': 'updater отключён (update.enabled)'}
+        if not self._is_frozen():
+            return {'ok': False, 'error':
+                    'apply работает только в frozen-сборке '
+                    '(dev-узел обновляется перезапуском из исходников)'}
+
+        current = read_version()
+        ok, err = self._validate_transition(
+            current, version, cfg.allow_downgrade, force)
+        if not ok:
+            return {'ok': False, 'error': err}
+        st = self._load_state()
+        if st.get('pending_boot_confirm') and not st.get('boot_ok'):
+            return {'ok': False, 'error':
+                    'предыдущее обновление ещё не подтверждено '
+                    '(дождитесь или выполните rollback)'}
+
+        info = self._known.get(version)
+        if info is None:
+            dl = await self.check({})
+            if not any(a['version'] == version for a in dl.get('available', [])):
+                return {'ok': False, 'error': f'версия {version} недоступна'}
+
+        # 1. скачать если нет
+        staged = self._find_staged_file(version)
+        if staged is None:
+            dl = await self.download({'version': version})
+            if not dl.get('ok'):
+                return dl
+            staged = self._find_staged_file(version)
+            if staged is None:
+                return {'ok': False, 'error': 'файл не появился после download'}
+
+        # 2. hash + подпись
+        expected = (info['manifest'].get('exe_sha256')
+                    if info else None) or None
+        if expected and _sha256(staged) != expected:
+            return {'ok': False, 'error': 'sha256 staged-файла не совпал'}
+        if cfg.require_signed:
+            sig_ok, sig_detail = verify.verify_signature(staged)
+            if not sig_ok:
+                return {'ok': False,
+                        'error': f'подпись не прошла проверку: {sig_detail}'}
+
+        # 3. stage: rename-trick
+        exe = self._exe_path()
+        old = exe.with_name(exe.name + '.old')
+        old.unlink(missing_ok=True)
+        os.replace(exe, old)
+        shutil.copyfile(staged, exe)
+        if _sha256(exe) != _sha256(staged):
+            os.replace(old, exe)     # мгновенный откат на месте
+            return {'ok': False, 'error':
+                    'копия на место не встала целой — откатили, exe не тронут'}
+
+        self._save_state({
+            'from': current, 'to': version,
+            'exe': str(exe), 'old_exe': str(old),
+            'staged_from': str(staged),
+            'attempts': 0,
+            'pending_boot_confirm': True, 'boot_ok': False,
+            'rolled_back': False,
+            'staged_at': time.time(),
+        })
+
+        # 4. detached-стартер: ждёт нашего exit и поднимает новый exe
+        starter = (f'timeout /t {RESTART_DELAY_SEC} /nobreak >nul & '
+                   f'start "" "{exe}"')
+        subprocess.Popen(
+            ['cmd', '/c', starter],
+            cwd=str(self._work_dir()),
+            creationflags=subprocess.DETACHED_PROCESS
+            | subprocess.CREATE_NEW_PROCESS_GROUP,
+            close_fds=True,
+        )
+        self.log.warning(
+            f'APPLY: {current} → {version}; узел завершится через '
+            f'{EXIT_DELAY_SEC}с и поднимется на новой версии')
+
+        async def _exit_later():
+            await asyncio.sleep(EXIT_DELAY_SEC)
+            os._exit(0)
+
+        asyncio.create_task(_exit_later())
+        return {'ok': True, 'note':
+                f'устанавливается {version}: узел перезапустится автоматически'}
+
+    async def _do_rollback(self, st: dict):
+        """Вернуть .old на место и перезапуститься на прежней версии."""
+        exe = Path(st.get('exe') or '')
+        old = Path(st.get('old_exe') or '')
+        if not old.is_file():
+            self.log.error('rollback невозможен: .old отсутствует')
+            st['rolled_back'] = True
+            self._save_state(st)
+            return
+        failed = exe.with_name(exe.name + '.failed')
+        try:
+            os.replace(exe, failed)
+        except OSError as e:
+            self.log.error(f'rollback: не переименовать текущий exe: {e}')
+            return
+        shutil.copyfile(old, exe)
+        st['rolled_back'] = True
+        st['rolled_back_at'] = time.time()
+        self._save_state(st)
+        self.locked_add(st['to'])
+
+        subprocess.Popen(
+            ['cmd', '/c',
+             f'timeout /t {RESTART_DELAY_SEC} /nobreak >nul & '
+             f'start "" "{exe}"'],
+            cwd=str(self._work_dir()),
+            creationflags=subprocess.DETACHED_PROCESS
+            | subprocess.CREATE_NEW_PROCESS_GROUP,
+            close_fds=True,
+        )
+        self.log.critical(f'ROLLBACK применён: возврат на {st.get("from")}')
+
+        async def _exit_later():
+            await asyncio.sleep(EXIT_DELAY_SEC)
+            os._exit(0)
+
+        asyncio.create_task(_exit_later())
+
+    # --- список заблокированных версий хранится прямо в state ---
+
+    def locked_add(self, version: str):
+        st = self._load_state()
+        locked = st.setdefault('locked_versions', [])
+        if version not in locked:
+            locked.append(version)
+            self._save_state(st)
+
+    @rpc
+    def clear_state(self, data: dict = None) -> dict:
+        """Сбросить состояние (после успешного обновления/разбора полётов)."""
+        self._state_path().unlink(missing_ok=True)
+        self.log.info('update state очищен')
+        return {'ok': True}

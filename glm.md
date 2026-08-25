@@ -189,6 +189,7 @@ SERVICE_META = {
     'netinfo':      ('🌐', 'Сеть',         'Состояние сети и маршрутизация'),
     'files':        ('🗂️', 'Сеть',         'Файловый транспорт между узлами'),
     'system':       ('⚙️', 'Система',      'Управление узлами и подключениями'),
+    'updater':      ('⬆️', 'Система',      'Обновление узла по mesh'),
     'compute_full': ('⚡', 'Вычисления',   'Генератор + консьюмер'),
     'generator':    ('📤', 'Вычисления',   'Генератор стримов'),
     'test':         ('🧪', 'Диагностика',  'Тестовый echo-сервис'),
@@ -223,6 +224,15 @@ RPC-методы: `list_shares` (имена/объём, без локальны�
 
 ### Сервис demo (`services/demo/`) — эталонный пример
 Учебный сервис с подробными пояснениями в комментариях. Демонстрирует: жизненный цикл (start/stop), @rpc sync/async, mesh-RPC из кода (find_by_service + network.call), @generator, push-стрим (Pipe + Dispatcher + attach_transport), приём стрима (@stream_wrapper/@stream_consumer + ACK prefetch), вызов Spawner'а через локальный шорткат. UI: три вкладки (проверка связи, стрим, распределённые вычисления). Новые сервисы делать по его образцу.
+
+### Сервис updater (`services/updater/`) — обновление узла по mesh
+Тонкий клиент над files-транспортом + локальный applier. Версия узла: `version.txt` (frozen — из бандла, генерирует compile.py из `VERSION` + счётчика `BUILD_NUMBER`; dev — корень проекта, fallback `0.0.0-dev`), читается `src/internal_modules/app_version.py` (формат `MAJOR.MINOR.PATCH[-buildN]`).
+
+Релиз на админской ноде = каталог в шаре (расшаривается через files UI): `<ver>/Node_P2P_Core.exe` + `<ver>/manifest.json` `{version, exe_sha256|id, exe_name?, size?, notes?, min_compatible?}`.
+
+Поток: `check()` — find(`*/manifest.json`) + `files.read` по каждому источнику → список версий; `download({version})` — files.download с `save_as=<ver>_<exe>` + сверка sha256; `apply({version, force})` — только frozen, guard перехода (новее ИЛИ allow_downgrade/force), hash+WinVerifyTrust (`verify.py`, ctypes/wintrust, GENERIC_VERIFY_V2), rename-trick (running→`.old`, новый на место), state-файл `<local.work_dir>/update_state.json`, detached cmd-стартер ждёт exit и поднимает новый exe, затем `os._exit(0)`.
+
+Boot-confirm/rollback: новая версия инкрементирует `attempts`, после `health_confirm_sec` здоровой работы ставит `boot_ok`; если процесс упал до подтверждения — при старте `attempts > MAX_ATTEMPTS(2)` ⇒ автоматический откат `.old`, версия попадает в `locked_versions`. RPC: `status/check/download/apply/clear_state` (+внутр. `_do_rollback`). В dev-режиме apply запрещён.
 
 ### Сервис system (`services/system/`)
 Управление узлами сети и автозапуск.
@@ -346,6 +356,15 @@ files:                   # FilesConfig — файловый транспорт (
   download_dir: downloads  # куда класть полученное (отн. → от local.work_dir)
   max_chunk: 4194304       # потолок chunk_size из запросов
   shares: []               # [{name, path, allow: [], chunk_size: 262144}]
+update:                  # UpdateConfig — обновление узла (сервис updater)
+  enabled: true
+  sources: []              # [{node: AdminNode, share: releases}]
+  auto_check: true
+  check_interval_min: 60
+  auto_apply: false        # применять без подтверждения из панели
+  require_signed: true     # WinVerifyTrust перед применением
+  allow_downgrade: false   # иначе только apply({force:true})
+  health_confirm_sec: 90   # время до boot_ok после апдейта
 services:
   path: services/
 local:                 # LocalConfig — параметры деплоя/автозапуска
