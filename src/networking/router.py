@@ -362,6 +362,11 @@ class Router:
         if route and route.expired:
             self._stream_routes.pop(label, None)
             return None
+        if route:
+            # скользящий TTL: пока по стриму идёт трафик, маршрут живёт
+            # (иначе длинная передача > _STREAM_ROUTE_TTL теряла маршрут
+            # посреди потока и умирала по ACK timeout)
+            route.established_at = time.monotonic()
         return route
 
     # ------------------------------------------------------------------ #
@@ -541,7 +546,14 @@ class Router:
             else:
                 log.warning(f'[stream] ACK: no route to {dst} label={label[:8]}')
         else:
-            log.warning(f'[stream] ACK: no cached route for label={label[:8]}')
+            # Маршрут чистится на EOF раньше, чем приёмник дочитает хвост
+            # буфера Pipe — поздние ACK штатны. Аномалия — только если стрим
+            # ещё жив в реестре (маршрут потерян при живой передаче).
+            if self.stream_registry.get(label) is None:
+                log.debug(f'[stream] late ACK after EOF: label={label[:8]}')
+            else:
+                log.warning(f'[stream] ACK: no cached route for '
+                            f'live stream label={label[:8]}')
 
     # ------------------------------------------------------------------ #
     #  Исходящие вызовы (публичный API)

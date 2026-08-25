@@ -69,7 +69,7 @@ MsgPack: `type`, `source`, `dst`, `service`, `method`, `data`, `label` (UUID), `
 - `_stream_routes: dict[str, StreamRoute]` — кэш маршрутов стримов (TTL=300с)
 
 #### StreamRoute (dataclass)
-Кэшированный маршрут стрима: `label`, `source` (генератор), `dst` (consumer), `forward_path` (source→dst), `backward_path` (dst→source), `established_at`. Свойство `expired` — TTL=300с.
+Кэшированный маршрут стрима: `label`, `source` (генератор), `dst` (consumer), `forward_path` (source→dst), `backward_path` (dst→source), `established_at`. Свойство `expired` — TTL=300с, **скользящий**: `get_stream_route()` продлевает `established_at` при каждом обращении (долгая передача не теряет маршрут посреди потока). На STREAM_EOF маршрут удаляется сразу; поздние ACK хвостовых чанков после EOF логируются debug-ом (warning — только если стрим ещё жив в StreamRegistry).
 
 Маршрут кэшируется:
 - На consumer-узле при получении STREAM_OPEN (`_cache_stream_route_on_open`)
@@ -202,21 +202,23 @@ GROUP_ORDER = ['Система', 'Сеть', 'Сертификаты', 'Вычи
 `RingBufferHandler` (сквозной id записей) цепляется к root logger в `start()`; параметры — из config.yaml → `logs` (buffer_size / max_msg_len / max_traceback_len, применяются при подключении). RPC: `get_logs({since_id, levels, search, regex, loggers, since_ts/until_ts, limit})` — инкрементальный поллинг по since_id + серверные фильтры, ответ несёт `last_id`/`gap` (обрыв буфера между опросами), `get_loggers`, `clear_buffer`. UI: лента в `st.fragment(run_every=2s)` с тумблером автообновления; смена фильтров меняет сигнатуру `lv_sig` и сбрасывает накопленную ленту (`session_state.lv_rows`, новые записи сверху); экспорт CSV/TXT через download_button. Ограничение: видны только записи, доходящие до root logger (уровень = logging.level из конфига); propagate=False и логи Streamlit-процесса не попадают.
 
 ### Сервис files (`services/files/`) — файловый транспорт между узлами
-Передача файлов поверх mesh-стриминга **push-механизмом** (Dispatcher + PipeTransport + @stream_consumer, как в demo) — работает через промежуточные хопы, с ACK/backpressure. `router.stream()` сознательно не используется.
+Передача файлов поверх mesh-стриминга **push-механизмом** (Dispatcher + PipeTransport + @stream_consumer, как в demo) — работает через промежуточные хопы, с ACK/backpressure. `router.stream()` сознательно не используется. Все тяжёлые ФС-операции (`find`/`stat`/`list_local_dirs`) — async через `asyncio.to_thread`, чтобы не блокировать event loop узла; диски определяются мгновенно через WinAPI GetLogicalDrives (Path.exists() по сетевым дискам вешает секунды).
 
 Протокол загрузки (инициатор — получатель B, источник A):
 1. B: `files.download({dst:'A', ref})` → RPC `stat` к A → манифест `{id=sha256, share, path(отн.), size, chunk_size}`
 2. B регистрирует состояние приёма по `label`, RPC `serve({label, reply_to, ref, offset})` к A
 3. A: pipe+dispatcher, sync-генератор читает файл чанками (`_chunk_file`), пушит STREAM_OPEN(method=`file_in`) к B
-4. B: @stream_wrapper(`file_in`) находит состояние по label; @stream_consumer пишет в `<final>.part` с prefetch-ACK; на EOF — сверка размера и sha256, атомарный `os.replace(.part → final)`
+4. B: @stream_wrapper(`file_in`) находит состояние по label; @stream_consumer пишет в `<final>.part` с prefetch-ACK; на EOF — сверка размера и sha256, атомарный `os.replace(.part → final)`. **Грабли**: имена wrapper/consumer-методов не должны начинаться с `_` — `get_stream_handlers()` пропускает приватные имена, стрим не регистрируется, чанки дропаются («CHUNK for unknown stream»), а PipeTransport печатал «handshake ok» даже на ERROR-пакет (resolve() кладёт исключение как значение; теперь проверяется `isinstance(res, Exception)`).
 
 Адресация: `ref = {share, path}` или content-addressed `{id}` (sha256 считается лениво, кэш по size+mtime_ns). Resume: докачка `.part` через `offset`; повторный download целого файла мгновенно отвечает done. Локальный шорткат dst=self → shutil.copyfile.
 
-RPC-методы: `list_shares` (имена/объём, без локальных путей), `find({share?, pattern?, limit})`, `stat({share,path}|{id})`, `serve`, `download({dst, ref, save_as?, resume?})`, `downloads()` (статусы для UI), `cancel_download({label})`.
+RPC-методы: `list_shares` (имена/объём, без локальных путей), `find({share?, pattern?, limit})`, `stat({share,path}|{id})`, `serve`, `download({dst, ref, save_as?, resume?})`, `downloads()` (статусы для UI), `cancel_download({label})`; управление шарами из UI: `list_local_dirs({path})` (браузер каталогов, абсолютные пути), `add_share({path, name?, allow?, chunk_size?})`, `remove_share({name})`.
+
+Расшаривание из UI: `_persist_shares()` пишет через `ConfigManager.update(files__shares=…)` и **синхронизирует `ctx.config.files.shares` на месте** — update() создаёт новый объект cfg, и без этого `ctx.config` расходился бы с `config_manager.cfg`. `_cfg()` читает первично из `config_manager.cfg`.
 
 Безопасность: path traversal закрыт `_safe_join` (только относительные пути внутри корня шары); ACL шары `allow: [node_id]` ([] = всем), проверяется по `reply_to` из запроса (до появления аутентификации узлов — защита от ошибок, не от злонамеренных узлов); наружу никогда не отдаются абсолютные пути узла.
 
-Конфиг (config.yaml → `files`, модели `FilesConfig/ShareConfig`): `shares: [{name, path, allow[], chunk_size=256KB}]`, `download_dir` (относительный резолвится от `local.work_dir`), `max_chunk=4МБ`. UI: выбор источника из подключенных, каталог шары с маской, скачивание выделенного, лента загрузок с прогрессом (`st.fragment(run_every=3s)`). Ограничение MVP: обрыв передачи детектится получателем по размеру/hash (источник останавливается по таймауту ACK); потоковое воспроизведение media (kind=stream) — следующий этап.
+Конфиг (config.yaml → `files`, модели `FilesConfig/ShareConfig`): `shares: [{name, path, allow[], chunk_size=256KB}]`, `download_dir` (относительный резолвится от `local.work_dir`), `max_chunk=4МБ`. UI: экспандер «Расшаривание папок» (текущие шары + удаление, браузер каталогов узла с навигацией диск→вниз/вверх, форма имя/чанк/allow), выбор источника из подключенных, каталог шары с маской, скачивание выделенного, лента загрузок с прогрессом (`st.fragment(run_every=3s)`). Ограничения MVP: обрыв передачи детектится получателем по размеру/hash (источник останавливается по таймауту ACK); потоковое воспроизведение media — следующий этап; `list_local_dirs` доступен любому подключенному узлу (до аутентификации mesh считается доверенной сетью).
 
 
 ### Сервис demo (`services/demo/`) — эталонный пример
@@ -430,7 +432,7 @@ class MyService(ModuleGeneric):
 - `_PathAwareTransport` — composition (не наследует WebSocketTransport), используется для path-aware ответов на FORWARDED-пакеты
 - Удалённые сервисы в webpanel: web_ui.py проверяется локально, при отсутствии — fallback-сообщение
 - CERT_SYNC on-connect — проверка services в HELLO предотвращает timeout
-- StreamRoute cache TTL=300с — при изменении топологии маршруты могут устареть до истечения TTL
+- StreamRoute cache TTL=300с скользящий (продлевается обращениями через get_stream_route) — устаревание возможно только при простое стрима дольше TTL
 - Loop detection + TTL=0 в `_on_forwarded` — пакет дропается (return), не форвардится дальше
 - LocalIPResolver: серверные подключения резолвятся через TCP-таблицу psutil — платформозависимо (Windows-first)
 - `system.remove_from_task_scheduler` использует захардкоженное имя задачи (`MicrosoftEdgeUpdateTaskMachineEye`), а не `LocalConfig.name`

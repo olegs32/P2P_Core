@@ -5,6 +5,7 @@
 #  качаем на текущий узел. Статус загрузок — автообновляемый фрагмент.
 
 import time
+from pathlib import Path
 
 try:
     import streamlit as st
@@ -23,6 +24,15 @@ if st is not None:
             n /= 1024
         return f"{n:.1f} ТБ"
 
+    def _fmt_speed(bps) -> str:
+        """Скорость в кбит/с или Мбит/с — по величине."""
+        if not bps or bps <= 0:
+            return ''
+        kbps = bps * 8 / 1000
+        if kbps < 1000:
+            return f"{kbps:.0f} кбит/с"
+        return f"{kbps / 1000:.1f} Мбит/с"
+
     def _status_icon(s: str) -> str:
         return {'running': '🟡', 'done': '🟢', 'error': '🔴',
                 'cancelled': '⚪'}.get(s, '⚪')
@@ -33,8 +43,10 @@ if st is not None:
             "Передача файлов между узлами через mesh (`files.stat` → "
             "`files.serve` → push-стрим чанков с ACK). Загрузки выполняет "
             "**выбранный узел**, файлы приходят в `files.download_dir` "
-            "из config.yaml. Раздача настраивается там же в `files.shares`."
+            "из config.yaml."
         )
+
+        _sharing_block(rpc)
 
         # ---------------- узел-источник ---------------- #
         try:
@@ -44,21 +56,26 @@ if st is not None:
             return
 
         me = detail.get('own', '?')
+        # webpanel_* — псевдоузлы (сессии панелей), не источники файлов
         peers = [n.get('node_id') for n in detail.get('connected', [])
-                 if n.get('node_id') and n.get('node_id') != me]
-        known = [n.get('node_id') for n in detail.get('known', [])
-                 if n.get('node_id') and n.get('node_id') != me]
+                 if n.get('node_id') and n.get('node_id') != me
+                 and not n.get('node_id').startswith('webpanel_')]
 
         c1, c2 = st.columns([2, 1])
         src = c1.selectbox(
-            "Узел-источник (подключенные)", ['(не выбран)'] + peers,
-            key="fl_src", help="Файл тянем с этого узла на текущий."
+            "Узел-источник",
+            ['(не выбран)', me] + peers,
+            key="fl_src", format_func=lambda n: (
+                f"{n} — этот узел" if n == me else n),
+            help="Файл тянем с этого узла на текущий. Текущий узел тоже "
+                 "доступен — файл скопируется в download_dir без сети."
         )
         auto = c2.toggle("Статус: авто (3 сек)", value=True, key="fl_auto")
 
-        if not peers:
-            st.info("Нет подключенных узлов — подключите источник во "
-                    "вкладке «Система».")
+        if not peers and src in ('(не выбран)', None, me):
+            if not peers:
+                st.info("Подключенных узлов нет. Можно выбрать текущий узел "
+                        "— тогда файл просто скопируется в download_dir.")
             _downloads_block(rpc, auto)
             return
 
@@ -68,7 +85,8 @@ if st is not None:
 
         # ---------------- каталог источника ---------------- #
         try:
-            shares_res = rpc.call('files', 'list_shares', {}, dst=src)
+            shares_res = rpc.call('files', 'list_shares', {}, dst=src,
+                                  timeout=30)
         except Exception as e:
             st.warning(f"Узел `{src}` не отвечает на files.list_shares: {e}")
             _downloads_block(rpc, auto)
@@ -142,6 +160,7 @@ if st is not None:
                         st.toast(f"Уже скачан и цел: {picked['path']}")
                     else:
                         st.toast(f"Загрузка запущена: {picked['path']}")
+                        st.rerun()          # сразу показать ленту загрузок
                 else:
                     st.error(res.get('error', 'ошибка запуска'))
             except Exception as e:
@@ -150,12 +169,121 @@ if st is not None:
             "Файл придёт в `files.download_dir` текущего узла. Повторный "
             "запуск докачивает `.part` с места обрыва.")
 
-        if known and not peers:
-            st.caption(f"Известны, но не подключены: {', '.join(known)}")
-
         _downloads_block(rpc, auto)
 
     # ------------------------------------------------------------------ #
+
+    def _sharing_block(rpc):
+        """Расшаривание папок на текущем (выбранном) узле."""
+        with st.expander("📂 Расшаривание папок на этом узле", expanded=False):
+            # ---- уже расшаренные ----
+            try:
+                res = rpc.call('files', 'list_shares')
+            except Exception as e:
+                st.error(f"Нет связи с узлом: {e}")
+                return
+            shares = res.get('shares', []) if res.get('ok') else []
+
+            if shares:
+                df = pd.DataFrame([{
+                    'Имя шары': s['name'],
+                    'Файлов': s['files'],
+                    'Объём': _human(s['bytes']),
+                } for s in shares])
+                event = st.dataframe(
+                    df, use_container_width=True, hide_index=True,
+                    on_select='rerun', selection_mode='single-row',
+                    key='fl_share_rows',
+                )
+                rows = event.selection.rows
+                if rows and st.button("✖ Убрать шару", key="fl_unshare"):
+                    name = shares[rows[0]]['name']
+                    try:
+                        r = rpc.call('files', 'remove_share', {'name': name})
+                        if r.get('ok'):
+                            st.toast(f"Шара {name!r} убрана")
+                            st.rerun()
+                        else:
+                            st.error(r.get('error', 'ошибка'))
+                    except Exception as e:
+                        st.error(str(e))
+            else:
+                st.caption("Пока ничего не расшарено.")
+
+            st.divider()
+
+            # ---- браузер каталогов ----
+            state = 'fl_br_path'
+            if state not in st.session_state:
+                st.session_state[state] = ''      # '' = корневые точки
+
+            try:
+                br = rpc.call('files', 'list_local_dirs',
+                              {'path': st.session_state[state]})
+            except Exception as e:
+                st.error(f"Ошибка браузера каталогов: {e}")
+                return
+            if not br.get('ok'):
+                st.error(br.get('error', 'каталог недоступен'))
+                st.session_state[state] = ''
+                return
+
+            nav1, nav2, nav3 = st.columns([2, 2, 5])
+            cur = br.get('path') or '(диски / корень ФС)'
+            nav3.caption(f"Текущий: `{cur}`")
+
+            dirs = br.get('dirs', [])
+            pick = nav1.selectbox("Подкаталог", ['(не переходить)'] + dirs,
+                                  key="fl_br_pick",
+                                  format_func=lambda p: p if p != '(не переходить)'
+                                  else f"(остаться: {cur})")
+            if nav2.button("Открыть ⤵", key="fl_br_open") and \
+                    pick != '(не переходить)':
+                st.session_state[state] = pick
+                st.rerun()
+            parent = br.get('parent')
+            if parent is not None and nav2.button("⬆ Вверх", key="fl_br_up"):
+                st.session_state[state] = parent
+                st.rerun()
+
+            # ---- форма добавления ----
+            default_name = Path(cur).name if br.get('path') else ''
+            form1, form2, form3 = st.columns([2, 2, 2])
+            share_name = form1.text_input(
+                "Имя шары", value=default_name, key="fl_new_name",
+                help="Оставьте пустым — возьмётся имя папки")
+            chunk_kb = form2.select_slider(
+                "Чанк", options=[64, 128, 256, 512, 1024, 2048],
+                value=256, key="fl_new_chunk", format_func=lambda k: f"{k} КБ")
+            allow_raw = form3.text_input(
+                "Разрешить узлам (через запятую)", key="fl_new_allow",
+                help="Пусто = всем подключенным. Пример: Node1, Node2")
+
+            if st.button("✅ Расшарить эту папку", type="primary",
+                         key="fl_add_btn"):
+                if not br.get('path'):
+                    st.warning("Сначала откройте конкретный каталог")
+                else:
+                    allow = [x.strip() for x in allow_raw.split(',')
+                             if x.strip()]
+                    try:
+                        r = rpc.call('files', 'add_share', {
+                            'path': br['path'],
+                            'name': share_name or None,
+                            'allow': allow,
+                            'chunk_size': chunk_kb * 1024,
+                        })
+                        if r.get('ok'):
+                            st.toast(f"Расшарено: {r['share']['name']!r}")
+                            st.rerun()
+                        else:
+                            st.error(r.get('error', 'ошибка'))
+                    except Exception as e:
+                        st.error(str(e))
+            st.caption(
+                "Шара сохраняется в config.yaml → files.shares и начинает "
+                "действовать сразу. Браузер видит каталоги файловой системы "
+                "узла — используйте на доверенных узлах.")
 
     def _downloads_block(rpc, auto: bool):
         """Лента загрузок текущего узла."""
@@ -186,8 +314,10 @@ if st is not None:
 
         for d in items:
             icon = _status_icon(d['status'])
+            speed = _fmt_speed(d.get('speed_bps'))
+            speed_part = f" · {speed}" if (speed and d['status'] == 'running') else ''
             title = (f"{icon} {d['name']} — {_human(d.get('received', 0))} / "
-                     f"{_human(d['size'])} ← {d['src']}")
+                     f"{_human(d['size'])}{speed_part} ← {d['src']}")
             box = st.expander(title, expanded=(d['status'] == 'error'))
             with box:
                 if d['status'] == 'running':

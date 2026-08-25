@@ -32,6 +32,15 @@ class FrameDecodeError(Exception):
     граница доверия: соединение закрывается."""
 
 
+async def _safe_close(websocket, code: int = 1000, reason: str = ''):
+    """Закрыть WS, не падая на двойном close: при остановке узла uvicorn
+    мог уже отправить close сам (RuntimeError в ASGI-имплементации)."""
+    try:
+        await websocket.close(code=code, reason=reason)
+    except RuntimeError:
+        pass
+
+
 class Node:
     def __init__(self, node_id: str, ws: WebSocket):
         self.node_id = node_id
@@ -84,6 +93,9 @@ class NetworkModule(ModuleGeneric):
                 # ждём HELLO первым кадром — строго binary msgpack
                 first = await asyncio.wait_for(websocket.receive(), timeout=10)
 
+                if first.get('type') == 'websocket.disconnect':
+                    raise WebSocketDisconnect(first.get('code', 1000))
+
                 if first.get('bytes') is None:
                     # text-кадр = легаси JSON-клиент; протокол теперь msgpack-only
                     reason = (
@@ -100,7 +112,7 @@ class NetworkModule(ModuleGeneric):
                         dst    = node_id,
                         data   = {'reason': reason},
                     ))
-                    await websocket.close(reason='upgrade required')
+                    await _safe_close(websocket, reason='upgrade required')
                     return
 
                 try:
@@ -110,7 +122,7 @@ class NetworkModule(ModuleGeneric):
                         f'Malformed HELLO frame from {node_id}: {e} '
                         f'head={hexdump_head(first["bytes"])}'
                     )
-                    await websocket.close(code=WS_CLOSE_PROTOCOL_ERROR)
+                    await _safe_close(websocket, code=WS_CLOSE_PROTOCOL_ERROR)
                     return
 
                 if pack.type != PackType.HELLO:
@@ -122,7 +134,7 @@ class NetworkModule(ModuleGeneric):
                         dst    = node_id,
                         data   = {'reason': reason},
                     ))
-                    await websocket.close(reason='handshake rejected')
+                    await _safe_close(websocket, reason='handshake rejected')
                     return
 
                 if pack.dst != self.ctx.NODE:
@@ -141,7 +153,7 @@ class NetworkModule(ModuleGeneric):
                             'got':      pack.dst,
                         },
                     ))
-                    await websocket.close(reason='handshake rejected')
+                    await _safe_close(websocket, reason='handshake rejected')
                     return
 
                 # проверить дубликат — заменить старое подключение на новое (reconnect)
@@ -208,7 +220,7 @@ class NetworkModule(ModuleGeneric):
                         continue
                     except FrameDecodeError as e:
                         self.log.warning(f'{e} — closing connection')
-                        await websocket.close(code=WS_CLOSE_PROTOCOL_ERROR)
+                        await _safe_close(websocket, code=WS_CLOSE_PROTOCOL_ERROR)
                         break
 
                     # обновить last_ts при любом трафике
@@ -236,6 +248,11 @@ class NetworkModule(ModuleGeneric):
     async def _recv_pack(self, websocket: WebSocket) -> MsgPack:
         """Принять один пакет: binary-кадр → decode_pack."""
         msg = await websocket.receive()
+        # голый receive() возвращает disconnect КАК ЕСТЬ (не исключение):
+        # {'type': 'websocket.disconnect', ...} без bytes/text. Раньше это
+        # классифицировалось как «text frame 'None'» и ломало остановку узла
+        if msg.get('type') == 'websocket.disconnect':
+            raise WebSocketDisconnect(msg.get('code', 1000))
         raw = msg.get('bytes')
         if raw is None:
             text = msg.get('text')
