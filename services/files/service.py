@@ -309,6 +309,26 @@ class Files(ModuleGeneric):
                  int(getattr(self._cfg(), 'max_chunk', 4 * 1024 * 1024)))
         return {'ok': True, 'manifest': self._manifest(share, abspath, cs)}
 
+    @rpc
+    async def read(self, data: dict) -> dict:
+        """Прочитать маленький файл целиком (манифесты релизов, конфиги).
+
+        data: {share,path} | {id}; limit? — байт (дефолт 256КБ, потолок 1МБ).
+        Ответ: {ok, data: bytes, size}. Чтение в потоке.
+        """
+        return await asyncio.to_thread(self._read_impl, data or {})
+
+    def _read_impl(self, data: dict) -> dict:
+        limit = min(max(int(data.pop('limit', 0) or 262144), 1), 1024 * 1024)
+        share, abspath = self._resolve_ref(data)
+        if share is None:
+            return {'ok': False, 'error': abspath}
+        size = abspath.stat().st_size
+        if size > limit:
+            return {'ok': False,
+                    'error': f'файл больше лимита: {size} > {limit} байт'}
+        return {'ok': True, 'data': abspath.read_bytes(), 'size': size}
+
     # ------------------------------------------------------------------ #
     #  RPC: управление шарами (расшаривание из UI)
     # ------------------------------------------------------------------ #

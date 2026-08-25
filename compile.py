@@ -1,5 +1,6 @@
 import logging
 import os
+import re
 import shutil
 import time
 import traceback
@@ -10,7 +11,33 @@ import PyInstaller.__main__
 from sign.signer import sign_exe
 
 SIGNED_DIR = Path('dist')
+ROOT = Path(__file__).parent
 start_time = time.time()
+
+
+# --------------------------------------------------------------------------- #
+#  Версия: VERSION (семантика) + BUILD_NUMBER (счётчик) → version.txt в бандл
+# --------------------------------------------------------------------------- #
+
+def make_version_txt() -> str:
+    ver_file = ROOT / 'VERSION'
+    semver = ver_file.read_text(encoding='utf-8').strip() \
+        if ver_file.exists() else '0.0.0'
+    if not re.match(r'^\d+\.\d+\.\d+$', semver):
+        raise SystemExit(f'VERSION файл задан неверно: {semver!r} '
+                         f'(нужно MAJOR.MINOR.PATCH)')
+
+    bn_file = ROOT / 'BUILD_NUMBER'
+    try:
+        build = int(bn_file.read_text(encoding='utf-8').strip())
+    except (OSError, ValueError):
+        build = 0
+    build += 1
+    bn_file.write_text(str(build), encoding='utf-8')
+
+    version = f'{semver}-build{build}'
+    (ROOT / 'version.txt').write_text(version, encoding='utf-8')
+    return version
 
 # --------------------------------------------------------------------------- #
 #  Общие hidden-imports, необходимые проекту
@@ -63,6 +90,11 @@ def build(name, ui=True):
 
     # Создаем КОПИЮ базовых аргументов для текущей сборки
     current_args = BASE_ARGS.copy()
+
+    # version.txt внутрь бандла (читает src.internal_modules.app_version)
+    version_txt = ROOT / 'version.txt'
+    if version_txt.exists():
+        current_args.extend(['--add-data', f'{version_txt};.'])
 
     # Добавляем базовые скрытые импорты
     for mod in BASE_HIDDEN_IMPORTS:
@@ -120,6 +152,9 @@ if __name__ == '__main__':
     logging.basicConfig(level=logging.INFO)
     log = logging.getLogger('Compiler')
     os.makedirs(SIGNED_DIR, exist_ok=True)
+
+    version = make_version_txt()
+    log.info(f'Building version {version}')
 
     # 1. Сборка приложения с UI
     build('WebUI_P2P_Core', ui=True)
