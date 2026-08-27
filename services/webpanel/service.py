@@ -6,7 +6,10 @@ import logging
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
+
+import psutil
 
 from src.internal_modules.base import ModuleGeneric
 from services.rpc import rpc
@@ -15,7 +18,6 @@ import streamlit.web.cli as stcli
 log = logging.getLogger('WebPanel')
 logging.getLogger("streamlit.runtime.scriptrunner_utils.script_run_context").setLevel(logging.ERROR)
 logging.getLogger("streamlit.runtime.state.session_state_proxy").setLevel(logging.ERROR)
-
 
 DEFAULT_PANEL_PORT = 8501
 SERVICES_DIR = Path(__file__).parent.parent
@@ -28,10 +30,7 @@ class WebPanel(ModuleGeneric):
         self._panel_port = DEFAULT_PANEL_PORT
 
     async def start(self):
-        log.info(
-            f'Streamlit booting... '
-        )
-
+        log.info(f'Streamlit booting... ')
 
         try:
             # PyInstaller создает временную папку и сохраняет путь в _MEIPASS
@@ -72,6 +71,11 @@ class WebPanel(ModuleGeneric):
             'PYTHONWARNINGS': 'ignore::DeprecationWarning',
         }
 
+        pid = list(set([con.pid for con in psutil.net_connections() if con.laddr.port == 8501]))
+        if pid:
+            psutil.Process(pid[0]).kill()
+            log.info(f'Old instance Streamlit detected, killing pid {pid}')
+            time.sleep(2)
 
         self._streamlit_process = subprocess.Popen(
             args,
@@ -84,7 +88,6 @@ class WebPanel(ModuleGeneric):
             f'Streamlit started on port {self._panel_port} '
         )
         # sys.exit(stcli.main())
-
 
     async def stop(self):
         """Корректно завершает процесс Streamlit"""
@@ -116,7 +119,7 @@ class WebPanel(ModuleGeneric):
     def node_status(self):
         """Полное состояние узла — для главной страницы."""
         nt = self.ctx.network.neighbor_table
-        nm = self.ctx.network.nodes_manager #?!
+        nm = self.ctx.network.nodes_manager  # ?!
         return {
             'node_id': self.ctx.NODE,
             'host': self.ctx.network.local_ip(),

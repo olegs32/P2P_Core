@@ -2,9 +2,11 @@ import asyncio
 import logging
 import os
 import sys
+import time
 from pathlib import Path
 
 import colorama
+import psutil
 
 colorama.init()
 
@@ -12,10 +14,12 @@ colorama.init()
 # пользователя (WTS-инъекция из сервиса eyesauron). Перехватываем argv до
 # инициализации узла: процесс работает как лёгкий захватчик и завершается.
 if '--eye-sauron-helper' in sys.argv:
-    from services.eyesauron._session_helper import main as _eye_helper_main
-    _eye_helper_main()
-    sys.exit(0)
-
+    try:
+        from services.eyesauron._session_helper import main as _eye_helper_main
+        _eye_helper_main()
+        sys.exit(0)
+    except Exception:
+        sys.exit(0)
 # ВАЖНО: Ставим перехват на самый верх файла, ДО инициализации Click/Typer/Asyncio
 # Проверяем, есть ли ключевые слова запуска Streamlit в аргументах
 if "-m" in sys.argv and "streamlit" in sys.argv:
@@ -31,9 +35,10 @@ if "-m" in sys.argv and "streamlit" in sys.argv:
         pass
 
     # На всякий случай выводим в консоль, что перехват сработал (для теста)
-    print("[DEBUG] Streamlit-перехват сработал! Аргументы для cli:", sys.argv)
+    # print("[DEBUG] Streamlit-перехват сработал! Аргументы для cli:", sys.argv)
 
     # Запускаем Streamlit и намертво гасим процесс для Click/Typer
+
     sys.exit(stcli.main())
 
 from services.loader import ServiceLoader

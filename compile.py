@@ -47,6 +47,7 @@ BASE_HIDDEN_IMPORTS = [
     'uvicorn',
     'websockets',
     'pydantic',
+    'pandas',
     'watchdog',
     'cryptography',
     'msgpack',
@@ -56,9 +57,9 @@ BASE_HIDDEN_IMPORTS = [
     'click',
     'anyio',
     'colorama',
-    'tornado',
-    'tornado.web',
-    'tornado.ioloop',
+    # 'tornado',
+    # 'tornado.web',
+    # 'tornado.ioloop',
 
     'src.networking.protocol',
     'src.internal_modules.context',
@@ -74,7 +75,7 @@ BASE_HIDDEN_IMPORTS = [
 # --------------------------------------------------------------------------- #
 BASE_ARGS = [
     'main.py',
-    '--onefile',
+    # '--onefile',
     '-i=src/icon.ico',
     '--clean',
     '--collect-all=src',

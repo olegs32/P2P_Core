@@ -71,4 +71,5 @@ dist/services/plot
 /sign/temp_dev_bundle.pfx
 /sign/signed/
 /dist/
-/docs/eyeSauron.md
+/docs/*sauron*.md
+/config.yaml.backups/

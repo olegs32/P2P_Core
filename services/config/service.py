@@ -452,7 +452,7 @@ class Config(ModuleGeneric):
                          f'и будет поднят стартером')
 
         async def _exit_later():
-            await asyncio.sleep(EXIT_DELAY_SEC)
+            # await asyncio.sleep(EXIT_DELAY_SEC)
             os._exit(0)
 
         asyncio.create_task(_exit_later())

@@ -280,6 +280,7 @@ def _render_node_panel(rpc):
     st.subheader("RPC-консоль")
 
     # Выбор целевого узла
+    all_node_ids = []
     all_node_ids = [own] + [
         n.get('node_id') for n in connected if n.get('node_id') != own
     ] + [
