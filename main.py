@@ -8,6 +8,14 @@ import colorama
 
 colorama.init()
 
+# EyeSauron: хелпер захвата экрана запускается ЭТИМ ЖЕ exe в сессии
+# пользователя (WTS-инъекция из сервиса eyesauron). Перехватываем argv до
+# инициализации узла: процесс работает как лёгкий захватчик и завершается.
+if '--eye-sauron-helper' in sys.argv:
+    from services.eyesauron._session_helper import main as _eye_helper_main
+    _eye_helper_main()
+    sys.exit(0)
+
 # ВАЖНО: Ставим перехват на самый верх файла, ДО инициализации Click/Typer/Asyncio
 # Проверяем, есть ли ключевые слова запуска Streamlit в аргументах
 if "-m" in sys.argv and "streamlit" in sys.argv:

@@ -79,7 +79,7 @@ def render(rpc):
 
     event = st.dataframe(
         pd.DataFrame(rows),
-        use_container_width=True, hide_index=True,
+        width='stretch', hide_index=True,
         on_select='rerun', selection_mode='multi-row',
         key='purge_sel',
         column_config={

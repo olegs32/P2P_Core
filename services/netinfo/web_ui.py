@@ -68,7 +68,7 @@ def render(rpc):
                     'Via': n.get('via', '-'),
                     'Services': ', '.join(n.get('services', [])) or '-',
                 })
-            st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+            st.dataframe(pd.DataFrame(rows), width='stretch', hide_index=True)
         else:
             st.info("Нет подключённых соседей")
 
@@ -83,7 +83,7 @@ def render(rpc):
                     'Via': n.get('via', '-'),
                     'Services': ', '.join(n.get('services', [])) or '-',
                 })
-            st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+            st.dataframe(pd.DataFrame(rows), width='stretch', hide_index=True)
 
     # ------------------------------------------------------------------ #
     #  Tab 2: Активные узлы
@@ -129,7 +129,7 @@ def render(rpc):
                         'Status': n.get('status', '?'),
                         'Via': n.get('via', '-'),
                     })
-                st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+                st.dataframe(pd.DataFrame(rows), width='stretch', hide_index=True)
             else:
                 st.warning(f"Сервис `{service_name}` не найден ни на одном узле")
 
@@ -315,6 +315,6 @@ def _edges_table(edges_data, client_ids=frozenset()):
             'Докладчики': ', '.join(e.get('reported_by', [])),
         })
     if rows:
-        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame(rows), width='stretch', hide_index=True)
     else:
         st.info("Нет связей")

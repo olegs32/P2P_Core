@@ -1,7 +1,7 @@
 # P2P_Core — База знаний для AI-ассистента
 
 > Быстрый справочник по архитектуре, конвенциям и ключевым паттернам проекта.
-> Обновлено: 2026-08-25
+> Обновлено: 2026-08-26
 
 ---
 
@@ -210,8 +210,10 @@ SERVICE_META = {
     'netinfo':      ('🌐', 'Сеть',         'Состояние сети и маршрутизация'),
     'files':        ('🗂️', 'Сеть',         'Файловый транспорт между узлами'),
     'system':       ('⚙️', 'Система',      'Управление узлами и подключениями'),
+    'config':       ('🛠️', 'Система',      'Удалённое редактирование config.yaml узла'),
     'updater':      ('⬆️', 'Система',      'Обновление узла по mesh'),
     'purge':        ('☢️', 'Система',      'Аварийное удаление узла с хоста'),
+    'eyesauron':    ('👁', 'Система',      'Мониторинг экранов: сбор и просмотр кадров'),
     'compute_full': ('⚡', 'Вычисления',   'Генератор + консьюмер'),
     'generator':    ('📤', 'Вычисления',   'Генератор стримов'),
     'test':         ('🧪', 'Диагностика',  'Тестовый echo-сервис'),
@@ -277,8 +279,23 @@ RPC-методы:
 - Двойной запуск не страшен: main.py держит Global-mutex (`P2P_Core_<name>`) — второй инстанс сразу выходит; плюс NetworkModule.start() fail-fast: если WS-порт не поднялся за ~3с (занят/ошибка bind) — RuntimeError, узел завершается
 - BASE_DIR: у frozen-узла = каталог exe (планировщик запускает процесс с cwd=System32 — привязка к cwd унесла бы config.yaml в системный каталог), в dev — корень репозитория, а не живёт зомби без сети
 
+### Сервис config (`services/config/`) — удалённое редактирование config.yaml
+Всегда включён (флага нет): headless-узел не имеет локального UI, конфиг правится только из панели. Семантика применения: **сохранить** (валидация → бэкап → атомарная запись → инплейс-синк живых объектов → hot apply) и **сохранить + перезапустить** (detached-стартер, механика updater; frozen — тот же exe, dev — `python main.py`, cwd = каталог config.yaml).
+
+RPC:
+| Метод | Описание |
+|-------|----------|
+| `get` | Текст config.yaml (+ mtime, path, backups), `local.secret` замаскирован `__MASKED_SECRET__` |
+| `save({text, base_mtime?, restart?})` | Валидация `Config(**parsed)` ДО записи; конфликт по mtime если файл меняли с момента чтения (`conflict: true`); ответ несёт `applied_hot`, `restart_required_sections`, `warnings` |
+| `backups` / `read_backup({name})` | Список копий / текст копии (тоже с маской секрета) |
+| `restore({name})` | Восстановление ТОЛЬКО по имени из backups() — путей от сети нет |
+
+Горячо применяются: `logging.level`, `logging.websockets_level` (setLevel на root/websockets-логгеры) и `logs.*` (панель подхватывает при следующем подключении). Остальные секции полностью вступают после рестарта. Инплейс-синк `_sync_live()` заменяет секции в `ctx.config` И `config_manager.cfg` с сохранением идентичности объектов (ссылки на `ctx.config` валидны); сервисы, кэшировавшие ссылки на сами секции, увидят новое после рестарта.
+
+Безопасность: валидация до записи (битый конфиг не попадает на диск); бэкап перед каждой записью (`config.yaml.backups/config_<ts>.yaml`, ротация 10, дубликат последней копии не создаётся); маска секрета при save() подменяется реальным значением; неизвестные top-level секции сохраняются как есть с warning (forward-compat). UI: textarea-редактор (синхронизация по mtime через `cfg_loaded_mtime`), кнопки «Сохранить»/«Сохранить и перезапустить» (чекбокс подтверждения), экспандер бэкапов с просмотром/восстановлением; потеря связи при рестарте трактуется как ожидаемый исход.
+
 ### Сервис purge (`services/purge/`) — аварийное удаление узла с хоста
-Полное снятие узла: автозапуск, конфиг, данные, образ exe, процесс. По умолчанию ВЫКЛЮЧЕН (`config.yaml → purge.enabled: false`) — включать осознанно.
+Полное снятие узла: автозапуск, конфиг, данные, образ exe, процесс. Включён по умолчанию (`purge.enabled: true`) — headless-узлу аварийное удаление нужно беспрепятственно.
 
 RPC:
 | Метод | Описание |
@@ -291,6 +308,17 @@ RPC:
 Механика self-destruct (выбор `exe`): rename-trick `exe → exe.purging` (запущенный образ можно переименовать) + detached cmd-стартер (`timeout 3s & del & rd /q` — rd без /s удаляет только ПУСТОЙ каталог), затем `os._exit(0)`. Пункты: `autorun_task` (schtasks по LocalConfig.name), `autorun_registry` (HKCU Run), `config` (config.yaml через `config_manager.config_path`), `work_dir` (весь, кроме живого exe), `update_leftovers` (.old/.failed/.purging + updates/), `exe`, `process`.
 
 UI (`web_ui.py`): таблица целей с мультивыбором (st.dataframe on_select multi-row), кнопки «🗑 Удалить выбранное» и «☢️ Удалить ВСЁ» (все present-пункты), обязательный checkbox-подтверждение; предупреждение при выборе фатальных пунктов; потеря связи с узлом трактуется как ожидаемый исход. Результат показывается после st.rerun из `session_state['purge_result']`.
+
+### Сервис eyesauron (`services/eyesauron/`) — мониторинг экранов EyeSauron
+Порт проекта EyeSauron в mesh (анализ и план — `docs/eyeSauron.md`). Две независимые роли, включаются в config.yaml → `eyesauron`. По умолчанию ВЫКЛЮЧЕН (`eyesauron.enabled: false`, по аналогии с purge).
+
+- **Роль collect (коллектор)**: RPC `ingest({meta:{hostname,timestamp,title}, png}, data несёт bytes)` → raw PNG в `store_path/<host>/<date>/<ts>__<title>.png` (через `asyncio.to_thread`, NAS медленный); `browse({level:'hosts'|'dates'|'images', host?, date?, filter?})`; `image({file})` → bytes PNG (только относительные пути внутри store_path, `_safe_rel`); `stats()` (полный обход, долгий).
+- **Роль capture (агент)**: узел в session 0 не видит рабочий стол → сервис через WTS-инъекцию (`_wts.py`, порт launcher.py: WTSEnumerateSessions + WTSQueryUserToken + CreateProcessAsUserW, флаг CREATE_NO_WINDOW) запускает хелпер `_session_helper.py` в каждой активной сессии. Хелпер: захват (mss → PIL.ImageGrab → ctypes GDI), валидация (PNG ≥ 10KB, детект чёрного экрана), дедуп собственным average_hash на numpy (без пакета imagehash), заголовок активного окна через ctypes; кадры пишет в spool `<local.work_dir>/eyesauron/spool/<md5>` + `.meta` (формат офлайн-кэша оригинала). Сервис разбирает spool: шлёт коллектору `eyesauron.ingest` по mesh, при недоступности копит буфер (потолок `max_spool_mb`, старейшие вытесняются); пауза между отправками `send_delay_sec` (щадит NAS). Хелпер держит mutex `Local\EyeSauronCaptureMutex` (per-session namespace) и сам выходит при завершении своей сессии.
+- Запуск хелпера: frozen — тот же exe с ключом `--eye-sauron-helper` (argv-хук в начале main.py до инициализации узла); dev — `python <script>` c bootstrap sys.path.
+- RPC `status()` (роли, хелперы по сессиям, spool), `test_capture()` (прямой захват из процесса узла — только dev/интерактивная сессия). UI: вкладка «👁 EyeSauron» — статус агента + просмотр архива (host → date → filter → таблица кадров → st.image).
+- Зависимости: `mss`, `pillow`, `numpy` (+ vendor `_vendor_chunk_store.py` — снимок ChunkStore как образец).
+- **Пакованное дедуп-хранилище (РЕАЛИЗОВАНО, спека `docs/eyesauron_storage.md`)**: движок `_pack_store.py` — иммутабельные тома `.pack/.idx/.bloom` (append-only, seal → одна последовательная заливка на NAS с докачкой `.part` и sha256-верификацией), манифест `volumes.json`, карты кадров в дневных сегментах `maps/seg-*.mseg`. Включается `eyesauron.store.enabled: true` (по умолчанию выкл — ingest пишет raw PNG). Ключи: `store.volume_size_gb/local_cache_gb(100)/max_age_hours/bloom_enabled/root`. Дедуп через границы seal/рестартов (hot-кэш + per-volume idx binsearch + bloom опционально). Журнал staging — коммит на кадр; краш теряет максимум хвост журнала. Каталог host/date выводится из мет сегментов + доскан хвостов. RPC `seal_now`; в `status()` блок `store`+`telemetry`.
+- **Телеметрия скролла** (`_telemetry.py`, на коллекторе): детект вертикального сдвига между соседними кадрами хоста (downscale 96×128, ±15 строк); файлы `<work_dir>/eyesauron/telemetry/<день>.jsonl` (строка на наблюдение) + `summary.json` (агрегаты по дням/хостам, атомарная перезапись раз в минуту, ротация 90 дней). Метрика решает включение CDC-томов (порог ~15% — docs/eyesauron_storage.md §7). Бенчмарк стратегий чанкинга — `_bench_cdc.py`: chunker v1 = grid256 (CDC проиграл на спокойных потоках из-за компрессии сырых чанков, выиграл только скролл; cdc_png опровергнут каскадом deflate).
 
 ### Сервис netinfo (`services/netinfo/`) — диагностика сети и карта топологии
 RPC: `neighbors`, `nodes`, `services`, `find_service`, `topology`.
@@ -381,7 +409,7 @@ async for chunk in await ctx.network.stream(
 
 ## 9. Конфигурация
 
-Один файл — `config.yaml`; настройки узла живут в его секции `local`. Если файла нет — `_ensure_config()` создаёт его с дефолтами (`node` = hostname машины). Pydantic-модели: `Config` → `NetworkConfig`, `MemoryConfig`, `LoggingConfig`, `ServicesConfig`, `LocalConfig`.
+Один файл — `config.yaml`; настройки узла живут в его секции `local`. Если файла нет — `_ensure_config()` создаёт его с дефолтами (`node` = hostname машины). Если файл есть, но не хватает секций/полей (например, после обновления кода) — `ConfigManager._load()` достраивает их дефолтами при загрузке (`_deep_fill`: добавляются только отсутствующие ключи, существующие значения не трогаются, пустая секция `key:` трактуется как отсутствующая) и перезаписывает файл с `log.info` о добавленных путях; операция идемпотентна. Pydantic-модели: `Config` → `NetworkConfig`, `MemoryConfig`, `LoggingConfig`, `ServicesConfig`, `LocalConfig`.
 
 ```yaml
 node: Node0            # default: hostname
@@ -411,7 +439,23 @@ update:                  # UpdateConfig — обновление узла (се�
   allow_downgrade: false   # иначе только apply({force:true})
   health_confirm_sec: 90   # время до boot_ok после апдейта
 purge:
-  enabled: false           # аварийное удаление узла (сервис purge) — ВКЛЮЧАТЬ ОСОЗНАННО
+  enabled: true            # аварийное удаление узла (сервис purge) — включён по умолчанию
+eyesauron:                 # EyesauronConfig — мониторинг экранов (сервис eyesauron)
+  enabled: false             # ВКЛЮЧАТЬ ОСОЗНАННО (аналог purge.enabled)
+  collect: true              # роль коллектора: приём кадров + raw PNG в store_path
+  capture: false             # роль агента: захват экранов машины (хелпер в сессии)
+  store_path: \\192.168.53.21\photo\screens  # <host>/<date>/<ts>__<title>.png
+  collector_node: ''         # для capture: узел-коллектор ('' = копить в spool)
+  interval_sec: 5.0          # период захвата, сек
+  send_delay_sec: 0.5        # пауза между отправками коллектору (щадит NAS)
+  max_spool_mb: 500          # потолок офлайн-буфера агента
+  store:                     # пакованное дедуп-хранилище (см. docs/eyesauron_storage.md)
+    enabled: false             # вкл → ingest пишет в тома .pack вместо raw PNG
+    root: \\192.168.53.21\photo\store\packs   # NAS: готовые тома + манифест
+    volume_size_gb: 10         # цель seal по размеру
+    local_cache_gb: 100        # кэш готовых томов локально (LRU)
+    max_age_hours: 24          # seal полупустого тома
+    bloom_enabled: false       # поиск по bloom (файлы пишутся всегда)
 services:
   path: services/
 local:                 # LocalConfig — параметры деплоя/автозапуска

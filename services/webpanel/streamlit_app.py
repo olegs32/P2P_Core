@@ -160,7 +160,7 @@ with st.sidebar:
 
     # ---- Главная — кнопка ----
     is_home = st.session_state.current_page == 'home'
-    if st.button("🏠  Главная", use_container_width=True, type="primary" if is_home else "secondary"):
+    if st.button("🏠  Главная", width='stretch', type="primary" if is_home else "secondary"):
         st.session_state.current_page = 'home'
         st.rerun()
 
@@ -185,7 +185,7 @@ with st.sidebar:
         for svc_name, icon, desc in items:
             is_active = st.session_state.current_page == svc_name
             btn_type = "primary" if is_active else "secondary"
-            if st.button(f"{icon}  {svc_name}", use_container_width=True, type=btn_type,
+            if st.button(f"{icon}  {svc_name}", width='stretch', type=btn_type,
                          key=f"nav_{svc_name}"):
                 st.session_state.current_page = svc_name
                 st.rerun()
@@ -197,7 +197,7 @@ with st.sidebar:
         for svc_name, icon, desc in ungrouped:
             is_active = st.session_state.current_page == svc_name
             btn_type = "primary" if is_active else "secondary"
-            if st.button(f"{icon}  {svc_name}", use_container_width=True, type=btn_type,
+            if st.button(f"{icon}  {svc_name}", width='stretch', type=btn_type,
                          key=f"nav_{svc_name}"):
                 st.session_state.current_page = svc_name
                 st.rerun()

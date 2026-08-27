@@ -139,7 +139,7 @@ if st is not None:
 
         st.markdown("**Файлы источника** — выделите строку:")
         event = st.dataframe(
-            df, use_container_width=True, hide_index=True,
+            df, width='stretch', hide_index=True,
             on_select='rerun', selection_mode='single-row', key='fl_rows',
             height=min(420, 35 * (len(entries) + 1)),
         )
@@ -191,7 +191,7 @@ if st is not None:
                     'Объём': _human(s['bytes']),
                 } for s in shares])
                 event = st.dataframe(
-                    df, use_container_width=True, hide_index=True,
+                    df, width='stretch', hide_index=True,
                     on_select='rerun', selection_mode='single-row',
                     key='fl_share_rows',
                 )

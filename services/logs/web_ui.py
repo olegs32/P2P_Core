@@ -189,7 +189,7 @@ if st is not None:
 
         st.dataframe(
             df,
-            use_container_width=True, hide_index=True, height=420,
+            width='stretch', hide_index=True, height=420,
             column_config={
                 "время": st.column_config.TextColumn(width="small"),
                 "уровень": st.column_config.TextColumn(width="small"),

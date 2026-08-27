@@ -114,7 +114,7 @@ def _methods_table(methods: list, rpc_service, widget_key: str):
     if rpc_service:
         st.markdown(f"**Методы ({len(methods)})** — кликните строку для вызова:")
         event = st.dataframe(
-            df, use_container_width=True, hide_index=True,
+            df, width='stretch', hide_index=True,
             on_select='rerun', selection_mode='single-row', key=widget_key,
         )
         rows = event.selection.rows
@@ -123,7 +123,7 @@ def _methods_table(methods: list, rpc_service, widget_key: str):
                                widget_key=widget_key)
     else:
         st.caption(f"Методы ({len(methods)}, внутренние — по сети не вызываются):")
-        st.dataframe(df, use_container_width=True, hide_index=True)
+        st.dataframe(df, width='stretch', hide_index=True)
 
 
 def _render_ctx(rpc):
@@ -177,7 +177,7 @@ def _render_ctx(rpc):
                     st.markdown("**RPC-методы сервисов** — кликните строку для вызова:")
                     event = st.dataframe(
                         pd.DataFrame(rpc_rows),
-                        use_container_width=True, hide_index=True,
+                        width='stretch', hide_index=True,
                         on_select='rerun', selection_mode='single-row',
                         key=f"sel_reg_{entry['name']}",
                     )
@@ -256,7 +256,7 @@ def _render_node_panel(rpc):
                 'Port': n.get('port', '?'),
                 'Services': ', '.join(n.get('services', [])) or '-',
             })
-        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame(rows), width='stretch', hide_index=True)
 
     if known:
         st.markdown("**🟡 Известны (через gossip)**")
@@ -269,7 +269,7 @@ def _render_node_panel(rpc):
                 'Via': n.get('via', '-'),
                 'Services': ', '.join(n.get('services', [])) or '-',
             })
-        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame(rows), width='stretch', hide_index=True)
 
     if not connected and not known:
         st.info("Нет известных узлов")
@@ -562,7 +562,7 @@ def _render_connect(rpc):
                 'Узел': c.get('peer', '?'),
                 'URI': c.get('uri', '?'),
             })
-        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame(rows), width='stretch', hide_index=True)
     else:
         st.caption("Нет зарегистрированных коннекторов")
 
@@ -588,7 +588,7 @@ def _render_connect(rpc):
                 'URI': uri,
                 'Статус': '🟢 Подключен' if is_conn else '⚪ Ожидание',
             })
-        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame(rows), width='stretch', hide_index=True)
     else:
         st.caption("Нет сохранённых пиров")
 
@@ -680,7 +680,7 @@ def _draw_sessions(rpc):
 
     st.dataframe(
         pd.DataFrame(rows),
-        use_container_width=True, hide_index=True,
+        width='stretch', hide_index=True,
         column_config={
             'Статус': st.column_config.TextColumn(width='small'),
             'Session': st.column_config.TextColumn(width='small'),

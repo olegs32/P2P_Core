@@ -114,7 +114,7 @@ def _render_cert_detail(cert: dict, idx: int):
             st.markdown(f"**Срок:** {exp_emoji} {exp_label}")
         with c3:
             # Кнопка "Починить" в деталях
-            if st.button("🔧 Починить связку", use_container_width=True,
+            if st.button("🔧 Починить связку", width='stretch',
                          help="Перепривязать закрытый ключ к сертификату",
                          key=f"fix_detail_{idx}"):
                 try:
@@ -228,7 +228,7 @@ def render(rpc):
                 st.caption(f"Выбрано: {len(st.session_state.certs_batch_queue)} шт.")
                 cols_actions = st.columns([1, 4])
                 with cols_actions[0]:
-                    if st.button("🗑️ Удалить выбранные", use_container_width=True):
+                    if st.button("🗑️ Удалить выбранные", width='stretch'):
                         deleted = 0
                         failed = 0
                         for thumbprint in list(st.session_state.certs_batch_queue):
@@ -249,7 +249,7 @@ def render(rpc):
                         st.success(f"Готово: ✅ {deleted} удалено, ❌ {failed} ошибок")
                         st.rerun()
                 with cols_actions[1]:
-                    if st.button("✕ Отменить выбор", use_container_width=True):
+                    if st.button("✕ Отменить выбор", width='stretch'):
                         st.session_state.certs_batch_queue = []
                         st.rerun()
                 st.divider()

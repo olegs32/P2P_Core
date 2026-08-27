@@ -1,6 +1,6 @@
 dist/.env
 .env
-config.local.yaml
+config.yaml
 
 # Python cache and compiled files
 __pycache__/
@@ -50,7 +50,7 @@ env/
 .idea/
 *.swp
 *.swo
-*~
+.qwen
 
 # OS
 .DS_Store
@@ -64,10 +64,11 @@ certs/*.pem
 certs/*.key
 certs/*.csr
 
-# Plot file (contains password generation data - keep secret!)
+
 dist/services/plot
 /sign/ca_cert.pem
 /sign/ca_key.pem
 /sign/temp_dev_bundle.pfx
 /sign/signed/
 /dist/
+/docs/eyeSauron.md

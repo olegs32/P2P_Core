@@ -1,5 +1,6 @@
 # src/internal_modules/config.py
 
+import copy
 import logging
 import os
 import socket
@@ -77,9 +78,45 @@ class UpdateConfig(BaseModel):
 class PurgeConfig(BaseModel):
     """Аварийное удаление узла со всеми данными (сервис purge).
 
-    По умолчанию ВЫКЛЮЧЕН — включается явно в config.yaml.
+    Включён по умолчанию: headless-узел не имеет локального UI, аварийное
+    удаление обязано работать безпредпятственно из веб-панели.
+    """
+    enabled: bool = True
+
+
+class EyesauronStoreConfig(BaseModel):
+    """Пакованное дедуп-хранилище (спека: docs/eyesauron_storage.md).
+
+    Пока выключено — ingest пишет raw PNG как раньше. При включении кадры
+    дедуплицируются тайлами 256×256 в иммутабельные тома .pack (локальный
+    staging → seal → одна последовательная заливка на NAS).
     """
     enabled: bool = False
+    root: Path = Path(r'\\192.168.53.21\photo\store\packs')  # NAS: готовые тома + манифест
+    volume_size_gb: int = 10             # D4: цель seal по размеру
+    local_cache_gb: int = 100            # D2: кэш готовых томов локально
+    max_age_hours: float = 24.0          # seal полупустого тома по возрасту
+    bloom_enabled: bool = False          # D6: поиск по bloom (файлы пишутся всегда)
+
+
+class EyesauronConfig(BaseModel):
+    """Мониторинг экранов EyeSauron (сервис eyesauron).
+
+    По умолчанию ВЫКЛЮЧЕН (enabled: false) — включать осознанно.
+    Роли независимы и могут сочетаться на одном узле:
+      collect — коллектор: принимает кадры по mesh, пишет raw PNG в store_path;
+      capture — агент: захватывает экраны машины (хелпер в сессии пользователя)
+                и отправляет их узлу collector_node.
+    """
+    enabled: bool = False
+    collect: bool = True            # роль коллектора (при включённом сервисе)
+    capture: bool = False           # роль агента захвата
+    store_path: Path = Path(r'\\192.168.53.21\photo\screens')  # raw PNG <host>/<date>/<ts>__<title>.png
+    collector_node: str = ''        # узел-коллектор для отправки кадров ('' = копить в spool)
+    interval_sec: float = 5.0       # период захвата, сек (как в оригинале — минимум 1с)
+    send_delay_sec: float = 0.5     # пауза между отправками кадров (щадит NAS)
+    max_spool_mb: int = 500         # потолок офлайн-буфера; переполнение → удаляются старейшие кадры
+    store: EyesauronStoreConfig = EyesauronStoreConfig()  # пакованное дедуп-хранилище
 
 
 class ServicesConfig(BaseModel):
@@ -112,6 +149,7 @@ class Config(BaseModel):
     files: FilesConfig = FilesConfig()
     update: UpdateConfig = UpdateConfig()
     purge: PurgeConfig = PurgeConfig()
+    eyesauron: EyesauronConfig = EyesauronConfig()
     services: ServicesConfig = ServicesConfig()
     local: LocalConfig = LocalConfig()
 
@@ -123,13 +161,35 @@ class Config(BaseModel):
         return v
 
 
+def _default_config_dict() -> dict:
+    """Эталонный dict всех полей конфига с дефолтными значениями."""
+    return Config().model_dump(mode='json')
+
+
+def _deep_fill(target: dict, defaults: dict, prefix: str = '') -> list[str]:
+    """Достроить target отсутствующими ключами из defaults (in place).
+
+    Рекурсивно добавляет только отсутствующие ключи; существующие
+    значения не перезаписываются. None вместо секции трактуется как
+    отсутствие секции и достраивается. Возвращает список добавленных
+    путей ('network.port') для логирования.
+    """
+    added: list[str] = []
+    for key, dval in defaults.items():
+        path = f'{prefix}.{key}' if prefix else key
+        cur = target.get(key)
+        if cur is None:
+            target[key] = copy.deepcopy(dval)
+            added.append(path)
+        elif isinstance(dval, dict) and isinstance(cur, dict):
+            added.extend(_deep_fill(cur, dval, path))
+    return added
+
+
 def _ensure_config(path: Path):
     if not path.exists():
-        default_model_instance = Config()
+        config_dict = _default_config_dict()
 
-        # 2. Переводим модель в Python-словарь (dict)
-        # mode='json' гарантирует, что специфичные типы (например, Path) превратятся в строки
-        config_dict = default_model_instance.model_dump(mode='json')
         path.parent.mkdir(parents=True, exist_ok=True)
 
         with open(path, 'w', encoding='utf-8') as f:
@@ -203,6 +263,12 @@ class ConfigManager:
     def _load(self) -> Config:
         _ensure_config(self._config_path)
         raw = _load_yaml(self._config_path)
+
+        added = _deep_fill(raw, _default_config_dict())
+        if added:
+            _save_yaml(self._config_path, raw)
+            log.info(f'Config backfilled with default fields: {", ".join(added)}')
+
         cfg = Config(**raw)
 
         log.info(

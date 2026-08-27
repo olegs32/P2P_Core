@@ -11,6 +11,11 @@ pyyaml~=6.0.2              # YAML configuration
 cryptography~=46.0.7       # SSL/TLS certificate generation (sign/signer.py)
 watchdog~=6.0.0            # hot-reload сервисов
 
+# EyeSauron (services/eyesauron): захват экрана + дедуп-хранилище (vendor)
+mss~=10.0.0                # быстрый захват экрана (хелпер сессии)
+pillow~=11.0.0             # PNG-кодирование, avg_hash
+numpy~=2.2.0               # avg_hash + vendor ChunkStore
+
 # Web panel
 streamlit~=1.54.0      # Streamlit dashboard
 pandas~=2.2.3         # DataFrames for web UI

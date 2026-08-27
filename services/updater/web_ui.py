@@ -107,7 +107,7 @@ if st is not None:
         } for a in available])
 
         st.markdown("**Доступные версии** — выделите строку:")
-        event = st.dataframe(df, use_container_width=True, hide_index=True,
+        event = st.dataframe(df, width='stretch', hide_index=True,
                              on_select='rerun', selection_mode='single-row',
                              key='upd_rows', height=min(320,
                                                         35 * (len(available)

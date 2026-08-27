@@ -4,6 +4,14 @@
 > код не менялся). Документ — база знаний для дальнейшей интеграции, чтобы не
 > пересканировать проект.
 
+> **СТАТУС ИНТЕГРАЦИИ (2026-08-26):** Фаза 1+2 реализованы сервисом
+> `services/eyesauron/` — коллектор (raw PNG вместо ChunkStore: тысячи мелких
+> чанков убивают NAS) + агент с WTS-хелпером и spool-очередью вместо HTTP.
+> Конфиг: `eyesauron.*`, по умолчанию выключен. Vendor-снимок ChunkStore:
+> `services/eyesauron/_vendor_chunk_store.py`.
+> Спека пакованного дедуп-хранилища (тома 10 ГБ, seal → заливка, chunker
+> v1 = grid256 + телеметрия скролла перед CDC): **`docs/eyesauron_storage.md`**.
+
 ---
 
 ## 1. Назначение
@@ -12,7 +20,7 @@
 
 ```
 [ПК пользователя]                      [Сервер :8000]                [Хранение]
-Agent (скриншот раз в сек,             eye_server.py (FastAPI)       NAS \\192.168.53.21\photo
+Agent (скриншот раз в сек,             eye_server.py (FastAPI)       NAS \\nas\dir
  дедуп по хешу, HTTP upload)  ──HTTP──►  /upload → raw PNG          ├── ...\screens\<host>\<date>\
                                         /version,/deploy            └── ...\store\   (ChunkStore)
 Launcher (SYSTEM, WTS-инъекция     ◄──апдейты── /download,/upload_eye
