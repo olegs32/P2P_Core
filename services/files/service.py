@@ -550,8 +550,14 @@ class Files(ModuleGeneric):
         if not dst:
             return {'ok': False, 'error': 'укажите dst — узел-источник'}
 
-        ref = {k: v for k, v in data.items()
+        # поддержка обоих форматов: плоский {share,path} и вложенный {ref:{...}}
+        ref_src = data.get('ref') if isinstance(data.get('ref'), dict) else data
+        ref = {k: v for k, v in ref_src.items()
                if k in ('share', 'path', 'id') and v}
+        # fallback: если ref вложенный пустой, попробовать плоский
+        if not ref and isinstance(data.get('ref'), dict):
+            ref = {k: v for k, v in data.items()
+                   if k in ('share', 'path', 'id') and v}
         if not ref:
             return {'ok': False, 'error': 'укажите ref: share+path или id'}
 

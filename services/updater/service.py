@@ -345,21 +345,47 @@ class Updater(ModuleGeneric):
 
         res = await self.ctx.network.call(
             dst=self.ctx.NODE, service='files', method='download',
-            data={'dst': info['node'], 'ref': {'share': info['share'],
-                                               'path': info['exe_rel']},
+            data={'dst': info['node'], 'share': info['share'],
+                  'path': info['exe_rel'],
                   'save_as': f'{version}_{self.ctx.config.local.exe_name}'},
             timeout=60)
         if not isinstance(res, dict) or not res.get('ok'):
             err = (res or {}).get('error', 'download failed')
             return {'ok': False, 'error': err}
 
-        staged = self._find_staged_file(version)
+        # files.download для удалённого источника - асинхронный push-стрим:
+        # возвращается сразу с label, файл появляется позже. Ждём staged файл.
+        if res.get('done') and res.get('path'):
+            return {'ok': True, 'version': version, 'path': str(res.get('path'))}
+
         expected = (info['manifest'].get('exe_sha256')
                     or info['manifest'].get('id'))
-        if staged and expected and _sha256(staged) != expected:
-            staged.unlink(missing_ok=True)
-            return {'ok': False, 'error': 'sha256 скачанного файла не совпал'}
-        return {'ok': True, 'version': version, 'path': str(staged)}
+        # ожидание появления файла (poll) - до 60с
+        for _ in range(120):
+            staged = self._find_staged_file(version)
+            if staged:
+                if expected and _sha256(staged) != expected:
+                    staged.unlink(missing_ok=True)
+                    return {'ok': False, 'error': 'sha256 скачанного файла не совпал'}
+                return {'ok': True, 'version': version, 'path': str(staged)}
+            # проверить, не упал ли files.download в ошибку
+            try:
+                files_svc = self.ctx.services.get_service('files')
+                if files_svc:
+                    d_st = (files_svc._downloads or {}).get(res.get('label') or '', {})
+                    if d_st.get('status') == 'error':
+                        return {'ok': False, 'error': d_st.get('error') or 'download failed'}
+            except Exception:
+                pass
+            await asyncio.sleep(0.5)
+
+        staged = self._find_staged_file(version)
+        if staged:
+            if expected and _sha256(staged) != expected:
+                staged.unlink(missing_ok=True)
+                return {'ok': False, 'error': 'sha256 скачанного файла не совпал'}
+            return {'ok': True, 'version': version, 'path': str(staged)}
+        return {'ok': False, 'error': 'таймаут ожидания файла (проверьте files.downloads)'}
 
     @rpc
     async def apply(self, data: dict) -> dict:
