@@ -59,6 +59,24 @@ class WebPanel(ModuleGeneric):
         # Важно: передаем текущее окружение (env), чтобы подпроцесс унаследовал пути,
         # особенно важно для корректной работы PyInstaller (переменные вроде PYTHONPATH)
         panel_host = self.ctx.network.local_ip()
+        # Корректный корень проекта: в frozen exe config.yaml лежит рядом с exe
+        # (main.py: BASE_DIR = Path(sys.executable).parent), а не в _MEIPASS
+        if getattr(sys, 'frozen', False):
+            project_root = str(Path(sys.executable).parent)
+            config_path = str(Path(sys.executable).parent / 'config.yaml')
+        else:
+            # дополнительно поддерживаем переопределение через ctx.config_manager
+            try:
+                cfg_path = getattr(getattr(self.ctx, 'config_manager', None), '_config_path', None)
+                if cfg_path:
+                    project_root = str(Path(cfg_path).parent)
+                    config_path = str(Path(cfg_path))
+                else:
+                    project_root = str(Path(__file__).parent.parent.parent)
+                    config_path = str(Path(project_root) / 'config.yaml')
+            except Exception:
+                project_root = str(Path(__file__).parent.parent.parent)
+                config_path = str(Path(project_root) / 'config.yaml')
         env = {
             **os.environ,
             'RUNNING': 'True',
@@ -67,7 +85,8 @@ class WebPanel(ModuleGeneric):
             'P2P_WS_HOST': panel_host,
             'P2P_PANEL_HOST': panel_host,
             'P2P_PANEL_PORT': str(self._panel_port),
-            'P2P_PROJECT_ROOT': str(Path(__file__).parent.parent.parent),
+            'P2P_PROJECT_ROOT': project_root,
+            'P2P_CONFIG_PATH': config_path,
             'PYTHONWARNINGS': 'ignore::DeprecationWarning',
         }
 

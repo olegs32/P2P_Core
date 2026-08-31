@@ -138,10 +138,10 @@ class NetworkModule(ModuleGeneric):
                     await _safe_close(websocket, reason='handshake rejected')
                     return
 
-                if pack.dst != self.ctx.NODE:
+                if pack.dst != self.ctx.NODE or pack.dst != self.ctx.config.local.alias:
                     reason = (
                         f'HELLO addressed to {pack.dst!r}, '
-                        f'this node is {self.ctx.NODE!r} — check peer URI/node_id'
+                        f'this node is {self.ctx.NODE!r} | {self.ctx.config.local.alias!r}  — check peer URI/node_id'
                     )
                     self.log.info(f'Handshake rejected from {node_id}: {reason}')
                     await transport.send(MsgPack(

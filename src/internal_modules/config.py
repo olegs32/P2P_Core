@@ -119,6 +119,22 @@ class EyesauronConfig(BaseModel):
     store: EyesauronStoreConfig = EyesauronStoreConfig()  # пакованное дедуп-хранилище
 
 
+class WebPanelAuthConfig(BaseModel):
+    """Авторизация веб-панели (services/webpanel).
+
+    Выключена по умолчанию — существующие установки работают без изменений.
+    Включение: config.yaml → webpanel.auth.enabled: true + users {login: sha256(password)}.
+    Хеш: python -c "import hashlib; print(hashlib.sha256(b'pass').hexdigest())"
+    """
+    enabled: bool = True
+    users: dict[str, str] = {}
+
+
+class WebPanelConfig(BaseModel):
+    """Настройки веб-панели."""
+    auth: WebPanelAuthConfig = WebPanelAuthConfig()
+
+
 class ServicesConfig(BaseModel):
     path: Path = Path('services')
 
@@ -150,6 +166,7 @@ class Config(BaseModel):
     update: UpdateConfig = UpdateConfig()
     purge: PurgeConfig = PurgeConfig()
     eyesauron: EyesauronConfig = EyesauronConfig()
+    webpanel: WebPanelConfig = WebPanelConfig()
     services: ServicesConfig = ServicesConfig()
     local: LocalConfig = LocalConfig()
 

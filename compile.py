@@ -4,7 +4,9 @@ import re
 import shutil
 import time
 import traceback
+from multiprocessing import Process
 from pathlib import Path
+from threading import Thread
 
 import PyInstaller.__main__
 
@@ -13,6 +15,7 @@ from sign.signer import sign_exe
 SIGNED_DIR = Path('dist')
 ROOT = Path(__file__).parent
 start_time = time.time()
+log = logging.getLogger('Compiler')
 
 
 # --------------------------------------------------------------------------- #
@@ -38,6 +41,7 @@ def make_version_txt() -> str:
     version = f'{semver}-build{build}'
     (ROOT / 'version.txt').write_text(version, encoding='utf-8')
     return version
+
 
 # --------------------------------------------------------------------------- #
 #  Общие hidden-imports, необходимые проекту
@@ -75,7 +79,8 @@ BASE_HIDDEN_IMPORTS = [
 # --------------------------------------------------------------------------- #
 BASE_ARGS = [
     'main.py',
-    # '--onefile',
+    '--onefile',
+    # '-y',
     '-i=src/icon.ico',
     '--clean',
     '--collect-all=src',
@@ -112,7 +117,7 @@ def build(name, ui=True):
         # Собираем нужные части services и streamlit отдельно
         ui_args = [
             '--collect-all', 'services',
-            '--collect-all', 'streamlit_agraph',   # граф карты сети (netinfo)
+            '--collect-all', 'streamlit_agraph',  # граф карты сети (netinfo)
             '--collect-binaries', 'streamlit',
             '--collect-datas', 'streamlit',
             '--recursive-copy-metadata', 'streamlit',
@@ -153,14 +158,9 @@ def build(name, ui=True):
         log.error(traceback.format_exc())
 
 
-if __name__ == '__main__':
-    logging.basicConfig(level=logging.INFO)
-    log = logging.getLogger('Compiler')
-    os.makedirs(SIGNED_DIR, exist_ok=True)
 
-    version = make_version_txt()
-    log.info(f'Building version {version}')
 
+def build_one():
     # 1. Сборка приложения с UI
     build('WebUI_P2P_Core', ui=True)
     log.info("Signing WebUI_P2P_Core...")
@@ -169,12 +169,30 @@ if __name__ == '__main__':
     if os.path.exists('dist/signed_WebUI_P2P_Core.exe'):
         shutil.move('dist/signed_WebUI_P2P_Core.exe', 'dist/WebUI_P2P_Core.exe')
 
+
+def build_two():
     # 2. Сборка приложения БЕЗ UI (Node)
     build('Node_P2P_Core', ui=False)
     log.info("Signing Node_P2P_Core...")
     sign_exe(Path('dist/Node_P2P_Core.exe'), SIGNED_DIR)
     if os.path.exists('dist/signed_Node_P2P_Core.exe'):
         shutil.move('dist/signed_Node_P2P_Core.exe', 'dist/Node_P2P_Core.exe')
+
+
+if __name__ == '__main__':
+    logging.basicConfig(level=logging.INFO)
+    log = logging.getLogger('Compiler')
+    os.makedirs(SIGNED_DIR, exist_ok=True)
+
+
+    version = make_version_txt()
+    log.info(f'Building version {version}')
+
+    ths = [Process(target=build_one), Process(target=build_two)]
+    ths[0].start()
+    ths[1].start()
+    ths[0].join()
+    ths[1].join()
 
     end_time = time.time()
     execution_time = end_time - start_time

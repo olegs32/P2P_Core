@@ -21,6 +21,7 @@ if PROJECT_ROOT not in sys.path:
 
 from services.webpanel.rpc_client import NodeRPC
 from services.webpanel.service_meta import SERVICE_META, GROUP_ORDER
+from services.webpanel.auth import check_authentication, is_auth_enabled, render_login_page, logout as auth_logout
 
 # ------------------------------------------------------------------ #
 #  Директория сервисов
@@ -91,6 +92,15 @@ st.set_page_config(
 )
 
 # ------------------------------------------------------------------ #
+#  Auth guard — не меняет основную функциональность:
+#  если webpanel.auth.enabled=false -> прозрачный проход.
+#  Если enabled=true и нет сессии -> рендер формы и st.stop().
+# ------------------------------------------------------------------ #
+if is_auth_enabled() and not check_authentication():
+    render_login_page()
+    st.stop()
+
+# ------------------------------------------------------------------ #
 #  Sidebar
 # ------------------------------------------------------------------ #
 local_node, rpc = None, None
@@ -128,7 +138,9 @@ with st.sidebar:
 
     if prev_node is not None and prev_node != selected_node:
         _PRESERVED = {'rpc', 'current_page', '_prev_selected_node',
-                       'selected_node_select'}
+                       'selected_node_select',
+                       '_auth_authenticated', '_auth_user', '_auth_error',
+                       '_auth_login_input', '_auth_pwd_input'}
         for key in list(st.session_state.keys()):
             if key not in _PRESERVED:
                 del st.session_state[key]
@@ -205,6 +217,14 @@ with st.sidebar:
     # ---- Статус (компактно) ----
     st.divider()
     st.caption(f"🌐 {len(all_nodes)} узлов  •  📦 {len(ui_services)} сервисов")
+
+    # ---- Auth: пользователь + выход (только если включена) ----
+    if is_auth_enabled() and st.session_state.get("_auth_authenticated"):
+        st.divider()
+        st.caption(f"👤 {st.session_state.get('_auth_user', '?')}")
+        if st.button("🚪 Выйти", width='stretch', key="auth_logout"):
+            auth_logout()
+            st.rerun()
 
 # ------------------------------------------------------------------ #
 #  Content — роутинг
