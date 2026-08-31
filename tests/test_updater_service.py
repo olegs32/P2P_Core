@@ -157,7 +157,8 @@ def test_build_frozen(tmp_path):
     fake_exe.write_bytes(b'fake exe content')
 
     with patch.object(sys, 'frozen', True, create=True), \
-            patch.object(sys, 'executable', str(fake_exe)):
+            patch.object(sys, 'executable', str(fake_exe)), \
+            patch('services.updater.service.read_version', return_value='9.9.9-build99'):
         u = make_updater(tmp_path)
         u.ctx.config.local.work_dir = tmp_path / 'work'
         res = u.build({'notes': 'test release'})

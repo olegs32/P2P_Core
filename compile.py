@@ -168,6 +168,9 @@ def build_one():
     log.info("Signing WebUI_P2P_Core...")
     sign_exe(Path('dist/WebUI_P2P_Core.exe'), SIGNED_DIR)
     # Предполагается, что sign_exe создает файл с префиксом signed_ внутри SIGNED_DIR
+    if os.path.exists('dist/WebUI_P2P_Core.exe'):
+        os.remove('dist/WebUI_P2P_Core.exe')
+
     if os.path.exists('dist/signed_WebUI_P2P_Core.exe'):
         shutil.move('dist/signed_WebUI_P2P_Core.exe', 'dist/WebUI_P2P_Core.exe')
 
@@ -177,6 +180,11 @@ def build_two():
     build('Node_P2P_Core', ui=False)
     log.info("Signing Node_P2P_Core...")
     sign_exe(Path('dist/Node_P2P_Core.exe'), SIGNED_DIR)
+    try:
+        os.remove('dist/Node_P2P_Core.exe')
+    except Exception as e:
+        print(e)
+
     if os.path.exists('dist/signed_Node_P2P_Core.exe'):
         shutil.move('dist/signed_Node_P2P_Core.exe', 'dist/Node_P2P_Core.exe')
 

@@ -4,12 +4,15 @@
 #
 #  Поток: check (манифесты релизов с узлов-источников через files.read)
 #         → download (files.download: resume + sha256)
-#         → apply (verify подписи+hash → rename-trick → detached-рестарт)
+#         → apply (verify → копия _update.exe → самовызов updater ядра)
 #         → boot confirm (новая версия N сек живая → boot_ok; иначе rollback)
 #
-#  Rename-trick: Windows позволяет переименовать запущенный exe.
-#    running.exe → running.exe.old; новый файл на место старого;
-#    detached cmd ждёт наш exit и стартует новый exe.
+#  Новая схема: apply не трогает running exe. Делает копию себя в
+#    Node_P2P_Core_update.exe, запускает frozen _update.exe с ключами
+#    (--updater --old-pid --old-exe --staged --health-confirm-sec).
+#  Ядро обновления src/internal_modules/update.py ждёт завершения старого
+#  процесса (pid+имя), убивает streamlit-дочки через psutil, заменяет
+#  бинарник, запускает новую версию, ждёт health_confirm_sec, иначе откат.
 #
 #  Откат (boot-marker): state-файл фиксирует pending_boot_confirm. Новая
 #  версия после health_confirm_sec здоровой работы ставит boot_ok. Если
@@ -42,8 +45,8 @@ from services.updater import verify
 STATE_FILE = 'update_state.json'
 MANIFEST_NAME = 'manifest.json'
 MAX_ATTEMPTS = 2            # неудачных загрузок новой версии до отката
-RESTART_DELAY_SEC = 3       # пауза detached-стартера перед запуском нового exe
-EXIT_DELAY_SEC = 4          # сколько живём после запуска стартера
+RESTART_DELAY_SEC = 3       # legacy (для _do_rollback совместимости)
+EXIT_DELAY_SEC = 1          # сколько живём после запуска _update.exe
 
 
 def _sha256(path: Path) -> str:
@@ -389,7 +392,7 @@ class Updater(ModuleGeneric):
 
     @rpc
     async def apply(self, data: dict) -> dict:
-        """Установить версию: verify → stage (rename-trick) → рестарт.
+        """Установить версию: verify → копия _update.exe → запуск ядра обновления.
 
         data: {version, force?: bool}
         """
@@ -442,20 +445,22 @@ class Updater(ModuleGeneric):
                 return {'ok': False,
                         'error': f'подпись не прошла проверку: {sig_detail}'}
 
-        # 3. stage: rename-trick
+        # 3. подготовить _update.exe и state
         exe = self._exe_path()
-        old = exe.with_name(exe.name + '.old')
-        old.unlink(missing_ok=True)
-        os.replace(exe, old)
-        shutil.copyfile(staged, exe)
-        if _sha256(exe) != _sha256(staged):
-            os.replace(old, exe)     # мгновенный откат на месте
-            return {'ok': False, 'error':
-                    'копия на место не встала целой — откатили, exe не тронут'}
+        if exe is None:
+            return {'ok': False, 'error': 'не удалось определить путь exe'}
+        try:
+            from src.internal_modules.update import get_updater_exe_path
+            updater_exe = get_updater_exe_path(exe)
+            shutil.copyfile(exe, updater_exe)
+        except OSError as e:
+            return {'ok': False, 'error': f'не удалось создать _update.exe: {e}'}
 
+        # сохраняем state ДО запуска updater (watchdog ядра его дополнит)
+        old_for_state = exe.with_name(exe.name + '.old')
         self._save_state({
             'from': current, 'to': version,
-            'exe': str(exe), 'old_exe': str(old),
+            'exe': str(exe), 'old_exe': str(old_for_state),
             'staged_from': str(staged),
             'attempts': 0,
             'pending_boot_confirm': True, 'boot_ok': False,
@@ -463,19 +468,43 @@ class Updater(ModuleGeneric):
             'staged_at': time.time(),
         })
 
-        # 4. detached-стартер: ждёт нашего exit и поднимает новый exe
-        starter = (f'timeout /t {RESTART_DELAY_SEC} /nobreak >nul & '
-                   f'start "" "{exe}"')
-        subprocess.Popen(
-            ['cmd', '/c', starter],
-            cwd=str(self._work_dir()),
-            creationflags=subprocess.DETACHED_PROCESS
-            | subprocess.CREATE_NEW_PROCESS_GROUP,
-            close_fds=True,
-        )
+        # 4. запуск _update.exe с ключами (без окна)
+        health_sec = int(getattr(cfg, 'health_confirm_sec', 90))
+        args = [
+            str(updater_exe),
+            '--updater',
+            '--old-pid', str(os.getpid()),
+            '--old-exe', str(exe),
+            '--staged', str(staged),
+            '--work-dir', str(self._work_dir()),
+            '--health-confirm-sec', str(health_sec),
+            '--from-version', str(current),
+            '--to-version', str(version),
+        ]
+        try:
+            creationflags = 0
+            if os.name == 'nt':
+                creationflags = getattr(subprocess, 'DETACHED_PROCESS', 0) | getattr(subprocess, 'CREATE_NEW_PROCESS_GROUP', 0)
+                creationflags |= 0x08000000  # CREATE_NO_WINDOW
+            subprocess.Popen(
+                args,
+                cwd=str(self._work_dir()),
+                creationflags=creationflags,
+                close_fds=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                stdin=subprocess.DEVNULL,
+            )
+        except OSError as e:
+            # откат создания _update.exe
+            try:
+                updater_exe.unlink(missing_ok=True)
+            except OSError:
+                pass
+            return {'ok': False, 'error': f'не удалось запустить _update.exe: {e}'}
+
         self.log.warning(
-            f'APPLY: {current} → {version}; узел завершится через '
-            f'{EXIT_DELAY_SEC}с и поднимется на новой версии')
+            f'APPLY: {current} → {version} via _update.exe pid={os.getpid()} health={health_sec}с')
 
         async def _exit_later():
             await asyncio.sleep(EXIT_DELAY_SEC)
@@ -483,7 +512,7 @@ class Updater(ModuleGeneric):
 
         asyncio.create_task(_exit_later())
         return {'ok': True, 'note':
-                f'устанавливается {version}: узел перезапустится автоматически'}
+                f'устанавливается {version} через _update.exe: узел перезапустится автоматически'}
 
     async def _do_rollback(self, st: dict):
         """Вернуть .old на место и перезапуститься на прежней версии."""
@@ -506,13 +535,16 @@ class Updater(ModuleGeneric):
         self._save_state(st)
         self.locked_add(st['to'])
 
+        # rollback — legacy detached starter c CREATE_NO_WINDOW
+        creationflags_rb = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+        if os.name == 'nt':
+            creationflags_rb |= 0x08000000
         subprocess.Popen(
             ['cmd', '/c',
              f'timeout /t {RESTART_DELAY_SEC} /nobreak >nul & '
              f'start "" "{exe}"'],
             cwd=str(self._work_dir()),
-            creationflags=subprocess.DETACHED_PROCESS
-            | subprocess.CREATE_NEW_PROCESS_GROUP,
+            creationflags=creationflags_rb,
             close_fds=True,
         )
         self.log.critical(f'ROLLBACK применён: возврат на {st.get("from")}')
