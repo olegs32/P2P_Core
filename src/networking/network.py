@@ -138,7 +138,7 @@ class NetworkModule(ModuleGeneric):
                     await _safe_close(websocket, reason='handshake rejected')
                     return
 
-                if pack.dst != self.ctx.NODE and pack.dst != self.ctx.config.local.alias:
+                if pack.dst != self.ctx.NODE or pack.dst != self.ctx.config.local.alias:
                     reason = (
                         f'HELLO addressed to {pack.dst!r}, '
                         f'this node is {self.ctx.NODE!r} | {self.ctx.config.local.alias!r}  — check peer URI/node_id'
