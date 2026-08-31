@@ -510,7 +510,7 @@ class Router:
         # 1b. client-side
         client_ws = self._client_ws.get(dst)
         if client_ws:
-            if not pack.path or pack.path[-1] != self.context.NODE:
+            if not pack.path or (pack.path[-1] != self.context.NODE and pack.path[-1] != self.context.config.local.alias):
                 pack.path.append(self.context.NODE)
             pack.ttl -= 1
             log.debug(
@@ -526,7 +526,7 @@ class Router:
         if neighbor and neighbor.via:
             via_transport = self.get_transport_to(neighbor.via)
             if via_transport:
-                if not pack.path or pack.path[-1] != self.context.NODE:
+                if not pack.path or (pack.path[-1] != self.context.NODE and pack.path[-1] != self.context.config.local.alias):
                     pack.path.append(self.context.NODE)
                 pack.ttl -= 1
                 if pack.type == PackType.REQUEST:
@@ -546,7 +546,7 @@ class Router:
                 if neighbor.via:
                     via_transport = self.get_transport_to(neighbor.via)
                     if via_transport:
-                        if not pack.path or pack.path[-1] != self.context.NODE:
+                        if not pack.path or (pack.path[-1] != self.context.NODE and pack.path[-1] != self.context.config.local.alias):
                             pack.path.append(self.context.NODE)
                         pack.ttl -= 1
                         if pack.type == PackType.REQUEST:
@@ -560,7 +560,7 @@ class Router:
                 else:
                     direct = self._nodes_mgr.get(resolved_id)
                     if direct:
-                        if not pack.path or pack.path[-1] != self.context.NODE:
+                        if not pack.path or (pack.path[-1] != self.context.NODE and pack.path[-1] != self.context.config.local.alias):
                             pack.path.append(self.context.NODE)
                         pack.ttl -= 1
                         log.debug(
@@ -572,7 +572,7 @@ class Router:
                         return
                     client_ws = self._client_ws.get(resolved_id)
                     if client_ws:
-                        if not pack.path or pack.path[-1] != self.context.NODE:
+                        if not pack.path or (pack.path[-1] != self.context.NODE and pack.path[-1] != self.context.config.local.alias):
                             pack.path.append(self.context.NODE)
                         pack.ttl -= 1
                         log.debug(
@@ -604,26 +604,19 @@ class Router:
     async def _route_back(self, pack: MsgPack):
         """Вернуть пакет по обратному маршруту из pack.path.
 
-        Конвенция: path = [origin,…,текущий узел] — каждый хоп выталакивает
+        Конвенция: path = [origin,…,текущий узел] — каждый хоп выталкивает
         себя с хвоста и шлёт новому хвосту. Ответные пакеты НЕ разворачиваются.
         """
         if not pack.path:
-            transport = self.get_transport_to(pack.dst)
-            if transport:
-                await transport.send(pack)
-            else:
-                self.sessions.resolve(pack.label, self._resolve_payload(pack))
+            self.sessions.resolve(pack.label, self._resolve_payload(pack))
             return
 
-        path = pack.path[:-1]
+        path = pack.path
+        if path and path[-1] == self.context.NODE:
+            path = path[:-1]
 
         if not path:
-            transport = self.get_transport_to(pack.dst)
-            if transport:
-                pack.path = []
-                await transport.send(pack)
-            else:
-                self.sessions.resolve(pack.label, self._resolve_payload(pack))
+            self.sessions.resolve(pack.label, self._resolve_payload(pack))
             return
 
         next_hop = path[-1]
