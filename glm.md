@@ -59,8 +59,9 @@ MsgPack: `type`, `source`, `dst`, `service`, `method`, `data`, `label` (UUID), `
 Центральный маршрутизатор. `handle(pack, transport)` — диспетчер по PackType.
 - `_on_request` — локальный RPC через `LocalExecutor`
 - `_on_remote_request` — сохраняет WS-transport, форвардит через mesh
-- `_forward` — прямой WS / через via из NeighborTable / NoRouteToHost
-- `_route_back` — обратная маршрутизация по `pack.path`
+- `_forward` — прямой WS / через via из NeighborTable / разрешение по host/IP / NoRouteToHost (условия `or`→`and` в проверке path/alias)
+- `_route_back` — обратная маршрутизация по `pack.path` (pop последнего элемента корректно, fallback к `pack.dst` при пустом пути)
+- `_resolve_by_host` — поиск node_id в NeighborTable по host/IP
 - `call(dst, service, method, data, timeout)` — публичный API: локальный shortcut или mesh-вызов
 - `stream(dst, service, method, data, timeout)` — публичный API: открыть mesh-стрим, вернуть `_MeshStreamIterator`
 - `send_stream_ack(label, buff)` — отправить ACK генератору через mesh по cached backward_path
@@ -254,9 +255,11 @@ RPC-методы: `list_shares` (имена/объём, без локальны�
 
 Релиз на админской ноде = каталог в шаре (расшаривается через files UI): `<ver>/Node_P2P_Core.exe` + `<ver>/manifest.json` `{version, exe_sha256|id, exe_name?, size?, notes?, min_compatible?}`.
 
-Поток: `check()` — find(`*/manifest.json`) + `files.read` по каждому источнику → список версий; `download({version})` — files.download с `save_as=<ver>_<exe>` + сверка sha256; `apply({version, force})` — только frozen, guard перехода (новее ИЛИ allow_downgrade/force), hash+WinVerifyTrust (`verify.py`, ctypes/wintrust, GENERIC_VERIFY_V2), rename-trick (running→`.old`, новый на место), state-файл `<local.work_dir>/update_state.json`, detached cmd-стартер ждёт exit и поднимает новый exe, затем `os._exit(0)`.
+Упаковка текущей версии: `build({notes?, min_compatible?})` — создаёт `dist/<version>/` с exe и `manifest.json`; доступно только в frozen-сборке. Auto-сборка manifest: `compile.py` после сборки вызывает `make_manifest(version)` — переносит `dist/Node_P2P_Core.exe` в `dist/<version>/` и генерирует `manifest.json` с sha256/size.
 
-Boot-confirm/rollback: новая версия инкрементирует `attempts`, после `health_confirm_sec` здоровой работы ставит `boot_ok`; если процесс упал до подтверждения — при старте `attempts > MAX_ATTEMPTS(2)` ⇒ автоматический откат `.old`, версия попадает в `locked_versions`. RPC: `status/check/download/apply/clear_state` (+внутр. `_do_rollback`). В dev-режиме apply запрещён.
+Поток: `check()` — find(`*/manifest.json`) + `files.read` по каждому источнику → список версий; если источник = локальный узел, вызов идёт локально (`dst=self.ctx.NODE`) через `_resolve_dst` (разрешение node_id/host). `download({version})` — files.download с `save_as=<ver>_<exe>` + сверка sha256; `apply({version, force})` — только frozen, guard перехода (новее ИЛИ allow_downgrade/force), hash+WinVerifyTrust (`verify.py`, ctypes/wintrust, GENERIC_VERIFY_V2), rename-trick (running→`.old`, новый на место), state-файл `<local.work_dir>/update_state.json`, detached cmd-стартер ждёт exit и поднимает новый exe, затем `os._exit(0)`.
+
+Boot-confirm/rollback: новая версия инкрементирует `attempts`, после `health_confirm_sec` здоровой работы ставит `boot_ok`; если процесс упал до подтверждения — при старте `attempts > MAX_ATTEMPTS(2)` ⇒ автоматический откат `.old`, версия попадает в `locked_versions`. RPC: `status/check/download/apply/build/clear_state` (+внутр. `_do_rollback`). В dev-режиме apply/build запрещены.
 
 ### Сервис system (`services/system/`)
 Управление узлами сети и автозапуск.

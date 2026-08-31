@@ -1,3 +1,5 @@
+import hashlib
+import json
 import logging
 import os
 import re
@@ -179,6 +181,36 @@ def build_two():
         shutil.move('dist/signed_Node_P2P_Core.exe', 'dist/Node_P2P_Core.exe')
 
 
+def make_manifest(version: str):
+    dist = ROOT / 'dist'
+    ver_dir = dist / version
+    ver_dir.mkdir(parents=True, exist_ok=True)
+
+    exe_path = dist / 'Node_P2P_Core.exe'
+    if not exe_path.is_file():
+        log.warning(f'Node_P2P_Core.exe не найден в dist — manifest не создан')
+        return
+
+    dest = ver_dir / exe_path.name
+    shutil.move(str(exe_path), str(dest))
+
+    h = hashlib.sha256()
+    with open(dest, 'rb') as f:
+        for block in iter(lambda: f.read(1024 * 1024), b''):
+            h.update(block)
+
+    manifest = {
+        'version': version,
+        'exe_name': exe_path.name,
+        'exe_sha256': h.hexdigest(),
+        'size': dest.stat().st_size,
+    }
+    (ver_dir / 'manifest.json').write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2),
+        encoding='utf-8')
+    log.info(f'manifest создан: {ver_dir / "manifest.json"}')
+
+
 if __name__ == '__main__':
     logging.basicConfig(level=logging.INFO)
     log = logging.getLogger('Compiler')
@@ -193,6 +225,8 @@ if __name__ == '__main__':
     ths[1].start()
     ths[0].join()
     ths[1].join()
+
+    make_manifest(version)
 
     end_time = time.time()
     execution_time = end_time - start_time

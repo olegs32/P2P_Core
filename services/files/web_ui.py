@@ -233,13 +233,11 @@ if st is not None:
             nav3.caption(f"Текущий: `{cur}`")
 
             dirs = br.get('dirs', [])
-            pick = nav1.selectbox("Подкаталог", ['(не переходить)'] + dirs,
-                                  key="fl_br_pick",
-                                  format_func=lambda p: p if p != '(не переходить)'
-                                  else f"(остаться: {cur})")
+            dir_labels = ['(не переходить)'] + [Path(d).name or d for d in dirs]
+            pick = nav1.selectbox("Подкаталог", dir_labels, key="fl_br_pick")
             if nav2.button("Открыть ⤵", key="fl_br_open") and \
                     pick != '(не переходить)':
-                st.session_state[state] = pick
+                st.session_state[state] = dirs[dir_labels.index(pick) - 1]
                 st.rerun()
             parent = br.get('parent')
             if parent is not None and nav2.button("⬆ Вверх", key="fl_br_up"):

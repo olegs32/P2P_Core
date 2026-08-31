@@ -1,7 +1,10 @@
 # tests/test_updater_service.py — логика updater без сети и frozen-хвостов
 
 import asyncio
+import json
+import sys
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -141,3 +144,30 @@ def test_verify_signature_shape(tmp_path):
 
 def test_state_file_name_constant():
     assert STATE_FILE == 'update_state.json'
+
+
+def test_build_not_frozen(tmp_path):
+    u = make_updater(tmp_path)
+    res = u.build({})
+    assert res['ok'] is False and 'frozen' in res['error']
+
+
+def test_build_frozen(tmp_path):
+    fake_exe = tmp_path / 'Node_P2P_Core.exe'
+    fake_exe.write_bytes(b'fake exe content')
+
+    with patch.object(sys, 'frozen', True, create=True), \
+            patch.object(sys, 'executable', str(fake_exe)):
+        u = make_updater(tmp_path)
+        u.ctx.config.local.work_dir = tmp_path / 'work'
+        res = u.build({'notes': 'test release'})
+        ver_dir = Path(sys.executable).parent / 'dist' / res['version']
+
+    assert res['ok'] is True
+    assert res['version']
+    assert (ver_dir / 'Node_P2P_Core.exe').is_file()
+    assert (ver_dir / 'manifest.json').is_file()
+    man = json.loads((ver_dir / 'manifest.json').read_text())
+    assert man['version'] == res['version']
+    assert man['exe_name'] == 'Node_P2P_Core.exe'
+    assert man['notes'] == 'test release'

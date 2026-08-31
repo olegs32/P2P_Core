@@ -27,7 +27,7 @@ KNOWN_METHODS = {
         'install_pfx_from_base64', 'fix_certificate_link',
     ],
     'system':        ['connect_to_node', 'list_connectors', 'node_detail', 'config_peers', 'sessions', 'ctx_map'],
-    'updater':       ['status', 'check', 'download', 'apply', 'clear_state'],
+    'updater':       ['status', 'check', 'download', 'apply', 'clear_state', 'build'],
     'purge':         ['plan', 'purge'],
     'logs':          ['get_logs', 'get_loggers', 'clear_buffer'],
     'webpanel':      ['node_status', 'discover_ui_services'],
@@ -35,6 +35,9 @@ KNOWN_METHODS = {
     'generator':     ['start_stream'],
     'test':          ['echo', 'echo_stream'],
     'spawner':       ['spawn', 'list_generators'],
+    'files':         ['ping', 'list_shares', 'find', 'stat', 'read',
+                       'list_local_dirs', 'add_share', 'remove_share',
+                       'serve', 'download', 'cancel_download', 'downloads'],
 }
 
 

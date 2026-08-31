@@ -72,6 +72,27 @@ class Updater(ModuleGeneric):
     def _updates_dir(self) -> Path:
         return self._work_dir() / 'updates'
 
+    def _dist_dir(self) -> Path:
+        if self._is_frozen():
+            return Path(sys.executable).parent / 'dist'
+        return Path('dist')
+
+    def _resolve_dst(self, node_or_host: str) -> str:
+        """Разрешить node_id или host/IP в реальный node_id для маршрутизации."""
+        if node_or_host == self.ctx.NODE:
+            return self.ctx.NODE
+        resolved = self._resolve_by_host(node_or_host)
+        if resolved:
+            return resolved
+        return node_or_host
+
+    def _resolve_by_host(self, host: str) -> str | None:
+        """Найти node_id в NeighborTable по host/IP."""
+        for info in self.ctx.network.neighbor_table.all():
+            if info.host == host:
+                return info.node_id
+        return None
+
     def _state_path(self) -> Path:
         return self._work_dir() / STATE_FILE
 
@@ -222,19 +243,20 @@ class Updater(ModuleGeneric):
         available = []
         errors = {}
         for s in sources:
+            dst = self._resolve_dst(s.node)
             try:
                 found = await self.ctx.network.call(
-                    dst=s.node, service='files', method='find',
+                    dst=dst, service='files', method='find',
                     data={'share': s.share,
                           'pattern': f'*/{MANIFEST_NAME}'},
                     timeout=20)
                 if not isinstance(found, dict) or not found.get('ok'):
                     raise RuntimeError((found or {}).get('error',
                                                          'files.find failed')
-                                       if isinstance(found, dict) else 'нет ответа')
+                                    if isinstance(found, dict) else 'нет ответа')
                 for entry in found.get('entries', []):
                     man_res = await self.ctx.network.call(
-                        dst=s.node, service='files', method='read',
+                        dst=dst, service='files', method='read',
                         data={'share': s.share, 'path': entry['path']},
                         timeout=15)
                     if not (isinstance(man_res, dict) and man_res.get('ok')):
@@ -262,7 +284,7 @@ class Updater(ModuleGeneric):
                         'newer': is_newer(ver, current),
                     })
             except Exception as e:
-                errors[s.node] = str(e)
+                errors[dst] = str(e)
 
         seen, uniq = set(), []
         for a in sorted(available, key=lambda x: x['version'], reverse=True):
@@ -463,3 +485,51 @@ class Updater(ModuleGeneric):
         self._state_path().unlink(missing_ok=True)
         self.log.info('update state очищен')
         return {'ok': True}
+
+    @rpc
+    def build(self, data: dict = None) -> dict:
+        """Упаковать текущую версию как пакет обновления.
+
+        Создаёт dist/<version>/ с exe и manifest.json.
+        data: {notes?: str, min_compatible?: str}
+        """
+        if not self._is_frozen():
+            return {'ok': False, 'error':
+                    'упаковка доступна только в frozen-сборке'}
+
+        version = read_version()
+        if not version or version == '0.0.0-dev':
+            return {'ok': False, 'error': 'не удалось определить версию'}
+
+        dist = self._dist_dir()
+        ver_dir = dist / version
+        ver_dir.mkdir(parents=True, exist_ok=True)
+
+        exe = self._exe_path()
+        exe_name = exe.name
+        dest_exe = ver_dir / exe_name
+
+        if not exe.is_file():
+            return {'ok': False, 'error': f'exe не найден: {exe}'}
+
+        shutil.copyfile(exe, dest_exe)
+
+        sha = _sha256(dest_exe)
+        size = dest_exe.stat().st_size
+
+        d = data or {}
+        manifest = {
+            'version': version,
+            'exe_name': exe_name,
+            'exe_sha256': sha,
+            'size': size,
+            'notes': d.get('notes', ''),
+            'min_compatible': d.get('min_compatible', ''),
+        }
+        (ver_dir / 'manifest.json').write_text(
+            json.dumps(manifest, ensure_ascii=False, indent=2),
+            encoding='utf-8')
+
+        self.log.info(f'Build packaged: {version} -> {ver_dir}')
+        return {'ok': True, 'version': version, 'path': str(ver_dir),
+                'manifest': manifest}

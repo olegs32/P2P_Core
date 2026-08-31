@@ -496,7 +496,7 @@ class Router:
         # 1. server-side
         node = self._nodes_mgr.get(dst)
         if node:
-            if not pack.path or pack.path[-1] != self.context.NODE:
+            if not pack.path or (pack.path[-1] != self.context.NODE and pack.path[-1] != self.context.config.local.alias):
                 pack.path.append(self.context.NODE)
             pack.ttl -= 1
             log.debug(
@@ -521,7 +521,7 @@ class Router:
             await transport.send(pack)
             return
 
-        # 2. через via из NeighborTable
+        # 2. через via из NeighborTable (по node_id)
         neighbor = self.context.network.neighbor_table.get(dst)
         if neighbor and neighbor.via:
             via_transport = self.get_transport_to(neighbor.via)
@@ -538,9 +538,61 @@ class Router:
                 await via_transport.send(pack)
                 return
 
+        # 2b. разрешение по host/IP из NeighborTable
+        resolved_id = self._resolve_by_host(dst)
+        if resolved_id:
+            neighbor = self.context.network.neighbor_table.get(resolved_id)
+            if neighbor:
+                if neighbor.via:
+                    via_transport = self.get_transport_to(neighbor.via)
+                    if via_transport:
+                        if not pack.path or pack.path[-1] != self.context.NODE:
+                            pack.path.append(self.context.NODE)
+                        pack.ttl -= 1
+                        if pack.type == PackType.REQUEST:
+                            pack.type = PackType.FORWARDED
+                        log.info(
+                            f'[mesh] forward {self.context.NODE}→{neighbor.via}→{resolved_id} '
+                            f'label={pack.label[:8]} ttl={pack.ttl} path={pack.path}'
+                        )
+                        await via_transport.send(pack)
+                        return
+                else:
+                    direct = self._nodes_mgr.get(resolved_id)
+                    if direct:
+                        if not pack.path or pack.path[-1] != self.context.NODE:
+                            pack.path.append(self.context.NODE)
+                        pack.ttl -= 1
+                        log.debug(
+                            f'[mesh] direct-host {self.context.NODE}→{resolved_id} '
+                            f'label={pack.label[:8]} path={pack.path}'
+                        )
+                        transport = WebSocketTransport(direct.ws)
+                        await transport.send(pack)
+                        return
+                    client_ws = self._client_ws.get(resolved_id)
+                    if client_ws:
+                        if not pack.path or pack.path[-1] != self.context.NODE:
+                            pack.path.append(self.context.NODE)
+                        pack.ttl -= 1
+                        log.debug(
+                            f'[mesh] client-host {self.context.NODE}→{resolved_id} '
+                            f'label={pack.label[:8]} path={pack.path}'
+                        )
+                        transport = WebSocketTransport(client_ws)
+                        await transport.send(pack)
+                        return
+
         # 3. нет маршрута
         log.error(f'[mesh] no route to {dst} label={pack.label[:8]}')
         raise NoRouteToHost(dst)
+
+    def _resolve_by_host(self, host: str) -> str | None:
+        """Найти node_id в NeighborTable по host/IP."""
+        for info in self.context.network.neighbor_table.all():
+            if info.host == host:
+                return info.node_id
+        return None
 
     def _resolve_payload(self, pack: MsgPack):
         """Значение для sessions.resolve при локальном завершении обратного
@@ -552,19 +604,26 @@ class Router:
     async def _route_back(self, pack: MsgPack):
         """Вернуть пакет по обратному маршруту из pack.path.
 
-        Конвенция: path = [origin,…,текущий узел] — каждый хоп выталкивает
+        Конвенция: path = [origin,…,текущий узел] — каждый хоп выталакивает
         себя с хвоста и шлёт новому хвосту. Ответные пакеты НЕ разворачиваются.
         """
         if not pack.path:
-            self.sessions.resolve(pack.label, self._resolve_payload(pack))
+            transport = self.get_transport_to(pack.dst)
+            if transport:
+                await transport.send(pack)
+            else:
+                self.sessions.resolve(pack.label, self._resolve_payload(pack))
             return
 
-        path = pack.path
-        if path and path[-1] == self.context.NODE:
-            path = path[:-1]
+        path = pack.path[:-1]
 
         if not path:
-            self.sessions.resolve(pack.label, self._resolve_payload(pack))
+            transport = self.get_transport_to(pack.dst)
+            if transport:
+                pack.path = []
+                await transport.send(pack)
+            else:
+                self.sessions.resolve(pack.label, self._resolve_payload(pack))
             return
 
         next_hop = path[-1]
