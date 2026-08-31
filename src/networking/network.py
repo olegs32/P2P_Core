@@ -230,15 +230,32 @@ class NetworkModule(ModuleGeneric):
 
                     # D4: touch делается в router.handle() — здесь был дубль
 
-                    # B3: сбой обработки одного пакета (исключение сервиса,
-                    # баг маршрутизации) не должен убивать соединение целиком
-                    try:
-                        await self.router.handle(pack, transport)
-                    except Exception:
-                        self.log.exception(
-                            f'handle() failed for {pack.type.value} '
-                            f'from {node_id} label={pack.label[:8]}'
-                        )
+                    # Дедлок updater.check: внешний REQUEST await executor
+                    # блокировал receive loop того же WS, поэтому вложенный
+                    # network.call на тот же узел (dst==self через alias/host)
+                    # не получал RESPONSE до timeout. REQUEST/FORWARDED
+                    # выносим в background task, остальные (RESPONSE/ERROR/PONG)
+                    # должны резолвить future синхронно.
+                    if pack.type in (PackType.REQUEST, PackType.FORWARDED,
+                                     PackType.STREAM_OPEN):
+                        async def _bg(_p=pack, _t=transport, _nid=node_id):
+                            try:
+                                await self.router.handle(_p, _t)
+                            except Exception:
+                                self.log.exception(
+                                    f'handle() failed for {_p.type.value} '
+                                    f'from {_nid} label={_p.label[:8]}'
+                                )
+                        asyncio.create_task(_bg())
+                    else:
+                        # B3: сбой обработки одного пакета не должен убивать соединение
+                        try:
+                            await self.router.handle(pack, transport)
+                        except Exception:
+                            self.log.exception(
+                                f'handle() failed for {pack.type.value} '
+                                f'from {node_id} label={pack.label[:8]}'
+                            )
 
             except asyncio.TimeoutError:
                 self.log.warning(f'HELLO timeout from {node_id}')

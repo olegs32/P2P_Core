@@ -78,8 +78,8 @@ class Updater(ModuleGeneric):
         return Path('dist')
 
     def _resolve_dst(self, node_or_host: str) -> str:
-        """Разрешить node_id или host/IP в реальный node_id для маршрутизации."""
-        if node_or_host == self.ctx.NODE:
+        """Разрешить node_id/alias/host/IP в реальный node_id для маршрутизации."""
+        if node_or_host in (self.ctx.NODE, self.ctx.config.local.alias):
             return self.ctx.NODE
         resolved = self._resolve_by_host(node_or_host)
         if resolved:
@@ -87,10 +87,13 @@ class Updater(ModuleGeneric):
         return node_or_host
 
     def _resolve_by_host(self, host: str) -> str | None:
-        """Найти node_id в NeighborTable по host/IP."""
+        """Найти node_id в NeighborTable по host/IP/alias."""
         for info in self.ctx.network.neighbor_table.all():
-            if info.host == host:
+            if info.host == host or info.node_id == host:
                 return info.node_id
+        # alias текущего узла мог быть указан как destination
+        if host == self.ctx.config.local.alias:
+            return self.ctx.NODE
         return None
 
     def _state_path(self) -> Path:
@@ -240,10 +243,12 @@ class Updater(ModuleGeneric):
             return {'ok': False, 'error': 'в update.sources нет источников'}
 
         current = read_version()
-        available = []
-        errors = {}
-        for s in sources:
+
+        async def _probe(s):
+            """Опрос одного источника: find + параллельные read по entries."""
             dst = self._resolve_dst(s.node)
+            local_avail = []
+            local_known = {}
             try:
                 found = await self.ctx.network.call(
                     dst=dst, service='files', method='find',
@@ -254,37 +259,59 @@ class Updater(ModuleGeneric):
                     raise RuntimeError((found or {}).get('error',
                                                          'files.find failed')
                                     if isinstance(found, dict) else 'нет ответа')
-                for entry in found.get('entries', []):
-                    man_res = await self.ctx.network.call(
-                        dst=dst, service='files', method='read',
-                        data={'share': s.share, 'path': entry['path']},
-                        timeout=15)
+                entries = found.get('entries', []) or []
+
+                async def _read_one(entry):
+                    try:
+                        man_res = await self.ctx.network.call(
+                            dst=dst, service='files', method='read',
+                            data={'share': s.share, 'path': entry['path']},
+                            timeout=15)
+                    except Exception:
+                        return None
                     if not (isinstance(man_res, dict) and man_res.get('ok')):
-                        continue
+                        return None
                     try:
                         man = json.loads(man_res['data'].decode('utf-8'))
                     except (ValueError, UnicodeDecodeError):
-                        continue
+                        return None
                     ver = man.get('version', '')
                     if parse_version(ver) is None:
-                        continue
+                        return None
                     rel_dir = str(Path(entry['path']).parent).replace('\\', '/')
                     exe_rel = f'{rel_dir}/{man.get("exe_name") or self.ctx.config.local.exe_name}'\
                         .replace('//', '/')
-                    self._known[ver] = {
+                    local_known[ver] = {
                         'manifest': man, 'node': s.node, 'share': s.share,
                         'exe_rel': exe_rel,
                     }
-                    available.append({
+                    return {
                         'version': ver,
                         'node': s.node,
                         'size': man.get('size'),
                         'notes': man.get('notes', ''),
                         'min_compatible': man.get('min_compatible', ''),
                         'newer': is_newer(ver, current),
-                    })
+                    }
+
+                if entries:
+                    results = await asyncio.gather(*[_read_one(e) for e in entries])
+                    for r in results:
+                        if r is not None:
+                            local_avail.append(r)
+                return local_avail, local_known, {}
             except Exception as e:
-                errors[dst] = str(e)
+                return [], {}, {dst: str(e)}
+
+        # Параллельный опрос всех источников — суммарное время = max, а не sum.
+        # Без этого 2 источника * 20с + N*15с > 45с внешнего таймаута web_ui.
+        probes = await asyncio.gather(*[_probe(s) for s in sources])
+        available = []
+        errors = {}
+        for local_avail, local_known, local_err in probes:
+            available.extend(local_avail)
+            self._known.update(local_known)
+            errors.update(local_err)
 
         seen, uniq = set(), []
         for a in sorted(available, key=lambda x: x['version'], reverse=True):

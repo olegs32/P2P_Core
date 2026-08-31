@@ -709,7 +709,14 @@ class Router:
             ttl     = DEFAULT_TTL,
         )
 
-        if dst == self.context.NODE:
+        # self-check с учётом alias (иначе локальный вызов через alias
+        # уходит в mesh и дедлочит websocket loop внешнего RPC)
+        if dst == self.context.NODE or dst == self.context.config.local.alias:
+            response = await self.executor.execute(pack)
+            return response.data
+        # host/IP -> node_id резолв для локального shortcut
+        resolved_self = self._resolve_by_host(dst)
+        if resolved_self == self.context.NODE:
             response = await self.executor.execute(pack)
             return response.data
 
