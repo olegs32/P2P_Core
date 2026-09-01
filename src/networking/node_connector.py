@@ -36,22 +36,22 @@ class NodeConnector(ModuleGeneric):
         self._ws          = None
         self._connect_task   = None
         self._keepalive_task = None
+        self._last_lex_reject = False
 
     # ------------------------------------------------------------------ #
     #  Lifecycle
     # ------------------------------------------------------------------ #
 
     async def start(self):
-        # Пару соединяет только лексикографически больший узел:
-        # обоюдный dial даёт два параллельных соединения (петля).
-        # Keepalive нужен в любом случае — он обслуживает и входящий канал.
-        if self.ctx.NODE > self.peer_node_id:
-            if not self._already_connected():
-                self._connect_task = asyncio.create_task(self._connect_loop())
+        # Reverse-HELLO: HELLO уходит всегда независимо от lex (проверка
+        # перенесена на сервер — NetworkModule.websocket_endpoint отвечает
+        # HELLO_REJECT+reverse dial если больший узел получил HELLO от
+        # меньшего). Это позволяет инициировать связь с меньшего узла.
+        if not self._already_connected():
+            self._connect_task = asyncio.create_task(self._connect_loop())
         else:
             self.log.info(
-                f'Passive mode ({self.ctx.NODE} vs {self.peer_node_id}): '
-                f'inbound connection expected'
+                f'Already connected to {self.peer_node_id} — dial deferred'
             )
         self._keepalive_task = asyncio.create_task(self._keepalive_loop())
         self.log.info(f'Connector started → {self.target_uri}')
@@ -103,6 +103,17 @@ class NodeConnector(ModuleGeneric):
                     # handshake
                     accepted = await self._handshake(ws)
                     if not accepted:
+                        # lex-отказ — сервер сейчас dial'ит обратно, не
+                        # наращиваем backoff, ждём inbound
+                        if getattr(self, '_last_lex_reject', False):
+                            self._last_lex_reject = False
+                            backoff = 5
+                            self.log.info(
+                                f'Lex reject from {self.peer_node_id} — '
+                                f'waiting reverse dial 5s'
+                            )
+                            await asyncio.sleep(5)
+                            continue
                         # R8: перманентный отказ не должен долбить каждые ~15с
                         backoff = min(backoff * 2, 300)
                         self.log.warning(
@@ -180,10 +191,21 @@ class NodeConnector(ModuleGeneric):
                 await self._on_hello_ack(pack)
                 return True
             elif pack.type == PackType.HELLO_REJECT:
+                data = pack.data or {}
+                is_lex = bool(data.get('lex_rule'))
+                self._last_lex_reject = is_lex
                 self.log.warning(
                     f'HELLO_REJECT from {self.peer_node_id}: '
-                    f'{pack.data.get("reason")}'
+                    f'{data.get("reason")}'
+                    + (' [lex_reverse expected]' if is_lex else '')
                 )
+                # lex-отказ — не перманентная ошибка: сервер сейчас dial'ит
+                # обратно по host/port из нашего HELLO, ждём inbound
+                if is_lex:
+                    self.log.info(
+                        f'Lex reverse: {self.peer_node_id} should dial back '
+                        f'(waiting inbound)'
+                    )
                 return False
         except asyncio.TimeoutError:
             self.log.error(f'Handshake timeout with {self.peer_node_id}')

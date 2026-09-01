@@ -26,7 +26,8 @@ KNOWN_METHODS = {
         'export_certificate_cer', 'delete_certificate',
         'install_pfx_from_base64', 'fix_certificate_link',
     ],
-    'system':        ['connect_to_node', 'list_connectors', 'node_detail', 'config_peers', 'sessions', 'ctx_map'],
+    'system':        ['connect_to_node', 'list_connectors', 'node_detail', 'config_peers', 'sessions', 'ctx_map',
+                       'autorun_status', 'autorun_enable', 'autorun_disable'],
     'updater':       ['status', 'check', 'download', 'apply', 'clear_state', 'build'],
     'purge':         ['plan', 'purge'],
     'logs':          ['get_logs', 'get_loggers', 'clear_buffer'],
@@ -44,8 +45,8 @@ KNOWN_METHODS = {
 def render(rpc):
     if st is None:
         return
-    tab_nodes, tab_connect, tab_sessions, tab_ctx = st.tabs(
-        ["Управление узлами", "Подключение", "🧵 Сессии", "🧭 Контекст (ctx)"]
+    tab_nodes, tab_connect, tab_sessions, tab_ctx, tab_autorun = st.tabs(
+        ["Управление узлами", "Подключение", "🧵 Сессии", "🧭 Контекст (ctx)", "🚀 Автозапуск"]
     )
 
     with tab_nodes:
@@ -59,6 +60,9 @@ def render(rpc):
 
     with tab_ctx:
         _render_ctx(rpc)
+
+    with tab_autorun:
+        _render_autorun(rpc)
 
 
 # ------------------------------------------------------------------ #
@@ -595,6 +599,88 @@ def _render_connect(rpc):
         st.dataframe(pd.DataFrame(rows), width='stretch', hide_index=True)
     else:
         st.caption("Нет сохранённых пиров")
+
+
+# ------------------------------------------------------------------ #
+#  Вкладка: автозапуск узла
+# ------------------------------------------------------------------ #
+def _render_autorun(rpc):
+    st.subheader("Автозапуск узла")
+    st.caption(
+        "Управление задачей планировщика Windows: `schtasks /SC ONSTART /RU SYSTEM`. "
+        "Узел запускается при старте хоста (до логина), имя задачи = `LocalConfig.name` (как в `purge`). "
+        "Источник — RPC `system.autorun_status / autorun_enable / autorun_disable`."
+    )
+
+    # статус
+    try:
+        stt = rpc.call('system', 'autorun_status')
+    except Exception as e:
+        st.error(f"Ошибка получения статуса автозапуска: {e}")
+        return
+
+    if not isinstance(stt, dict) or not stt.get('ok'):
+        st.error(f"Узел ответил ошибкой: {(stt or {}).get('error', 'нет данных')}")
+        return
+
+    enabled = bool(stt.get('enabled'))
+    task_present = bool(stt.get('task_present'))
+    reg_present = bool(stt.get('registry_present'))
+    task_name = stt.get('task_name', '?')
+    exe_path = stt.get('exe_path', '?')
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Автозапуск", "🟢 Включён" if enabled else "⚪ Выключен")
+    c2.metric("Задача планировщика", "есть" if task_present else "нет")
+    c3.metric("Legacy HKCU Run", "есть" if reg_present else "нет")
+
+    st.code(f"Задача: {task_name}\nИсполняемый файл: {exe_path}", language="text")
+    if reg_present:
+        st.warning("Обнаружен legacy-ключ `HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run` — остался от старых версий, будет удалён при отключении.")
+
+    # результат последнего действия (показывается после rerun)
+    last = st.session_state.pop('sys_autorun_result', None)
+    if last:
+        kind, text = last
+        (st.success if kind == 'success' else st.error)(text)
+
+    st.divider()
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("✅ Включить автозапуск", type="primary", disabled=enabled, key="autorun_enable_btn"):
+            try:
+                with st.spinner("Создание задачи планировщика..."):
+                    res = rpc.call('system', 'autorun_enable')
+            except Exception as e:
+                res = {'ok': False, 'error': str(e)}
+            if res.get('ok'):
+                st.session_state['sys_autorun_result'] = ('success', f"✅ Автозапуск включён: `{task_name}`")
+                st.toast("Автозапуск включён", icon="✅")
+            else:
+                st.session_state['sys_autorun_result'] = ('error', f"❌ Не удалось включить: {res.get('error', 'ошибка')}")
+                st.toast(res.get('error', 'ошибка'), icon="❌")
+            st.rerun()
+        if enabled:
+            st.caption("Задача уже создана — узел запустится при следующем старте системы.")
+
+    with col2:
+        if st.button("⛔ Отключить автозапуск", disabled=not enabled and not reg_present, key="autorun_disable_btn"):
+            try:
+                with st.spinner("Удаление задачи планировщика..."):
+                    res = rpc.call('system', 'autorun_disable')
+            except Exception as e:
+                res = {'ok': False, 'error': str(e)}
+            if res.get('ok'):
+                st.session_state['sys_autorun_result'] = ('success', f"⛔ Автозапуск отключён: `{task_name}`")
+                st.toast("Автозапуск отключён", icon="⛔")
+            else:
+                st.session_state['sys_autorun_result'] = ('error', f"❌ Не удалось отключить: {res.get('error', 'ошибка')}")
+                st.toast(res.get('error', 'ошибка'), icon="❌")
+            st.rerun()
+        if not enabled and not reg_present:
+            st.caption("Автозапуск уже выключен.")
+
+    st.info("Отключение удаляет задачу `schtasks /Delete /TN` и legacy-ключ реестра (как пункт `autorun_task`/`autorun_registry` в `purge`).")
 
 
 # ------------------------------------------------------------------ #

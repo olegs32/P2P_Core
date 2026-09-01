@@ -23,6 +23,7 @@ import itertools
 import logging
 import re
 import threading
+import traceback
 from collections import deque
 
 from services.rpc import rpc
@@ -73,7 +74,16 @@ class RingBufferHandler(logging.Handler):
                 'msg': _sanitize(record.getMessage())[:self.max_msg_len],
             }
             if record.exc_info:
-                tb = self.formatException(record.exc_info)
+                try:
+                    if self.formatter is not None:
+                        tb = self.formatter.formatException(record.exc_info)
+                    else:
+                        tb = ''.join(traceback.format_exception(*record.exc_info))
+                except Exception:
+                    try:
+                        tb = ''.join(traceback.format_exception(*record.exc_info))
+                    except Exception:
+                        tb = str(record.exc_info[1]) if record.exc_info[1] else ''
                 if len(tb) > self.max_tb_len:
                     tb = '...' + tb[-self.max_tb_len:]
                 entry['msg'] += '\n' + tb

@@ -25,10 +25,29 @@ _MAP_NODE_COLORS = {
     'unreachable': '#e74c3c',   # красный — считался недоступным
 }
 _ROOT_COLOR = '#3498db'         # синий — узел, к которому подключена панель
-_CLIENT_COLOR = '#95a5a6'       # серый — служебный WS-клиент (webpanel и т.п.)
+_CLIENT_COLOR = '#d5dbdb'       # светло-серый — служебный WS-клиент (видно на тёмном фоне; + белая обводка)
 _EDGE_OK = '#2ecc71'
 _EDGE_BAD = '#e74c3c'
 _EDGE_GOSSIP = '#f1c40f'
+
+# общие стили узлов для тёмной темы: белый шрифт с тёмной обводкой + белая рамка узла
+_NODE_FONT = {'color': '#ffffff', 'strokeWidth': 4, 'strokeColor': '#000000', 'size': 14}
+_NODE_BORDER_WIDTH = 2
+_NODE_BORDER_COLOR = '#ffffff'
+
+
+def _node_color_kwargs(color: str) -> dict:
+    """Возвращает kwargs для Node чтобы узел был видим на тёмном фоне."""
+    return {
+        'color': {
+            'background': color,
+            'border': _NODE_BORDER_COLOR,
+            'highlight': {'background': color, 'border': _NODE_BORDER_COLOR},
+            'hover': {'background': color, 'border': _NODE_BORDER_COLOR},
+        },
+        'borderWidth': _NODE_BORDER_WIDTH,
+        'font': _NODE_FONT,
+    }
 
 
 def render(rpc):
@@ -156,7 +175,7 @@ def _render_network_map(rpc):
         f"🔵 узел, к которому подключена панель"
     )
 
-    auto = st.toggle("Автообновление (5 сек)", value=True, key="net_map_auto")
+    auto = st.toggle("Автообновление (5 сек)", value=False, key="net_map_auto")
 
     if auto:
         @st.fragment(run_every="5s")
@@ -227,43 +246,62 @@ def _draw_network_map(rpc):
         tooltip = (f"{nid}\n{n.get('host', '?')}:{n.get('port', '?')} · "
                    f"{n.get('status', '?')}")
         a_nodes.append(Node(
-            id=nid, label=nid, size=size, color=color,
+            id=nid, label=nid, size=size,
             shape='dot', title=tooltip,
+            **_node_color_kwargs(color),
         ))
 
-    # клиенты панели — серые
+    # клиенты панели — светлые с белой обводкой (видно на тёмном фоне)
     for c in clients:
         cid = c['node_id']
         a_nodes.append(Node(
-            id=cid, label=cid, size=18, color=_CLIENT_COLOR,
+            id=cid, label=cid, size=18,
             shape='dot', title=f"{cid} (клиент панели)",
+            **_node_color_kwargs(_CLIENT_COLOR),
         ))
 
     # физические рёбра: verified — зелёное, half-open — красное,
     # рёбра с участием клиента панели — серые (клиент не отвечает на
     # topology, поэтому они всегда «неподтверждены» — это норма)
+    # Убраны текстовые плашки на рёбрах (label='') и отключен renderLabel
+    # чтобы gossip и half-open не перекрывали друг друга.
     for e in edges_data:
         rep = ', '.join(e.get('reported_by', []))
         if e['src'] in client_ids or e['dst'] in client_ids:
             a_edges.append(Edge(
                 source=e['src'], target=e['dst'],
-                color=_CLIENT_COLOR, width=1.5, label='client',
+                color=_CLIENT_COLOR, width=1.5, label='',
                 title=f"{e['src']} → {e['dst']} · клиент панели",
             ))
             continue
         ok = bool(e.get('verified'))
-        a_edges.append(Edge(
-            source=e['src'],
-            target=e['dst'],
-            color=_EDGE_OK if ok else _EDGE_BAD,
-            width=2.5 if ok else 1.5,
-            label='' if ok else 'half-open?',
-            title=f"{e['src']} → {e['dst']} · "
-                  f"{'подтверждено обоими' if ok else 'half-open'}"
-                  f" (докладчики: {rep})",
-        ))
+        if ok:
+            a_edges.append(Edge(
+                source=e['src'],
+                target=e['dst'],
+                color=_EDGE_OK,
+                width=2.5,
+                label='',
+                title=f"{e['src']} → {e['dst']} · "
+                      f"подтверждено обоими"
+                      f" (докладчики: {rep})",
+            ))
+        else:
+            # half-open — пунктир + скругление чтобы не сливалось с gossip-пунктиром
+            a_edges.append(Edge(
+                source=e['src'],
+                target=e['dst'],
+                color=_EDGE_BAD,
+                width=1.5,
+                dashes=True,
+                smooth={'type': 'curvedCW', 'roundness': 0.15},
+                label='',
+                title=f"{e['src']} → {e['dst']} · "
+                      f"half-open"
+                      f" (докладчики: {rep})",
+            ))
 
-    # gossip-пунктир для known-узлов (не физическая связь!)
+    # gossip-пунктир для known-узлов (не физическая связь!) — с противоположным скруглением
     for n in nodes_data:
         via = n.get('via')
         if n.get('status') == 'known' and via in by_id:
@@ -272,7 +310,9 @@ def _draw_network_map(rpc):
                 target=n['node_id'],
                 color=_EDGE_GOSSIP,
                 width=1,
-                label='gossip',
+                dashes=True,
+                smooth={'type': 'curvedCCW', 'roundness': 0.15},
+                label='',
                 title=f"{n['node_id']} известен через {via} (gossip)",
             ))
 
@@ -286,10 +326,23 @@ def _draw_network_map(rpc):
         highlightColor='#F7A7A6',
         collapsible=False,
         node={'labelProperty': 'label'},
-        link={'labelProperty': 'label', 'renderLabel': True},
+        link={'labelProperty': 'label', 'renderLabel': False},
     )
 
-    selected = agraph(nodes=a_nodes, edges=a_edges, config=config)
+    # тонкая рамка вокруг карты (пунктир) — визуально отделяет карту
+    # Используем st.container(border=True) + CSS для пунктира
+    st.markdown(
+        """<style>
+        /* пунктирная тонкая рамка вокруг карты сети */
+        div[data-testid="stVerticalBlockBorderWrapper"] {
+            border: 1px dashed #888 !important;
+            border-radius: 8px !important;
+        }
+        </style>""",
+        unsafe_allow_html=True,
+    )
+    with st.container(border=True):
+        selected = agraph(nodes=a_nodes, edges=a_edges, config=config)
 
     # клик по узлу — карточка с деталями из снимка топологии
     if selected:

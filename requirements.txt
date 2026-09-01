@@ -20,3 +20,4 @@ numpy~=2.2.0               # avg_hash + vendor ChunkStore
 streamlit~=1.54.0      # Streamlit dashboard
 pandas~=2.2.3         # DataFrames for web UI
 streamlit-agraph   # интерактивный граф карты сети (только WebUI-сборка)
+streamlit-ace==0.1.1  # YAML-подсветка редактора config (fallback когда code_editor недоступен)

@@ -23,8 +23,8 @@ except ImportError:
 
 CTX_ATTR_DOCS = {
     'NODE':            'Имя этого узла в mesh-сети (config.yaml → node)',
-    'config':          'Config — pydantic-модель конфигурации: .network.port, .local.peers, ...',
-    'config_manager':  'ConfigManager — чтение/запись конфига: .get("network.port"), .update({...}), .add_peer(node_id, uri), .list_peers()',
+    'config':          'Config — pydantic-модель конфигурации: .network.port, .local.peers, .local.full_path, ...',
+    'config_manager':  'ConfigManager — управление конфигом: .cfg, .config_path, .update(...), .add_peer(node_id, uri), .list_peers()',
     'peers':           'Список пиров из config.yaml → local.peers (автоподключение при старте)',
     'services':        'ServiceManager — реестр локальных сервисов и их RPC-методов',
     'certs_index':     'CertsIndex — сводка сертификатов всей сети (обмен CERT_SYNC)',
@@ -73,21 +73,10 @@ class System(ModuleGeneric):
         if existing and existing.status.value == 'connected':
             return {'ok': False, 'error': f'Узел {node_id} уже подключен'}
 
-        # Лексикографическое правило: иначе коннектор ушёл бы в passive mode
-        # и подключение не произошло бы никогда (удалённый о нас может и не знать).
-        # Отказываем сразу — без создания пустого коннектора и записи в pending.
-        if self.ctx.NODE <= node_id:
-            self.log.warning(
-                f'Connect to {node_id} rejected by lexicographic rule '
-                f'({self.ctx.NODE} <= {node_id})'
-            )
-            return {
-                'ok': False,
-                'lex_rule': True,
-                'error': (f'Лексикографическое правило: {self.ctx.NODE} ≤ {node_id} — '
-                          f'подключение должен инициировать удалённый узел {node_id}'),
-            }
-
+        # Reverse-HELLO: HELLO уходит всегда, lex проверяется на принимающей
+        # стороне (NetworkModule.websocket_endpoint). Если сервер больше — он
+        # отвечает HELLO_REJECT lex_rule и сам dial'ит обратно по host/port
+        # из HELLO.data. Здесь hard-block снят.
         uri = f'ws://{host}:{port}/ws/{self.ctx.NODE}'
         config_uri = f'ws://{host}:{port}/ws/'
 
@@ -107,7 +96,12 @@ class System(ModuleGeneric):
 
         if connected:
             try:
-                self.ctx.config_manager.add_peer(node_id, config_uri)
+                # верный источник пиров — ConfigManager; поддерживаем оба для совместимости
+                mgr = getattr(self.ctx, 'config_manager', None)
+                if mgr is not None and hasattr(mgr, 'add_peer'):
+                    mgr.add_peer(node_id, config_uri)
+                else:
+                    self.ctx.config.add_peer(node_id, config_uri)
                 self.log.info(f'Peer saved to config: {node_id} → {config_uri}')
             except Exception as e:
                 self.log.warning(f'Failed to save peer to config: {e}')
@@ -151,7 +145,11 @@ class System(ModuleGeneric):
     @rpc
     def config_peers(self):
         """Список пиров из config.yaml (local.peers)."""
-        peers = self.ctx.config_manager.list_peers()
+        mgr = getattr(self.ctx, 'config_manager', None)
+        if mgr is not None and hasattr(mgr, 'list_peers'):
+            peers = mgr.list_peers()
+        else:
+            peers = self.ctx.config.list_peers()
         return [{'node_id': p.node_id, 'uri': p.uri} for p in peers]
 
     @rpc
@@ -325,6 +323,43 @@ class System(ModuleGeneric):
 
         return {'node': ctx.NODE, 'entries': entries}
 
+    def _local_cfg(self):
+        """Вернуть LocalConfig независимо от того, где лежит конфиг.
+
+        Поддерживает оба источника из-за исторической путаницы
+        ctx.config (Config) vs ctx.config_manager (ConfigManager):
+        ConfigManager хранит модель в .cfg, Config — напрямую в .local.
+        """
+        # 1) Config — pydantic модель (основной путь)
+        cfg = getattr(self.ctx, 'config', None)
+        if cfg is not None:
+            # если это ConfigManager (у него есть .cfg) — берём .cfg.local
+            if hasattr(cfg, 'cfg') and hasattr(getattr(cfg, 'cfg', None), 'local'):
+                try:
+                    return cfg.cfg.local
+                except Exception:
+                    pass
+            if hasattr(cfg, 'local'):
+                try:
+                    return cfg.local
+                except Exception:
+                    pass
+        # 2) ConfigManager
+        mgr = getattr(self.ctx, 'config_manager', None)
+        if mgr is not None:
+            if hasattr(mgr, 'cfg') and hasattr(getattr(mgr, 'cfg', None), 'local'):
+                try:
+                    return mgr.cfg.local
+                except Exception:
+                    pass
+            if hasattr(mgr, 'local'):
+                try:
+                    return mgr.local
+                except Exception:
+                    pass
+        # fallback — пусть упадёт с понятной ошибкой
+        return cfg.local  # type: ignore
+
     def add_to_task_scheduler(self):
         """Задача автозапуска при старте хоста (/SC ONSTART, от SYSTEM).
 
@@ -332,8 +367,9 @@ class System(ModuleGeneric):
         загрузке машины до чьего-либо логина. Имя задачи = LocalConfig.name.
         Возвращает True при успехе.
         """
-        exe_path = self.ctx.config_manager.local.full_path
-        task_name = self.ctx.config_manager.local.name
+        local = self._local_cfg()
+        exe_path = local.full_path
+        task_name = local.name
 
         try:
             cmd = (f'schtasks /Create /F /TN "{task_name}" /TR "{exe_path}" '
@@ -358,7 +394,7 @@ class System(ModuleGeneric):
 
         True = задачи больше нет (удалена или отсутствовала).
         """
-        task_name = self.ctx.config_manager.local.name
+        task_name = self._local_cfg().name
         try:
             cmd = f'schtasks /Delete /F /TN "{task_name}"'
             result = subprocess.call(cmd, shell=True,
@@ -387,7 +423,7 @@ class System(ModuleGeneric):
             return False
 
         try:
-            key_name = self.ctx.config_manager.local.name
+            key_name = self._local_cfg().name
 
             key = winreg.OpenKey(
                 winreg.HKEY_CURRENT_USER,
@@ -409,4 +445,91 @@ class System(ModuleGeneric):
         except OSError as e:
             self.log.error(f"Ошибка удаления из реестра: {e}")
             return False
+
+    # ------------------------------------------------------------------ #
+    #  Автозапуск узла (отдельная вкладка UI) — RPC-обвязка
+    # ------------------------------------------------------------------ #
+
+    def _autorun_task_present(self) -> bool:
+        """Есть ли задача schtasks с именем LocalConfig.name."""
+        task_name = self._local_cfg().name
+        return subprocess.call(
+            f'schtasks /Query /TN "{task_name}"',
+            shell=True, stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL) == 0
+
+    def _autorun_registry_present(self) -> bool:
+        """Есть ли legacy-ключ HKCU Run."""
+        if winreg is None:
+            return False
+        try:
+            key = winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER,
+                r"Software\Microsoft\Windows\CurrentVersion\Run",
+                0, winreg.KEY_READ)
+            try:
+                winreg.QueryValueEx(key, self._local_cfg().name)
+                return True
+            except OSError:
+                return False
+            finally:
+                try:
+                    winreg.CloseKey(key)
+                except Exception:
+                    pass
+        except OSError:
+            return False
+
+    @rpc
+    def autorun_status(self, data: dict = None) -> dict:
+        """Статус автозапуска узла.
+
+        Возвращает {ok, enabled(task), registry_present, task_name, exe_path, full_path}.
+        enabled=True если задача планировщика ONSTART/SYSTEM присутствует.
+        """
+        local = self._local_cfg()
+        return {
+            'ok': True,
+            'enabled': self._autorun_task_present(),
+            'task_present': self._autorun_task_present(),
+            'registry_present': self._autorun_registry_present(),
+            'task_name': local.name,
+            'exe_path': str(local.full_path),
+            'work_dir': str(local.work_dir),
+        }
+
+    @rpc
+    def autorun_enable(self, data: dict = None) -> dict:
+        """Активировать автозапуск (создать задачу ONSTART/SYSTEM).
+
+        Использует существующий backend add_to_task_scheduler().
+        """
+        ok = self.add_to_task_scheduler()
+        return {
+            'ok': ok,
+            'enabled': self._autorun_task_present(),
+            'task_name': self._local_cfg().name,
+            'error': None if ok else 'не удалось создать задачу планировщика (см. лог узла)',
+        }
+
+    @rpc
+    def autorun_disable(self, data: dict = None) -> dict:
+        """Отключить автозапуск (удалить задачу + legacy-ключ реестра).
+
+        Логика удаления задачи — как в purge (autorun_task), реестра — как в
+        remove_from_registry_startup().
+        """
+        task_ok = self.remove_from_task_scheduler()
+        reg_ok = self.remove_from_registry_startup()
+        # для UI считаем «отключено» если задачи нет (удалена или отсутствовала)
+        still_present = self._autorun_task_present()
+        ok = not still_present
+        return {
+            'ok': ok,
+            'enabled': still_present,
+            'task_removed': task_ok,
+            'registry_removed': reg_ok,
+            'task_name': self._local_cfg().name,
+            'error': None if ok else 'задача планировщика не удалена (возможно, отсутствует или отказ)',
+        }
 

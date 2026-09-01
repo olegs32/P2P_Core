@@ -77,10 +77,11 @@ async def _run_start(connector):
 
 
 def test_start_passive_when_lesser_node():
-    # 'A' < 'B' — исходящий dial не создаётся, keepalive работает
+    # Reverse-HELLO: HELLO уходит всегда, lex проверяется на сервере
+    # (HELLO_REJECT+reverse dial). Поэтому даже меньший узел создаёт dial.
     c = make_connector(node='A', peer='B')
     asyncio.run(_run_start(c))
-    assert c._connect_task is None
+    assert c._connect_task is not None
     assert c._keepalive_task is not None
 
 

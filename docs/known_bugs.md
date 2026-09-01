@@ -1,26 +1,18 @@
 - config:
-  - auto restart on config update: no path to exe, shows console windows but
+  - auto restart on config update - как при update
   - сделать подсветку синтаксиса в UI
-- lexicography hell: if triggered this rule - i cant connect to remote. maybe i should connect with transport error from remote by lexicography,but remote got connect to requested node
 - network map: map goes move to border canvas without centered UI node, i had see nothing
-- file_share:
-  - в листинге папок не прописывать полный путь, не умещается
+
 
 - mesh
   - при указании локального узла: 2026-08-27 11:04:20 [Router] ERROR: [mesh] no route to sysadmin-pc label=05dca1f6
   - так же с удаленного: no route to sysadmin-pc
     - возможно нода ищется по IP вместо имени, но file_transport работает при этом
-  - update:
-    - Источник 192.168.53.53: RPC timeout (20s): d67a3a0f-acd7-4fd2-b2b7-6200591933b3
-    - так же не работает по ip
-    - BUT файловый транспорт прекрасно работает с 53.53
 - webpanel:
   - в главной странице при выборе другой ноды без UI Ошибка получения данных: Method not found: webpanel.node_status
 - eye_sauron: 
   - [eyesauron] INFO: отключён (config.yaml → eyesauron.enabled: true), RPC отвечают отказом
   - в архив кадров нужно добавить возможность просмотра по отфильтрованным элементам в выводимой таблице в виде галереи, текущий просмотр очень неудобен
-- system: 
-  - RPC-консоль
-    -on remote host: Ошибка рендеринга UI: cannot access local variable 'all_node_ids' where it is not associated with a value
-  - вкладка подключение: Ошибка рендеринга UI: cannot access local variable 'all_node_ids' where it is not associated with a value
-  - вкладка сессии: Ошибка рендеринга UI: cannot access local variable 'all_node_ids' where it is not associated with a value
+
+- lex reverse dial: [РЕШЕНО 2026-09-01]
+  - keep inbound + parallel reverse реализован (NetworkModule.websocket_endpoint -> accept inbound, parallel dial по host/port из HELLO; при успехе outbound закрываем inbound, при ошибке оставляем inbound). NodeConnector всегда dial. Все успешные outbound сохраняются в config даже против lex. NAT: mesh может быть в серой сети — проверка по факту попыткой достучаться (упор на маршрутизацию), keep inbound покрывает. См. src/networking/network.py: _lex_reverse_keep_inbound.

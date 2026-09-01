@@ -121,9 +121,11 @@ def build(name, ui=True):
         ui_args = [
             '--collect-all', 'services',
             '--collect-all', 'streamlit_agraph',  # граф карты сети (netinfo)
+            '--collect-all', 'streamlit_ace',  # YAML-редактор config
             '--collect-binaries', 'streamlit',
             '--collect-datas', 'streamlit',
             '--recursive-copy-metadata', 'streamlit',
+            '--recursive-copy-metadata', 'streamlit-ace',
         ]
         current_args.extend(ui_args)
 

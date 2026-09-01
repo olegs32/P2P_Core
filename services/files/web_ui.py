@@ -4,6 +4,7 @@
 #  Выбираем узел-источник из подключенных, смотрим его шары/файлы,
 #  качаем на текущий узел. Статус загрузок — автообновляемый фрагмент.
 
+import os
 import time
 from pathlib import Path
 
@@ -235,11 +236,20 @@ if st is not None:
             dirs = br.get('dirs', [])
             dir_labels = ['(не переходить)'] + [Path(d).name or d for d in dirs]
             pick = nav1.selectbox("Подкаталог", dir_labels, key="fl_br_pick")
-            if nav2.button("Открыть ⤵", key="fl_br_open") and \
-                    pick != '(не переходить)':
-                st.session_state[state] = dirs[dir_labels.index(pick) - 1]
-                st.rerun()
             parent = br.get('parent')
+            # Fallback для старых узлов / когда бэкенд вернул None в корне диска (C:\):
+            # Вверх должен вести к списку дисков ('')
+            if parent is None and br.get('path'):
+                # любой непустой путь без родителя считаем корнем диска
+                parent = ''
+            if nav2.button("Открыть ⤵", key="fl_br_open"):
+                if pick != '(не переходить)':
+                    st.session_state[state] = dirs[dir_labels.index(pick) - 1]
+                    st.rerun()
+                elif parent is not None:
+                    # в корне диска "(не переходить)" работает как «Вверх к дискам»
+                    st.session_state[state] = parent
+                    st.rerun()
             if parent is not None and nav2.button("⬆ Вверх", key="fl_br_up"):
                 st.session_state[state] = parent
                 st.rerun()

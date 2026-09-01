@@ -380,7 +380,11 @@ class Files(ModuleGeneric):
             if not p.is_dir():
                 return {'ok': False, 'error': f'каталог не найден: {raw}'}
             dirs = sorted(str(d) for d in p.iterdir() if d.is_dir())
-            parent = str(p.parent) if p.parent != p else None
+            if p.parent == p:
+                # корень ФС — для Windows это корень диска (C:\): Вверх должен вести к списку дисков ('')
+                parent = '' if os.name == 'nt' else None
+            else:
+                parent = str(p.parent)
             return {'ok': True, 'path': str(p), 'parent': parent, 'dirs': dirs}
         except (OSError, ValueError) as e:
             return {'ok': False, 'error': str(e)}

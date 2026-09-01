@@ -207,6 +207,66 @@ class NetworkModule(ModuleGeneric):
                     f'enc={hello_data.get("enc", "?")})'
                 )
 
+                # Lex reverse: больший узел должен dial'ить меньший, но
+                # inbound держим параллельно. Если reverse достучится —
+                # закроем inbound и оставим lex-правильный outbound,
+                # иначе сохраним inbound. NAT: mesh может быть в серой сети,
+                # проверка по факту попыткой (маршрутизация).
+                if self.ctx.NODE > node_id and not self.router.has_client_ws(node_id):
+                    _peer_host = hello_data.get('host', '')
+                    _peer_port = hello_data.get('port', 9000)
+                    _inbound_ws = websocket  # для закрытия после успеха reverse
+
+                    async def _lex_reverse_keep_inbound():
+                        await asyncio.sleep(0.5)
+                        if self.router.has_client_ws(node_id):
+                            return
+                        if not _peer_host:
+                            return
+                        try:
+                            await self.connect_to(
+                                node_id,
+                                f'ws://{_peer_host}:{_peer_port}/ws/{self.ctx.NODE}',
+                            )
+                        except Exception as e:
+                            self.log.warning(f'Lex reverse dial to {node_id} failed: {e} — keep inbound')
+                            return
+                        # ждать появления outbound транспорта
+                        for _ in range(10):
+                            await asyncio.sleep(0.5)
+                            if self.router.has_client_ws(node_id):
+                                break
+                        if self.router.has_client_ws(node_id):
+                            # outbound успешен — сохранить в конфиг даже против lex
+                            try:
+                                cfg_uri = f'ws://{_peer_host}:{_peer_port}/ws/'
+                                # add_peer идемпотентен
+                                self.ctx.config_manager.add_peer(node_id, cfg_uri)
+                            except Exception:
+                                pass
+                            # закрыть inbound, оставить lex-правильный outbound
+                            cur = self.nodes_manager.get(node_id)
+                            if cur and cur.ws is _inbound_ws:
+                                try:
+                                    await _inbound_ws.close()
+                                except Exception:
+                                    pass
+                                self.log.info(f'Lex reverse ok {node_id} — inbound closed, keep outbound')
+                        else:
+                            self.log.warning(
+                                f'Lex reverse dial to {node_id} no transport after retry '
+                                f'(host={_peer_host} NAT?) — keep inbound'
+                            )
+                            # сохранить inbound как peer для будущих попыток
+                            try:
+                                cfg_uri = f'ws://{_peer_host}:{_peer_port}/ws/'
+                                if not any(p.node_id == node_id for p in self.ctx.config_manager.list_peers()):
+                                    self.ctx.config_manager.add_peer(node_id, cfg_uri)
+                            except Exception:
+                                pass
+
+                    asyncio.create_task(_lex_reverse_keep_inbound())
+
                 # Запросить CERT_SYNC у нового узла (если у него есть certstool)
                 hello_services = hello_data.get('services', [])
                 if 'certstool' in hello_services:
