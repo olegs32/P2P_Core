@@ -42,7 +42,7 @@ MAX_BACKUPS = 10              # ротация резервных копий
 EXIT_DELAY_SEC = 1            # сколько живём после запуска _update helper'а
 
 # секции, применяемые на горячую (без рестарта)
-HOT_SECTIONS = {'logging', 'logs'}
+HOT_SECTIONS = {'logging', 'logs', 'update'}
 
 _SECRET_LINE_RE = re.compile(
     r'(?m)^(?P<indent>[ \t]+)secret:[ \t]*(?P<val>\S.*?)[ \t]*$')
