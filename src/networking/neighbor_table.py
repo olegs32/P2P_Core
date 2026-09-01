@@ -194,4 +194,4 @@ class NeighborTable:
                 updated += 1
 
         if added or updated:
-            log.info(f'Gossip from {from_node}: +{added} new, ~{updated} refreshed')
+            log.debug(f'Gossip from {from_node}: +{added} new, ~{updated} refreshed')

@@ -62,11 +62,13 @@ if "-m" in sys.argv and "streamlit" in sys.argv:
     sys.exit(stcli.main())
 
 from services.loader import ServiceLoader
+from services.rpc import get_rpc_methods
 from src.internal_modules.config import load_config
 from src.internal_modules.context import AppContext, app_lifespan
 from src.internal_modules.memory import MemoryModule
 from src.internal_modules.setup_logging import setup_logging
 from src.internal_modules.spawner import Spawner
+from src.internal_modules.updater import Updater
 from src.networking.network import NetworkModule
 from src.networking.node_connector import NodeConnector
 
@@ -145,6 +147,12 @@ async def main():
     ctx.services.register_service(ctx.spawn)
     ctx.services.register_method(ctx.spawn, 'spawn', ctx.spawn.spawn)
     ctx.services.register_method(ctx.spawn, 'list_generators', ctx.spawn.list_generators)
+
+    # Updater — ядерный модуль (перенесен из services/updater)
+    ctx.updater = ctx.register(Updater(name='updater', context=ctx))
+    ctx.services.register_service(ctx.updater)
+    for _mname, _m in get_rpc_methods(ctx.updater).items():
+        ctx.services.register_method(ctx.updater, _mname, _m)
 
     # пробрасываем ctx в роуты FastAPI
     ctx.network.app.state.ctx = ctx

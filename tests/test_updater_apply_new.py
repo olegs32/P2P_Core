@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch, AsyncMock
 import pytest
 
 from src.internal_modules.config import Config, UpdateConfig, UpdateSource
-from services.updater.service import Updater
+from src.internal_modules.updater import Updater
 
 
 def make_ctx(tmp_path):
@@ -44,10 +44,10 @@ async def test_apply_creates_updater_and_exits(tmp_path):
     }
     with patch.object(sys, "frozen", True, create=True), \
          patch.object(sys, "executable", str(fake_exe)), \
-         patch("services.updater.verify.verify_signature", return_value=(True, "ok")), \
+         patch("src.internal_modules.updater_verify.verify_signature", return_value=(True, "ok")), \
          patch("subprocess.Popen") as mock_popen, \
          patch("os._exit") as mock_exit, \
-         patch("services.updater.service.asyncio.sleep", new=AsyncMock()):
+         patch("src.internal_modules.updater.asyncio.sleep", new=AsyncMock()):
         res = await svc.apply({"version": "9.9.9"})
         assert res["ok"] is True, res
 

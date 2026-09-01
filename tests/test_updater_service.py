@@ -9,7 +9,7 @@ from unittest.mock import patch
 import pytest
 
 from src.internal_modules.config import Config, UpdateConfig, UpdateSource
-from services.updater.service import STATE_FILE, Updater, _sha256
+from src.internal_modules.updater import STATE_FILE, Updater, _sha256
 
 
 class _Local:
@@ -130,7 +130,7 @@ def test_sha256_matches_files_transport(tmp_path):
 
 def test_verify_signature_shape(tmp_path):
     """Функция не падает: на Windows unsigned-файл не проходит проверку."""
-    from services.updater.verify import verify_signature
+    from src.internal_modules.updater_verify import verify_signature
 
     f = tmp_path / 'unsigned.exe'
     f.write_bytes(b'MZ fake binary')
@@ -158,7 +158,7 @@ def test_build_frozen(tmp_path):
 
     with patch.object(sys, 'frozen', True, create=True), \
             patch.object(sys, 'executable', str(fake_exe)), \
-            patch('services.updater.service.read_version', return_value='9.9.9-build99'):
+            patch('src.internal_modules.updater.read_version', return_value='9.9.9-build99'):
         u = make_updater(tmp_path)
         u.ctx.config.local.work_dir = tmp_path / 'work'
         res = u.build({'notes': 'test release'})

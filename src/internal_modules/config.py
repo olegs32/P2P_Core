@@ -187,19 +187,26 @@ def _deep_fill(target: dict, defaults: dict, prefix: str = '') -> list[str]:
     """Достроить target отсутствующими ключами из defaults (in place).
 
     Рекурсивно добавляет только отсутствующие ключи; существующие
-    значения не перезаписываются. None вместо секции трактуется как
-    отсутствие секции и достраивается. Возвращает список добавленных
-    путей ('network.port') для логирования.
+    значения не перезаписываются. None вместо секции (dict) трактуется как
+    отсутствие секции и достраивается. Скалярные None (напр. local.secret)
+    считаются присутствующим значением — не добавляются повторно.
+    Возвращает список добавленных путей ('network.port') для логирования.
     """
     added: list[str] = []
     for key, dval in defaults.items():
         path = f'{prefix}.{key}' if prefix else key
-        cur = target.get(key)
-        if cur is None:
+        if key not in target:
             target[key] = copy.deepcopy(dval)
             added.append(path)
-        elif isinstance(dval, dict) and isinstance(cur, dict):
-            added.extend(_deep_fill(cur, dval, path))
+        else:
+            cur = target[key]
+            if isinstance(dval, dict):
+                if cur is None or not isinstance(cur, dict):
+                    target[key] = copy.deepcopy(dval)
+                    added.append(path)
+                else:
+                    added.extend(_deep_fill(cur, dval, path))
+            # скаляр: уже присутствует (даже если None) — не трогаем
     return added
 
 

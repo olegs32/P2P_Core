@@ -28,7 +28,8 @@ class AppContext:
 
         self.network: NetworkModule | None = None
         self.memory: MemoryModule | None = None
-        self.spawn: Spawner | None =  None
+        self.spawn: Spawner | None = None
+        self.updater = None  # Updater — ядерный модуль (src/internal_modules/updater.py)
 
         # главный event loop (для планирования из потоков watchdog и т.п.)
         self.loop: asyncio.AbstractEventLoop | None = None

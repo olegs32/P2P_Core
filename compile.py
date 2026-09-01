@@ -1,3 +1,4 @@
+import datetime
 import hashlib
 import json
 import logging
@@ -238,4 +239,4 @@ if __name__ == '__main__':
 
     end_time = time.time()
     execution_time = end_time - start_time
-    print(f"Время выполнения: {execution_time:.6f} секунд")
+    print(f"Время выполнения: {execution_time:.6f} секунд, завершено в {datetime.datetime.now()}")

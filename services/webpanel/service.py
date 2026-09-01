@@ -90,10 +90,36 @@ class WebPanel(ModuleGeneric):
             'PYTHONWARNINGS': 'ignore::DeprecationWarning',
         }
 
-        pid = list(set([con.pid for con in psutil.net_connections() if con.laddr.port == 8501]))
-        if pid:
-            psutil.Process(pid[0]).kill()
-            log.info(f'Old instance Streamlit detected, killing pid {pid}')
+        # Аккуратно прибить старый Streamlit на 8501: фильтр pid 0/None и AccessDenied
+        pids: set[int] = set()
+        try:
+            for con in psutil.net_connections(kind="inet"):
+                try:
+                    laddr = getattr(con, "laddr", None)
+                    if laddr and getattr(laddr, "port", None) == self._panel_port and con.pid not in (None, 0):
+                        pids.add(int(con.pid))
+                except Exception:
+                    continue
+        except (psutil.AccessDenied, PermissionError) as e:
+            log.debug(f"net_connections scan skipped: {e}")
+        for pid in pids:
+            try:
+                proc = psutil.Process(pid)
+                # не убиваем явно системные процессы: проверяем что это python/streamlit
+                try:
+                    cmd = " ".join(proc.cmdline() or []).lower()
+                    name = (proc.name() or "").lower()
+                    if "streamlit" not in cmd and "python" not in name and "p2p" not in name:
+                        log.debug(f"skip pid {pid} ({name}) not streamlit/python")
+                        continue
+                except Exception:
+                    pass
+                proc.kill()
+                log.info(f"Old Streamlit pid {pid} killed")
+            except (psutil.NoSuchProcess, psutil.AccessDenied, PermissionError) as e:
+                log.debug(f"skip kill pid {pid}: {e}")
+                continue
+        if pids:
             time.sleep(2)
 
         self._streamlit_process = subprocess.Popen(
