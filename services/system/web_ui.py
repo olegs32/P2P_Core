@@ -476,17 +476,22 @@ def _render_connect(rpc):
     st.divider()
 
     # ---- Форма подключения ----
+    # Инициализация Session State до создания виджетов (иначе Streamlit ругается
+    # "widget with key was created with a default value but also had its value set via the Session State API")
+    for k, v in (("connect_host", ""), ("connect_port", 9000), ("connect_node_id", "")):
+        if k not in st.session_state:
+            st.session_state[k] = v
     col1, col2 = st.columns([2, 1])
 
     with col1:
-        host = st.text_input("Хост (адрес)", value="", placeholder="192.168.1.10",
+        host = st.text_input("Хост (адрес)", placeholder="192.168.1.10",
                              key="connect_host")
 
     with col2:
-        port = st.number_input("Порт", value=9000, min_value=1, max_value=65535,
+        port = st.number_input("Порт", min_value=1, max_value=65535,
                                key="connect_port")
 
-    node_id = st.text_input("Node ID удалённого узла", value="",
+    node_id = st.text_input("Node ID удалённого узла",
                             placeholder="Node1", key="connect_node_id")
 
     # Подсказка: подстановка из известных узлов
