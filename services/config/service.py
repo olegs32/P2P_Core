@@ -39,8 +39,7 @@ from src.internal_modules.config import Config as ConfigModel
 SECRET_PLACEHOLDER = '__MASKED_SECRET__'
 BACKUP_NAME_RE = re.compile(r'^config_\d{8}-\d{6}(_\d+)?\.yaml$')
 MAX_BACKUPS = 10              # ротация резервных копий
-RESTART_DELAY_SEC = 3         # пауза detached-стартера перед запуском узла
-EXIT_DELAY_SEC = 4            # сколько живём после запуска стартера
+EXIT_DELAY_SEC = 1            # сколько живём после запуска _update helper'а
 
 # секции, применяемые на горячую (без рестарта)
 HOT_SECTIONS = {'logging', 'logs'}
@@ -418,41 +417,91 @@ class Config(ModuleGeneric):
         return applied
 
     # ------------------------------------------------------------------ #
-    #  Рестарт (detached-стартер, механика updater)
+    #  Рестарт (механика updater: копия _update.exe + helper)
     # ------------------------------------------------------------------ #
 
     def _schedule_restart(self) -> str | None:
-        """Запустить detached-стартер и запланировать свой exit.
+        """Запустить _update helper и запланировать свой exit.
+
+        Копирует текущий exe в _update.exe с заменой существующего (чтобы не
+        запустить старую версию после обновления), запускает helper
+        --config-restart, который дождётся завершения ноды, освобождения портов
+        из config.yaml, паузы на дескрипторы и стартует ноду заново с
+        watchdog config_confirm_sec.
 
         Возвращает None при успехе или текст ошибки (файл уже сохранён).
         """
-        cwd = self._cfg_path().parent
-        if self._is_frozen():
-            exe = Path(sys.executable)
-            inner = (f'timeout /t {RESTART_DELAY_SEC} /nobreak >nul & '
-                     f'start "" "{exe}"')
-        else:
-            py = Path(sys.executable)
-            inner = (f'timeout /t {RESTART_DELAY_SEC} /nobreak >nul & '
-                     f'start "" "{py}" main.py')
-
+        cfg_path = self._cfg_path()
+        work_dir = cfg_path.parent
+        health_sec = int(getattr(self.ctx.config, 'config_confirm_sec', 15))
         try:
-            subprocess.Popen(
-                ['cmd', '/c', inner],
-                cwd=str(cwd),
-                creationflags=subprocess.DETACHED_PROCESS
-                | subprocess.CREATE_NEW_PROCESS_GROUP,
-                close_fds=True,
-            )
+            if self._is_frozen():
+                exe = Path(sys.executable)
+                from src.internal_modules.update import get_updater_exe_path
+                helper = get_updater_exe_path(exe)
+                # перезаписать существующий _update.exe свежей копией
+                try:
+                    import shutil
+                    shutil.copyfile(exe, helper)
+                except OSError as e:
+                    self.log.error(f'copy to _update.exe failed: {e}')
+                    return str(e)
+                args = [
+                    str(helper),
+                    '--config-restart',
+                    '--old-pid', str(os.getpid()),
+                    '--old-exe', str(exe),
+                    '--work-dir', str(work_dir),
+                    '--config-path', str(cfg_path),
+                    '--health-confirm-sec', str(health_sec),
+                ]
+                creationflags = 0
+                if os.name == 'nt':
+                    creationflags = getattr(subprocess, 'DETACHED_PROCESS', 0) | getattr(subprocess, 'CREATE_NEW_PROCESS_GROUP', 0)
+                    creationflags |= 0x08000000  # CREATE_NO_WINDOW
+                subprocess.Popen(
+                    args,
+                    cwd=str(work_dir),
+                    creationflags=creationflags,
+                    close_fds=True,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    stdin=subprocess.DEVNULL,
+                )
+            else:
+                # dev: запуск helper'а через python
+                py = Path(sys.executable)
+                args = [
+                    str(py), '-m', 'src.internal_modules.config_update',
+                    '--config-restart',
+                    '--old-pid', str(os.getpid()),
+                    '--old-exe', str(py),
+                    '--work-dir', str(work_dir),
+                    '--config-path', str(cfg_path),
+                    '--health-confirm-sec', str(health_sec),
+                ]
+                creationflags = 0
+                if os.name == 'nt':
+                    creationflags = getattr(subprocess, 'DETACHED_PROCESS', 0) | getattr(subprocess, 'CREATE_NEW_PROCESS_GROUP', 0)
+                    creationflags |= 0x08000000
+                subprocess.Popen(
+                    args,
+                    cwd=str(work_dir),
+                    creationflags=creationflags,
+                    close_fds=True,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    stdin=subprocess.DEVNULL,
+                )
         except OSError as e:
-            self.log.error(f'restart starter failed: {e}')
+            self.log.error(f'restart helper failed: {e}')
             return str(e)
 
         self.log.warning(f'RESTART: узел завершится через {EXIT_DELAY_SEC}с '
-                         f'и будет поднят стартером')
+                         f'и будет поднят helper-ом (health={health_sec}с)')
 
         async def _exit_later():
-            # await asyncio.sleep(EXIT_DELAY_SEC)
+            await asyncio.sleep(EXIT_DELAY_SEC)
             os._exit(0)
 
         asyncio.create_task(_exit_later())

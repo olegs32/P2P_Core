@@ -58,17 +58,39 @@ if st is not None:
 
         me = detail.get('own', '?')
         # webpanel_* — псевдоузлы (сессии панелей), не источники файлов
-        peers = [n.get('node_id') for n in detail.get('connected', [])
-                 if n.get('node_id') and n.get('node_id') != me
-                 and not n.get('node_id').startswith('webpanel_')]
+        # показываем ВСЕ известные узлы (connected + known via gossip), а не только напрямую подключенные
+        _connected = {n.get('node_id'): n for n in detail.get('connected', [])}
+        _known = {n.get('node_id'): n for n in detail.get('known', [])}
+        # known, которые уже есть в connected — не дублируем
+        _all_map = {}
+        for nid, info in _connected.items():
+            if nid and nid != me and not nid.startswith('webpanel_'):
+                _all_map[nid] = info
+        for nid, info in _known.items():
+            if nid and nid != me and not nid.startswith('webpanel_') and nid not in _all_map:
+                _all_map[nid] = info
+        peers = list(_all_map.keys())
+        # для форматирования: показываем via для known
+        def _fmt_peer(nid: str) -> str:
+            if nid == me:
+                return f"{nid} — этот узел"
+            if nid == '(не выбран)':
+                return nid
+            info = _all_map.get(nid, {})
+            via = info.get('via')
+            status = info.get('status')
+            if via:
+                return f"{nid} — через {via} (known)"
+            if status == 'known':
+                return f"{nid} — known"
+            return nid
 
         c1, c2 = st.columns([2, 1])
         src = c1.selectbox(
             "Узел-источник",
-            ['(не выбран)', me] + peers,
-            key="fl_src", format_func=lambda n: (
-                f"{n} — этот узел" if n == me else n),
-            help="Файл тянем с этого узла на текущий. Текущий узел тоже "
+            ['(не выбран)', me] + sorted(peers),
+            key="fl_src", format_func=_fmt_peer,
+            help="Файл тянем с этого узла на текущий (поддерживается mesh-маршрутизация через via — напрямую или транзитом). Текущий узел тоже "
                  "доступен — файл скопируется в download_dir без сети."
         )
         auto = c2.toggle("Статус: авто (3 сек)", value=True, key="fl_auto")

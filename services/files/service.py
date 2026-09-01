@@ -52,6 +52,10 @@ DEFAULT_BUFF = 8          # чанков в полёте (pipe buff)
 SPEED_WINDOW = 10         # сек — окно расчёта скорости
 
 
+def _canon(s: str) -> str:
+    return s.strip().lower() if isinstance(s, str) else s
+
+
 # ------------------------------------------------------------------ #
 #  Чистые функции (покрываются юнит-тестами)
 # ------------------------------------------------------------------ #
@@ -234,8 +238,8 @@ class Files(ModuleGeneric):
         return None
 
     def _acl_ok(self, share, node_id: str) -> bool:
-        allow = list(getattr(share, 'allow', []) or [])
-        return not allow or node_id in allow
+        allow = [_canon(a) for a in list(getattr(share, 'allow', []) or [])]
+        return not allow or _canon(node_id) in allow
 
     def _manifest(self, share, abspath: Path, chunk_size: int) -> dict:
         stt = abspath.stat()

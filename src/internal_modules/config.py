@@ -15,6 +15,14 @@ log = logging.getLogger('Config')
 _HOSTNAME = socket.gethostname()
 
 
+def _canon_node(v: Any) -> Any:
+    """A2: канонизация идентификатора узла к lower — регистр alias это зло."""
+    if isinstance(v, str):
+        s = v.strip()
+        return s.lower() if s else s
+    return v
+
+
 # ------------------------------------------------------------------ #
 #  Модели
 # ------------------------------------------------------------------ #
@@ -49,6 +57,13 @@ class ShareConfig(BaseModel):
     allow: list[str] = []           # node_id, кому можно; пусто = всем подключенным
     chunk_size: int = 262144        # размер чанка чтения, байт (256 KB)
 
+    @field_validator('allow', mode='before')
+    @classmethod
+    def _canon_allow(cls, v):
+        if isinstance(v, list):
+            return [_canon_node(x) for x in v]
+        return v
+
 
 class FilesConfig(BaseModel):
     """Файловый транспорт (сервис files)."""
@@ -61,6 +76,11 @@ class UpdateSource(BaseModel):
     """Узел-источник релизов для сервиса обновлений."""
     node: str                       # имя узла в mesh
     share: str = 'releases'         # имя шары с релизами на этом узле
+
+    @field_validator('node', mode='before')
+    @classmethod
+    def _canon_node(cls, v):
+        return _canon_node(v)
 
 
 class UpdateConfig(BaseModel):
@@ -113,6 +133,11 @@ class EyesauronConfig(BaseModel):
     capture: bool = False           # роль агента захвата
     store_path: Path = Path(r'\\192.168.53.21\photo\screens')  # raw PNG <host>/<date>/<ts>__<title>.png
     collector_node: str = ''        # узел-коллектор для отправки кадров ('' = копить в spool)
+
+    @field_validator('collector_node', mode='before')
+    @classmethod
+    def _canon_collector(cls, v):
+        return _canon_node(v)
     interval_sec: float = 5.0       # период захвата, сек (как в оригинале — минимум 1с)
     send_delay_sec: float = 0.5     # пауза между отправками кадров (щадит NAS)
     max_spool_mb: int = 500         # потолок офлайн-буфера; переполнение → удаляются старейшие кадры
@@ -143,6 +168,11 @@ class PeerConfig(BaseModel):
     node_id: str
     uri: str
 
+    @field_validator('node_id', mode='before')
+    @classmethod
+    def _canon_node_id(cls, v):
+        return _canon_node(v)
+
 
 class LocalConfig(BaseModel):
     alias: str = _HOSTNAME
@@ -154,6 +184,11 @@ class LocalConfig(BaseModel):
     full_path: Path = work_dir / exe_name
     excluded_autoload_services: list = ['webpanel']
     peers: list[PeerConfig] = []
+
+    @field_validator('alias', 'name', mode='before')
+    @classmethod
+    def _canon_local(cls, v):
+        return _canon_node(v)
 
 
 class Config(BaseModel):
@@ -169,6 +204,12 @@ class Config(BaseModel):
     webpanel: WebPanelConfig = WebPanelConfig()
     services: ServicesConfig = ServicesConfig()
     local: LocalConfig = LocalConfig()
+    config_confirm_sec: int = 15
+
+    @field_validator('node', mode='before')
+    @classmethod
+    def _canon_node_field(cls, v):
+        return _canon_node(v)
 
     @field_validator('node')
     @classmethod
@@ -295,6 +336,47 @@ class ConfigManager:
 
         cfg = Config(**raw)
 
+        # A2: канонизация + дедуп peers по lower node_id (миграция файла если был разный регистр)
+        # Validators уже привели всё к lower, но в файле мог остаться верхний регистр и дубли
+        _need_migrate = False
+        # проверка регистра в файле vs canonical
+        _raw_node = raw.get('node', '')
+        _raw_alias = (raw.get('local') or {}).get('alias', '')
+        _raw_name = (raw.get('local') or {}).get('name', '')
+        if isinstance(_raw_node, str) and _raw_node != cfg.node:
+            _need_migrate = True
+        if isinstance(_raw_alias, str) and _raw_alias != cfg.local.alias:
+            _need_migrate = True
+        if isinstance(_raw_name, str) and _raw_name != cfg.local.name:
+            _need_migrate = True
+        # peers: сравнить raw vs canonical + дедуп
+        _raw_peers = (raw.get('local') or {}).get('peers') or []
+        if len(_raw_peers) != len(cfg.local.peers):
+            _need_migrate = True
+        else:
+            for rp, cp in zip(_raw_peers, cfg.local.peers):
+                if rp.get('node_id') != cp.node_id:
+                    _need_migrate = True
+                    break
+        # дедуп peers по lower (если две записи стали одной)
+        seen = {}
+        uniq = []
+        for p in cfg.local.peers:
+            low = p.node_id.lower()
+            if low not in seen:
+                seen[low] = True
+                uniq.append(p)
+        if len(uniq) != len(cfg.local.peers):
+            cfg.local.peers = uniq
+            _need_migrate = True
+        # allow в шарах тоже канонизируем и сравниваем
+        for rp_share, cp_share in zip(_raw_peers, cfg.local.peers):
+            pass  # peers уже проверены
+        if _need_migrate:
+            # перезаписываем файл каноническим дампом
+            _save_yaml(self._config_path, cfg.model_dump(mode='json'))
+            log.info(f'Config canonicalized to lower case (A2) and saved: node={cfg.node}')
+
         log.info(
             f'Config loaded: node={cfg.node} '
             f'port={cfg.network.port} '
@@ -331,10 +413,11 @@ class ConfigManager:
     # ------------------------------------------------------------------ #
 
     def add_peer(self, node_id: str, uri: str) -> bool:
+        node_id = _canon_node(node_id)
         data = _load_yaml(self._config_path)
         peers_data = data.setdefault('local', {}).setdefault('peers', [])
 
-        if any(p.get('node_id') == node_id for p in peers_data):
+        if any(_canon_node(p.get('node_id', '')) == node_id for p in peers_data):
             log.warning(f'Peer already exists: {node_id}')
             return False
 
@@ -345,9 +428,10 @@ class ConfigManager:
         return True
 
     def remove_peer(self, node_id: str) -> bool:
+        node_id = _canon_node(node_id)
         data = _load_yaml(self._config_path)
         peers_data = data.get('local', {}).get('peers', [])
-        new_peers = [p for p in peers_data if p.get('node_id') != node_id]
+        new_peers = [p for p in peers_data if _canon_node(p.get('node_id', '')) != node_id]
 
         if len(new_peers) == len(peers_data):
             log.warning(f'Peer not found: {node_id}')

@@ -61,7 +61,7 @@ def test_normal_exhaustion_still_sends_sentinel():
 
 
 def test_producer_failure_closes_pipes_without_sentinel():
-    """Ошибка генератора → pipes закрыты БЕЗ sentinel (обрыв цепочки)."""
+    """Ошибка генератора → pipes помечены как failed (обрыв цепочки)."""
 
     async def main():
         pipe = Pipe('t3', buff_len=4)
@@ -73,7 +73,11 @@ def test_producer_failure_closes_pipes_without_sentinel():
 
         await asyncio.wait_for(d.run(broken_gen), timeout=5)
         assert pipe._closed
-        # sentinel НЕ клался: приёмник увидит обрыв, а не конец потока
-        assert not any(item is _SENTINEL for item in list(pipe._queue._queue))
+        # pipe помечен как failed, потребитель получит исходное исключение
+        assert pipe.failed
+        assert isinstance(pipe.error, ValueError)
+        # sentinel кладётся fail() для пробуждения потребителя, затем raise
+        # (ранее sentinel не клался, теперь — кладётся, но с ошибкой)
+        assert pipe._error is not None
 
     asyncio.run(main())

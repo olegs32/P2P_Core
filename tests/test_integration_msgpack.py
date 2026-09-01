@@ -214,7 +214,8 @@ async def _full_scenario():
         deadline = asyncio.get_event_loop().time() + 5
         while asyncio.get_event_loop().time() < deadline:
             g = net_b.neighbor_table.get('Ghost')
-            if g and g.status == NeighborStatus.KNOWN and g.via == LISTENER_ID:
+            # A2: via канонизирован к lower
+            if g and g.status == NeighborStatus.KNOWN and g.via.lower() == LISTENER_ID.lower():
                 break
             await asyncio.sleep(0.1)
         else:
@@ -232,7 +233,8 @@ async def _full_scenario():
         deadline = asyncio.get_event_loop().time() + 5
         while asyncio.get_event_loop().time() < deadline:
             entry = ctx_a.certs_index._entries.get('TP01')
-            if entry and DIALER_ID in entry.available_on and entry.sync_version == 3:
+            # A2: available_on канонизирован
+            if entry and DIALER_ID.lower() in [x.lower() for x in entry.available_on] and entry.sync_version == 3:
                 break
             await asyncio.sleep(0.1)
         else:

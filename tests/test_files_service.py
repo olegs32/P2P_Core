@@ -378,7 +378,7 @@ def test_add_share_custom_name_and_acl(svc_cm, tmp_path):
 
     assert res['ok'] is True
     s = next(s for s in svc_cm._shares() if s.name == 'секрет')
-    assert s.allow == ['NodeA']
+    assert s.allow == ['nodea']  # A2 lower
     assert s.chunk_size <= svc_cm._cfg().max_chunk      # потолок применён
 
 

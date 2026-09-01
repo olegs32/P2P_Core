@@ -28,6 +28,10 @@ log = logging.getLogger('Network')
 WS_CLOSE_PROTOCOL_ERROR = 1002
 
 
+def _canon(s: str) -> str:
+    return s.strip().lower() if isinstance(s, str) else s
+
+
 class FrameDecodeError(Exception):
     """Кадр нарушает протокол (text вместо binary / битый msgpack) —
     граница доверия: соединение закрывается."""
@@ -53,16 +57,19 @@ class NodesManager:
         self.nodes: Dict[str, Node] = {}
 
     def register(self, node_id: str, websocket: WebSocket) -> Node:
+        node_id = _canon(node_id)
         node = Node(node_id=node_id, ws=websocket)
         self.nodes[node_id] = node
         log.info(f'Node {node_id} registered')
         return node
 
     def remove(self, node_id: str):
+        node_id = _canon(node_id)
         self.nodes.pop(node_id, None)
         log.info(f'Node {node_id} removed')
 
     def get(self, node_id: str) -> Node | None:
+        node_id = _canon(node_id)
         return self.nodes.get(node_id)
 
 
@@ -138,7 +145,7 @@ class NetworkModule(ModuleGeneric):
                     await _safe_close(websocket, reason='handshake rejected')
                     return
 
-                if pack.dst != self.ctx.NODE and pack.dst != self.ctx.config.local.alias:
+                if _canon(pack.dst) != _canon(self.ctx.NODE) and _canon(pack.dst) != _canon(self.ctx.config.local.alias):
                     reason = (
                         f'HELLO addressed to {pack.dst!r}, '
                         f'this node is {self.ctx.NODE!r} | {self.ctx.config.local.alias!r}  — check peer URI/node_id'
@@ -212,7 +219,8 @@ class NetworkModule(ModuleGeneric):
                 # закроем inbound и оставим lex-правильный outbound,
                 # иначе сохраним inbound. NAT: mesh может быть в серой сети,
                 # проверка по факту попыткой (маршрутизация).
-                if self.ctx.NODE > node_id and not self.router.has_client_ws(node_id):
+                # A2: канонизация lower — регистр alias зло
+                if _canon(self.ctx.NODE) > _canon(node_id) and not self.router.has_client_ws(node_id):
                     _peer_host = hello_data.get('host', '')
                     _peer_port = hello_data.get('port', 9000)
                     _inbound_ws = websocket  # для закрытия после успеха reverse
@@ -260,7 +268,7 @@ class NetworkModule(ModuleGeneric):
                             # сохранить inbound как peer для будущих попыток
                             try:
                                 cfg_uri = f'ws://{_peer_host}:{_peer_port}/ws/'
-                                if not any(p.node_id == node_id for p in self.ctx.config_manager.list_peers()):
+                                if not any(_canon(p.node_id) == _canon(node_id) for p in self.ctx.config_manager.list_peers()):
                                     self.ctx.config_manager.add_peer(node_id, cfg_uri)
                             except Exception:
                                 pass

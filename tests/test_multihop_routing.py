@@ -110,7 +110,8 @@ async def _multihop_scenario():
         deadline = asyncio.get_event_loop().time() + 5
         while asyncio.get_event_loop().time() < deadline:
             info = net_a.neighbor_table.get(NODE_C)
-            if info and info.via == NODE_B:
+            # A2 lower
+            if info and info.via and info.via.lower() == NODE_B.lower():
                 break
             await asyncio.sleep(0.05)
         else:

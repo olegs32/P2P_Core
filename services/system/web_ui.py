@@ -27,7 +27,7 @@ KNOWN_METHODS = {
         'install_pfx_from_base64', 'fix_certificate_link',
     ],
     'system':        ['connect_to_node', 'list_connectors', 'node_detail', 'config_peers', 'sessions', 'ctx_map',
-                       'autorun_status', 'autorun_enable', 'autorun_disable'],
+                       'autorun_status', 'autorun_enable', 'autorun_disable', 'remove_peer', 'rename_node'],
     'updater':       ['status', 'check', 'download', 'apply', 'clear_state', 'build'],
     'purge':         ['plan', 'purge'],
     'logs':          ['get_logs', 'get_loggers', 'clear_buffer'],
@@ -571,6 +571,23 @@ def _render_connect(rpc):
                 'URI': c.get('uri', '?'),
             })
         st.dataframe(pd.DataFrame(rows), width='stretch', hide_index=True)
+        # удаление ожидающего коннектора (A2 — регистр игнорируется)
+        del_c = st.selectbox("Удалить коннектор", ["(не выбран)"] + [c.get('peer','?') for c in connectors], key="del_conn_sel")
+        c1, c2 = st.columns([1, 3])
+        confirm_c = c2.checkbox("Подтвердить удаление коннектора (остановит Connector_*)", key="del_conn_confirm")
+        if c1.button("🗑 Удалить коннектор", key="del_conn_btn", disabled=del_c=="(не выбран)" or not confirm_c):
+            try:
+                with st.spinner(f"Удаление {del_c}..."):
+                    res = rpc.call('system', 'remove_peer', {'node_id': del_c})
+                if res.get('ok'):
+                    st.toast(f"Удалён {del_c} (config:{res.get('removed_config')} коннекторов:{res.get('stopped_connectors')})", icon="🗑")
+                    st.session_state['sys_connect_result'] = ('success', f"🗑 Удалён {del_c}")
+                else:
+                    st.toast(res.get('error','ошибка'), icon="❌")
+                    st.session_state['sys_connect_result'] = ('error', f"❌ {res.get('error')}")
+            except Exception as e:
+                st.toast(str(e), icon="❌")
+            st.rerun()
     else:
         st.caption("Нет зарегистрированных коннекторов")
 
@@ -597,6 +614,22 @@ def _render_connect(rpc):
                 'Статус': '🟢 Подключен' if is_conn else '⚪ Ожидание',
             })
         st.dataframe(pd.DataFrame(rows), width='stretch', hide_index=True)
+        del_p = st.selectbox("Забыть пира (удалить из local.peers)", ["(не выбран)"] + [p.get('node_id','?') for p in peers_data], key="del_peer_sel")
+        c1, c2 = st.columns([1, 3])
+        confirm_p = c2.checkbox("Подтвердить удаление из config.yaml", key="del_peer_confirm")
+        if c1.button("🗑 Забыть пира", key="del_peer_btn", disabled=del_p=="(не выбран)" or not confirm_p):
+            try:
+                with st.spinner(f"Удаление {del_p}..."):
+                    res = rpc.call('system', 'remove_peer', {'node_id': del_p})
+                if res.get('ok'):
+                    st.toast(f"Забыт {del_p}", icon="🗑")
+                    st.session_state['sys_connect_result'] = ('success', f"🗑 Забыт {del_p} (config:{res.get('removed_config')})")
+                else:
+                    st.toast(res.get('error','ошибка'), icon="❌")
+                    st.session_state['sys_connect_result'] = ('error', f"❌ {res.get('error')}")
+            except Exception as e:
+                st.toast(str(e), icon="❌")
+            st.rerun()
     else:
         st.caption("Нет сохранённых пиров")
 
@@ -681,6 +714,39 @@ def _render_autorun(rpc):
             st.caption("Автозапуск уже выключен.")
 
     st.info("Отключение удаляет задачу `schtasks /Delete /TN` и legacy-ключ реестра (как пункт `autorun_task`/`autorun_registry` в `purge`).")
+
+    # ---- Переименование узла (A2: lower) ----
+    st.divider()
+    st.subheader("✏️ Переименование узла")
+    st.caption("Канонизация A2: имя приводится к `lower` — регистр alias зло. Меняет `config.yaml → node` и `local.alias`. Требует рестарт для полного применения (WS, NeighborTable, mutex).")
+    try:
+        _detail = rpc.call('system', 'node_detail', {}, timeout=10)
+        _own = _detail.get('own', '?')
+    except Exception:
+        _own = stt.get('task_name', '?')
+    st.code(f"Текущее имя: {_own}", language="text")
+    new_name = st.text_input("Новое имя", placeholder="my_node", key="rename_new_name")
+    _canon_preview = new_name.strip().lower() if new_name.strip() else ""
+    if _canon_preview:
+        st.caption(f"Будет сохранено как `{_canon_preview}` (lower)")
+        if new_name.strip() != _canon_preview:
+            st.warning("Введено с верхним регистром — будет канонизировано к нижнему.")
+    c1, c2 = st.columns([1, 3])
+    confirm_rename = c2.checkbox("Подтвердить переименование (изменит config.yaml)", key="rename_confirm")
+    if c1.button("✏️ Переименовать", type="primary", disabled=not _canon_preview or not confirm_rename, key="rename_btn"):
+        try:
+            with st.spinner(f"Переименование {_own} → {_canon_preview}..."):
+                res = rpc.call('system', 'rename_node', {'new_name': new_name}, timeout=15)
+            if res.get('ok'):
+                st.session_state['sys_autorun_result'] = ('success', f"✏️ Переименован: `{res.get('old_node')}` → `{res.get('new_node')}`. {res.get('note','')} ")
+                st.toast(f"Переименован в {res.get('new_node')}", icon="✏️")
+            else:
+                st.session_state['sys_autorun_result'] = ('error', f"❌ {res.get('error','ошибка')}")
+                st.toast(res.get('error','ошибка'), icon="❌")
+        except Exception as e:
+            st.session_state['sys_autorun_result'] = ('error', f"❌ {e}")
+            st.toast(str(e), icon="❌")
+        st.rerun()
 
 
 # ------------------------------------------------------------------ #

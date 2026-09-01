@@ -26,6 +26,21 @@ if '--updater' in sys.argv:
             pass
         sys.exit(1)
 
+# ConfigUpdater: рестарт по конфигу (копия технологии updater)
+if '--config-restart' in sys.argv:
+    try:
+        from src.internal_modules.config_update import config_updater_main
+        sys.exit(config_updater_main())
+    except SystemExit:
+        raise
+    except Exception as e:
+        try:
+            import traceback
+            traceback.print_exc()
+        except Exception:
+            pass
+        sys.exit(1)
+
 # update-failed — диагностический флаг после неудачного отката (показывает сообщение)
 if '--update-failed' in sys.argv:
     print("[Updater] update failed — rolled back to previous version", file=sys.stderr)

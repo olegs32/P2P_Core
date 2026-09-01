@@ -11,6 +11,10 @@ log = logging.getLogger('NeighborTable')
 
 PROTOCOL_VERSION = "2.0"
 
+
+def _canon(s: str) -> str:
+    return s.strip().lower() if isinstance(s, str) else s
+
 # Роль участника: 'node' — полноценный узел mesh, 'client' — служебный
 # WS-клиент (webpanel и т.п.): в карту сети попадает серым, BFS его не опрашивает
 ROLE_NODE = 'node'
@@ -29,6 +33,7 @@ class NeighborInfo(BaseModel):
     port:       int
     status:     NeighborStatus  = NeighborStatus.KNOWN
     via:        Optional[str]   = None     # через кого слать если KNOWN
+    hops:       int             = 1        # дистанция: 1=прямо, >1 через via
     last_ts:    float           = Field(default_factory=time.time)
     session_id: Optional[str]   = None
     version:    str             = PROTOCOL_VERSION
@@ -44,7 +49,7 @@ class NeighborInfo(BaseModel):
 
 class NeighborTable:
     def __init__(self, own_node_id: str):
-        self.own_node_id = own_node_id
+        self.own_node_id = _canon(own_node_id)
         self._table: Dict[str, NeighborInfo] = {}
 
     # ------------------------------------------------------------------ #
@@ -55,12 +60,15 @@ class NeighborTable:
                            session_id: str, version: str = PROTOCOL_VERSION,
                            services: List[str] = None,
                            role: str = ROLE_NODE) -> NeighborInfo:
+        node_id = _canon(node_id)
+        via = None
         info = NeighborInfo(
             node_id    = node_id,
             host       = host,
             port       = port,
             status     = NeighborStatus.CONNECTED,
-            via        = None,        # прямое — via не нужен
+            via        = via,        # прямое — via не нужен
+            hops       = 1,
             last_ts    = time.time(),
             session_id = session_id,
             version    = version,
@@ -75,6 +83,8 @@ class NeighborTable:
                        via: str, version: str = PROTOCOL_VERSION,
                        services: List[str] = None,
                        role: str = ROLE_NODE) -> NeighborInfo:
+        node_id = _canon(node_id)
+        via = _canon(via) if via else via
         # не перезаписывать connected более слабым known
         existing = self._table.get(node_id)
         if existing and existing.status == NeighborStatus.CONNECTED:
@@ -86,6 +96,7 @@ class NeighborTable:
             port     = port,
             status   = NeighborStatus.KNOWN,
             via      = via,
+            hops     = 2,
             last_ts  = time.time(),
             version  = version,
             services = services or [],
@@ -101,18 +112,18 @@ class NeighborTable:
 
     def touch(self, node_id: str):
         """Обновить last_ts при любом входящем трафике от ноды."""
-        info = self._table.get(node_id)
+        info = self._table.get(_canon(node_id))
         if info:
             info.last_ts = time.time()
 
     def mark_unreachable(self, node_id: str):
-        info = self._table.get(node_id)
+        info = self._table.get(_canon(node_id))
         if info:
             info.status = NeighborStatus.UNREACHABLE
             log.warning(f'Marked unreachable: {node_id}')
 
     def update_services(self, node_id: str, services: List[str]):
-        info = self._table.get(node_id)
+        info = self._table.get(_canon(node_id))
         if info:
             info.services = services
             log.debug(f'Services updated for {node_id}: {services}')
@@ -122,7 +133,7 @@ class NeighborTable:
     # ------------------------------------------------------------------ #
 
     def get(self, node_id: str) -> Optional[NeighborInfo]:
-        return self._table.get(node_id)
+        return self._table.get(_canon(node_id))
 
     def connected(self) -> List[NeighborInfo]:
         return [n for n in self._table.values()
@@ -151,7 +162,6 @@ class NeighborTable:
             if n.status != NeighborStatus.UNREACHABLE
                and n.node_id != self.own_node_id
         ]
-
     def merge_gossip(self, neighbors: List[dict], from_node: str):
         """Смержить входящую таблицу соседей.
 
@@ -159,14 +169,24 @@ class NeighborTable:
         non-CONNECTED записи обновляются из свежего gossip (R5): via/host/
         port/services актуализируются, UNREACHABLE реанимируется в KNOWN.
         Свои CONNECTED-записи никогда не перезаписываются.
+        Петля via==self отбрасывается, предпочтение — меньшим hops.
         """
+        from_node = _canon(from_node)
         added = 0
         updated = 0
         for entry in neighbors:
-            node_id = entry.get('node_id')
-            if not node_id or node_id == self.own_node_id:
+            node_id = _canon(entry.get('node_id'))
+            if not node_id or node_id == _canon(self.own_node_id):
                 continue
 
+            # Loop guard: gossip где via == self -> путь через себя (sysadmin<-test via=sysadmin)
+            # иначе sysadmin перезапишет правильный via=PyServ на via=test и закольцует (см. 2026-09-01 loop sysadmin<->test->DPost)
+            if _canon(entry.get('via')) == _canon(self.own_node_id):
+                log.debug(f'Gossip from {from_node}: skip {node_id} via self (loop)')
+                continue
+
+            # hops дистанция: 1=прямо, >1 через via
+            incoming_hops = int(entry.get('hops') or 1) + 1
             existing = self._table.get(node_id)
             if existing and existing.status == NeighborStatus.CONNECTED:
                 continue  # своё прямое соединение не трогаем
@@ -178,20 +198,36 @@ class NeighborTable:
                     port=entry.get('port', 9000),
                     status=NeighborStatus.KNOWN,
                     via=from_node,
+                    hops=incoming_hops,
                     version=entry.get('version', PROTOCOL_VERSION),
                     services=entry.get('services', []),
                 )
                 added += 1
             else:
-                existing.host = entry.get('host', existing.host)
-                existing.port = entry.get('port', existing.port)
-                existing.via = from_node
-                existing.version = entry.get('version', existing.version)
-                existing.services = entry.get('services', existing.services)
-                existing.last_ts = time.time()
-                if existing.status == NeighborStatus.UNREACHABLE:
-                    existing.status = NeighborStatus.KNOWN
-                updated += 1
+                # предпочтение меньшим hops (короткий путь), иначе флэп via
+                # и взаимная петля sysadmin<->PyServ для 43-img
+                if incoming_hops < existing.hops:
+                    existing.host = entry.get('host', existing.host)
+                    existing.port = entry.get('port', existing.port)
+                    existing.via = from_node
+                    existing.hops = incoming_hops
+                    existing.version = entry.get('version', existing.version)
+                    existing.services = entry.get('services', existing.services)
+                    existing.last_ts = time.time()
+                    if existing.status == NeighborStatus.UNREACHABLE:
+                        existing.status = NeighborStatus.KNOWN
+                    updated += 1
+                elif incoming_hops == existing.hops and _canon(entry.get('via')) != _canon(existing.via):
+                    # равные hops — не флэпать, оставить существующий
+                    existing.last_ts = time.time()
+                    if existing.status == NeighborStatus.UNREACHABLE:
+                        existing.status = NeighborStatus.KNOWN
+                else:
+                    # более длинный путь — только обновить last_ts/services, via не трогать
+                    existing.last_ts = time.time()
+                    existing.services = entry.get('services', existing.services)
+                    if existing.status == NeighborStatus.UNREACHABLE and incoming_hops <= existing.hops + 2:
+                        existing.status = NeighborStatus.KNOWN
 
         if added or updated:
             log.debug(f'Gossip from {from_node}: +{added} new, ~{updated} refreshed')

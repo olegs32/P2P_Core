@@ -75,7 +75,8 @@ def test_status_reports_current_and_config(tmp_path):
     res = u.status({})
     assert res['ok'] is True
     assert isinstance(res['current'], str)
-    assert res['config']['sources'] == ['AdminNode']
+    # A2: канонизация lower
+    assert res['config']['sources'] == ['adminnode']
     assert res['state'] in (None, {})
 
 

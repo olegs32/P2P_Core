@@ -20,6 +20,10 @@ log = logging.getLogger('Router')
 
 DEFAULT_TTL = 16
 
+
+def _canon(s: str) -> str:
+    return s.strip().lower() if isinstance(s, str) else s
+
 # TTL кэша маршрута стрима (секунды)
 _STREAM_ROUTE_TTL = 300
 
@@ -73,22 +77,26 @@ class Router:
         self._transport_cache: dict[str, WebSocketTransport] = {}
 
     def register_client_ws(self, node_id: str, ws):
+        node_id = _canon(node_id)
         """Зарегистрировать client-side WS (от NodeConnector)."""
         self._client_ws[node_id] = ws
         # сокет сменился — кэшированный транспорт невалиден
         self.invalidate_transport(node_id)
 
     def unregister_client_ws(self, node_id: str):
+        node_id = _canon(node_id)
         """Убрать client-side WS при disconnect."""
         self._client_ws.pop(node_id, None)
         self.invalidate_transport(node_id)
 
     def invalidate_transport(self, node_id: str):
+        node_id = _canon(node_id)
         """Сбросить кэшированный транспорт узла (при reconnect/disconnect)."""
         if self._transport_cache.pop(node_id, None) is not None:
             log.debug(f'Transport cache invalidated for {node_id}')
 
     def has_client_ws(self, node_id: str) -> bool:
+        node_id = _canon(node_id)
         """Есть ли активное исходящее (client-side, от NodeConnector) WS к узлу."""
         return self._client_ws.get(node_id) is not None
 
@@ -124,13 +132,14 @@ class Router:
             )
 
     def get_transport_to(self, node_id: str) -> WebSocketTransport | None:
+        node_id = _canon(node_id)
         """Получить транспорт к узлу (server-side или client-side).
 
         Транспорты кэшируются по node_id — инвалидируются при
         register/unregister_client_ws и при смене server-side сокета
         (websocket_endpoint вызывает invalidate_transport).
         """
-        cached = self._transport_cache.get(node_id)
+        cached = self._transport_cache.get(_canon(node_id))
         if cached is not None:
             return cached
 
@@ -162,7 +171,7 @@ class Router:
                 await self._on_forwarded(pack)
 
             case PackType.REQUEST:
-                if pack.dst and pack.dst != self.context.NODE:
+                if pack.dst and _canon(pack.dst) != _canon(self.context.NODE):
                     await self._on_remote_request(pack, transport)
                 else:
                     await self._on_request(pack)
@@ -179,7 +188,7 @@ class Router:
             # --- Stream packets: маршрутизация через mesh --- #
 
             case PackType.STREAM_OPEN:
-                if pack.dst and pack.dst != self.context.NODE:
+                if pack.dst and _canon(pack.dst) != _canon(self.context.NODE):
                     await self._forward_stream_open(pack)
                 else:
                     response = await self._on_stream_open(pack)
@@ -196,19 +205,19 @@ class Router:
                     self.sessions.resolve(pack.label, pack.data)
 
             case PackType.STREAM_CHUNK:
-                if pack.dst and pack.dst != self.context.NODE:
+                if pack.dst and _canon(pack.dst) != _canon(self.context.NODE):
                     await self._forward_stream_data(pack)
                 else:
                     await self.stream_registry.feed(pack.label, pack.data)
 
             case PackType.STREAM_ACK:
-                if pack.dst and pack.dst != self.context.NODE:
+                if pack.dst and _canon(pack.dst) != _canon(self.context.NODE):
                     await self._route_back(pack)
                 else:
                     self.sessions.resolve(f'ack_{pack.label}', 'ack')
 
             case PackType.STREAM_EOF:
-                if pack.dst and pack.dst != self.context.NODE:
+                if pack.dst and _canon(pack.dst) != _canon(self.context.NODE):
                     await self._forward_stream_data(pack)
                 else:
                     await self.stream_registry.close(pack.label)
@@ -278,7 +287,7 @@ class Router:
             )
             return
 
-        if self.context.NODE in pack.path:
+        if _canon(self.context.NODE) in [_canon(x) for x in pack.path]:
             log.warning(
                 f'[mesh] Loop detected at {self.context.NODE} '
                 f'label={pack.label[:8]} path={pack.path} — packet dropped'
@@ -287,7 +296,7 @@ class Router:
 
         pack.path.append(self.context.NODE)
 
-        if pack.dst == self.context.NODE:
+        if _canon(pack.dst) == _canon(self.context.NODE):
             pack.type = PackType.REQUEST
             await self._on_request(pack)
             return
@@ -494,9 +503,9 @@ class Router:
         dst = pack.dst
 
         # 1. server-side
-        node = self._nodes_mgr.get(dst)
+        node = self._nodes_mgr.get(_canon(dst))
         if node:
-            if not pack.path or (pack.path[-1] != self.context.NODE and pack.path[-1] != self.context.config.local.alias):
+            if not pack.path or (_canon(pack.path[-1]) != _canon(self.context.NODE) and _canon(pack.path[-1]) != _canon(self.context.config.local.alias)):
                 pack.path.append(self.context.NODE)
             pack.ttl -= 1
             log.debug(
@@ -508,9 +517,9 @@ class Router:
             return
 
         # 1b. client-side
-        client_ws = self._client_ws.get(dst)
+        client_ws = self._client_ws.get(_canon(dst))
         if client_ws:
-            if not pack.path or (pack.path[-1] != self.context.NODE and pack.path[-1] != self.context.config.local.alias):
+            if not pack.path or (_canon(pack.path[-1]) != _canon(self.context.NODE) and _canon(pack.path[-1]) != _canon(self.context.config.local.alias)):
                 pack.path.append(self.context.NODE)
             pack.ttl -= 1
             log.debug(
@@ -526,7 +535,7 @@ class Router:
         if neighbor and neighbor.via:
             via_transport = self.get_transport_to(neighbor.via)
             if via_transport:
-                if not pack.path or (pack.path[-1] != self.context.NODE and pack.path[-1] != self.context.config.local.alias):
+                if not pack.path or (_canon(pack.path[-1]) != _canon(self.context.NODE) and _canon(pack.path[-1]) != _canon(self.context.config.local.alias)):
                     pack.path.append(self.context.NODE)
                 pack.ttl -= 1
                 if pack.type == PackType.REQUEST:
@@ -546,7 +555,7 @@ class Router:
                 if neighbor.via:
                     via_transport = self.get_transport_to(neighbor.via)
                     if via_transport:
-                        if not pack.path or (pack.path[-1] != self.context.NODE and pack.path[-1] != self.context.config.local.alias):
+                        if not pack.path or (_canon(pack.path[-1]) != _canon(self.context.NODE) and _canon(pack.path[-1]) != _canon(self.context.config.local.alias)):
                             pack.path.append(self.context.NODE)
                         pack.ttl -= 1
                         if pack.type == PackType.REQUEST:
@@ -558,9 +567,9 @@ class Router:
                         await via_transport.send(pack)
                         return
                 else:
-                    direct = self._nodes_mgr.get(resolved_id)
+                    direct = self._nodes_mgr.get(_canon(resolved_id))
                     if direct:
-                        if not pack.path or (pack.path[-1] != self.context.NODE and pack.path[-1] != self.context.config.local.alias):
+                        if not pack.path or (_canon(pack.path[-1]) != _canon(self.context.NODE) and _canon(pack.path[-1]) != _canon(self.context.config.local.alias)):
                             pack.path.append(self.context.NODE)
                         pack.ttl -= 1
                         log.debug(
@@ -570,9 +579,9 @@ class Router:
                         transport = WebSocketTransport(direct.ws)
                         await transport.send(pack)
                         return
-                    client_ws = self._client_ws.get(resolved_id)
+                    client_ws = self._client_ws.get(_canon(resolved_id))
                     if client_ws:
-                        if not pack.path or (pack.path[-1] != self.context.NODE and pack.path[-1] != self.context.config.local.alias):
+                        if not pack.path or (_canon(pack.path[-1]) != _canon(self.context.NODE) and _canon(pack.path[-1]) != _canon(self.context.config.local.alias)):
                             pack.path.append(self.context.NODE)
                         pack.ttl -= 1
                         log.debug(
@@ -612,7 +621,7 @@ class Router:
             return
 
         path = pack.path
-        if path and path[-1] == self.context.NODE:
+        if path and _canon(path[-1]) == _canon(self.context.NODE):
             path = path[:-1]
 
         if not path:
@@ -625,7 +634,10 @@ class Router:
         if not transport:
             log.error(
                 f'[mesh] return path broken: '
-                f'{next_hop} not reachable path={pack.path}'
+                f'{next_hop} not reachable path={pack.path} '
+                f'nodes={list(self._nodes_mgr.nodes.keys())} '
+                f'client_ws={list(self._client_ws.keys())} '
+                f'canon_next={_canon(next_hop)}'
             )
             return
 
@@ -711,7 +723,7 @@ class Router:
 
         # self-check с учётом alias (иначе локальный вызов через alias
         # уходит в mesh и дедлочит websocket loop внешнего RPC)
-        if dst == self.context.NODE or dst == self.context.config.local.alias:
+        if _canon(dst) == _canon(self.context.NODE) or _canon(dst) == _canon(self.context.config.local.alias):
             response = await self.executor.execute(pack)
             return response.data
         # host/IP -> node_id резолв для локального shortcut

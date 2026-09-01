@@ -16,6 +16,11 @@ except ImportError:
     winreg = None
 
 
+def _canon(s: str) -> str:
+    """A2 канонизация — lower + trim. Регистр alias — зло."""
+    return s.strip().lower() if isinstance(s, str) else s
+
+
 # ------------------------------------------------------------------ #
 #  Карта контекста приложения (для разработчика сервисов)
 #  Описание атрибутов AppContext — см. src/internal_modules/context.py
@@ -63,13 +68,20 @@ class System(ModuleGeneric):
         """
         host = data.get('host', '')
         port = data.get('port', 9000)
-        node_id = data.get('node_id', '')
+        node_id = _canon(data.get('node_id', ''))
 
         if not host or not node_id:
             return {'ok': False, 'error': 'host и node_id обязательны'}
 
         nt = self.ctx.network.neighbor_table
+        # канонизированный поиск — без учёта регистра
         existing = nt.get(node_id)
+        if existing is None:
+            # fallback case-insensitive поиск по таблице
+            for n in nt.all():
+                if _canon(n.node_id) == node_id and n.status.value == 'connected':
+                    existing = n
+                    break
         if existing and existing.status.value == 'connected':
             return {'ok': False, 'error': f'Узел {node_id} уже подключен'}
 
@@ -151,6 +163,112 @@ class System(ModuleGeneric):
         else:
             peers = self.ctx.config.list_peers()
         return [{'node_id': p.node_id, 'uri': p.uri} for p in peers]
+
+    @rpc
+    async def remove_peer(self, data: dict):
+        """Удалить ожидающий коннектор/пира: из config.yaml и остановить живой Connector_*.
+
+        Принимает любой регистр — канонизирует к lower. Останавливает живой коннектор
+        (если есть), чистит _modules и config. Используется когда имя введено с ошибкой
+        регистра (lower vs KaKtOTaK) — регистр alias это зло.
+        data: {node_id}
+        """
+        raw_id = (data or {}).get('node_id') or (data or {}).get('peer') or ''
+        node_id = _canon(raw_id)
+        if not node_id:
+            return {'ok': False, 'error': 'node_id обязателен'}
+
+        # 1) config
+        mgr = getattr(self.ctx, 'config_manager', None)
+        removed_cfg = False
+        try:
+            if mgr is not None and hasattr(mgr, 'remove_peer'):
+                # пробуем точный lower, затем case-insensitive fallback по файлу
+                removed_cfg = mgr.remove_peer(node_id)
+                if not removed_cfg:
+                    # fallback: ищем фактический ключ в файле с учётом регистра
+                    from src.internal_modules.config import _load_yaml
+                    data_raw = _load_yaml(mgr.config_path)
+                    peers_raw = (data_raw.get('local') or {}).get('peers') or []
+                    for p in peers_raw:
+                        if _canon(p.get('node_id','')) == node_id:
+                            removed_cfg = mgr.remove_peer(p.get('node_id'))
+                            break
+            elif hasattr(self.ctx.config, 'remove_peer'):
+                removed_cfg = self.ctx.config.remove_peer(node_id)
+        except Exception as e:
+            return {'ok': False, 'error': f'ошибка удаления из config: {e}'}
+
+        # 2) живой коннектор(ы) — останавливаем
+        stopped = 0
+        to_stop = []
+        for mod in list(self.ctx._modules):
+            if 'Connector_' in getattr(mod, 'name', ''):
+                peer = _canon(getattr(mod, 'peer_node_id', ''))
+                if peer == node_id or _canon(getattr(mod, 'name', '')) == f"connector_{node_id}":
+                    to_stop.append(mod)
+        for mod in to_stop:
+            try:
+                await mod.stop()
+            except Exception as e:
+                self.log.warning(f'remove_peer stop {mod.name}: {e}')
+            try:
+                if mod in self.ctx._modules:
+                    self.ctx._modules.remove(mod)
+            except Exception:
+                pass
+            stopped += 1
+            self.log.info(f'Connector stopped and removed: {mod.name}')
+
+        # 3) если коннектора не было, но запись в config была — считаем успехом
+        if removed_cfg or stopped:
+            return {'ok': True, 'node_id': node_id, 'removed_config': bool(removed_cfg), 'stopped_connectors': stopped}
+        return {'ok': False, 'error': f'пир {node_id} не найден (ни в config, ни среди коннекторов)'}
+
+    @rpc
+    async def rename_node(self, data: dict):
+        """Переименовать узел (канонизация A2 — lower).
+
+        Меняет Config.node и LocalConfig.alias (отображаемое имя). Требует рестарт
+        для полного применения (WS endpoint, NeighborTable, mutex). Обновляет
+        config.yaml и in-memory ctx.NODE/cfg.
+        data: {new_name} или {node} или {alias}
+        """
+        raw = (data or {}).get('new_name') or (data or {}).get('node') or (data or {}).get('alias') or (data or {}).get('name') or ''
+        new_name = _canon(raw)
+        if not new_name:
+            return {'ok': False, 'error': 'new_name обязателен'}
+        if len(new_name) < 1 or len(new_name) > 64:
+            return {'ok': False, 'error': 'имя должно быть 1..64 символов'}
+        old_node = getattr(self.ctx, 'NODE', '?')
+        old_alias = getattr(getattr(self.ctx, 'config', None), 'local', None)
+        old_alias = getattr(old_alias, 'alias', '?') if old_alias else '?'
+
+        mgr = getattr(self.ctx, 'config_manager', None)
+        try:
+            if mgr is not None:
+                # обновляем оба поля — node и local.alias (name — задача планировщика, не трогаем)
+                mgr.update(node=new_name, local__alias=new_name)
+                # in-memory
+                self.ctx.NODE = new_name
+                # cfg уже обновлён внутри mgr.update, но продублируем для ctx.config если это разные объекты
+                try:
+                    if hasattr(self.ctx, 'config') and hasattr(self.ctx.config, 'node'):
+                        self.ctx.config.node = new_name
+                        if hasattr(self.ctx.config, 'local') and hasattr(self.ctx.config.local, 'alias'):
+                            self.ctx.config.local.alias = new_name
+                except Exception:
+                    pass
+            else:
+                # fallback: правим напрямую Config
+                self.ctx.config.node = new_name
+                if hasattr(self.ctx.config, 'local'):
+                    self.ctx.config.local.alias = new_name
+            self.log.info(f'Node renamed: {old_node} ({old_alias}) → {new_name}')
+            return {'ok': True, 'old_node': old_node, 'new_node': new_name, 'need_restart': True,
+                    'note': 'Имя изменено в config.yaml, для полного применения перезапустите узел'}
+        except Exception as e:
+            return {'ok': False, 'error': str(e)}
 
     @rpc
     def sessions(self, data: dict = None):
