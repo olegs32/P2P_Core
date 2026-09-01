@@ -115,6 +115,7 @@ with st.sidebar:
         st.stop()
 
     # ---- Выбор узла ----
+    status = {}
     try:
         status = rpc.call('webpanel', 'node_status')
         connected_nodes = [n.get('node_id', '?') for n in status.get('connected', [])]
@@ -156,15 +157,24 @@ with st.sidebar:
     st.divider()
 
     # ---- Сервисы с UI ----
+    _svc_cache_key = f'_svc_cache_{selected_node}'
     try:
         if selected_node == local_node:
             ui_services = rpc.call('webpanel', 'discover_ui_services')
         else:
-            svc_list = rpc.call('netinfo', 'services', dst=selected_node)
-            ui_services = list(svc_list or [])
+            # Сервисы берутся из NeighborTable (голосование) — отдельный RPC не нужен
+            ui_services = []
+            for n in status.get('connected', []) + status.get('known', []):
+                if n.get('node_id') == selected_node:
+                    ui_services = list(n.get('services', []))
+                    break
+        if ui_services:
+            st.session_state[_svc_cache_key] = ui_services
+        elif _svc_cache_key in st.session_state:
+            ui_services = st.session_state[_svc_cache_key]
     except Exception as e:
         st.warning(f"Сервисы недоступны: {e}")
-        ui_services = []
+        ui_services = st.session_state.get(_svc_cache_key, [])
 
     # ---- Текущая страница ----
     if 'current_page' not in st.session_state:
