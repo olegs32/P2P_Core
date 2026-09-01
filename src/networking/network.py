@@ -206,6 +206,7 @@ class NetworkModule(ModuleGeneric):
                         'version':    PROTOCOL_VERSION,
                         'session_id': session_id,
                         'services':   list(self.ctx.services.services.keys()),
+                        'role':       hello_data.get('role', 'node'),
                         'neighbors':  self.neighbor_table.to_gossip(),
                     }
                 ))
@@ -415,6 +416,11 @@ class NetworkModule(ModuleGeneric):
             await asyncio.sleep(30)
             # R3: TTL-чистка ws_pending заодно с циклом
             self.router.sweep_ws_pending()
+            # TTL-чистка KNOWN/UNREACHABLE (кто следит: Network — владелец таблицы, единый таймер)
+            try:
+                self.neighbor_table.sweep()
+            except Exception as e:
+                self.log.warning(f'Neighbor sweep failed: {e}')
             neighbors = self.neighbor_table.to_gossip()
             if not neighbors:
                 continue

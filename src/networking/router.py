@@ -420,10 +420,10 @@ class Router:
             return
         route = StreamRoute(
             label=pack.label,
-            source=pack.source,
-            dst=pack.dst or self.context.NODE,
-            forward_path=list(reversed(pack.path)),
-            backward_path=list(pack.path),
+            source=_canon(pack.source),
+            dst=_canon(pack.dst or self.context.NODE),
+            forward_path=[_canon(x) for x in reversed(pack.path)],
+            backward_path=[_canon(x) for x in pack.path],
         )
         self._stream_routes[pack.label] = route
         log.debug(
@@ -437,10 +437,10 @@ class Router:
             return
         route = StreamRoute(
             label=pack.label,
-            source=pack.dst,            # мы — генератор
-            dst=pack.source,            # consumer
-            forward_path=list(reversed(pack.path)),  # мы → consumer
-            backward_path=list(pack.path),            # consumer → мы
+            source=_canon(pack.dst),            # мы — генератор
+            dst=_canon(pack.source),            # consumer
+            forward_path=[_canon(x) for x in reversed(pack.path)],  # мы → consumer
+            backward_path=[_canon(x) for x in pack.path],            # consumer → мы
         )
         self._stream_routes[pack.label] = route
         log.debug(
@@ -474,9 +474,9 @@ class Router:
             if not existing:
                 self._stream_routes[pack.label] = StreamRoute(
                     label=pack.label,
-                    source=pack.source,
-                    dst=pack.dst,
-                    forward_path=list(pack.path),
+                    source=_canon(pack.source),
+                    dst=_canon(pack.dst),
+                    forward_path=[_canon(x) for x in pack.path],
                 )
         await self._forward(pack)
 

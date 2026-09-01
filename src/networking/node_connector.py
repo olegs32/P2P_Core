@@ -8,7 +8,7 @@ import uuid
 import websockets
 
 from src.internal_modules.base import ModuleGeneric
-from src.networking.neighbor_table import PROTOCOL_VERSION
+from src.networking.neighbor_table import PROTOCOL_VERSION, ROLE_NODE
 from src.networking.protocol import (
     MAX_FRAME_SIZE,
     MsgPack,
@@ -223,6 +223,7 @@ class NodeConnector(ModuleGeneric):
             session_id = data.get('session_id', ''),
             version    = data.get('version', PROTOCOL_VERSION),
             services   = data.get('services', []),
+            role       = data.get('role', ROLE_NODE),
         )
 
         # смержить таблицу соседей

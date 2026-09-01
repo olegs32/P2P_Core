@@ -65,7 +65,7 @@ MsgPack: `type`, `source`, `dst`, `service`, `method`, `data`, `label` (UUID), `
 - `call(dst, service, method, data, timeout)` — публичный API: локальный shortcut или mesh-вызов
 - `stream(dst, service, method, data, timeout)` — публичный API: открыть mesh-стрим, вернуть `_MeshStreamIterator`
 - `send_stream_ack(label, buff)` — отправить ACK генератору через mesh по cached backward_path
-- `_ws_pending: dict[str, WebSocketTransport]` — для ответов WS-клиентам (webpanel)
+- `_ws_pending: dict[str, tuple[WebSocketTransport, float]]` — для ответов WS-клиентам (webpanel); хранит `(transport, created_ts)` для TTL-чистки через `sweep_ws_pending()`
 - `_client_ws: dict[str, Any]` — client-side WS маппинг (от NodeConnector)
 - `_stream_routes: dict[str, StreamRoute]` — кэш маршрутов стримов (TTL=300с)
 
@@ -98,7 +98,7 @@ FastAPI + uvicorn. WS endpoint `/ws/{node_id}`. HELLO-handshake → NeighborTabl
 - `connect_to(node_id, target_uri)` — динамическое исходящее подключение к узлу
 - `local_sessions()` — снапшот сессий узла с направлением каналов (`direction`: inbound/outbound/inbound+outbound/'' и `age_sec`); единый источник для `system.sessions()` и `netinfo.topology()`
 
-HELLO_ACK содержит `host` = `self.local_ip()` — реальный IP интерфейса mesh. HELLO с несовпадающим `dst:name` отклоняется (HELLO_REJECT). HELLO.data несёт `role`: `'node'` (дефолт) или `'client'` (webpanel и др. служебные WS-клиенты) — сохраняется в NeighborInfo.role.
+HELLO_ACK содержит `host` = `self.local_ip()` — реальный IP интерфейса mesh, `neighbors` — текущая таблица соседей (для первичного пополнения `NeighborTable` у нового узла). HELLO с несовпадающим `dst:name` отклоняется (HELLO_REJECT). HELLO.data несёт `role`: `'node'` (дефолт) или `'client'` (webpanel и др. служебные WS-клиенты) — сохраняется в NeighborInfo.role.
 
 `ConnectionManager` — DEAD CODE (broadcast() не используется, рассылка через neighbor_table + Router).
 
@@ -111,10 +111,10 @@ HELLO_ACK содержит `host` = `self.local_ip()` — реальный IP и
 Используется для announce/handshake: узлы сообщают друг другу реальные адреса вместо hostname.
 
 ### NeighborTable (`src/networking/neighbor_table.py`)
-Статусы: `CONNECTED` (прямое WS), `KNOWN` (через gossip), `UNREACHABLE`. Хранит `via` (next-hop) и `role` ('node'/'client', из HELLO.data; клиенты в карту сети попадают серым, BFS их не опрашивает). `merge_gossip()` — слияние таблиц от других узлов (role переносится). `find_by_service()` — поиск узлов с нужным сервисом.
+Статусы: `CONNECTED` (прямое WS), `KNOWN` (через gossip), `UNREACHABLE`. Хранит `via` (next-hop) и `role` ('node'/'client', из HELLO.data; клиенты в карту сети попадают серым, BFS их не опрашивает). `merge_gossip()` — слияние таблиц от других узлов (role, host, port, services, version переносятся из свежего gossip). При `incoming_hops < existing.hops` — полное обновление; при `incoming_hops == existing.hops` и `via` различается — обновляет via только если `existing.via == UNREACHABLE` (failover), иначе сохраняет для стабильности (нет флаппинга). Метаданные (host, port, services, version, role) обновляются всегда при поступлении свежего gossip. `find_by_service()` — поиск узлов с нужным сервисом.
 
 ### NodeConnector (`src/networking/node_connector.py`)
-Исходящее подключение. Лексикографическое правило: соединяется только если `self.NODE > peer_node_id`. HELLO-handshake, receive-loop → Router, keepalive ping. При connect — `router.register_client_ws()`, при disconnect — `router.unregister_client_ws()`.
+Исходящее подключение. Всегда пытается соединиться с пиром; лексикографическое правило (`self.NODE > peer_node_id`) принудительно применяется **сервером** при входящем HELLO: сервер отвечает `HELLO_REJECT lex_rule` и запускает `_lex_reverse_keep_inbound()` (reverse dial обратно к меньшему узлу). `NodeConnector` не блокируется при lex-отказе — ждёт reverse-dial или inbound. HELLO-handshake, receive-loop → Router, keepalive ping (`PING` каждые 20с, таймаут 60с без трафика → ping, 90с → `mark_unreachable`). При connect — `router.register_client_ws()`, при disconnect — `router.unregister_client_ws()`.
 
 ### CertsIndex (`src/internal_modules/certs_index.py`)
 Индекс сертификатов сети: `thumbprint → CertEntry`. `CertEntry`: subject_cn, valid_to, available_on[], installed_locally, stale (TTL=180с). `last_updated` = `field(default_factory=time.monotonic)`. Методы: `merge_cert_sync()`, `update_local()` (только для `installed_locally=True`), `get_network_available()`, `get_digest_for_sync()`.
@@ -542,7 +542,6 @@ class MyService(ModuleGeneric):
 
 - **Переходный период wire-протокола**: необновлённые узлы (JSON, протокол 1.0) не соединяются с новыми (msgpack-only, протокол 2.0) — получают HELLO_REJECT «upgrade required». Смешанные пары работают только после обновления обеих сторон
 - `debug_client.py` — legacy на JSON: против msgpack-узлов не работает (перевести отдельной задачей)
-- `_PathAwareTransport` — composition (не наследует WebSocketTransport), используется для path-aware ответов на FORWARDED-пакеты
 - Удалённые сервисы в webpanel: web_ui.py проверяется локально, при отсутствии — fallback-сообщение
 - CERT_SYNC on-connect — проверка services в HELLO предотвращает timeout
 - StreamRoute cache TTL=300с скользящий (продлевается обращениями через get_stream_route) — устаревание возможно только при простое стрима дольше TTL

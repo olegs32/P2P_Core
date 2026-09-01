@@ -166,10 +166,12 @@ class NeighborTable:
         """Смержить входящую таблицу соседей.
 
         Новые узлы добавляются как KNOWN via=from_node. Уже известные
-        non-CONNECTED записи обновляются из свежего gossip (R5): via/host/
-        port/services актуализируются, UNREACHABLE реанимируется в KNOWN.
-        Свои CONNECTED-записи никогда не перезаписываются.
+        non-CONNECTED записи обновляются из свежего gossip: via/host/port/
+        services/version/role актуализируются, UNREACHABLE реанимируется
+        в KNOWN. Свои CONNECTED-записи никогда не перезаписываются.
         Петля via==self отбрасывается, предпочтение — меньшим hops.
+        При равных hops с другим via: failover только если существующий via
+        UNREACHABLE (иначе — нет флаппинга); метаданные обновляются всегда.
         """
         from_node = _canon(from_node)
         added = 0
@@ -183,6 +185,12 @@ class NeighborTable:
             # иначе sysadmin перезапишет правильный via=PyServ на via=test и закольцует (см. 2026-09-01 loop sysadmin<->test->DPost)
             if _canon(entry.get('via')) == _canon(self.own_node_id):
                 log.debug(f'Gossip from {from_node}: skip {node_id} via self (loop)')
+                continue
+            # 2-hop петля: via узла указывает обратно на нас via==self.own via==self
+            # напр. 43-img via sysadmin-pc, а sysadmin-pc via 43-img — оба через друг друга
+            via_info = self._table.get(_canon(entry.get('via') or ''))
+            if via_info and _canon(via_info.via) == _canon(self.own_node_id):
+                log.debug(f'Gossip from {from_node}: skip {node_id} via {entry.get("via")} whose via is self (2-hop loop)')
                 continue
 
             # hops дистанция: 1=прямо, >1 через via
@@ -201,33 +209,89 @@ class NeighborTable:
                     hops=incoming_hops,
                     version=entry.get('version', PROTOCOL_VERSION),
                     services=entry.get('services', []),
+                    role=entry.get('role', ROLE_NODE),
                 )
                 added += 1
             else:
-                # предпочтение меньшим hops (короткий путь), иначе флэп via
-                # и взаимная петля sysadmin<->PyServ для 43-img
                 if incoming_hops < existing.hops:
+                    # более короткий путь — полное обновление
                     existing.host = entry.get('host', existing.host)
                     existing.port = entry.get('port', existing.port)
                     existing.via = from_node
                     existing.hops = incoming_hops
                     existing.version = entry.get('version', existing.version)
                     existing.services = entry.get('services', existing.services)
+                    existing.role = entry.get('role', existing.role)
                     existing.last_ts = time.time()
                     if existing.status == NeighborStatus.UNREACHABLE:
                         existing.status = NeighborStatus.KNOWN
                     updated += 1
                 elif incoming_hops == existing.hops and _canon(entry.get('via')) != _canon(existing.via):
-                    # равные hops — не флэпать, оставить существующий
-                    existing.last_ts = time.time()
+                    # равные hops, via различается
                     if existing.status == NeighborStatus.UNREACHABLE:
+                        # failover: текущий via мёртв — переключаемся на новый
+                        existing.via = from_node
+                        existing.host = entry.get('host', existing.host)
+                        existing.port = entry.get('port', existing.port)
+                        existing.hops = incoming_hops
+                        existing.version = entry.get('version', existing.version)
+                        existing.services = entry.get('services', existing.services)
+                        existing.role = entry.get('role', existing.role)
+                        existing.last_ts = time.time()
                         existing.status = NeighborStatus.KNOWN
+                        updated += 1
+                    else:
+                        # via жив — не флэпать, но обновить метаданные из свежего gossip
+                        existing.host = entry.get('host', existing.host)
+                        existing.port = entry.get('port', existing.port)
+                        existing.version = entry.get('version', existing.version)
+                        existing.services = entry.get('services', existing.services)
+                        existing.role = entry.get('role', existing.role)
+                        existing.last_ts = time.time()
+                        updated += 1
                 else:
-                    # более длинный путь — только обновить last_ts/services, via не трогать
-                    existing.last_ts = time.time()
+                    # более длинный путь или тот же via — обновить метаданные, via/hops не трогать
+                    existing.host = entry.get('host', existing.host)
+                    existing.port = entry.get('port', existing.port)
+                    existing.version = entry.get('version', existing.version)
                     existing.services = entry.get('services', existing.services)
+                    existing.role = entry.get('role', existing.role)
+                    existing.last_ts = time.time()
                     if existing.status == NeighborStatus.UNREACHABLE and incoming_hops <= existing.hops + 2:
                         existing.status = NeighborStatus.KNOWN
 
         if added or updated:
             log.debug(f'Gossip from {from_node}: +{added} new, ~{updated} refreshed')
+
+    def sweep(self, now: float | None = None, ttl_known: float = 90, ttl_unreach: float = 300):
+        """TTL-чистка: KNOWN без обновления >ttl_known → UNREACHABLE, UNREACHABLE >ttl_unreach → удаление.
+
+        Также каскад: если via стал UNREACHABLE, зависимые KNOWN тоже помечаются.
+        Вызывается из Network._gossip_loop (30с) — единый владелец таблицы.
+        """
+        now = now if now is not None else time.time()
+        to_remove = []
+        for nid, info in list(self._table.items()):
+            age = now - info.last_ts
+            if info.status == NeighborStatus.KNOWN and age > ttl_known:
+                via_info = self._table.get(info.via) if info.via else None
+                # если via недоступен — сразу помечаем, иначе — stale
+                if via_info and via_info.status == NeighborStatus.UNREACHABLE:
+                    info.status = NeighborStatus.UNREACHABLE
+                    log.warning(f'Sweep: {nid} via {info.via} unreachable -> mark unreachable')
+                else:
+                    info.status = NeighborStatus.UNREACHABLE
+                    log.warning(f'Sweep: {nid} stale {age:.0f}s >{ttl_known:.0f}s -> unreachable')
+            elif info.status == NeighborStatus.UNREACHABLE and age > ttl_unreach:
+                to_remove.append(nid)
+        for nid in to_remove:
+            self._table.pop(nid, None)
+            log.info(f'Sweep: removed {nid} (UNREACHABLE {ttl_unreach:.0f}s)')
+
+        # каскад: KNOWN чей via стал UNREACHABLE — пометить
+        for nid, info in list(self._table.items()):
+            if info.status == NeighborStatus.KNOWN and info.via:
+                via_info = self._table.get(info.via)
+                if via_info and via_info.status == NeighborStatus.UNREACHABLE:
+                    info.status = NeighborStatus.UNREACHABLE
+                    log.warning(f'Sweep: {nid} via {info.via} unreachable -> cascade unreachable')
