@@ -223,7 +223,7 @@ async def main():
         services_manager=ctx.services,
     )
     loader.scan()
-    loader.watch()
+    # loader.watch()
 
     # автозагрузка всех сервисов из MEI_/services/ уже выше (frozen_loader)
 

@@ -47,9 +47,26 @@ def get_rpc() -> NodeRPC:
     port = int(os.environ.get('P2P_WS_PORT', 9000))
     target = os.environ.get('P2P_NODE_ID', 'Node0')
     node_id = f"webpanel_{target}"
+    # wss/ws — auto по наличию SE certs, или явно через env
+    use_tls_env = os.environ.get('P2P_WS_USE_TLS', 'auto').strip().lower()
+    if use_tls_env in ("true", "1", "yes", "wss"):
+        use_tls = True
+    elif use_tls_env in ("false", "0", "no", "ws"):
+        use_tls = False
+    else:
+        use_tls = None  # auto
+    secure_storage_path = os.environ.get('P2P_SECURE_STORAGE') or os.environ.get('P2P_CONFIG_PATH')
+    # если это путь к config.yaml — берём рядом p2p_secure.bin
+    if secure_storage_path and secure_storage_path.endswith('.yaml'):
+        try:
+            from pathlib import Path as _P
+            secure_storage_path = str(_P(secure_storage_path).parent / 'p2p_secure.bin')
+        except Exception:
+            pass
     st.session_state.rpc = NodeRPC(
         host=host, port=port,
         node_id=node_id, target_node=target,
+        use_tls=use_tls, secure_storage_path=secure_storage_path,
     )
     return st.session_state.rpc
 

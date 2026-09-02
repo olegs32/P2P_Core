@@ -5,8 +5,11 @@
 import asyncio
 import logging
 import os
+import ssl
+import tempfile
 import threading
 import uuid
+from pathlib import Path
 
 import websockets
 
@@ -43,11 +46,14 @@ class NodeRPC:
     """
 
     def __init__(self, host='localhost', port=9000,
-                 node_id='webpanel', target_node=None):
+                 node_id='webpanel', target_node=None, use_tls: bool | None = None,
+                 secure_storage_path: str | Path | None = None):
         self.host = host
         self.port = port
         self.node_id = node_id
         self.target_node = target_node
+        self.use_tls = use_tls  # None=auto (wss если есть certs, иначе ws)
+        self.secure_storage_path = Path(secure_storage_path) if secure_storage_path else None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._thread: threading.Thread | None = None
         self._ws = None
@@ -57,6 +63,10 @@ class NodeRPC:
         self._reconnecting = False
         self._recv_task: asyncio.Task | None = None
         self._lock = threading.Lock()
+        self._ssl_ctx: ssl.SSLContext | None = None
+        self._scheme: str = "ws"
+        self._thumbprint: str | None = None
+        self._tmp_files: list[Path] = []
 
         self._start()
 
@@ -74,25 +84,140 @@ class NodeRPC:
         asyncio.set_event_loop(self._loop)
         self._loop.run_forever()
 
+    def _build_ssl_context(self) -> ssl.SSLContext | None:
+        """Попытаться собрать mTLS контекст из SecureStorage (.bin) — для wss.
+
+        Возвращает SSLContext или None (ws). При SE-сборке certs лежат в SecureStorage
+        рядом с config.yaml / work_dir. При open — ImportError / FileNotFound → None.
+        """
+        try:
+            # Определить bin_path как в kernel
+            bin_path: Path | None = self.secure_storage_path
+            if bin_path is None:
+                # эвристика: рядом с config.yaml, work_dir, data/, cwd
+                candidates = [
+                    Path("p2p_secure.bin"),
+                    Path("data/p2p_secure.bin"),
+                ]
+                # work_dir из env или config
+                for env_key in ("P2P_WORK_DIR", "P2P_CONFIG"):
+                    v = os.environ.get(env_key)
+                    if v:
+                        candidates.insert(0, Path(v).parent / "p2p_secure.bin" if Path(v).is_file() else Path(v) / "p2p_secure.bin")
+                for c in candidates:
+                    if c.exists():
+                        bin_path = c
+                        break
+                if bin_path is None:
+                    # пробуем через SecureStorage default
+                    bin_path = Path("data/p2p_secure.bin")
+                    if not bin_path.exists():
+                        return None
+            if not bin_path.exists():
+                return None
+            # Пробуем загрузить через IdentityManager/Storage если SE доступен
+            try:
+                from src.se.storage import SecureStorage as _SS
+                from cryptography import x509 as _x509
+            except ImportError:
+                return None
+            # SecureStorage потребует .key рядом — если нет, значит open
+            key_path = bin_path.with_suffix(bin_path.suffix + ".key")
+            if not key_path.exists():
+                return None
+            ss = _SS(bin_path)
+            try:
+                ca_pem = ss.read_bytes("/certs/ca_cert.pem")
+                node_pem = ss.read_bytes("/certs/node_cert.pem")
+                key_pem = ss.read_bytes("/certs/node_key.pem")
+            except FileNotFoundError:
+                return None
+            finally:
+                try:
+                    ss.close()
+                except Exception:
+                    pass
+            # thumbprint для HELLO
+            try:
+                from src.se.cert_signer import cert_thumbprint as _tp
+                self._thumbprint = _tp(node_pem)
+            except Exception:
+                self._thumbprint = None
+            # Сборка SSLContext (как IdentityManager.build_client_context)
+            # Временные файлы 0o600
+            def _tmp(data: bytes, suffix: str) -> Path:
+                fd, p = tempfile.mkstemp(suffix=suffix)
+                os.write(fd, data)
+                os.close(fd)
+                try:
+                    os.chmod(p, 0o600)
+                except Exception:
+                    pass
+                pp = Path(p)
+                self._tmp_files.append(pp)
+                return pp
+            ca_f = _tmp(ca_pem, "_ca.pem")
+            cert_f = _tmp(node_pem, "_cert.pem")
+            key_f = _tmp(key_pem, "_key.pem")
+            ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_REQUIRED
+            ctx.load_cert_chain(certfile=str(cert_f), keyfile=str(key_f))
+            ctx.load_verify_locations(cafile=str(ca_f))
+            ctx.options |= ssl.OP_NO_TLSv1 | ssl.OP_NO_TLSv1_1
+            return ctx
+        except Exception as e:
+            log.debug(f"SSL context build failed, fallback ws: {e}")
+            return None
+
+    def _resolve_scheme(self) -> tuple[str, ssl.SSLContext | None]:
+        """Определить схему и SSL контекст с учётом use_tls."""
+        if self.use_tls is True:
+            ctx = self._build_ssl_context()
+            # если запрошен wss но контекста нет — всё равно пробуем default контекст (без mTLS)
+            if ctx is None:
+                ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+                ctx.check_hostname = False
+                ctx.verify_mode = ssl.CERT_NONE
+            return "wss", ctx
+        if self.use_tls is False:
+            return "ws", None
+        # auto
+        ctx = self._build_ssl_context()
+        if ctx is not None:
+            return "wss", ctx
+        return "ws", None
+
     async def _connect(self):
-        uri = f"ws://{self.host}:{self.port}/ws/{self.node_id}"
-        self._ws = await websockets.connect(uri, max_size=MAX_FRAME_SIZE)
+        # Определяем схему (ws/wss) с учётом SE certs
+        scheme, ssl_ctx = self._resolve_scheme()
+        self._scheme = scheme
+        self._ssl_ctx = ssl_ctx
+        uri = f"{scheme}://{self.host}:{self.port}/ws/{self.node_id}"
+        if ssl_ctx is not None:
+            self._ws = await websockets.connect(uri, max_size=MAX_FRAME_SIZE, ssl=ssl_ctx)
+        else:
+            self._ws = await websockets.connect(uri, max_size=MAX_FRAME_SIZE)
 
         dst = self.target_node or 'Node0'
+        hello_data: dict = {
+            "node_id": self.node_id,
+            "host": os.environ.get('P2P_PANEL_HOST', '127.0.0.1'),
+            "port": int(os.environ.get('P2P_PANEL_PORT', '8501')),
+            "version": PROTOCOL_VERSION,
+            "session_id": str(uuid.uuid4()),
+            "services": [],
+            "role": "client",
+            "enc": "msgpack",
+        }
+        # В SE-режиме thumbprint обязателен (SecureNetwork требует)
+        if self._thumbprint:
+            hello_data["thumbprint"] = self._thumbprint
         hello = MsgPack(
             type=PackType.HELLO,
             source=self.node_id,
             dst=dst,
-            data={
-                "node_id": self.node_id,
-                "host": os.environ.get('P2P_PANEL_HOST', '127.0.0.1'),
-                "port": int(os.environ.get('P2P_PANEL_PORT', '8501')),
-                "version": PROTOCOL_VERSION,
-                "session_id": str(uuid.uuid4()),
-                "services": [],
-                "role": "client",   # не mesh-узел: в карте сети рисуется серым, BFS не опрашивает
-                "enc": "msgpack",
-            },
+            data=hello_data,
         )
         await self._ws.send(encode_pack(hello))
 
@@ -268,6 +393,13 @@ class NodeRPC:
                 ).result(timeout=5)
             except Exception:
                 pass
+        # cleanup tmp cert files
+        for p in self._tmp_files:
+            try:
+                p.unlink(missing_ok=True)
+            except Exception:
+                pass
+        self._tmp_files.clear()
         if self._loop:
             self._loop.call_soon_threadsafe(self._loop.stop)
         if self._thread:

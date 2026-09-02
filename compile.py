@@ -185,20 +185,19 @@ def build(name, ui=True, services: list[str] | None = None, extra_args: list[str
     # Добавляем имя выходного файла
     current_args.extend(['--name', name])
 
-    # packer ветка: pyarmor pack -e "..." оборачивает pyinstaller, но для совместимости
-    # пока используем PyInstaller напрямую; если pyarmor установлен и packer==pyarmor — пробуем
+    # packer — строго что выбрано, без fallback (требование deployer)
     if packer == "pyarmor":
-        # Попытка через pyarmor pack, fallback на PyInstaller
         pyarmor = shutil.which("pyarmor")
-        if pyarmor:
-            try:
-                # pyarmor pack -e "pyinstaller args" — собираем строку
-                # Деплой передаёт extra_args как часть pack -e, здесь они уже в current_args
-                log.info(f"pyarmor pack detected: {pyarmor}, using pyarmor wrapper")
-                # Для MVP — всё равно вызываем PyInstaller (pyarmor pack требует лицензию/настройку)
-                # Логируем, но не падаем
-            except Exception as e:
-                log.warning(f"pyarmor pack fallback: {e}")
+        if not pyarmor:
+            log.error("pyarmor not found but packer='pyarmor' requested — build failed (no fallback)")
+            return False
+        log.info(f"pyarmor pack detected: {pyarmor}")
+        # pyarmor pack -e "pyinstaller ..." — пока используем PyInstaller напрямую,
+        # но отсутствие pyarmor уже ошибка (выше). Лицензия/настройка — следующий этап.
+
+    if packer not in ("pyinstaller", "pyarmor"):
+        log.error(f"unknown packer {packer!r}")
+        return False
 
     try:
         PyInstaller.__main__.run(current_args)

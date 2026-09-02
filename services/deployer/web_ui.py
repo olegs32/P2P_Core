@@ -24,7 +24,30 @@ def render(rpc):
 
     # Packer dropdown — pyarmor дефолт
     packer = st.selectbox("Packer", packers, index=packers.index(default_packer) if default_packer in packers else 0)
-    extra_args = st.text_input("Доп. аргументы для pack -e", placeholder="--onedir --noconsole", help="Проверяются whitelist, только безопасные символы")
+
+    # Доп. аргументы — чекбоксы + custom
+    st.subheader("Доп. аргументы для pack -e (чекбоксы)")
+    PACK_EXTRAS = [
+        ("--clean", "Очистка кэша"),
+        ("--noconsole", "Без консоли (windowed)"),
+        ("--noupx", "Отключить UPX"),
+        ("--strip", "Strip символов"),
+        ("--debug=all", "Отладка"),
+        ("--onedir", "Папкой (onedir)"),
+    ]
+    cols = st.columns(3)
+    _selected_extras: list[str] = []
+    for i, (flag, desc) in enumerate(PACK_EXTRAS):
+        with cols[i % 3]:
+            if st.checkbox(flag, help=desc, key=f"pack_extra_{flag}"):
+                _selected_extras.append(flag)
+    _custom_extra = st.text_input("Свои аргументы (дополнительно)", placeholder="--exclude-module ...", key="pack_extra_custom")
+    if _custom_extra and _custom_extra.strip():
+        _selected_extras.append(_custom_extra.strip())
+    extra_args = " ".join(_selected_extras)
+
+    # Параллельная сборка Web-UI
+    build_webui = st.checkbox("Собирать Web-UI NODE (параллельно)", value=True, help="Собрать WebUI_P2P_Core.exe параллельно с Node")
 
     # Services чекбоксы с транзитивностью
     st.subheader("Сервисы в сборке")
@@ -70,12 +93,14 @@ def render(rpc):
             "packer": packer,
             "services": selected,
             "extra_args": extra_args,
+            "build_webui": build_webui,
             "action": action,
             "targets": targets,
             "remote_path": remote_path,
         }
-        with st.spinner("Сборка..."):
+        with st.spinner("Запуск сборки..."):
             try:
+                # Увеличенный таймаут не нужен — build теперь фоновый и возвращается сразу
                 res = rpc.call("deployer", "build", payload)
             except Exception as e:
                 st.error(f"build failed: {e}")
@@ -85,17 +110,79 @@ def render(rpc):
             if res.get("trace"):
                 st.code(res["trace"][-1500:])
             return
-        st.success(f"✅ v{res.get('version')} packer={res.get('packer')} services={res.get('services')}")
-        if res.get("logs"):
-            st.code("\n".join(res["logs"][-10:]))
-        if action == "deploy":
-            for r in res.get("deploy", []):
-                if r.get("ok"):
-                    st.success(f"{r['target']} → {r['remote_path']} OK")
-                else:
-                    st.error(f"{r['target']} FAIL: {r.get('error')}")
+        if res.get("started"):
+            st.info(f"🚀 Сборка запущена (packer={packer}) — логи ниже обновляются каждую 1с (авто) или кнопкой «Обновить»")
+            st.session_state["deployer_last_logs"] = res.get("logs", [])
+            st.session_state["deployer_build_started"] = True
         else:
-            st.info(f"Сохранено: dist/{res.get('version')}/ — далее можно деплоить через deploy()")
+            st.success(f"✅ v{res.get('version')} packer={res.get('packer')} services={res.get('services')}")
+            if res.get("logs"):
+                st.code("\n".join(res["logs"][-20:]))
+            if action == "deploy":
+                for r in res.get("deploy", []):
+                    if r.get("ok"):
+                        st.success(f"{r['target']} → {r['remote_path']} OK")
+                    else:
+                        st.error(f"{r['target']} FAIL: {r.get('error')}")
+            else:
+                st.info(f"Сохранено: dist/{res.get('version')}/ — далее можно деплоить через deploy()")
+            st.session_state["deployer_last_logs"] = res.get("logs", [])
+
+    st.divider()
+    # Логи паковщика — чекбокс автообновления 1с + ручная кнопка
+    st.subheader("📜 Логи паковщика")
+    auto = st.checkbox("Автообновление логов (каждую 1с)", value=True, key="deployer_log_auto")
+    col1, col2 = st.columns([1, 4])
+    with col1:
+        if st.button("🔄 Обновить", key="deployer_log_manual"):
+            st.rerun()
+    with col2:
+        st.caption("Авто — fragment 1с, ручная — кнопка")
+
+    def _render_logs():
+        try:
+            st2 = rpc.call("deployer", "build_status", {})
+            state = st2.get("state", "idle")
+            logs = st2.get("logs") or []
+            result = st2.get("result")
+            # Fallback на last_build после смены вкладки / завершения
+            if not logs:
+                st3 = rpc.call("deployer", "get_status", {})
+                last = st3.get("last_build") or {}
+                logs = last.get("logs") or st.session_state.get("deployer_last_logs", [])
+                result = result or last
+                if last.get("version"):
+                    st.caption(f"Последняя: {last.get('version')} webui={last.get('webui_exe') or '—'} state={state}")
+            else:
+                if st2.get("version"):
+                    st.caption(f"Сборка: {st2.get('version')} state={state}")
+            if logs:
+                st.code("\n".join(logs[-100:]), language="text")
+                if state == "running":
+                    st.caption("⏳ Сборка идёт — логи обновляются...")
+                elif state == "failed":
+                    st.error(f"Сборка failed: {(result or {}).get('error','')}")
+                elif state == "done" and result:
+                    if result.get("version"):
+                        st.success(f"✅ Готово v{result.get('version')} packer={result.get('packer')}")
+                    # Показать деплой если был
+                    for r in (result.get("deploy") or []):
+                        if r.get("ok"):
+                            st.success(f"{r['target']} → {r['remote_path']} OK")
+                        else:
+                            st.error(f"{r['target']} FAIL: {r.get('error')}")
+            else:
+                st.caption("Логов нет — выполните сборку")
+        except Exception as e:
+            st.caption(f"logs unavailable: {e}")
+
+    if auto:
+        @st.fragment(run_every=1)
+        def _auto_logs():
+            _render_logs()
+        _auto_logs()
+    else:
+        _render_logs()
 
     st.divider()
     # История сборок

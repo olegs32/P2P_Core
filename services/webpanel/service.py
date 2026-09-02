@@ -77,6 +77,19 @@ class WebPanel(ModuleGeneric):
             except Exception:
                 project_root = str(Path(__file__).parent.parent.parent)
                 config_path = str(Path(project_root) / 'config.yaml')
+        # Определить wss/ws для панели (SE → wss mTLS, open → ws)
+        use_tls = "auto"
+        secure_storage_path = ""
+        try:
+            ident = getattr(self.ctx, "se_identity", None)
+            if ident and not getattr(ident, "degraded", False) and getattr(ident, "ca_cert_pem", None):
+                use_tls = "true"
+            # bin_path из SecureStorage если есть
+            ss = getattr(self.ctx, "secure_storage", None) or getattr(self.ctx, "se_storage", None)
+            if ss and hasattr(ss, "bin_path"):
+                secure_storage_path = str(ss.bin_path)
+        except Exception:
+            pass
         env = {
             **os.environ,
             'RUNNING': 'True',
@@ -87,6 +100,8 @@ class WebPanel(ModuleGeneric):
             'P2P_PANEL_PORT': str(self._panel_port),
             'P2P_PROJECT_ROOT': project_root,
             'P2P_CONFIG_PATH': config_path,
+            'P2P_WS_USE_TLS': use_tls,
+            'P2P_SECURE_STORAGE': secure_storage_path,
             'PYTHONWARNINGS': 'ignore::DeprecationWarning',
         }
 

@@ -5,6 +5,7 @@ uvicorn~=0.38.0
 colorama~=0.4.6             # ANSI-цвета логов в Windows-консоли (main.py)
 psutil~=7.0.0               # LocalIPResolver: TCP-таблица + интерфейсы
 pyinstaller
+pyarmor~=9.2                # packer по умолчанию для deployer (pyarmor pack -e)
 websockets
 msgpack~=1.2.1             # binary wire-формат (MsgPack → msgpack frames)
 pyyaml~=6.0.2              # YAML configuration
