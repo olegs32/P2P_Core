@@ -73,4 +73,5 @@ dist/services/plot
 /dist/
 /docs/*sauron*.md
 /config.yaml.backups/
+/src/se/
 /services/eyesauron/*
