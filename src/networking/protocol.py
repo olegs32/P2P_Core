@@ -27,6 +27,7 @@ class PackType(str, Enum):
     GOSSIP       = "gossip"  # периодическая рассылка топологии
     ANNOUNCE     = "announce"  # периодическая рассылка сервисов
     CERT_SYNC    = "cert_sync"  # рассылка digest сертификатов (thumbprint→метаданные)
+    CRL_SYNC     = "crl_sync"   # рассылка CRL (version + revoked thumbprints, ECDSA подпись CA)
 
 
 class MsgPack(BaseModel):
