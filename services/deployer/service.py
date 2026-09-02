@@ -91,90 +91,18 @@ def _read_devices() -> list[str]:
 
 
 def _make_version_txt() -> str:
-    """Как в compile.py — VERSION + BUILD_NUMBER -> version.txt"""
-    ver_file = ROOT / "VERSION"
-    semver = ver_file.read_text(encoding="utf-8").strip() if ver_file.exists() else "0.0.0"
-    if not re.match(r"^\d+\.\d+\.\d+$", semver):
-        semver = "0.0.0"
-    bn_file = ROOT / "BUILD_NUMBER"
-    try:
-        build = int(bn_file.read_text(encoding="utf-8").strip())
-    except Exception:
-        build = 0
-    build += 1
-    bn_file.write_text(str(build), encoding="utf-8")
-    version = f"{semver}-build{build}"
-    (ROOT / "version.txt").write_text(version, encoding="utf-8")
-    return version
+    """Делегирует compile.make_version_txt — единый источник версии."""
+    import compile as comp
+    return comp.make_version_txt()
 
 
 def _build_args_for_services(services: list[str], ui: bool = False, extra_args: str = "") -> list[str]:
-    """Собрать аргументы для PyInstaller с фильтрацией сервисов.
-    Использует логику compile.py BASE_ARGS / BASE_HIDDEN_IMPORTS, но фильтрует services.
-    """
-    # Импортируем константы из compile, чтобы не дублировать
+    """Deprecated — теперь compile.build принимает services напрямую. Оставлен для совместимости."""
     try:
-        import compile as comp
-        base_args = list(comp.BASE_ARGS)
-        hidden = list(comp.BASE_HIDDEN_IMPORTS)
+        import compile as comp  # noqa
+        return [f"# compile.build(services={services}, ui={ui}, extra_args={extra_args!r})"]
     except Exception:
-        base_args = ["main.py", "--onefile", "-i=src/icon.ico", "--clean", "--collect-all=src"]
-        hidden = []
-
-    current_args = list(base_args)
-    # version.txt
-    vt = ROOT / "version.txt"
-    if vt.exists():
-        current_args.extend(["--add-data", f"{vt};."])
-    for mod in hidden:
-        current_args.extend(["--hidden-import", mod])
-
-    # Фильтрация сервисов: вместо --collect-all services собираем только выбранные + их зависимости
-    # compile.py собирает services.{name} — повторяем
-    expanded = _expand_services(services) if services else []
-    if expanded:
-        for svc in expanded:
-            current_args.extend(["--collect-all", f"services.{svc}"])
-            # web_ui отдельного сервиса — исключаем если ui=False (headless Node)
-            if not ui and (ROOT / "services" / svc / "web_ui.py").exists():
-                current_args.extend(["--exclude-module", f"services.{svc}.web_ui"])
-    else:
-        # если не указаны — как в compile: все
-        if ui:
-            current_args.extend(["--collect-all", "services", "--collect-all", "streamlit_agraph", "--collect-all", "streamlit_ace"])
-        else:
-            for p in (ROOT / "services").glob("*/"):
-                if p.is_dir() and p.name not in ("webpanel", "__pycache__"):
-                    current_args.extend(["--collect-all", f"services.{p.name}"])
-                    if (p / "web_ui.py").exists():
-                        current_args.extend(["--exclude-module", f"services.{p.name}.web_ui"])
-
-    if ui:
-        for mod in ["streamlit.web.cli", "streamlit.web.bootstrap", "streamlit.runtime.scriptrunner.magic_funcs"]:
-            current_args.extend(["--hidden-import", mod])
-        current_args.extend([
-            "--collect-all", "streamlit_agraph",
-            "--collect-all", "streamlit_ace",
-            "--collect-binaries", "streamlit",
-            "--collect-datas", "streamlit",
-            "--recursive-copy-metadata", "streamlit",
-            "--recursive-copy-metadata", "streamlit-ace",
-        ])
-    else:
-        current_args.extend([
-            "--exclude-module", "services.webpanel",
-            "--exclude-module", "streamlit",
-            "--exclude-module", "streamlit.web",
-            "--exclude-module", "streamlit.runtime",
-        ])
-
-    # extra_args — разбиваем по пробелам, валидируем
-    if extra_args and extra_args.strip():
-        if not EXTRA_ARGS_SAFE_RE.match(extra_args):
-            raise ValueError("extra_args содержит недопустимые символы")
-        current_args.extend(extra_args.strip().split())
-
-    return current_args
+        return []
 
 
 def _dummy_build(version: str, services: list[str]) -> Path:
@@ -473,31 +401,20 @@ class Deployer(ModuleGeneric):
         version = _make_version_txt()
         self.log.info(f"Deployer build v{version} packer={packer} services={expanded} action={action} targets={targets}")
 
-        # 2. Сборка exe — пытаемся реальный PyInstaller, fallback dummy
+        # 2. Сборка exe — делегируем compile.build (единый источник, соответствует deployer)
         exe_src: Path | None = None
         build_logs: list[str] = []
         try:
-            # Собираем args
-            ui_flag = False  # Node without UI — как в updater
-            # Но если выбран webpanel в services — ui True
-            if "webpanel" in expanded:
-                ui_flag = True
-            args = _build_args_for_services(expanded, ui=ui_flag, extra_args=extra_args)
-            # Добавляем --name
-            args.extend(["--name", "Node_P2P_Core"])
-            build_logs.append(f"packer={packer} args={' '.join(args[:6])}... ui={ui_flag}")
-
-            # Реальный билд только если явно не в тестовом режиме
-            # Для скорости в dev — dummy, если env P2P_DUMMY_BUILD=1 или нет PyInstaller
+            ui_flag = "webpanel" in expanded
+            extra_list = extra_args.strip().split() if isinstance(extra_args, str) and extra_args.strip() else (list(extra_args) if extra_args else [])
+            build_logs.append(f"packer={packer} services={expanded} ui={ui_flag} extra={extra_list}")
             use_dummy = os.environ.get("P2P_DUMMY_BUILD") == "1"
             if not use_dummy:
-                try:
-                    import PyInstaller.__main__  # type: ignore
-                    # Запуск в thread чтобы не блокировать loop
-                    def _run():
-                        PyInstaller.__main__.run(args)
-                    await asyncio.to_thread(_run)
-                    # sign
+                import compile as comp
+                # compile.build теперь принимает services/extra_args/packer напрямую
+                ok = await asyncio.to_thread(comp.build, "Node_P2P_Core", ui_flag, expanded, extra_list, packer)
+                if ok:
+                    # sign — compile.build не подписывает, делаем здесь как раньше
                     try:
                         from sign.signer import sign_exe as _sign
                         exe_candidate = DIST / "Node_P2P_Core.exe"
@@ -511,22 +428,18 @@ class Deployer(ModuleGeneric):
                                 shutil.move(str(DIST / "signed_Node_P2P_Core.exe"), str(exe_candidate))
                     except Exception as e:
                         build_logs.append(f"sign skip: {e}")
-                    # manifest
                     try:
-                        import compile as _comp
-                        _comp.make_manifest(version)
+                        comp.make_manifest(version, services=expanded, packer=packer)
                         exe_src = DIST / version / "Node_P2P_Core.exe"
                     except Exception as e:
                         build_logs.append(f"manifest skip: {e}")
-                        # fallback — ищем exe
                         for cand in [DIST / version / "Node_P2P_Core.exe", DIST / "Node_P2P_Core.exe"]:
                             if cand.exists():
                                 exe_src = cand
                                 break
-                except Exception as e:
-                    build_logs.append(f"pyinstaller failed: {e} — dummy fallback")
+                else:
+                    build_logs.append("compile.build returned False — dummy fallback")
                     use_dummy = True
-
             if use_dummy or exe_src is None or not exe_src.exists():
                 exe_src = _dummy_build(version, expanded)
                 build_logs.append(f"dummy build at {exe_src}")

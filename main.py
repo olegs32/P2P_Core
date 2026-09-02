@@ -50,7 +50,7 @@ if '--update-failed' in sys.argv:
 # инициализации узла: процесс работает как лёгкий захватчик и завершается.
 if '--eye-sauron-helper' in sys.argv:
     try:
-        from services.eyesauron._session_helper import main as _eye_helper_main
+        from src.se.services.eyesauron._session_helper import main as _eye_helper_main
         _eye_helper_main()
         sys.exit(0)
     except Exception:
@@ -150,12 +150,32 @@ async def main():
     ctx = AppContext(cfg)
     ctx.config_manager = cfg_manager
 
+    # SE — единственная точка различия (src/se/AGENTS.md §1, §2): ONE CALL wiring.
+    # Если se собран — activate заменит ctx.config_manager/network/router на защищённые.
+    # Отсутствие = open mode, без ветвлений в горячем пути.
+    try:
+        from src.se import kernel as se_kernel
+        se_kernel.activate(ctx, cfg_manager)
+        cfg = ctx.config  # SEConfigManager читает .bin → Config
+        # синхронизируем производные поля AppContext (защита от расхождения после подмены Config)
+        ctx.NODE = cfg.node
+        ctx.peers = cfg.local.peers
+        setup_logging(cfg.logging)  # уровни из защищённого конфига
+    except ImportError:
+        pass
+    except Exception as e:
+        logging.getLogger("SEKernel").warning(f"SE activate failed, fallback to open: {e}", exc_info=True)
+
     # порядок вызовов = порядок загрузки
     ctx.memory = ctx.register(MemoryModule(name='memory', context=ctx))
-    ctx.network = ctx.register(NetworkModule(name='network',
-                                             context=ctx,
-                                             host=cfg.network.host,
-                                             port=cfg.network.port, ))
+    # network: в SE режиме уже SecureNetworkModule (создан в se_kernel.activate)
+    if getattr(ctx, "network", None) is None:
+        ctx.network = ctx.register(NetworkModule(name='network',
+                                                 context=ctx,
+                                                 host=cfg.network.host,
+                                                 port=cfg.network.port, ))
+    elif ctx.network not in ctx._modules:
+        ctx.register(ctx.network)
 
     # Spawner — не в services/, регистрируем вручную
     ctx.spawn = ctx.register(Spawner(name='spawner', context=ctx))
@@ -207,8 +227,13 @@ async def main():
 
     # автозагрузка всех сервисов из MEI_/services/ уже выше (frozen_loader)
 
+    # выбор коннектора: SecureNodeConnector в SE-сборке, NodeConnector в open (src/se/AGENTS.md §10.1)
+    try:
+        from src.se.network.connector import SecureNodeConnector as PeerConnector  # type: ignore
+    except ImportError:
+        PeerConnector = NodeConnector  # type: ignore
     for peer in cfg.local.peers:
-        connector = ctx.register(NodeConnector(
+        connector = ctx.register(PeerConnector(
             name=f'Connector_{peer.node_id}',
             context=ctx,
             peer_node_id=peer.node_id,
