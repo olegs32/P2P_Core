@@ -19,29 +19,54 @@ log = logging.getLogger('ServiceLoader')
 
 
 class ServiceLoader:
-    def __init__(self, services_path: Path, context, services_manager):
-        self.path     = Path(services_path)
+    def __init__(self, services_path: Path | list[Path] | None = None, context=None, services_manager=None, search_paths: list[Path] | None = None):
+        # multipath AGENTS.md §8.2 — приоритет search_paths из config, иначе services_path
+        if search_paths is not None:
+            self.search_paths = [Path(p) for p in search_paths]
+        elif isinstance(services_path, (list, tuple)):
+            self.search_paths = [Path(p) for p in services_path]
+        elif services_path is not None:
+            self.search_paths = [Path(services_path)]
+        else:
+            # fallback из config
+            try:
+                cfg_paths = getattr(context, 'config', None).services.search_paths if context else None
+                self.search_paths = [Path(p) for p in cfg_paths] if cfg_paths else [Path('services')]
+            except Exception:
+                self.search_paths = [Path('services')]
+        # backward compat: self.path = первый путь
+        self.path = self.search_paths[0] if self.search_paths else Path('services')
         self.ctx  = context
         self.manager  = services_manager
         self._observer: Observer | None = None
+        self._watched: list[Path] = []
 
     # ------------------------------------------------------------------ #
     #  Публичный API
     # ------------------------------------------------------------------ #
 
     def scan(self):
-        """Сканировать все поддиректории services/ и зарегистрировать."""
-        for service_dir in self.path.iterdir():
-            if service_dir.is_dir() and not service_dir.name.startswith('_'):
-                self._load_service_dir(service_dir)
+        """Сканировать все search_paths (AGENTS.md §8.2) — отсутствующие игнор, без ветвей."""
+        for base in self.search_paths:
+            if not base.exists():
+                log.debug(f"search_path not found, skip: {base}")
+                continue
+            for service_dir in base.iterdir():
+                if service_dir.is_dir() and not service_dir.name.startswith('_'):
+                    self._load_service_dir(service_dir)
 
     def watch(self):
-        """Запустить watchdog — hot reload при изменении/добавлении файлов."""
+        """Запустить watchdog — hot reload при изменении/добавлении файлов (на всех search_paths)."""
+        if not self.search_paths:
+            return
         handler = _ReloadHandler(self)
         self._observer = Observer()
-        self._observer.schedule(handler, str(self.path), recursive=True)
+        for base in self.search_paths:
+            if base.exists():
+                self._observer.schedule(handler, str(base), recursive=True)
+                self._watched.append(base)
         self._observer.start()
-        log.info(f'Watching {self.path}')
+        log.info(f'Watching {self.search_paths}')
 
     def stop_watch(self):
         if self._observer:
@@ -57,13 +82,13 @@ class ServiceLoader:
         for py_file in service_dir.glob('*.py'):
             if py_file.name.startswith('_'):
                 continue
-            self._load_file(py_file)
+            self._load_file(py_file, service_name=service_dir.name)
 
-    def _load_file(self, path: Path):
+    def _load_file(self, path: Path, service_name: str | None = None):
         module_name = f'_services.{path.parent.name}.{path.stem}'
         try:
             module = self._import_fresh(module_name, path)
-            self._register_from_module(module)
+            self._register_from_module(module, service_name=service_name)
         except Exception as e:
             log.error(f'Failed to load {path}: {e}')
 
@@ -78,13 +103,15 @@ class ServiceLoader:
         spec.loader.exec_module(module)
         return module
 
-    def _register_from_module(self, module: types.ModuleType):
+    def _register_from_module(self, module: types.ModuleType, service_name: str | None = None):
         """Найти ModuleGeneric подклассы и зарегистрировать их @rpc методы."""
         for _, cls in inspect.getmembers(module, inspect.isclass):
             if not issubclass(cls, ModuleGeneric) or cls is ModuleGeneric:
                 continue
 
-            service_name = cls.__name__.lower()
+            # Предпочтение: имя директории сервиса (надёжно), fallback — имя класса
+            if service_name is None:
+                service_name = cls.__name__.lower()
 
             # отменяем pending RPC если сервис уже был зарегистрирован
             self._cancel_pending(service_name)

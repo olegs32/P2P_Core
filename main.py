@@ -189,17 +189,23 @@ async def main():
         os.makedirs(SERVICES_DIR)
 
     loader = None
-    if os.path.exists(BASE_DIR / 'services'):
-        # автозагрузка всех сервисов из ./services/ (live editing available)
-        loader = ServiceLoader(
-            services_path=BASE_DIR / 'services',
-            context=ctx,
-            services_manager=ctx.services,
-        )
-        loader.scan()
-        loader.watch()  # hot reload local services
+    # search_paths из конфига (AGENTS.md §8.2) — SE раскомментирует второй путь
+    search_paths = getattr(cfg.services, 'search_paths', None) or [BASE_DIR / 'services']
+    resolved_paths = []
+    for p in search_paths:
+        pp = Path(p)
+        if not pp.is_absolute():
+            pp = BASE_DIR / pp
+        resolved_paths.append(pp)
+    loader = ServiceLoader(
+        search_paths=resolved_paths,
+        context=ctx,
+        services_manager=ctx.services,
+    )
+    loader.scan()
+    loader.watch()
 
-    # автозагрузка всех сервисов из MEI_/services/
+    # автозагрузка всех сервисов из MEI_/services/ уже выше (frozen_loader)
 
     for peer in cfg.local.peers:
         connector = ctx.register(NodeConnector(

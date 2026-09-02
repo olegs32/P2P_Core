@@ -162,6 +162,7 @@ class WebPanelConfig(BaseModel):
 
 class ServicesConfig(BaseModel):
     path: Path = Path('services')
+    search_paths: list[Path] = [Path('services')]  # AGENTS.md §8.2 — multipath, второй путь раскомментируется в SE-сборке
 
 
 class PeerConfig(BaseModel):
