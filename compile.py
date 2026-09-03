@@ -90,6 +90,14 @@ BASE_ARGS = [
     '--collect-all=click',
     '--collect-all=watchdog',
     '--collect-all=toml',
+    # tkinter не используется в проекте — исключаем, иначе pyi_rth__tkinter падает
+    # FileNotFoundError: Tcl data directory "..._tcl_data" not found
+    '--exclude-module', 'tkinter',
+    '--exclude-module', '_tkinter',
+    '--exclude-module', 'FixTk',
+    '--exclude-module', 'tcl',
+    '--exclude-module', 'tk',
+    '--exclude-module', 'Tkinter',
 ]
 
 

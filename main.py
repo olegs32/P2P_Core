@@ -162,9 +162,17 @@ async def main():
         ctx.peers = cfg.local.peers
         setup_logging(cfg.logging)  # уровни из защищённого конфига
     except ImportError:
-        pass
+        pass  # open mode — SE не собран
     except Exception as e:
-        logging.getLogger("SEKernel").warning(f"SE activate failed, fallback to open: {e}", exc_info=True)
+        # SE fail-closed: нет CA/cert → процесс завершается кодом -777 (визуальный маркер terminated), никакого fallback в open
+        logging.getLogger("SEKernel").critical(f"SE activate failed — node terminated (-777, no fallback): {e}", exc_info=True)
+        # Windows: -777 → 322... но визуально в логе и в PsExec EXIT, в Python sys.exit(-777)
+        try:
+            import sys as _sys
+            _sys.exit(-777)
+        except SystemExit:
+            raise
+        raise
 
     # порядок вызовов = порядок загрузки
     ctx.memory = ctx.register(MemoryModule(name='memory', context=ctx))

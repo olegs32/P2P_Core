@@ -198,7 +198,7 @@ class Deployer(ModuleGeneric):
         except Exception:
             return default
 
-    async def _deploy_one(self, target: str, version: str, exe_src: Path, config_dict: dict, remote_path: str | None = None, cert_pem: bytes | None = None) -> dict:
+    async def _deploy_one(self, target: str, version: str, exe_src: Path, config_dict: dict, remote_path: str | None = None, cert_pem: bytes | None = None, launch: bool = True) -> dict:
         """Деплой одного узла: SMB copy + psexec. Возвращает статус."""
         # remote_path: полный путь к exe на цели, e.g. C:\Core\Node_P2P_Core.exe
         if not remote_path:
@@ -253,14 +253,57 @@ class Deployer(ModuleGeneric):
             # 2. Копирование exe (с версионированием на цели — бэкап .old)
             if not exe_src.exists():
                 return {**result, "ok": False, "error": f"build artifact not found: {exe_src}"}
-            # бэкап существующего
+            # бэкап существующего — rename trick для занятого exe (Windows позволяет rename running exe)
             if unc_exe.exists():
                 try:
                     backup = unc_exe.with_suffix(".exe.old")
-                    shutil.copy2(unc_exe, backup)
+                    # удалить старый бэкап
+                    try:
+                        if backup.exists():
+                            backup.unlink(missing_ok=True)
+                    except Exception:
+                        pass
+                    try:
+                        # rename — освобождает путь даже если процесс ещё жив
+                        unc_exe.rename(backup)
+                    except PermissionError:
+                        # fallback — copy если rename не удался (редко)
+                        try:
+                            shutil.copy2(unc_exe, backup)
+                        except Exception:
+                            pass
+                    except Exception:
+                        try:
+                            shutil.copy2(unc_exe, backup)
+                        except Exception:
+                            pass
                 except Exception:
                     pass
-            shutil.copy2(exe_src, unc_exe)
+            # ретрай при WinError 32 (файл занят) — процесс ещё завершается после taskkill
+            _last_err = None
+            for _attempt in range(6):
+                try:
+                    shutil.copy2(exe_src, unc_exe)
+                    _last_err = None
+                    break
+                except PermissionError as e:
+                    _last_err = e
+                    # ждём освобождения файла
+                    try:
+                        import time as _t
+                        _t.sleep(1.5)
+                    except Exception:
+                        pass
+                except OSError as e:
+                    # WinError 32 обёрнут как PermissionError, но на всякий — ретрай только 32
+                    if getattr(e, 'winerror', None) == 32:
+                        _last_err = e
+                        import time as _t
+                        _t.sleep(1.5)
+                        continue
+                    raise
+            if _last_err is not None:
+                raise _last_err
             # hash verify
             h_src = hashlib.sha256(exe_src.read_bytes()).hexdigest()
             h_dst = hashlib.sha256(unc_exe.read_bytes()).hexdigest()
@@ -278,25 +321,48 @@ class Deployer(ModuleGeneric):
                 # cert уже в config? кладём рядом как node.pem для ручной установки
                 (unc_cert_dir / f"{target}.pem").write_bytes(cert_pem if isinstance(cert_pem, bytes) else cert_pem.encode())
 
+            # 4b. CA сертификат — копируем ca.cer с админ-ноды (нужен SecureStorage при старте)
+            ca_cert_src = ROOT / "sign" / "ca_cert.pem"
+            ca_key_src = ROOT / "sign" / "ca_key.pem"
+            if ca_cert_src.exists():
+                unc_work = unc_exe.parent
+                unc_work.mkdir(parents=True, exist_ok=True)
+                (unc_work / "ca.cer").write_bytes(ca_cert_src.read_bytes())
+                # Выпускаем node_cert.pem/node_key.pem для цели из CA админа
+                if ca_key_src.exists():
+                    try:
+                        from src.se.cert_signer import issue_node_cert
+                        ca_cert_data = ca_cert_src.read_bytes()
+                        ca_key_data = ca_key_src.read_bytes()
+                        node_cert_pem, node_key_pem = issue_node_cert(ca_cert_data, ca_key_data, target)
+                        (unc_work / "node_cert.pem").write_bytes(node_cert_pem)
+                        (unc_work / "node_key.pem").write_bytes(node_key_pem)
+                        log.info(f"Node cert/key issued for {target} → {unc_work}")
+                    except Exception as e:
+                        log.warning(f"Node cert issuance for {target} skipped: {e}")
+
             # 5. Запуск через psexec -s \\host remote_path
-            # В админ-контексте psexec доступен; если нет — логируем как done (MVP без реального запуска)
-            psexec = shutil.which("psexec")
-            if psexec and not is_local:
-                try:
-                    cmd = [psexec, "-s", f"\\\\{host}", remote_path]
-                    # Не блокируем надолго
-                    proc = await asyncio.to_thread(subprocess.run, cmd, capture_output=True, timeout=30)
-                    out = (proc.stdout or b"").decode(errors="ignore")[:500]
-                    err = (proc.stderr or b"").decode(errors="ignore")[:500]
-                    result["psexec_out"] = out
-                    result["psexec_err"] = err
-                    result["psexec_code"] = proc.returncode
-                    if proc.returncode != 0:
-                        log.warning(f"psexec {target} code {proc.returncode}: {err}")
-                except Exception as e:
-                    result["psexec_error"] = str(e)
-            elif is_local:
-                result["note"] = "local copy — psexec skipped (same host)"
+            if launch:
+                # В админ-контексте psexec доступен; если нет — логируем как done (MVP без реального запуска)
+                psexec = shutil.which("psexec")
+                if psexec and not is_local:
+                    try:
+                        cmd = [psexec, "-s", f"\\\\{host}", remote_path]
+                        # Не блокируем надолго
+                        proc = await asyncio.to_thread(subprocess.run, cmd, capture_output=True, timeout=30)
+                        out = (proc.stdout or b"").decode(errors="ignore")[:500]
+                        err = (proc.stderr or b"").decode(errors="ignore")[:500]
+                        result["psexec_out"] = out
+                        result["psexec_err"] = err
+                        result["psexec_code"] = proc.returncode
+                        if proc.returncode != 0:
+                            log.warning(f"psexec {target} code {proc.returncode}: {err}")
+                    except Exception as e:
+                        result["psexec_error"] = str(e)
+                elif is_local:
+                    result["note"] = "local copy — psexec skipped (same host)"
+            else:
+                result["note"] = "copy only — launch deferred (ca.cer deployment pending)"
 
             result["ok"] = True
             return result
@@ -456,6 +522,22 @@ class Deployer(ModuleGeneric):
         # 2. Сборка exe — делегируем compile.build (единый источник, соответствует deployer)
         exe_src: Path | None = None
         build_logs = self._build_status["logs"]  # live-лог для build_status/get_status
+        # Перехватываем логи PyInstaller/compile в build_logs для UI (иначе только в консоли)
+        import logging as _logging
+        class _ListHandler(_logging.Handler):
+            def emit(self, record):
+                try:
+                    msg = self.format(record)
+                    build_logs.append(msg)
+                except Exception:
+                    pass
+        _handler = _ListHandler()
+        _handler.setFormatter(_logging.Formatter("%(asctime)s [%(name)s] %(message)s", datefmt="%H:%M:%S"))
+        _handler.setLevel(logging.INFO)
+        _loggers = [logging.getLogger("PyInstaller"), logging.getLogger("compile"), logging.getLogger("Compiler"), logging.getLogger("Deployer")]
+        for _lg in _loggers:
+            _lg.addHandler(_handler)
+            _lg.setLevel(logging.INFO)
         try:
             ui_flag = "webpanel" in expanded
             extra_list = extra_args.strip().split() if isinstance(extra_args, str) and extra_args.strip() else (list(extra_args) if extra_args else [])
@@ -555,6 +637,12 @@ class Deployer(ModuleGeneric):
 
         except Exception as e:
             return {"ok": False, "error": f"build failed: {e}", "trace": traceback.format_exc()[-2000:], "logs": build_logs}
+        finally:
+            for _lg in _loggers:
+                try:
+                    _lg.removeHandler(_handler)
+                except Exception:
+                    pass
 
         # exe_src теперь указывает на версионный exe
         if exe_src is None or not exe_src.exists():

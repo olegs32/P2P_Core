@@ -20,6 +20,7 @@
 #   - перед каждой записью — автоматический бэкап с ротацией.
 
 import asyncio
+import base64
 import json
 import logging
 import os
@@ -64,11 +65,32 @@ class Config(ModuleGeneric):
     #  Пути
     # ------------------------------------------------------------------ #
 
+    def _is_se(self) -> bool:
+        # SE mode — SecureStorage + SEConfigManager
+        return hasattr(self.ctx, 'secure_storage') and hasattr(self.ctx, 'se_storage')
+
     def _cfg_path(self) -> Path:
-        return Path(self.ctx.config_manager.config_path)
+        # для SE — дисплей-путь внутри bin, для open — файловый путь
+        try:
+            return Path(self.ctx.config_manager.config_path)
+        except Exception:
+            # fallback для SE если config_path виртуальный
+            if self._is_se():
+                try:
+                    return Path(self.ctx.secure_storage.bin_path)
+                except Exception:
+                    pass
+            return Path("config.yaml")
 
     def _backups_dir(self) -> Path:
         p = self._cfg_path()
+        # для SE — бэкапы рядом с bin
+        if self._is_se():
+            try:
+                bin_p = Path(self.ctx.secure_storage.bin_path)
+                return bin_p.parent / (bin_p.name + '.backups')
+            except Exception:
+                pass
         return p.parent / (p.name + '.backups')
 
     @staticmethod
@@ -86,6 +108,37 @@ class Config(ModuleGeneric):
         Ответ несёт text с замаскированным local.secret
         ({SECRET_PLACEHOLDER}) — при save() подставится реальное значение.
         """
+        is_se = self._is_se()
+        if is_se:
+            try:
+                # SE: генерим yaml из живого Config (SecureStorage:/config/app.yaml)
+                cfg_dict = self.ctx.config.model_dump(mode='json')
+                text = yaml.dump(cfg_dict, allow_unicode=True, default_flow_style=False, sort_keys=False)
+                # mtime — bin файла
+                try:
+                    mtime = Path(self.ctx.secure_storage.bin_path).stat().st_mtime
+                except Exception:
+                    mtime = time.time()
+                path = self.ctx.secure_storage.bin_path
+                # для SE — также показываем se.yaml
+                try:
+                    se_cfg = getattr(self.ctx.config_manager, 'se_cfg', None)
+                    se_text = yaml.dump(se_cfg.model_dump(mode='json'), allow_unicode=True, sort_keys=False) if se_cfg else ""
+                except Exception:
+                    se_text = ""
+                return {
+                    'ok': True,
+                    'node': self.ctx.NODE,
+                    'path': f"{path}:/config/app.yaml (SecureStorage)",
+                    'text': self._mask_secret(text),
+                    'mtime': mtime,
+                    'frozen': self._is_frozen(),
+                    'backups': self._backups(),
+                    'se_text': se_text,
+                    'is_se': True,
+                }
+            except Exception as e:
+                return {'ok': False, 'error': f'config (SE) не читается: {e}'}
         path = self._cfg_path()
         try:
             text = path.read_text(encoding='utf-8')
@@ -100,6 +153,7 @@ class Config(ModuleGeneric):
             'mtime': mtime,
             'frozen': self._is_frozen(),
             'backups': self._backups(),
+            'is_se': False,
         }
 
     @rpc
@@ -166,8 +220,7 @@ class Config(ModuleGeneric):
 
     async def _commit(self, edited_text: str, base_mtime=None,
                       restart: bool = False) -> dict:
-        path = self._cfg_path()
-
+        is_se = self._is_se()
         # 1. parse
         try:
             parsed = yaml.safe_load(edited_text)
@@ -205,6 +258,59 @@ class Config(ModuleGeneric):
             warnings.append(f'имя узла "{new_cfg.node}" вступит в силу '
                             f'только после рестарта')
 
+        if is_se:
+            # SE: mtime — bin файла, запись — в SecureStorage
+            bin_path = Path(self.ctx.secure_storage.bin_path)
+            try:
+                cur_mtime = await asyncio.to_thread(lambda: bin_path.stat().st_mtime)
+            except OSError as e:
+                return {'ok': False, 'error': f'bin недоступен: {e}'}
+            if base_mtime is not None and abs(cur_mtime - float(base_mtime)) > 0.001:
+                return {
+                    'ok': False, 'conflict': True,
+                    'error': 'конфликт: config изменён с момента загрузки. Перечитайте и повторите.'}
+            old_cfg = self.ctx.config.model_copy(deep=True)
+            final_text = (self._unmask_secret(edited_text, real_secret)
+                          if placeholder_used else edited_text)
+            # бэкап предыдущего — в файловые бэкапы рядом с bin (читаемы без SecureStorage)
+            try:
+                await asyncio.to_thread(self._backup_and_write_se, bin_path, final_text, old_cfg)
+            except Exception as e:
+                return {'ok': False, 'error': f'запись (SE) не удалась: {e}'}
+            # запись в SecureStorage
+            try:
+                await asyncio.to_thread(self._write_se, final_text)
+            except Exception as e:
+                return {'ok': False, 'error': f'запись в SecureStorage не удалась: {e}'}
+            changed = [f for f in ConfigModel.model_fields
+                       if f not in HOT_SECTIONS
+                       and getattr(old_cfg, f) != getattr(new_cfg, f)]
+            self._sync_live(new_cfg)
+            applied_hot = self._apply_hot(new_cfg, old_cfg)
+            try:
+                mtime = bin_path.stat().st_mtime
+            except Exception:
+                mtime = cur_mtime
+            res = {
+                'ok': True,
+                'path': f"{bin_path}:/config/app.yaml (SecureStorage)",
+                'mtime': mtime,
+                'warnings': warnings,
+                'applied_hot': applied_hot,
+                'restart_required_sections': changed,
+                'restart_required': bool(changed),
+            }
+            self.log.info(f'config (SE) saved restart_required={bool(changed)} hot={applied_hot} changed={changed}')
+            if restart:
+                err = self._schedule_restart()
+                if err:
+                    res['note'] = f'сохранено (SE), но рестарт не запущен: {err}'
+                else:
+                    res['note'] = 'сохранено (SE); узел перезапустится'
+            return res
+
+        # open mode — файловый путь
+        path = self._cfg_path()
         # 4. conflict check по mtime
         try:
             cur_mtime = await asyncio.to_thread(
@@ -362,6 +468,125 @@ class Config(ModuleGeneric):
         tmp = path.parent / (path.name + '.tmp')
         tmp.write_text(text, encoding='utf-8')
         os.replace(tmp, path)
+
+    def _backup_and_write_se(self, bin_path: Path, new_text: str, old_cfg):
+        """Бэкап для SE: предыдущий yaml рядом с bin, ротация 10."""
+        bdir = bin_path.parent / (bin_path.name + '.backups')
+        bdir.mkdir(parents=True, exist_ok=True)
+        # предыдущий текст из старого cfg
+        try:
+            prev_text = yaml.dump(old_cfg.model_dump(mode='json'), allow_unicode=True, sort_keys=False)
+            prev_bytes = prev_text.encode('utf-8')
+            stamp = time.strftime('%Y%m%d-%H%M%S')
+            target = bdir / f'config_{stamp}.yaml'
+            n = 1
+            while target.exists():
+                target = bdir / f'config_{stamp}_{n}.yaml'
+                n += 1
+            latest = next(iter(sorted(bdir.glob('config_*.yaml'), key=lambda x: x.stat().st_mtime, reverse=True)), None)
+            same = False
+            if latest is not None:
+                try:
+                    same = latest.read_bytes() == prev_bytes
+                except OSError:
+                    same = False
+            if not same:
+                target.write_bytes(prev_bytes)
+            all_backups = sorted(bdir.glob('config_*.yaml'), key=lambda x: x.stat().st_mtime, reverse=True)
+            for old in all_backups[MAX_BACKUPS:]:
+                old.unlink(missing_ok=True)
+        except Exception as e:
+            self.log.warning(f"SE backup failed: {e}")
+
+    def _write_se(self, text: str):
+        """Запись config в SecureStorage:/config/app.yaml + flush."""
+        # валидация уже пройдена
+        self.ctx.secure_storage.write('/config/app.yaml', text.encode('utf-8'))
+        self.ctx.secure_storage.flush()
+        # обновляем ctx.config_manager.cfg уже через _sync_live, но и storage.cfg
+        try:
+            # перечитать чтобы SEConfigManager.cfg синхронизирован
+            self.ctx.config_manager.cfg = self.ctx.config  # _sync_live сделает
+        except Exception:
+            pass
+
+    # ---- SecureStorage browser (SE) ----
+
+    @rpc
+    def storage_list(self, data: dict = None) -> dict:
+        """Список файлов в SecureStorage (только SE)."""
+        if not self._is_se():
+            return {'ok': False, 'error': 'not SE mode (no SecureStorage)'}
+        prefix = (data or {}).get('prefix') or (data or {}).get('path') or "/"
+        try:
+            files = self.ctx.secure_storage.list(prefix)
+            # обогащаем размерами
+            items = []
+            for p in files:
+                try:
+                    sz = len(self.ctx.secure_storage.read_bytes(p))
+                except Exception:
+                    sz = -1
+                items.append({'path': p, 'size': sz})
+            # bin info
+            try:
+                bin_p = Path(self.ctx.secure_storage.bin_path)
+                bin_sz = bin_p.stat().st_size if bin_p.exists() else -1
+                key_sz = bin_p.with_suffix(bin_p.suffix + '.key').stat().st_size if bin_p.with_suffix(bin_p.suffix + '.key').exists() else -1
+            except Exception:
+                bin_sz = -1
+                key_sz = -1
+            return {'ok': True, 'prefix': prefix, 'files': items, 'bin_size': bin_sz, 'key_size': key_sz, 'bin_path': str(self.ctx.secure_storage.bin_path)}
+        except Exception as e:
+            return {'ok': False, 'error': str(e)}
+
+    @rpc
+    def storage_read(self, data: dict = None) -> dict:
+        """Чтение файла из SecureStorage. Текст — utf-8 или base64 если бинарь."""
+        if not self._is_se():
+            return {'ok': False, 'error': 'not SE mode'}
+        path = (data or {}).get('path') or (data or {}).get('name')
+        if not path:
+            return {'ok': False, 'error': 'path required'}
+        try:
+            raw = self.ctx.secure_storage.read_bytes(path)
+            # пробуем utf-8
+            try:
+                text = raw.decode('utf-8')
+                # yaml/json — показываем как есть, иначе base64 не нужен
+                is_text = True
+                # если это не текст (много \x00) — fallback base64
+                if '\x00' in text:
+                    raise ValueError('binary')
+            except Exception:
+                import base64
+                text = base64.b64encode(raw).decode()
+                is_text = False
+            return {'ok': True, 'path': path, 'text': text, 'is_text': is_text, 'size': len(raw)}
+        except FileNotFoundError:
+            return {'ok': False, 'error': f'not found: {path}'}
+        except Exception as e:
+            return {'ok': False, 'error': str(e)}
+
+    @rpc
+    def storage_info(self, data: dict = None) -> dict:
+        """Сводка по SecureStorage."""
+        if not self._is_se():
+            return {'ok': False, 'error': 'not SE mode'}
+        try:
+            bin_p = Path(self.ctx.secure_storage.bin_path)
+            key_p = bin_p.with_suffix(bin_p.suffix + '.key')
+            return {
+                'ok': True,
+                'bin_path': str(bin_p),
+                'bin_exists': bin_p.exists(),
+                'bin_size': bin_p.stat().st_size if bin_p.exists() else 0,
+                'key_exists': key_p.exists(),
+                'key_size': key_p.stat().st_size if key_p.exists() else 0,
+                'files': len(self.ctx.secure_storage.list('/')),
+            }
+        except Exception as e:
+            return {'ok': False, 'error': str(e)}
 
     # ------------------------------------------------------------------ #
     #  Горячее применение и синк живых объектов

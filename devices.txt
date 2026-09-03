@@ -1,5 +1,24 @@
 ﻿# MVP devices — по одному host/node_id на строку
 # пример:
-node1
-node2
-192.168.1.10
+test
+41-1
+41-2
+41-3
+41-4
+43-IMG
+BUH
+DC-19
+DIRECTOR
+HEAD-ZAKUP
+K38-3
+K41-ZAM
+K42-1
+K43-2
+K43-3
+service1
+SYSADMIN-PC
+VGN
+ZAKUP1
+ZAKUP2
+ZAVHOZ
+URIST2

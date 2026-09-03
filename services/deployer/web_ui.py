@@ -193,3 +193,37 @@ def render(rpc):
             st.code(f"{b.get('version')} — {b.get('path')} — {b.get('manifest', {}).get('services', [])}")
     else:
         st.caption("Пока нет сборок в dist/")
+
+    st.divider()
+    st.subheader("📦 Только деплой (без сборки)")
+    st.caption("Использует уже собранный dist/<версия>/Node_P2P_Core.exe — без вызова паковщика")
+    if not builds:
+        st.caption("Нет сборок — сначала соберите")
+    else:
+        versions = [b.get("version") for b in builds if b.get("version")]
+        sel_ver = st.selectbox("Версия для деплоя", versions, key="deploy_only_ver")
+        deploy_targets = st.multiselect("Цели (без сборки)", devices, key="deploy_only_targets")
+        deploy_rpath = st.text_input("Remote path (без сборки)", value=r"C:\Core\Node_P2P_Core.exe", key="deploy_only_rpath")
+        if st.button("🚀 Деплоить без сборки", type="secondary", use_container_width=True, key="deploy_only_btn"):
+            if not deploy_targets:
+                st.error("Выберите цели")
+            elif not sel_ver:
+                st.error("Выберите версию")
+            else:
+                payload = {"version": sel_ver, "targets": deploy_targets, "remote_path": deploy_rpath}
+                with st.spinner(f"Деплой {sel_ver} → {deploy_targets} ..."):
+                    try:
+                        res = rpc.call("deployer", "deploy", payload)
+                    except Exception as e:
+                        st.error(f"deploy failed: {e}")
+                        res = None
+                if res is not None:
+                    if not res.get("ok"):
+                        st.error(f"Deploy error: {res.get('error')}")
+                    else:
+                        st.success(f"✅ Деплой {sel_ver} — {res.get('note','')}")
+                        for r in res.get("deploy", []):
+                            if r.get("ok"):
+                                st.success(f"{r['target']} → {r['remote_path']} OK")
+                            else:
+                                st.error(f"{r['target']} FAIL: {r.get('error')}")
