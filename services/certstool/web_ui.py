@@ -86,8 +86,9 @@ _SUMMARY_FIELDS = {'Subject', 'Subject_CN', 'Issuer', 'Issuer_CN',
                    'Действителен с', 'Действителен до'}
 
 
-def _render_cert_detail(cert: dict, idx: int):
+def _render_cert_detail(cert: dict, idx: int, rpc_proxy=None):
     """Рендерит развёрнутую панель подробностей сертификата."""
+    # rpc_proxy пробрасывается из render для session-aware вызовов
     raw = cert.get('raw', {})
 
     with st.container():
@@ -113,15 +114,20 @@ def _render_cert_detail(cert: dict, idx: int):
             exp_emoji, exp_label = _expiry_badge(cert.get('valid_to', ''))
             st.markdown(f"**Срок:** {exp_emoji} {exp_label}")
         with c3:
-            # Кнопка "Починить" в деталях
+            # Кнопка "Починить" в деталях — session-aware (WTS без окна)
             if st.button("🔧 Починить связку", width='stretch',
                          help="Перепривязать закрытый ключ к сертификату",
                          key=f"fix_detail_{idx}"):
                 try:
-                    res = rpc.call('certstool', 'fix_certificate_link', {
-                        'thumbprint': thumbprint,
-                        'password': '00000000',
-                    })
+                    sid = st.session_state.get('selected_cert_session_id')
+                    data = {'thumbprint': thumbprint, 'password': '00000000'}
+                    if sid is not None:
+                        data['session_id'] = sid
+                    _rpc = rpc_proxy if rpc_proxy is not None else None
+                    if _rpc is None:
+                        st.error("RPC недоступен")
+                        return
+                    res = _rpc.call('certstool', 'fix_certificate_link', data)
                     if res.get('success'):
                         st.success("Связка починена ✓")
                         st.session_state.pop(f'cert_detail_{idx}', None)
@@ -182,8 +188,60 @@ def _render_cert_detail(cert: dict, idx: int):
 def render(rpc):
     if st is None:
         return
-    tab_list, tab_install, tab_net, tab_export, tab_search = st.tabs(
-        ["Сертификаты", "Установка", "🌐 Сетевая установка", "Экспорт", "Поиск"]
+    # --- Глобальный выбор сессии: все certmgr/csptest в контексте пользователя ---
+    # SYSTEM (session 0) не видит uMy пользователя -> нужно выбрать живую сессию.
+    # Запуск без окна: CreateProcessAsUserW + CREATE_NO_WINDOW (src/se/wts.py).
+    _active_sid = st.session_state.get('selected_cert_session_id')
+    # кэш сессий для селектора (обновляется кнопкой в табе Сессии)
+    try:
+        _sess_cache = st.session_state.get('sessions_data')
+        if _sess_cache is None:
+            _sess_cache = rpc.call('certstool', 'list_sessions', {})
+            st.session_state.sessions_data = _sess_cache
+    except Exception as _e:
+        _sess_cache = {"sessions": []}
+    _sess_list = _sess_cache.get('sessions', []) if isinstance(_sess_cache, dict) else []
+
+    # helper: вызов с пробросом session_id если выбран
+    def _cs(method, data=None):
+        d = dict(data or {})
+        if _active_sid is not None:
+            d['session_id'] = _active_sid
+        return rpc.call('certstool', method, d)
+
+    # селектор над вкладками
+    with st.container(border=True):
+        c1, c2, c3 = st.columns([3, 2, 1])
+        with c1:
+            opts = [None] + [s['session_id'] for s in _sess_list]
+            def _fmt(sid):
+                if sid is None:
+                    return "SYSTEM (session 0) — без имперсонации"
+                s = next((x for x in _sess_list if x['session_id']==sid), None)
+                if s:
+                    return f"Сессия {sid} — {s.get('user_name','')} ({s.get('winstation','')})"
+                return f"Сессия {sid}"
+            # index
+            try:
+                idx = opts.index(_active_sid)
+            except ValueError:
+                idx = 0
+            sel = st.selectbox("Контекст выполнения certmgr/csptest", options=opts, format_func=_fmt, index=idx, key="selected_cert_session_select", help="Все действия с сертификатами будут выполнены в выбранной сессии пользователя без окна. SYSTEM не видит пользовательское хранилище uMy.")
+            if sel != _active_sid:
+                st.session_state.selected_cert_session_id = sel
+                st.rerun()
+        with c2:
+            if _active_sid is None:
+                st.warning("Выбран SYSTEM — список uMy может быть пуст")
+            else:
+                st.success(f"Активна сессия {_active_sid} — команды идут через WTS без окна")
+        with c3:
+            if st.button("🔄 Сессии", key="global_sessions_refresh"):
+                st.session_state.pop('sessions_data', None)
+                st.rerun()
+
+    tab_list, tab_install, tab_net, tab_export, tab_search, tab_sessions = st.tabs(
+        ["Сертификаты", "Установка", "🌐 Сетевая установка", "Экспорт", "Поиск", "👤 Сессии"]
     )
 
     # ------------------------------------------------------------------ #
@@ -199,16 +257,27 @@ def render(rpc):
         if 'certs_dashboard' not in st.session_state:
             with st.spinner("Загрузка сертификатов..."):
                 try:
-                    st.session_state.certs_dashboard = rpc.call(
-                        'certstool', 'get_dashboard_data'
-                    )
+                    st.session_state.certs_dashboard = _cs('get_dashboard_data')
                 except Exception as e:
                     st.error(f"Ошибка: {e}")
                     return
 
         dash = st.session_state.certs_dashboard
         certs = dash.get('certificates', [])
-        col_count.metric("Всего сертификатов", dash.get('total_certificates', 0))
+        col_total, col_csp = st.columns(2)
+        col_total.metric("Всего сертификатов", dash.get('total_certificates', 0))
+        csp_ver = dash.get('csp_version', 'unknown')
+        csp_full = dash.get('csp_version_full', '')
+        csp_bin = dash.get('csp_bin', '')
+        if csp_ver != 'unknown':
+            ver_label = csp_full if csp_full else f"{csp_ver}.x"
+            col_csp.metric("Версия CSP", f"v{ver_label}", help=f"бин: {csp_bin}" if csp_bin else None)
+        else:
+            # детекция не сработала — показываем какие бинарники реально используются
+            if csp_bin in ('v4', 'v5'):
+                col_csp.metric("Версия CSP", "не определена", delta=f"бин: {csp_bin}", delta_color="off", help="CSP не ответил на -version, используются встроенные бинарники")
+            else:
+                col_csp.metric("Версия CSP", "неизвестна")
 
         if not certs:
             st.info("Нет установленных сертификатов")
@@ -233,7 +302,7 @@ def render(rpc):
                         failed = 0
                         for thumbprint in list(st.session_state.certs_batch_queue):
                             try:
-                                res = rpc.call('certstool', 'delete_certificate', {
+                                res = _cs('delete_certificate', {
                                     'thumbprint': thumbprint,
                                 })
                                 if res.get('success'):
@@ -292,7 +361,7 @@ def render(rpc):
                             if st.button("📦 Экспорт PFX", key=f"pfx_go_{i}"):
                                 with st.spinner("Экспорт PFX..."):
                                     try:
-                                        res = rpc.call('certstool', 'export_certificate_pfx', {
+                                        res = _cs('export_certificate_pfx', {
                                             'container_name': container,
                                             'thumbprint': thumbprint,
                                             'password': pfx_pwd,
@@ -328,7 +397,7 @@ def render(rpc):
                             if st.button("🔧", key=f"fix_{i}",
                                          help="Починить связку сертификата с закрытым ключом"):
                                 try:
-                                    res = rpc.call('certstool', 'fix_certificate_link', {
+                                    res = _cs('fix_certificate_link', {
                                         'thumbprint': thumbprint,
                                         'password': '00000000',
                                     })
@@ -347,7 +416,7 @@ def render(rpc):
                         with cols[6]:
                             if st.button("🗑️", key=f"del_{i}"):
                                 try:
-                                    res = rpc.call('certstool', 'delete_certificate', {
+                                    res = _cs('delete_certificate', {
                                         'thumbprint': thumbprint,
                                     })
                                     if res.get('success'):
@@ -370,7 +439,7 @@ def render(rpc):
                             if st.button("📄 CER", key=f"exp_cer_{i}"):
                                 with st.spinner("Экспорт CER..."):
                                     try:
-                                        res = rpc.call('certstool', 'export_certificate_cer', {
+                                        res = _cs('export_certificate_cer', {
                                             'container_name': container,
                                             'thumbprint': thumbprint,
                                         })
@@ -384,7 +453,7 @@ def render(rpc):
 
                     # Подробности сертификата
                     if st.session_state.get(f'cert_detail_{i}'):
-                        _render_cert_detail(c, i)
+                        _render_cert_detail(c, i, rpc_proxy=rpc)
 
                     # Download buttons if export completed
                     if f'pfx_dl_{i}' in st.session_state:
@@ -420,7 +489,7 @@ def render(rpc):
         if pfx_file is not None and st.button("Установить", key="certs_install_btn"):
             pfx_b64 = base64.b64encode(pfx_file.read()).decode('utf-8')
             try:
-                result = rpc.call('certstool', 'install_pfx_from_base64', {
+                result = _cs('install_pfx_from_base64', {
                     'pfx_base64': pfx_b64,
                     'password': pfx_password,
                     'filename': pfx_file.name,
@@ -449,7 +518,7 @@ def render(rpc):
                     'filename': f.name,
                 })
             try:
-                result = rpc.call('certstool', 'batch_install_pfx_from_bytes', {
+                result = _cs('batch_install_pfx_from_bytes', {
                     'pfx_list': pfx_list,
                     'current_password': batch_pwd,
                     'new_password': batch_new_pwd or None,
@@ -546,7 +615,7 @@ def render(rpc):
                             if st.button("📥 Установить", key=f"net_install_{tp[:12]}"):
                                 with st.spinner(f"Установка с {source}..."):
                                     try:
-                                        result = rpc.call('certstool', 'install_from_node', {
+                                        result = _cs('install_from_node', {
                                             'thumbprint': tp,
                                             'source_node': source,
                                             'new_password': new_pwd,
@@ -587,7 +656,7 @@ def render(rpc):
                     progress = st.progress(0)
                     for idx, item in enumerate(queue):
                         try:
-                            result = rpc.call('certstool', 'install_from_node', {
+                            result = _cs('install_from_node', {
                                 'thumbprint': item['thumbprint'],
                                 'source_node': item['source_node'],
                                 'new_password': new_pwd,
@@ -632,7 +701,7 @@ def render(rpc):
         if st.button("Экспортировать", key="certs_export_btn") and export_pattern:
             with st.spinner("Экспорт..."):
                 try:
-                    result = rpc.call('certstool', 'export_certificate_by_subject', {
+                    result = _cs('export_certificate_by_subject', {
                         'subject_pattern': export_pattern,
                         'password': export_pwd,
                     })
@@ -669,7 +738,7 @@ def render(rpc):
 
         if st.button("Экспортировать PFX", key="certs_exp_pfx_btn") and exp_container:
             try:
-                result = rpc.call('certstool', 'export_certificate_pfx', {
+                result = _cs('export_certificate_pfx', {
                     'container_name': exp_container,
                     'password': exp_pwd2,
                 })
@@ -692,7 +761,7 @@ def render(rpc):
         search_pattern = st.text_input("Паттерн Subject для поиска", key="certs_search")
         if st.button("Найти", key="certs_search_btn") and search_pattern:
             try:
-                results = rpc.call('certstool', 'find_certificates_by_subject', {
+                results = _cs('find_certificates_by_subject', {
                     'subject_pattern': search_pattern,
                 })
                 if results:
@@ -704,3 +773,34 @@ def render(rpc):
                     st.warning("Сертификаты не найдены")
             except Exception as e:
                 st.error(f"Ошибка: {e}")
+
+    # ------------------------------------------------------------------ #
+    #  Tab 6: Сессии — справка по контексту выполнения
+    # ------------------------------------------------------------------ #
+    with tab_sessions:
+        st.subheader("👤 Интерактивные сессии")
+        st.caption("Выбор сессии определяет, в каком пользовательском контексте выполняются certmgr/csptest (без окна). Узел работает в session 0 SYSTEM и без выбора не видит пользовательское хранилище uMy.")
+        st.info("Используйте селектор над вкладками. Все действия (список, установка, экспорт, удаление, починка) автоматически идут в выбранной сессии через WTS CreateProcessAsUserW + CREATE_NO_WINDOW. Кнопка ниже — legacy установка node-сертификата (оставлена для совместимости).")
+        if st.button("🔄 Обновить сессии", key="sessions_refresh"):
+            st.session_state.pop('sessions_data', None)
+            st.rerun()
+        sessions = _sess_list
+        st.metric("Активных сессий", len(sessions))
+        if not sessions:
+            st.info("Нет активных интерактивных сессий")
+        else:
+            for s in sessions:
+                st.text(f"Сессия {s['session_id']} — {s.get('user_name','')} | {s.get('winstation','')} | state={s.get('state')}")
+            # legacy
+            with st.expander("Legacy: установить node-сертификат в сессию (не требуется для работы с uMy)"):
+                sel_legacy = st.selectbox("Сессия для legacy", options=[s['session_id'] for s in sessions], key="session_select_legacy")
+                if st.button("🔐 Установить сертификат ноды в эту сессию", key="install_cert_session_btn"):
+                    with st.spinner("Запуск certmgr в сессии..."):
+                        try:
+                            res = rpc.call('certstool', 'install_cert_to_session', {'session_id': sel_legacy})
+                            if res.get('ok'):
+                                st.success(f"✅ Сертификат установлен в сессию {sel_legacy} (pid={res.get('pid','?')})")
+                            else:
+                                st.error(f"Ошибка: {res.get('error','неизвестная')}")
+                        except Exception as e:
+                            st.error(f"Ошибка: {e}")

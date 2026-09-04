@@ -169,11 +169,11 @@ def build(name, ui=True, services: list[str] | None = None, extra_args: list[str
         if services is not None:
             # выборочные сервисы (deployer) — без webpanel, без лишних web_ui если headless
             for svc in services:
-                if svc == 'webpanel':
+                if svc in ('webpanel', 'deployer', 'demo'):
                     continue
                 current_args.extend(['--collect-all', f'services.{svc}'])
-                if (Path("./services") / svc / "web_ui.py").exists():
-                    exclude_args.extend(['--exclude-module', f'services.{svc}.web_ui'])
+                # if (Path("./services") / svc / "web_ui.py").exists():
+                #     exclude_args.extend(['--exclude-module', f'services.{svc}.web_ui'])
         else:
             for p in Path("./services").glob("*/"):
                 if p.is_dir() and p.name != 'webpanel' and p.name != '__pycache__':

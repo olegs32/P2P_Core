@@ -84,7 +84,7 @@ def _read_devices() -> list[str]:
         return []
     out = []
     for raw in lines:
-        s = raw.strip()
+        s = raw.strip().lower()
         if not s or s.startswith("#"):
             continue
         # формат: host или "node_id host" — берём первое слово как id
@@ -328,8 +328,9 @@ class Deployer(ModuleGeneric):
                 unc_work = unc_exe.parent
                 unc_work.mkdir(parents=True, exist_ok=True)
                 (unc_work / "ca.cer").write_bytes(ca_cert_src.read_bytes())
-                # Выпускаем node_cert.pem/node_key.pem для цели из CA админа
-                if ca_key_src.exists():
+                # Выпускаем node_cert.pem/node_key.pem только если хранилище отсутствует (первый деплой)
+                p2p_secure_remote = unc_work / "p2p_secure.bin"
+                if not p2p_secure_remote.exists() and ca_key_src.exists():
                     try:
                         from src.se.cert_signer import issue_node_cert
                         ca_cert_data = ca_cert_src.read_bytes()
@@ -340,15 +341,33 @@ class Deployer(ModuleGeneric):
                         log.info(f"Node cert/key issued for {target} → {unc_work}")
                     except Exception as e:
                         log.warning(f"Node cert issuance for {target} skipped: {e}")
+                elif p2p_secure_remote.exists():
+                    log.info(f"Node {target} already has SecureStorage — skipping cert re-issuance")
 
-            # 5. Запуск через psexec -s \\host remote_path
+            # 5. Остановка старого процесса + запуск нового через psexec
             if launch:
-                # В админ-контексте psexec доступен; если нет — логируем как done (MVP без реального запуска)
                 psexec = shutil.which("psexec")
                 if psexec and not is_local:
+                    # 5a. Убиваем старый процесс ноды на удалённой машине
+                    try:
+                        kill_cmd = [psexec, "-s", f"\\\\{host}", "taskkill", "/f", "/im", "Node_P2P_Core.exe"]
+                        kill_proc = await asyncio.to_thread(subprocess.run, kill_cmd, capture_output=True, timeout=15)
+                        kill_out = (kill_proc.stdout or b"").decode(errors="ignore")[:300]
+                        kill_err = (kill_proc.stderr or b"").decode(errors="ignore")[:300]
+                        result["kill_out"] = kill_out
+                        result["kill_err"] = kill_err
+                        if kill_proc.returncode != 0:
+                            log.warning(f"taskkill {target} code {kill_proc.returncode}: {kill_err}")
+                        else:
+                            log.info(f"Old process on {target} killed")
+                        # Ждём освобождения порта/процесса
+                        await asyncio.to_thread(__import__("time").sleep, 3)
+                    except Exception as e:
+                        result["kill_error"] = str(e)
+                        log.warning(f"taskkill failed for {target}: {e}")
+                    # 5b. Запускаем новый exe
                     try:
                         cmd = [psexec, "-s", f"\\\\{host}", remote_path]
-                        # Не блокируем надолго
                         proc = await asyncio.to_thread(subprocess.run, cmd, capture_output=True, timeout=30)
                         out = (proc.stdout or b"").decode(errors="ignore")[:500]
                         err = (proc.stderr or b"").decode(errors="ignore")[:500]

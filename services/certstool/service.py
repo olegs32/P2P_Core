@@ -6,12 +6,21 @@ import asyncio
 import base64
 import re
 import secrets
+import subprocess
 import tempfile
 from datetime import datetime
 from pathlib import Path
 
 from src.internal_modules.base import ModuleGeneric
 from src.networking.protocol import MsgPack, PackType
+from src.se.storage import SecureStorage
+try:
+    from src.se.wts import WTS_SESSION, get_sessions, run_in_session, run_in_session_output
+except ImportError:
+    WTS_SESSION = None
+    get_sessions = None
+    run_in_session = None
+    run_in_session_output = None
 from services.rpc import rpc
 
 
@@ -36,12 +45,183 @@ class CertsTool(ModuleGeneric):
         'Тип поставщика не определен',
     )
 
+    # Каталоги binaries для разных версий CSP
+    _CSP_VERSION_DIRS = {'5': 'v5', '4': 'v4'}
+
     def __init__(self, name: str, context):
         super().__init__(name, context)
-        self.csp_path = Path(__file__).parent
+        # Определяем версию установленного в системе КриптоПро CSP
+        self.csp_version, self.csp_version_full = self._detect_csp_version()
         self._cert_sync_task: asyncio.Task | None = None
         self._install_history: list[dict] = []
         self._terminated: bool = False
+        # Теперь определяем путь к бинарникам на основе версии
+        self.csp_path = self._detect_csp_path(self.csp_version)
+        self.log.info(f'CertsTool started (csp_path={self.csp_path}, csp_version={self.csp_version}, full={self.csp_version_full})')
+
+    def _parse_csp_output(self, out: str) -> tuple[str | None, str | None]:
+        """Парсит вывод csptest -version -> (major, full). Поддерживает CryptoPro / Crypto-Pro, RU/EN."""
+        if not out:
+            return None, None
+        if re.search(r'КРИПТО[-\s]*ПРО', out, re.IGNORECASE):
+            return '5', None
+        if re.search(r'Crypto[-\s]*Pro', out, re.IGNORECASE):
+            return '4', None
+        return None, None
+
+    def _detect_csp_version(self) -> tuple[str | None, str | None]:
+        """Detect installed system Cryptopro CSP version. Returns (major, full)."""
+        # Расширяем where — находим реальный путь csptest/certmgr в PATH, чтобы не вызвать виндовый certmgr
+        def _where_candidates(name: str) -> list[str]:
+            try:
+                r = subprocess.run(f'where {name}', shell=True, capture_output=True, text=True, encoding='cp1251', errors='ignore', timeout=3)
+                out = (r.stdout or '').strip()
+                cand = []
+                for line in out.splitlines():
+                    line=line.strip().strip('"')
+                    if line and 'Crypto' in line:
+                        cand.append(line)
+                    elif line and name.lower() in line.lower() and 'Windows' not in line:
+                        cand.append(line)
+                return cand
+            except Exception:
+                return []
+
+        where_csptest = _where_candidates('csptest')
+        candidates = list(dict.fromkeys(where_csptest + [
+            'csptest',
+            r'C:\Program Files\Crypto Pro\CSP\csptest.exe',
+            r'C:\Program Files\CryptoPro\CSP\csptest.exe',
+            r'C:\Program Files (x86)\Crypto Pro\CSP\csptest.exe',
+            r'C:\Program Files (x86)\CryptoPro\CSP\csptest.exe',
+            r'C:\Program Files\Common Files\Crypto Pro\CSP\csptest.exe',
+            r'C:\Program Files\Common Files\CryptoPro\CSP\csptest.exe',
+        ]))
+        for exe in candidates:
+            try:
+                # кавычки нужны только если в пути пробелы
+                exe_q = f'"{exe}"' if ' ' in exe and not exe.startswith('"') else exe
+                full_command = f'chcp 1251 >nul && {exe_q} -version'
+                result = subprocess.run(
+                    full_command,
+                    shell=True,
+                    capture_output=True,
+                    text=True,
+                    encoding='cp1251',
+                    errors='ignore',
+                    timeout=5,
+                )
+                out = (result.stdout or '') + '\n' + (result.stderr or '')
+                major, full = self._parse_csp_output(out)
+                if major:
+                    self.log.info(f'CSP version detected via {exe}: major={major}, full={full}')
+                    return major, full
+                else:
+                    self.log.debug(f'csptest -version via {exe} no match, out={out[:200]!r}')
+            except Exception as e:
+                self.log.debug(f'CSP version probe {exe} failed: {e}')
+                continue
+
+        # Fallback 2: certmgr -help — различие по копирайту/году
+        # v5: 'Certmgr (c) "КРИПТО-ПРО", 2007-2025.'  v4: 'Certmgr 1.1 (c) "Crypto-Pro", 2007-2018.'
+        # Год может меняться, но v4 не перевалит за 2018, v5 уже >=2025 — эвристика по году.
+        def _parse_help(out: str) -> tuple[str | None, str | None]:
+            if not out:
+                return None, None
+            m = re.search(r'2007-(\d{4})', out)
+            if m:
+                year = int(m.group(1))
+                # 2018 и раньше — v4, 2020+ — v5
+                if year >= 2020:
+                    return '5', f'5.x (help {year})'
+                else:
+                    return '4', f'4.x (help {year})'
+            if 'КРИПТО-ПРО' in out:
+                return '5', None
+            if 'Crypto-Pro' in out and 'Certmgr 1.1' in out:
+                return '4', None
+            return None, None
+
+        # 'certmgr' без пути — виндовый, пропускаем. Ищем только КриптоПро.
+        where_certmgr = [p for p in _where_candidates('certmgr') if 'Crypto' in p]
+        help_candidates = list(dict.fromkeys(where_certmgr + [
+            r'C:\Program Files\Crypto Pro\CSP\certmgr.exe',
+            r'C:\Program Files\CryptoPro\CSP\certmgr.exe',
+            r'C:\Program Files (x86)\Crypto Pro\CSP\certmgr.exe',
+            r'C:\Program Files (x86)\CryptoPro\CSP\certmgr.exe',
+            r'C:\Program Files\Common Files\Crypto Pro\CSP\certmgr.exe',
+            str(Path(__file__).parent / 'v5' / 'certmgr.exe'),
+            str(Path(__file__).parent / 'v4' / 'certmgr.exe'),
+        ]))
+        for exe in help_candidates:
+            try:
+                exe_q = f'"{exe}"' if ' ' in exe and not exe.startswith('"') else exe
+                full_command = f'chcp 1251 >nul && {exe_q} -help'
+                result = subprocess.run(
+                    full_command,
+                    shell=True,
+                    capture_output=True,
+                    text=True,
+                    encoding='cp1251',
+                    errors='ignore',
+                    timeout=5,
+                )
+                out = (result.stdout or '') + '\n' + (result.stderr or '')
+                major, full = _parse_help(out)
+                if major:
+                    self.log.info(f'CSP version via certmgr -help {exe}: major={major}, help_year={full}')
+                    return major, full
+            except Exception as e:
+                self.log.debug(f'certmgr help probe {exe} failed: {e}')
+                continue
+
+        # Fallback 3: реестр Windows (если csptest/certmgr не в PATH)
+        try:
+            import winreg
+            for hive, sub in [
+                (winreg.HKEY_LOCAL_MACHINE, r'SOFTWARE\Crypto Pro\Cryptography\CurrentVersion'),
+                (winreg.HKEY_LOCAL_MACHINE, r'SOFTWARE\WOW6432Node\Crypto Pro\Cryptography\CurrentVersion'),
+            ]:
+                try:
+                    with winreg.OpenKey(hive, sub) as k:
+                        for val in ('Version', 'ProductVersion', 'DisplayVersion'):
+                            try:
+                                v, _ = winreg.QueryValueEx(k, val)
+                                major, full = self._parse_csp_output(str(v))
+                                if major:
+                                    self.log.info(f'CSP version from registry {sub}\\{val}: {v}')
+                                    return major, full
+                            except FileNotFoundError:
+                                continue
+                except FileNotFoundError:
+                    continue
+        except Exception as e:
+            self.log.debug(f'Registry CSP probe failed: {e}')
+
+        self.log.warning('CSP version not detected — fallback to unknown')
+        return None, None
+
+    def _detect_csp_path(self, detected_version: str | None = None) -> Path:
+        """Detect CSP version and return path to appropriate binaries directory."""
+        # Определяем каталог на основе версии
+        if detected_version and detected_version in self._CSP_VERSION_DIRS:
+            version_dir = self._CSP_VERSION_DIRS[detected_version]
+            candidate = Path(__file__).parent / version_dir
+            if candidate.exists() and (candidate / 'certmgr.exe').exists():
+                self.log.info(f'Using CSP version directory: {candidate}')
+                return candidate
+            self.log.warning(f'CSP version {detected_version} directory not found or incomplete: {candidate}')
+
+        # Фоллбек: используем v4 (старшая совместимость)
+        fallback = Path(__file__).parent / 'v4'
+        if fallback.exists() and (fallback / 'certmgr.exe').exists():
+            self.log.info(f'Using fallback CSP directory: {fallback}')
+            return fallback
+
+        # Последний фоллбек: корневой каталог certstool
+        root = Path(__file__).parent
+        self.log.warning(f'Using root CSP directory (no version detection): {root}')
+        return root
 
     async def start(self):
         self._validate_csp_path()
@@ -132,9 +312,53 @@ class CertsTool(ModuleGeneric):
         if missing:
             self.log.warning(f'Missing CSP tools: {missing}')
 
-    async def _run_async(self, command: str) -> str:
+    # Маркеры пустого хранилища — не ошибка
+    _EMPTY_MARKERS = ('Список сертификатов пуст', 'No certificates', '0 certificates')
+
+    def _extract_session(self, data: dict | None) -> int | None:
+        """session_id из RPC data (int/str), None = SYSTEM/session 0."""
+        if not isinstance(data, dict):
+            return None
+        sid = data.get('session_id', data.get('sessionId', None))
+        if sid is None or sid == '' or str(sid).lower() == 'none':
+            return None
+        try:
+            v = int(sid)
+            return v if v != 0 else None
+        except Exception:
+            return None
+
+    def _shared_tmp_path(self, suffix: str) -> Path:
+        """Кросс-сессионный tmp (work_dir доступен и SYSTEM и user)."""
+        try:
+            base = Path(getattr(self.ctx.config.local, 'work_dir', tempfile.gettempdir()))
+        except Exception:
+            base = Path(tempfile.gettempdir())
+        d = base / 'cert_tmp'
+        try:
+            d.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
+        return d / f'cert_{secrets.token_hex(4)}{suffix}'
+
+    async def _run_async(self, command: str, session_id: int | None = None) -> str:
         if self._terminated:
             return ''
+        # session-aware путь — без окна, в контексте пользователя
+        if session_id is not None and run_in_session_output is not None:
+            try:
+                cmdline = f'cmd.exe /c chcp 1251 >nul && {command}'
+                out = await asyncio.to_thread(run_in_session_output, cmdline, int(session_id), None, 45)
+                if any(m in out for m in self._CSP_MISSING_MARKERS):
+                    await self._terminate_no_csp()
+                    return ''
+                if any(m in out for m in self._EMPTY_MARKERS):
+                    self.log.info('certmgr: empty store (session %s)', session_id)
+                    return ''
+                return out
+            except Exception as e:
+                self.log.error(f'Command error (session {session_id}): {e}')
+                return ''
         try:
             # chcp 1251 в том же shell-контексте, что и основная команда
             full_command = f'chcp 1251 && {command}'
@@ -144,23 +368,29 @@ class CertsTool(ModuleGeneric):
                 stderr=asyncio.subprocess.PIPE,
             )
             stdout, stderr = await proc.communicate()
-            try:
-                out = stdout.decode('cp1251')
-            except UnicodeDecodeError:
-                out = stdout.decode('utf-8', errors='ignore')
-            if stderr:
-                try:
-                    err_text = stderr.decode('cp1251')
-                except UnicodeDecodeError:
-                    err_text = stderr.decode('utf-8', errors='ignore')
-                if err_text.strip():
-                    if any(m in err_text for m in self._CSP_MISSING_MARKERS):
-                        await self._terminate_no_csp()
-                        return ''
-                    self.log.warning(f'certmgr stderr: {err_text[:500]}')
-                    out += '\n' + err_text
+            def _decode(b: bytes) -> str:
+                for enc in ('cp1251', 'cp866', 'utf-8'):
+                    try:
+                        return b.decode(enc)
+                    except UnicodeDecodeError:
+                        continue
+                return b.decode('cp1251', errors='ignore')
+            out = _decode(stdout)
+            err_text = _decode(stderr) if stderr else ''
+            if err_text.strip():
+                if any(m in err_text for m in self._CSP_MISSING_MARKERS):
+                    await self._terminate_no_csp()
+                    return ''
+                if any(m in err_text for m in self._EMPTY_MARKERS) or any(m in out for m in self._EMPTY_MARKERS):
+                    self.log.info(f'certmgr: empty store ({err_text[:120]})')
+                    return ''
+                self.log.warning(f'certmgr stderr: {err_text[:500]}')
+                out += '\n' + err_text
             if any(m in out for m in self._CSP_MISSING_MARKERS):
                 await self._terminate_no_csp()
+                return ''
+            if any(m in out for m in self._EMPTY_MARKERS):
+                self.log.info('certmgr: empty store')
                 return ''
             return out
         except Exception as e:
@@ -279,9 +509,10 @@ class CertsTool(ModuleGeneric):
 
     @rpc
     async def list_certificates(self, data: dict) -> dict:
-        """Список установленных сертификатов."""
+        """Список установленных сертификатов. data может содержать session_id."""
+        sid = self._extract_session(data)
         cmd = f'"{self.csp_path / "certmgr.exe"}" -list'
-        output = await self._run_async(cmd)
+        output = await self._run_async(cmd, session_id=sid)
         if not output.strip():
             return {}
         return self._parse_certificate_list(output)
@@ -290,7 +521,8 @@ class CertsTool(ModuleGeneric):
     async def find_certificate_by_subject(self, data: dict) -> dict:
         """Найти первый сертификат по паттерну в Subject."""
         pattern = data.get('subject_pattern', '')
-        certs = await self.list_certificates({})
+        sid = self._extract_session(data)
+        certs = await self.list_certificates({'session_id': sid} if sid is not None else {})
         for info in certs.values():
             if 'Subject' in info and pattern.lower() in info['Subject'].lower():
                 return info
@@ -300,13 +532,15 @@ class CertsTool(ModuleGeneric):
     async def find_certificates_by_subject(self, data: dict) -> list:
         """Найти все сертификаты по паттерну в Subject."""
         pattern = data.get('subject_pattern', '')
-        certs = await self.list_certificates({})
+        sid = self._extract_session(data)
+        certs = await self.list_certificates({'session_id': sid} if sid is not None else {})
         return [info for info in certs.values()
                 if 'Subject' in info and pattern.lower() in info['Subject'].lower()]
 
     @rpc
     async def deploy_certificate(self, data: dict) -> dict:
         """Развернуть сертификат из PFX + CER файлов."""
+        sid = self._extract_session(data)
         pfx_path = data.get('pfx_path', '')
         cer_path = data.get('cer_path', '')
         pin = data.get('pin', '00000000')
@@ -325,7 +559,7 @@ class CertsTool(ModuleGeneric):
         cmd = (f'"{self.csp_path / "certmgr.exe"}" -install -store uMy '
                f'-file "{pfx_path}" -pfx -container "{auto_container}" '
                f'-silent -keep_exportable -pin {pin}')
-        output = await self._run_async(cmd)
+        output = await self._run_async(cmd, session_id=sid)
         result['pfx_error'] = self._extract_error_code(output)
         result['container'] = self._extract_container(output)
         if not result['container'] and result['pfx_error'] == '0x00000000':
@@ -338,7 +572,7 @@ class CertsTool(ModuleGeneric):
         cmd = (f'"{self.csp_path / "certmgr.exe"}" -install -store uMy '
                f'-file "{cer_path}" -certificate -container "{result["container"]}" '
                f'-silent -inst_to_cont')
-        output = await self._run_async(cmd)
+        output = await self._run_async(cmd, session_id=sid)
         result['cer_error'] = self._extract_error_code(output)
 
         if result['cer_error'] != '0x00000000':
@@ -347,7 +581,7 @@ class CertsTool(ModuleGeneric):
         # 3. Change password
         cmd = (f'"{self.csp_path / "csptest.exe"}" -passwd '
                f'-container "{result["container"]}" -change {pin}')
-        output = await self._run_async(cmd)
+        output = await self._run_async(cmd, session_id=sid)
         result['password_error'] = self._extract_error_code(output)
 
         result['success'] = all(
@@ -359,18 +593,30 @@ class CertsTool(ModuleGeneric):
     @rpc
     async def export_certificate_pfx(self, data: dict) -> dict:
         """Экспорт закрытого ключа в PFX (base64)."""
+        sid = self._extract_session(data)
         container = data.get('container_name', '')
         thumbprint = data.get('thumbprint', '')
         password = data.get('password', '00000000')
 
-        with tempfile.NamedTemporaryFile(suffix='.pfx', delete=False) as tmp:
-            tmp_path = tmp.name
+        if sid is not None:
+            tmp_path = str(self._shared_tmp_path('.pfx'))
+            Path(tmp_path).parent.mkdir(parents=True, exist_ok=True)
+            tmp_created = False
+            # touch empty file to ensure dest exists
+            try:
+                Path(tmp_path).write_bytes(b'')
+            except Exception:
+                pass
+        else:
+            with tempfile.NamedTemporaryFile(suffix='.pfx', delete=False) as tmp:
+                tmp_path = tmp.name
+            tmp_created = True
 
         try:
             cmd = (f'"{self.csp_path / "certmgr.exe"}" -export '
                    f'-container "{container}" -dest "{tmp_path}" '
                    f'-pfx -keep_exportable -pin {password}')
-            output = await self._run_async(cmd)
+            output = await self._run_async(cmd, session_id=sid)
             error = self._extract_error_code(output)
 
             self.log.info(f'export_pfx: container={container}, error={error}')
@@ -394,14 +640,23 @@ class CertsTool(ModuleGeneric):
     @rpc
     async def export_certificate_cer(self, data: dict) -> dict:
         """Экспорт открытого ключа в CER (base64)."""
+        sid = self._extract_session(data)
         container = data.get('container_name', '')
         thumbprint = data.get('thumbprint', '')
 
         if not container and not thumbprint:
             return {'success': False, 'error': 'container_name or thumbprint required', 'cer_base64': ''}
 
-        with tempfile.NamedTemporaryFile(suffix='.cer', delete=False) as tmp:
-            tmp_path = tmp.name
+        if sid is not None:
+            tmp_path = str(self._shared_tmp_path('.cer'))
+            Path(tmp_path).parent.mkdir(parents=True, exist_ok=True)
+            try:
+                Path(tmp_path).write_bytes(b'')
+            except Exception:
+                pass
+        else:
+            with tempfile.NamedTemporaryFile(suffix='.cer', delete=False) as tmp:
+                tmp_path = tmp.name
 
         try:
             if container:
@@ -411,7 +666,7 @@ class CertsTool(ModuleGeneric):
                 cmd = (f'"{self.csp_path / "certmgr.exe"}" -export '
                        f'-thumbprint "{thumbprint}" -dest "{tmp_path}"')
 
-            output = await self._run_async(cmd)
+            output = await self._run_async(cmd, session_id=sid)
             error = self._extract_error_code(output)
 
             if error != '0x00000000' or not Path(tmp_path).exists():
@@ -440,25 +695,27 @@ class CertsTool(ModuleGeneric):
         container = cert.get('Container', '')
         thumbprint = cert.get('Thumbprint', '')
 
+        sid = self._extract_session(data)
         pfx_result = {'success': False, 'error': 'No container', 'pfx_base64': ''}
         if container:
             pfx_result = await self.export_certificate_pfx(
-                {'container_name': container, 'password': password})
+                {'container_name': container, 'password': password, 'session_id': sid} if sid is not None else {'container_name': container, 'password': password})
 
         cer_result = await self.export_certificate_cer(
-            {'container_name': container, 'thumbprint': thumbprint})
+            {'container_name': container, 'thumbprint': thumbprint, 'session_id': sid} if sid is not None else {'container_name': container, 'thumbprint': thumbprint})
 
         return {'pfx': pfx_result, 'cer': cer_result}
 
     @rpc
     async def delete_certificate(self, data: dict) -> dict:
         """Удалить сертификат по thumbprint."""
+        sid = self._extract_session(data)
         thumbprint = data.get('thumbprint', '')
         if not thumbprint:
             return {'success': False, 'error': 'Thumbprint is required'}
 
         cmd = f'"{self.csp_path / "certmgr.exe"}" -delete -thumbprint "{thumbprint}"'
-        output = await self._run_async(cmd)
+        output = await self._run_async(cmd, session_id=sid)
         error = self._extract_error_code(output)
 
         if error == '0x00000000':
@@ -468,6 +725,7 @@ class CertsTool(ModuleGeneric):
     @rpc
     async def install_pfx_from_base64(self, data: dict) -> dict:
         """Установка PFX из base64-данных."""
+        sid = self._extract_session(data)
         pfx_b64 = data.get('pfx_base64', '')
         password = data.get('password', '00000000')
         filename = data.get('filename', 'cert.pfx')
@@ -477,9 +735,13 @@ class CertsTool(ModuleGeneric):
         except Exception as e:
             return {'success': False, 'error': f'Base64 decode error: {e}'}
 
-        with tempfile.NamedTemporaryFile(suffix='.pfx', delete=False) as tmp:
-            tmp.write(pfx_bytes)
-            tmp_path = tmp.name
+        if sid is not None:
+            tmp_path = str(self._shared_tmp_path('.pfx'))
+            Path(tmp_path).write_bytes(pfx_bytes)
+        else:
+            with tempfile.NamedTemporaryFile(suffix='.pfx', delete=False) as tmp:
+                tmp.write(pfx_bytes)
+                tmp_path = tmp.name
 
         try:
             # CSP v5: без явного контейнера certmgr может не привязать закрытый ключ.
@@ -491,7 +753,7 @@ class CertsTool(ModuleGeneric):
             cmd = (f'"{self.csp_path / "certmgr.exe"}" -install -store uMy '
                    f'-file "{tmp_path}" -pfx -container "{container_name}" '
                    f'-silent -keep_exportable -pin {password}')
-            output = await self._run_async(cmd)
+            output = await self._run_async(cmd, session_id=sid)
             error = self._extract_error_code(output)
             container = self._extract_container(output)
 
@@ -512,6 +774,7 @@ class CertsTool(ModuleGeneric):
     @rpc
     async def batch_install_pfx_from_bytes(self, data: dict) -> dict:
         """Пакетная установка PFX из base64 со сменой пароля."""
+        sid = self._extract_session(data)
         pfx_list: list[dict[str, str]] = data.get('pfx_list', [])
         current_pwd = data.get('current_password', '00000000')
         new_pwd = data.get('new_password') or current_pwd
@@ -531,9 +794,13 @@ class CertsTool(ModuleGeneric):
                 fail += 1
                 continue
 
-            with tempfile.NamedTemporaryFile(suffix='.pfx', delete=False) as tmp:
-                tmp.write(pfx_bytes)
-                tmp_path = tmp.name
+            if sid is not None:
+                tmp_path = str(self._shared_tmp_path('.pfx'))
+                Path(tmp_path).write_bytes(pfx_bytes)
+            else:
+                with tempfile.NamedTemporaryFile(suffix='.pfx', delete=False) as tmp:
+                    tmp.write(pfx_bytes)
+                    tmp_path = tmp.name
 
             try:
                 auto_container = f'{self._CARRIER}\\p2p_{secrets.token_hex(4)}'
@@ -541,7 +808,7 @@ class CertsTool(ModuleGeneric):
                 cmd = (f'"{self.csp_path / "certmgr.exe"}" -install -store uMy '
                        f'-file "{tmp_path}" -pfx -container "{auto_container}" '
                        f'-silent -keep_exportable -pin {current_pwd}')
-                output = await self._run_async(cmd)
+                output = await self._run_async(cmd, session_id=sid)
                 error = self._extract_error_code(output)
                 container = self._extract_container(output)
 
@@ -557,7 +824,7 @@ class CertsTool(ModuleGeneric):
                 if new_pwd != current_pwd and container:
                     pw_cmd = (f'"{self.csp_path / "csptest.exe"}" -passwd '
                               f'-container "{container}" -change {new_pwd}')
-                    await self._run_async(pw_cmd)
+                    await self._run_async(pw_cmd, session_id=sid)
 
                 results.append({'filename': fname, 'success': True, 'container': container})
                 ok += 1
@@ -575,8 +842,9 @@ class CertsTool(ModuleGeneric):
     @rpc
     async def get_dashboard_data(self, data: dict) -> dict:
         """Данные для веб-панели: список сертификатов с нормализацией полей."""
+        sid = self._extract_session(data)
         try:
-            certs = await self.list_certificates({})
+            certs = await self.list_certificates({'session_id': sid} if sid is not None else {})
             cert_list = []
             for cert_id, info in certs.items():
                 valid_from = (info.get('ValidFrom') or info.get('Not valid before') or
@@ -599,6 +867,9 @@ class CertsTool(ModuleGeneric):
             return {
                 'total_certificates': len(cert_list),
                 'certificates': cert_list,
+                'csp_version': self.csp_version or 'unknown',
+                'csp_version_full': self.csp_version_full or '',
+                'csp_bin': self.csp_path.name if self.csp_path else 'unknown',
             }
         except Exception as e:
             self.log.error(f'Dashboard data error: {e}')
@@ -661,6 +932,7 @@ class CertsTool(ModuleGeneric):
 
         Возвращает: {success, container, error, source_node, thumbprint}
         """
+        sid = self._extract_session(data)
         thumbprint = data.get('thumbprint', '')
         source_node = data.get('source_node', '')
         new_password = data.get('new_password', '') or '00000000'
@@ -716,12 +988,15 @@ class CertsTool(ModuleGeneric):
         if not pfx_b64:
             return {'success': False, 'error': 'Empty PFX data from source node'}
 
-        # 4. Установить PFX локально с одноразовым паролем
-        install_result = await self.install_pfx_from_base64({
+        # 4. Установить PFX локально с одноразовым паролем (в выбранной сессии если указано)
+        pfx_data = {
             'pfx_base64': pfx_b64,
             'password': one_time_password,
             'filename': f'{thumbprint[:8]}.pfx',
-        })
+        }
+        if sid is not None:
+            pfx_data['session_id'] = sid
+        install_result = await self.install_pfx_from_base64(pfx_data)
 
         if not install_result.get('success'):
             return {
@@ -737,10 +1012,10 @@ class CertsTool(ModuleGeneric):
         if new_password != one_time_password and local_container:
             pw_cmd = (f'"{self.csp_path / "csptest.exe"}" -passwd '
                       f'-container "{local_container}" -change {new_password}')
-            await self._run_async(pw_cmd)
+            await self._run_async(pw_cmd, session_id=sid)
 
         # 6. Обновить CertsIndex и историю
-        self.ctx.certs_index.update_local(await self.list_certificates({}))
+        self.ctx.certs_index.update_local(await self.list_certificates({'session_id': sid} if sid is not None else {}))
         self._add_install_history(thumbprint, source_node)
 
         self.log.info(
@@ -774,9 +1049,10 @@ class CertsTool(ModuleGeneric):
     @rpc
     async def get_certificate_info(self, data: dict) -> dict:
         """Детальная информация о сертификате по имени контейнера или thumbprint."""
+        sid = self._extract_session(data)
         container = data.get('container_name', '')
         thumbprint_lookup = data.get('thumbprint_lookup', '')
-        certs = await self.list_certificates({})
+        certs = await self.list_certificates({'session_id': sid} if sid is not None else {})
         for info in certs.values():
             if container and info.get('Container', '') == container:
                 return info
@@ -795,9 +1071,11 @@ class CertsTool(ModuleGeneric):
         Параметры:
           thumbprint: str — идентификатор сертификата
           password: str — текущий пароль контейнера (default='00000000')
+          session_id: int — опционально выполнять в сессии пользователя
 
         Возвращает: {success, container, error}
         """
+        sid = self._extract_session(data)
         thumbprint = data.get('thumbprint', '')
         password = data.get('password', '00000000')
 
@@ -805,7 +1083,7 @@ class CertsTool(ModuleGeneric):
             return {'success': False, 'error': 'Thumbprint is required'}
 
         # 1. Найти сертификат по thumbprint
-        certs = await self.list_certificates({})
+        certs = await self.list_certificates({'session_id': sid} if sid is not None else {})
         cert_info = None
         for info in certs.values():
             if info.get('Thumbprint', '').lower() == thumbprint.lower():
@@ -825,6 +1103,10 @@ class CertsTool(ModuleGeneric):
         export_result = await self.export_certificate_pfx({
             'container_name': container,
             'password': password,
+            'session_id': sid,
+        } if sid is not None else {
+            'container_name': container,
+            'password': password,
         })
 
         if not export_result.get('success'):
@@ -838,7 +1120,7 @@ class CertsTool(ModuleGeneric):
             return {'success': False, 'error': 'Empty PFX data'}
 
         # 3. Удалить старый сертификат
-        del_result = await self.delete_certificate({'thumbprint': thumbprint})
+        del_result = await self.delete_certificate({'thumbprint': thumbprint, 'session_id': sid} if sid is not None else {'thumbprint': thumbprint})
         if not del_result.get('success'):
             self.log.warning(f'Delete old cert failed: {del_result.get("error", "?")}')
             # Продолжить установку — может быть дубликат
@@ -846,15 +1128,19 @@ class CertsTool(ModuleGeneric):
         # 4. Установить PFX заново с явным контейнером — это создаст связку
         pfx_bytes = base64.b64decode(pfx_b64)
 
-        with tempfile.NamedTemporaryFile(suffix='.pfx', delete=False) as tmp:
-            tmp.write(pfx_bytes)
-            tmp_path = tmp.name
+        if sid is not None:
+            tmp_path = str(self._shared_tmp_path('.pfx'))
+            Path(tmp_path).write_bytes(pfx_bytes)
+        else:
+            with tempfile.NamedTemporaryFile(suffix='.pfx', delete=False) as tmp:
+                tmp.write(pfx_bytes)
+                tmp_path = tmp.name
 
         try:
             cmd = (f'"{self.csp_path / "certmgr.exe"}" -install -store uMy '
                    f'-file "{tmp_path}" -pfx -container "{container}" '
                    f'-silent -keep_exportable -pin {password}')
-            output = await self._run_async(cmd)
+            output = await self._run_async(cmd, session_id=sid)
             error = self._extract_error_code(output)
             result_container = self._extract_container(output)
 
@@ -875,6 +1161,56 @@ class CertsTool(ModuleGeneric):
                 'container': result_container,
                 'thumbprint': thumbprint,
             }
+        finally:
+            Path(tmp_path).unlink(missing_ok=True)
+
+    # ------------------------------------------------------------------ #
+    #  Сеансы и установка сертификата в сессию (WTS)
+    # ------------------------------------------------------------------ #
+
+    @rpc
+    async def list_sessions(self, data: dict) -> dict:
+        """Перечислить активные интерактивные сессии на локальном узле."""
+        if get_sessions is None:
+            return {"ok": False, "error": "WTS not available (Windows only)"}
+        sessions = get_sessions()
+        return {"ok": True, "sessions": [s.__dict__ for s in sessions]}
+
+    @rpc
+    async def install_cert_to_session(self, data: dict) -> dict:
+        """Установить node-сертификат в хранилище 'my' выбранной пользовательской сессии."""
+        if run_in_session is None:
+            return {"ok": False, "error": "WTS not available (Windows only)"}
+        session_id = data.get('session_id')
+        if session_id is None:
+            return {"ok": False, "error": "session_id required"}
+        storage = getattr(self.ctx, 'secure_storage', None)
+        if storage is None:
+            return {"ok": False, "error": "SecureStorage not available"}
+        try:
+            node_cert_pem = storage.read_bytes("/certs/node_cert.pem")
+        except Exception as e:
+            return {"ok": False, "error": f"node_cert read failed: {e}"}
+        cert_obj = None
+        try:
+            from cryptography import x509
+            cert_obj = x509.load_pem_x509_certificate(node_cert_pem)
+        except Exception:
+            pass
+        if cert_obj is None:
+            return {"ok": False, "error": "invalid node_cert.pem"}
+        with tempfile.NamedTemporaryFile(suffix='.pem', delete=False, mode='wb') as tmp:
+            tmp.write(node_cert_pem)
+            tmp_path = tmp.name
+        try:
+            certmgr = str(self.csp_path / "certmgr.exe")
+            cmd = (f'"{certmgr}" -inst -store my -file "{tmp_path}" -silent')
+            pid = await asyncio.to_thread(run_in_session, cmd, int(session_id))
+            self.log.info(f"certmgr installed to session {session_id} (pid={pid})")
+            return {"ok": True, "session_id": session_id, "pid": pid}
+        except Exception as e:
+            self.log.error(f"install_cert_to_session failed: {e}")
+            return {"ok": False, "error": str(e)}
         finally:
             Path(tmp_path).unlink(missing_ok=True)
 
