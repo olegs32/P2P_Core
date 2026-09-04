@@ -207,7 +207,7 @@ def render(rpc):
         d = dict(data or {})
         if _active_sid is not None:
             d['session_id'] = _active_sid
-        return rpc.call('certstool', method, d)
+        return rpc.call('certstool', method, d, timeout=40)
 
     # селектор над вкладками
     with st.container(border=True):

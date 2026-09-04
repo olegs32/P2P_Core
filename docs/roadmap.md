@@ -2,6 +2,7 @@
 
 - mesh 
   - autobuilding network
+  - what is: [Router] WARNING: Swept 1 stale ws_pending entries (no RESPONSE within 180s)
 
 - create network control panel via politics as main page
   - design control panel
@@ -34,3 +35,8 @@
   - speedtest persistent log
   - cloud database?)
   - base for messenger?!)
+- certstool
+  - not only direct connected certs, join from gossip adv
+
+- ### exotik:
+  - emulate SMB share from files
