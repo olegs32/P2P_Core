@@ -352,7 +352,7 @@ class CertsTool(ModuleGeneric):
             self.log.warning(f'Missing CSP tools: {missing}')
 
     # Маркеры пустого хранилища — не ошибка
-    _EMPTY_MARKERS = ('Список сертификатов пуст', 'No certificates', '0 certificates')
+    _EMPTY_MARKERS = ('Список сертификатов пуст', 'No certificates', '0 certificates', 'Empty certificate list')
 
     def _extract_session(self, data: dict | None) -> int | None:
         """session_id из RPC data (int/str), None = SYSTEM/session 0."""
@@ -388,7 +388,7 @@ class CertsTool(ModuleGeneric):
             try:
                 cmdline = f'cmd.exe /c chcp 1251 >nul && {command}'
                 self.log.debug(f'WTS exec session={session_id}: {command[:120]}')
-                out = await asyncio.to_thread(run_in_session_output, cmdline, int(session_id), None, 45)
+                out = await asyncio.to_thread(run_in_session_output, cmdline, int(session_id), None, 45, load_profile=True)
                 self.log.debug(f'WTS exec done session={session_id} out_len={len(out)}')
                 if any(m in out for m in self._CSP_MISSING_MARKERS):
                     await self._terminate_no_csp()
