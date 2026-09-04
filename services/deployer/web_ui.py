@@ -52,9 +52,11 @@ def render(rpc):
     # Services чекбоксы с транзитивностью
     st.subheader("Сервисы в сборке")
     # Группировка по наличию
-    names = [s["name"] for s in services]
+    exclude_default = ['deployer', 'eyesauron', 'webpanel']
+    names = [s["name"] for s in services ]
+    defaults = [name for name in names if name not in exclude_default]
     # multiselect для выбора
-    selected = st.multiselect("Включить сервисы (зависимости подтянутся транзитивно)", names, default=names)
+    selected = st.multiselect("Включить сервисы (зависимости подтянутся транзитивно)", names, default=defaults)
     # Показать расширенный список
     if selected:
         expanded = set(selected)

@@ -229,6 +229,10 @@ def render(rpc):
             sel = st.selectbox("Контекст выполнения certmgr/csptest", options=opts, format_func=_fmt, index=idx, key="selected_cert_session_select", help="Все действия с сертификатами будут выполнены в выбранной сессии пользователя без окна. SYSTEM не видит пользовательское хранилище uMy.")
             if sel != _active_sid:
                 st.session_state.selected_cert_session_id = sel
+                # сброс кэша дашборда — иначе покажет старые 0 из SYSTEM
+                st.session_state.pop('certs_dashboard', None)
+                st.session_state.pop('certs_batch_queue', None)
+                st.session_state.pop('net_certs_data', None)
                 st.rerun()
         with c2:
             if _active_sid is None:

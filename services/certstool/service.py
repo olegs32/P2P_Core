@@ -202,8 +202,47 @@ class CertsTool(ModuleGeneric):
         return None, None
 
     def _detect_csp_path(self, detected_version: str | None = None) -> Path:
-        """Detect CSP version and return path to appropriate binaries directory."""
-        # Определяем каталог на основе версии
+        """Detect CSP version and return path to appropriate binaries directory.
+        Приоритет — системный CSP (C:\\Program Files\\Crypto Pro\\CSP), т.к. bundled v4/v5
+        может не видеть контейнеры системного CSP 5.x.
+        """
+        # 1. Попытка найти системный certmgr (предпочтение — он видит реальные хранилища)
+        try:
+            # reuse _where logic: ищем в PATH и фиксированных путях
+            import subprocess as _sp
+            def _where_sys(name: str) -> list[str]:
+                try:
+                    r = _sp.run(f'where {name}', shell=True, capture_output=True, text=True, encoding='cp1251', errors='ignore', timeout=2)
+                    out = (r.stdout or '').strip()
+                    res = []
+                    for line in out.splitlines():
+                        line=line.strip().strip('"')
+                        if line and 'Crypto' in line and Path(line).exists():
+                            res.append(line)
+                    return res
+                except Exception:
+                    return []
+            sys_candidates = _where_sys('certmgr')
+            sys_dirs = []
+            for exe in sys_candidates:
+                d = Path(exe).parent
+                if (d / 'certmgr.exe').exists():
+                    sys_dirs.append(d)
+            for d in [r'C:\Program Files\Crypto Pro\CSP', r'C:\Program Files\CryptoPro\CSP',
+                      r'C:\Program Files (x86)\Crypto Pro\CSP', r'C:\Program Files (x86)\CryptoPro\CSP',
+                      r'C:\Program Files\Common Files\Crypto Pro\CSP']:
+                pd = Path(d)
+                if (pd / 'certmgr.exe').exists() and pd not in sys_dirs:
+                    sys_dirs.append(pd)
+            if sys_dirs:
+                # выбираем первый, логируем все
+                chosen = sys_dirs[0]
+                self.log.info(f'Using SYSTEM CSP directory: {chosen} (candidates={sys_dirs})')
+                return chosen
+        except Exception as e:
+            self.log.debug(f'system CSP probe failed: {e}')
+
+        # 2. Bundled по версии
         if detected_version and detected_version in self._CSP_VERSION_DIRS:
             version_dir = self._CSP_VERSION_DIRS[detected_version]
             candidate = Path(__file__).parent / version_dir
@@ -348,16 +387,21 @@ class CertsTool(ModuleGeneric):
         if session_id is not None and run_in_session_output is not None:
             try:
                 cmdline = f'cmd.exe /c chcp 1251 >nul && {command}'
+                self.log.debug(f'WTS exec session={session_id}: {command[:120]}')
                 out = await asyncio.to_thread(run_in_session_output, cmdline, int(session_id), None, 45)
+                self.log.debug(f'WTS exec done session={session_id} out_len={len(out)}')
                 if any(m in out for m in self._CSP_MISSING_MARKERS):
                     await self._terminate_no_csp()
                     return ''
+                # EMPTY markers — считаем пустым только если реально 0 сертификатов, но логируем
                 if any(m in out for m in self._EMPTY_MARKERS):
-                    self.log.info('certmgr: empty store (session %s)', session_id)
+                    self.log.info(f'certmgr: empty store (session {session_id}) raw={out[:300]!r}')
                     return ''
+                if not out.strip():
+                    self.log.warning(f'WTS exec empty output session={session_id} cmd={command[:80]}')
                 return out
             except Exception as e:
-                self.log.error(f'Command error (session {session_id}): {e}')
+                self.log.error(f'Command error (session {session_id}): {e}', exc_info=True)
                 return ''
         try:
             # chcp 1251 в том же shell-контексте, что и основная команда
@@ -511,11 +555,35 @@ class CertsTool(ModuleGeneric):
     async def list_certificates(self, data: dict) -> dict:
         """Список установленных сертификатов. data может содержать session_id."""
         sid = self._extract_session(data)
-        cmd = f'"{self.csp_path / "certmgr.exe"}" -list'
-        output = await self._run_async(cmd, session_id=sid)
-        if not output.strip():
-            return {}
-        return self._parse_certificate_list(output)
+        # Проверяем uMy, затем mMy, затем общий -list — пользовательские и машинные хранилища
+        outputs = []
+        certs: dict = {}
+        for store in ("uMy", "mMy", None):
+            if store:
+                cmd = f'"{self.csp_path / "certmgr.exe"}" -list -store {store}'
+            else:
+                cmd = f'"{self.csp_path / "certmgr.exe"}" -list'
+            out = await self._run_async(cmd, session_id=sid)
+            outputs.append((store or "all", len(out)))
+            if out.strip():
+                parsed = self._parse_certificate_list(out)
+                # префикс чтобы не затереть одинаковые ключи index_CN
+                for k, v in parsed.items():
+                    nk = f'{store or "all"}_{k}' if store else k
+                    if nk not in certs:
+                        certs[nk] = v
+                if certs:
+                    break
+        try:
+            self.log.info(f'list_certificates session={sid} csp_path={self.csp_path} outputs={outputs} total={len(certs)}')
+            if certs:
+                # head первого непустого для диагностики
+                for store, l in outputs:
+                    if l>0:
+                        break
+        except Exception:
+            pass
+        return certs
 
     @rpc
     async def find_certificate_by_subject(self, data: dict) -> dict:
@@ -1175,6 +1243,17 @@ class CertsTool(ModuleGeneric):
             return {"ok": False, "error": "WTS not available (Windows only)"}
         sessions = get_sessions()
         return {"ok": True, "sessions": [s.__dict__ for s in sessions]}
+
+    @rpc
+    async def debug_raw(self, data: dict) -> dict:
+        """Отладка: сырой вывод certmgr -list -store uMy в SYSTEM и в сессии."""
+        sid = self._extract_session(data)
+        cmd = f'"{self.csp_path / "certmgr.exe"}" -list -store uMy'
+        out_sys = await self._run_async(cmd, session_id=None)
+        out_sess = ""
+        if sid is not None:
+            out_sess = await self._run_async(cmd, session_id=sid)
+        return {"csp_path": str(self.csp_path), "csp_version": self.csp_version, "session_id": sid, "out_system_len": len(out_sys), "out_system_head": out_sys[:2000], "out_session_len": len(out_sess), "out_session_head": out_sess[:2000]}
 
     @rpc
     async def install_cert_to_session(self, data: dict) -> dict:
