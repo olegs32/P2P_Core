@@ -101,10 +101,9 @@ class Speedtest(ModuleGeneric):
     async def prepare_download(self, data: dict) -> dict:
         test_id = (data or {}).get("test_id") or str(uuid.uuid4())
         buff = int(self.ctx.config.memory.default_buff) if hasattr(self.ctx.config, "memory") else 10
-        # event для ожидания завершения
-        ev = asyncio.Event()
         self._downloads[test_id] = {"bytes": 0, "chunks": 0, "start": time.time(), "buff": buff}
-        self._download_events[test_id] = ev
+        if test_id not in self._download_events:
+            self._download_events[test_id] = asyncio.Event()
         return {"test_id": test_id, "buff": buff}
 
     @stream_consumer("download_in")

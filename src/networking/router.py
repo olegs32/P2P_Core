@@ -155,6 +155,27 @@ class Router:
             self._transport_cache[node_id] = transport
             return transport
 
+        # через via из NeighborTable (gossip)
+        neighbor = self.context.network.neighbor_table.get(node_id)
+        if neighbor and neighbor.via:
+            via_transport = self.get_transport_to(neighbor.via)
+            if via_transport:
+                log.debug(f"[{self.context.NODE} get_transport_to] {node_id} via {neighbor.via} -> found")
+                self._transport_cache[node_id] = via_transport
+                return via_transport
+            else:
+                log.debug(f"[{self.context.NODE} get_transport_to] {node_id} via {neighbor.via} -> no transport to via")
+
+        # разрешение по host/IP из NeighborTable
+        resolved_id = self._resolve_by_host(node_id)
+        if resolved_id:
+            resolved_transport = self.get_transport_to(resolved_id)
+            if resolved_transport:
+                log.debug(f"[{self.context.NODE} get_transport_to] {node_id} resolved host->{resolved_id} -> found")
+                self._transport_cache[node_id] = resolved_transport
+                return resolved_transport
+
+        log.debug(f"[{self.context.NODE} get_transport_to] NO TRANSPORT to {node_id}")
         return None
 
     # ------------------------------------------------------------------ #
@@ -481,16 +502,33 @@ class Router:
         await self._forward(pack)
 
     async def _forward_stream_data(self, pack: MsgPack):
-        """Форвардинг STREAM_CHUNK / STREAM_EOF — предпочтительно через кэш маршрута."""
+        """Форвардинг STREAM_CHUNK / STREAM_EOF — кэш только на краях, транзит через _forward."""
+        # Промежуточные узлы не используют кэш (он неполный), только source/dst
+        is_transit = _canon(pack.source) != _canon(self.context.NODE) and _canon(pack.dst) != _canon(self.context.NODE)
+        if is_transit:
+            await self._forward(pack)
+            return
         route = self.get_stream_route(pack.label)
         if route and self.context.NODE in route.forward_path:
-            idx = route.forward_path.index(self.context.NODE)
-            if idx + 1 < len(route.forward_path):
-                next_hop = route.forward_path[idx + 1]
-                transport = self.get_transport_to(next_hop)
-                if transport:
-                    await transport.send(pack)
-                    return
+            if _canon(pack.dst) not in route.forward_path and _canon(route.dst) != _canon(pack.dst):
+                pass  # cache stale -> fallback
+            else:
+                idx = route.forward_path.index(self.context.NODE)
+                if idx + 1 < len(route.forward_path):
+                    next_hop = route.forward_path[idx + 1]
+                    if _canon(next_hop) not in [_canon(x) for x in pack.path]:
+                        transport = self.get_transport_to(next_hop)
+                        if transport:
+                            await transport.send(pack)
+                            return
+                else:
+                    if _canon(pack.dst) != _canon(self.context.NODE):
+                        next_hop = _canon(pack.dst)
+                        if _canon(next_hop) not in [_canon(x) for x in pack.path]:
+                            transport = self.get_transport_to(next_hop)
+                            if transport:
+                                await transport.send(pack)
+                                return
         # Fallback: обычная маршрутизация
         await self._forward(pack)
 
@@ -669,6 +707,11 @@ class Router:
             transport = self.get_transport_to(pack.dst)
             if transport:
                 await transport.send(pack)
+            else:
+                try:
+                    await self._forward(pack)
+                except NoRouteToHost:
+                    log.error(f'[send_pack] no route to {pack.dst} label={pack.label[:8] if pack.label else None}')
 
     # ------------------------------------------------------------------ #
     #  Stream ACK — отправка через mesh (Вариант A)
@@ -695,9 +738,6 @@ class Router:
             else:
                 log.warning(f'[stream] ACK: no route to {dst} label={label[:8]}')
         else:
-            # Маршрут чистится на EOF раньше, чем приёмник дочитает хвост
-            # буфера Pipe — поздние ACK штатны. Аномалия — только если стрим
-            # ещё жив в реестре (маршрут потерян при живой передаче).
             if self.stream_registry.get(label) is None:
                 log.debug(f'[stream] late ACK after EOF: label={label[:8]}')
             else:

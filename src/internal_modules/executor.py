@@ -105,4 +105,4 @@ class LocalExecutor:
         try:
             await consumer(pipe, ctx)
         except Exception as e:
-            log.error(f'consumer error: {e}')
+            log.error(f'consumer error {consumer.__name__}: {e}', exc_info=True)

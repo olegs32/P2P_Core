@@ -150,7 +150,6 @@ class PipeTransport:
                 )
                 await self.router._send_pack(chunk_pack)
                 sent_in_batch += 1
-                log.debug(f'[pipe_transport] sent #{sent_in_batch}/{self.buff_size}')
 
                 if sent_in_batch >= self.buff_size:
                     log.debug(f'[pipe_transport] batch done ({self.buff_size} chunks) — waiting ACK')
