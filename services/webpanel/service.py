@@ -194,12 +194,17 @@ class WebPanel(ModuleGeneric):
     @rpc
     def discover_ui_services(self, data: dict):
         """Найти сервисы с web_ui.py — для sidebar навигации."""
-        result = []
-        for svc_dir in SERVICES_DIR.iterdir():
-            if not svc_dir.is_dir() or svc_dir.name.startswith('_'):
-                continue
-            if svc_dir.name == 'webpanel':
-                continue
-            if (svc_dir / 'web_ui.py').exists():
-                result.append(svc_dir.name)
+        result = set()
+        search_dirs = [SERVICES_DIR]
+        se_dir = SERVICES_DIR.parent / 'src' / 'se' / 'services'
+        if se_dir.is_dir() and se_dir not in search_dirs:
+            search_dirs.append(se_dir)
+        for services_dir in search_dirs:
+            for svc_dir in services_dir.iterdir():
+                if not svc_dir.is_dir() or svc_dir.name.startswith('_'):
+                    continue
+                if svc_dir.name == 'webpanel':
+                    continue
+                if (svc_dir / 'web_ui.py').exists():
+                    result.add(svc_dir.name)
         return sorted(result)

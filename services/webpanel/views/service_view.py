@@ -10,7 +10,7 @@ from services.webpanel.service_meta import SERVICE_META
 
 
 def _load_web_ui(service_name: str):
-    """Динамический импорт services/<name>/web_ui.py."""
+    """Динамический импорт services/<name>/web_ui.py или src/se/services/<name>/web_ui.py."""
     module_name = f"services.{service_name}.web_ui"
 
     if module_name in sys.modules:
@@ -19,6 +19,10 @@ def _load_web_ui(service_name: str):
     from pathlib import Path
     services_dir = Path(__file__).parent.parent.parent
     ui_path = services_dir / service_name / 'web_ui.py'
+
+    if not ui_path.exists():
+        se_dir = services_dir.parent / 'src' / 'se' / 'services' / service_name
+        ui_path = se_dir / 'web_ui.py'
 
     if not ui_path.exists():
         return None
