@@ -656,8 +656,46 @@ class Config(ModuleGeneric):
 
         Возвращает None при успехе или текст ошибки (файл уже сохранён).
         """
-        cfg_path = self._cfg_path()
-        work_dir = cfg_path.parent
+        # cfg_path / work_dir: в SE режиме _cfg_path() возвращает виртуальный
+        # "/config/app.yaml" — его parent "/config" не существует на диске и
+        # приводит к WinError 267 при cwd=str(work_dir). Поэтому для SE берём
+        # реальный путь из SecureStorage.bin_path.
+        is_se = self._is_se()
+        if is_se:
+            try:
+                bin_p = Path(self.ctx.secure_storage.bin_path)
+                work_dir = bin_p.parent.resolve() if str(bin_p.parent) not in ('', '.') else Path.cwd().resolve()
+                # Для helper передаём реальный файловый путь — он ждёт порты
+                # через ConfigManager(cfg_path). В SE конфиг внутри .bin, но
+                # helper не умеет читать .bin — передаём yaml-путь рядом с bin.
+                # Если миграционный config.yaml есть — helper прочитает его,
+                # иначе fallback на [9000,8501] (безопасно, не трогаем .bin).
+                cfg_path = bin_p.parent / "config.yaml"
+                # гарантируем что work_dir существует (иначе WinError 267)
+                work_dir.mkdir(parents=True, exist_ok=True)
+            except Exception as e:
+                self.log.warning(f'restart work_dir resolve (SE) failed: {e}')
+                work_dir = Path.cwd().resolve()
+                cfg_path = work_dir / "config.yaml"
+        else:
+            cfg_path = self._cfg_path()
+            # cfg_path может быть относительным ("config.yaml") → parent = "."
+            # Popen cwd="." работает но лучше резолвить в абсолютный существующий каталог
+            try:
+                p = Path(cfg_path)
+                if not p.is_absolute():
+                    # резолвим относительно cwd проекта
+                    p = (Path.cwd() / p).resolve()
+                    cfg_path = p
+                work_dir = p.parent
+                if str(work_dir) in ('', '.'):
+                    work_dir = Path.cwd().resolve()
+                else:
+                    work_dir = work_dir.resolve()
+                work_dir.mkdir(parents=True, exist_ok=True)
+            except Exception as e:
+                self.log.warning(f'restart work_dir resolve failed: {e}')
+                work_dir = Path.cwd().resolve()
         health_sec = int(getattr(self.ctx.config, 'config_confirm_sec', 15))
         try:
             if self._is_frozen():

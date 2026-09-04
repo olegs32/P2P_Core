@@ -73,8 +73,11 @@ class Speedtest(ModuleGeneric):
         duration = max(1, min(duration, 120))
         max_chunks = max(1, min(max_chunks, 200_000_000))
 
-        chunk = b"\x00" * chunk_size
-        pipe = self.ctx.memory.create_pipe(buff=8)
+        import os
+        # несжимаемый чанк — иначе WebSocket deflate сжимает нули в ~0 и транзит видит 1 Мбит вместо 300
+        chunk = os.urandom(chunk_size)
+        buff = int(self.ctx.config.memory.default_buff) if hasattr(self.ctx.config, "memory") else 10
+        pipe = self.ctx.memory.create_pipe(buff=buff)
         dispatcher = self.ctx.memory.create_dispatcher([pipe])
 
         def gen():
@@ -112,15 +115,16 @@ class Speedtest(ModuleGeneric):
         buff = int(ctx.get("buff", 10))
         router = self.ctx.network.router
         label = ctx.get("label")
-        if label:
-            await router.send_stream_ack(label, buff)
         total = 0
         chunks = 0
+        since_ack = 0
         async for chunk in pipe:
             total += len(chunk) if isinstance(chunk, (bytes, bytearray)) else 0
             chunks += 1
-            if label and pipe.size < buff:
+            since_ack += 1
+            if label and since_ack >= buff:
                 await router.send_stream_ack(label, buff)
+                since_ack = 0
         # сохраняем
         if test_id in self._downloads:
             self._downloads[test_id]["bytes"] = total
@@ -156,15 +160,16 @@ class Speedtest(ModuleGeneric):
         buff = int(ctx.get("buff", 10))
         router = self.ctx.network.router
         label = ctx.get("label")
-        if label:
-            await router.send_stream_ack(label, buff)
         total = 0
         chunks = 0
+        since_ack = 0
         async for chunk in pipe:
             total += len(chunk) if isinstance(chunk, (bytes, bytearray)) else 0
             chunks += 1
-            if label and pipe.size < buff:
+            since_ack += 1
+            if label and since_ack >= buff:
                 await router.send_stream_ack(label, buff)
+                since_ack = 0
         if test_id in self._uploads:
             self._uploads[test_id]["bytes"] = total
             self._uploads[test_id]["chunks"] = chunks
@@ -237,8 +242,10 @@ class Speedtest(ModuleGeneric):
 
     async def _test_upload(self, dst: str, duration: float, chunk_size: int, max_chunks: int) -> dict:
         test_id = str(uuid.uuid4())
-        chunk = b"\x00" * chunk_size
-        pipe = self.ctx.memory.create_pipe(buff=8)
+        import os
+        chunk = os.urandom(chunk_size)
+        buff = int(self.ctx.config.memory.default_buff) if hasattr(self.ctx.config, "memory") else 10
+        pipe = self.ctx.memory.create_pipe(buff=buff)
         dispatcher = self.ctx.memory.create_dispatcher([pipe])
         sent = {"bytes": 0, "chunks": 0}
         def gen():
