@@ -1,15 +1,36 @@
 # TODO
 
-- ### SECURITY ESSENTIAL!
+- mesh 
+  - autobuilding network
 
 - create network control panel via politics as main page
-  - design arch politics
   - design control panel
-  - design execution service on endpoints - использовать rpc настроек
+    - firewall control UI
+      - show all connections: local + ECDH 
+  - design arch politics
+    - design execution service control on endpoints - использовать rpc настроек
+      - centralize configurator
 
-- certstool
-  - добавить обнаружение используемой версии крипто про и использовать соответствующую утилиту для этого
-
-- speedtest
-  - низкая скорость когда mesh
-  - при mesh роутинге только upload
+- safe deployments
+  - no drop certs
+    - make initial temp crypto storage, push storage + binary to remote
+    - initial decrypted by hardcode password, store in main storage
+    - remove temp deployment stor
+  - base64 built in initial py conf file vs unlinked stor?
+  - deploy agent - to get required data
+    - request pre-config for node
+    - download node, run, check
+    - self-terminating
+- distribution compute
+  - ui
+  - backend
+- hoster projects/games
+  - notificator service
+    - via VK_bot
+- RPC client secure 
+  - store cert to connect
+  - firewall controlled calls
+- cloud log storage
+  - speedtest persistent log
+  - cloud database?)
+  - base for messenger?!)
