@@ -213,7 +213,7 @@ def render(rpc):
                 payload = {"version": sel_ver, "targets": deploy_targets, "remote_path": deploy_rpath}
                 with st.spinner(f"Деплой {sel_ver} → {deploy_targets} ..."):
                     try:
-                        res = rpc.call("deployer", "deploy", payload)
+                        res = rpc.call("deployer", "deploy", payload, timeout=180)
                     except Exception as e:
                         st.error(f"deploy failed: {e}")
                         res = None
