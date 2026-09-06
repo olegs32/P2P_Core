@@ -18,19 +18,39 @@ class Pipe:
         self.low_watermark = max(1, buff_len // 3)  # may be truncated
         self._queue = asyncio.Queue(maxsize=buff_len)
         self._closed = False
-        self._refill_cb: Optional[Callable[[str], None]] = None
-
-    def set_refill_callback(self, cb: Callable[[str], None]):  # may be truncated
-        self._refill_cb = cb
+        self._error: Optional[BaseException] = None  # B4: причина аварийного конца
 
     async def put(self, item):
         await self._queue.put(item)
 
+    def put_nowait(self, item):
+        """Без блокировки: для остановки Dispatcher (pipe может быть полон)."""
+        self._queue.put_nowait(item)
+
+    def fail(self, error: BaseException):
+        """Аварийное завершение (ошибка producer): консьюмер получит
+        исключение вместо «успешного» StopAsyncIteration."""
+        self._error = error
+        try:
+            self._queue.put_nowait(_SENTINEL)
+        except asyncio.QueueFull:
+            pass  # консьюмер досчитает реальные чанки и упрётся в close()
+        self.close()
+
+    @property
+    def failed(self) -> bool:
+        return self._error is not None
+
+    @property
+    def error(self) -> Optional[BaseException]:
+        return self._error
+
+    def _raise_if_failed(self):
+        if self._error is not None:
+            raise self._error
+
     async def get(self):
-        item = await self._queue.get()
-        if self._queue.qsize() <= self.low_watermark and self._refill_cb:
-            self._refill_cb(self.pipe_id)
-        return item
+        return await self._queue.get()
 
     def is_full(self) -> bool:
         return self._queue.full()
@@ -50,9 +70,11 @@ class Pipe:
 
     async def __anext__(self):
         if self._closed and self._queue.empty():
+            self._raise_if_failed()
             raise StopAsyncIteration
         item = await self.get()
         if item is _SENTINEL:
+            self._raise_if_failed()
             raise StopAsyncIteration
         return item
 
@@ -92,9 +114,16 @@ class PipeTransport:
         await self.router._forward(open_pack)
 
         try:
-            await asyncio.wait_for(future, timeout=self.timeout)
+            res = await asyncio.wait_for(future, timeout=self.timeout)
         except asyncio.TimeoutError:
             log.error(f'[pipe_transport] handshake timeout {self.template.label[:8]}')
+            return
+        if isinstance(res, Exception):
+            # resolve() кладёт ERROR-пакет как ЗНАЧЕНИЕ, не как исключение:
+            # без этой проверки «handshake ok» печатался даже при отказе,
+            # и чанки уходили в никуда (ACK timeout через N секунд)
+            log.error(f'[pipe_transport] handshake rejected '
+                      f'{self.template.label[:8]}: {res}')
             return
 
         log.info(f'[pipe_transport] handshake ok, buff_size={self.buff_size}')
@@ -104,28 +133,61 @@ class PipeTransport:
         sent_in_batch = 0
         ack_label = f'ack_{self.template.label}'
 
-        async for chunk in self.pipe:
-            chunk_pack = MsgPack(
-                type=PackType.STREAM_CHUNK,
+        # B2: future регистрируется ДО отправки батча — быстрый консьюмер
+        # может ответить ACK на первый чанк раньше, чем раньше выполнялась
+        # регистрация после батча; resolve() молча ронял такой ACK и _pump
+        # замирал на полный timeout.
+        ack_future = self.router.sessions.register_single(ack_label, '', '')
+
+        try:
+            async for chunk in self.pipe:
+                chunk_pack = MsgPack(
+                    type=PackType.STREAM_CHUNK,
+                    source=self.template.source,
+                    dst=self.template.dst,
+                    label=self.template.label,
+                    data=chunk,
+                )
+                await self.router._send_pack(chunk_pack)
+                sent_in_batch += 1
+                log.debug(f'[pipe_transport] sent #{sent_in_batch}/{self.buff_size}')
+
+                if sent_in_batch >= self.buff_size:
+                    log.debug(f'[pipe_transport] batch done ({self.buff_size} chunks) — waiting ACK')
+                    try:
+                        await asyncio.wait_for(ack_future, timeout=self.timeout)
+                        log.debug(f'[pipe_transport] ACK received — next batch')
+                    except asyncio.TimeoutError:
+                        log.error(f'[pipe_transport] ACK timeout — stopping')
+                        break
+                    sent_in_batch = 0
+                    # следующая партия уже может полить — сессия обязана существовать
+                    ack_future = self.router.sessions.register_single(ack_label, '', '')
+        except Exception as e:
+            # B4: producer упал — Pipe.__anext__ бросил исходное исключение;
+            # сетевые сбои (pipe не помечен упавшим) пробрасываем как раньше
+            if not self.pipe.failed:
+                raise
+            log.debug(f'[pipe_transport] producer failed mid-stream: {e}')
+
+        # снять незакрытую ack-сессию (EOF / выход после timeout):
+        # иначе запись навсегда остаётся в SessionTable
+        self.router.sessions.cancel(ack_label)
+
+        if self.pipe.failed:
+            # B4: producer упал — сообщить консьюмеру об ошибке,
+            # а не «успешным» STREAM_EOF
+            error_pack = MsgPack(
+                type=PackType.ERROR,
                 source=self.template.source,
                 dst=self.template.dst,
                 label=self.template.label,
-                data=chunk,
+                error=f'producer failed: {self.pipe.error}',
             )
-            await self.router._send_pack(chunk_pack)
-            sent_in_batch += 1
-            log.debug(f'[pipe_transport] sent #{sent_in_batch}/{self.buff_size}')
-
-            if sent_in_batch >= self.buff_size:
-                log.debug(f'[pipe_transport] batch done ({self.buff_size} chunks) — waiting ACK')
-                ack_future = self.router.sessions.register_single(ack_label, '', '')
-                try:
-                    await asyncio.wait_for(ack_future, timeout=self.timeout)
-                    log.debug(f'[pipe_transport] ACK received — next batch')
-                except asyncio.TimeoutError:
-                    log.error(f'[pipe_transport] ACK timeout — stopping')
-                    break
-                sent_in_batch = 0
+            await self.router._send_pack(error_pack)
+            log.error(f'[pipe_transport] producer failed — '
+                      f'ERROR sent ({self.pipe.error})')
+            return
 
         eof_pack = MsgPack(
             type=PackType.STREAM_EOF,
@@ -145,80 +207,106 @@ class Dispatcher:
     """
     Единая точка входа от генератора → распределяет по pipe'ам.
     Паузит генератор когда все pipe полные.
+
+    Поток-продюсер кладёт элементы в потокобезопасную queue.Queue,
+    async-сторона вычитывает её через run_in_executor (одна блокирующая
+    вычитка «в полёте», без кросс-поточного планирования на каждый item —
+    раньше run_coroutine_threadsafe(...).result() дёргался на каждый элемент).
     """
 
     def __init__(self, pipes: list[Pipe]):
         self.pipes: Dict[str, Pipe] = {p.pipe_id: p for p in pipes}
-        self._resume = asyncio.Event()
-        self._resume.set()
         self._running = False
         self._task: Optional[asyncio.Task] = None
-
-        for pipe in pipes:
-            pipe.set_refill_callback(self._on_refill_needed)
-
-    def _on_refill_needed(self, pipe_id: str):
-        log.debug(f'[dispatcher] refill from {pipe_id}')
-        self._resume.set()
 
     def _least_loaded(self) -> Optional[Pipe]:
         candidates = [p for p in self.pipes.values() if not p.is_full()]
         return min(candidates, key=lambda p: p.size) if candidates else None
 
     async def run(self, generator: Callable):
+        import queue as _thread_queue
+
         self._running = True
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
 
         total_buff = sum(p.buff_len for p in self.pipes.values())
-        gen_queue: asyncio.Queue = asyncio.Queue(maxsize=total_buff)
+        out_q: _thread_queue.Queue = _thread_queue.Queue(maxsize=max(1, total_buff))
 
-        _producer_failed = False
+        state = {'failed': False, 'error': None}
+
+        def _put_out(item) -> bool:
+            """Блокирующий put из потока с проверкой _running каждые 0.25с:
+            потребитель умер/остановлен → выходим, не виснем навсегда."""
+            while self._running:
+                try:
+                    out_q.put(item, timeout=0.25)
+                    return True
+                except _thread_queue.Full:
+                    continue
+            return False
 
         def _produce():
             try:
                 for item in generator():
-                    if not self._running:
+                    if not self._running or not _put_out(item):
                         break
-                    asyncio.run_coroutine_threadsafe(gen_queue.put(item), loop).result()
             except Exception as e:
-                log.error(f'[dispatcher] generator error: {e}')
-                nonlocal _producer_failed
-                _producer_failed = True
+                log.error(f'[dispatcher] generator error: '
+                          f'{type(e).__name__}: {e}')
+                state['failed'] = True
+                state['error'] = e
             finally:
-                asyncio.run_coroutine_threadsafe(gen_queue.put(_SENTINEL), loop).result()
+                if self._running:
+                    _put_out(_SENTINEL)
 
         producer_future = loop.run_in_executor(None, _produce)
         log.info(f'[dispatcher] started → {len(self.pipes)} pipes')
 
         while self._running:
-            item = await gen_queue.get()
+            # блокирующая вычитка в executor-потоке с таймаутом: отзывчиво к stop()
+            try:
+                item = await loop.run_in_executor(
+                    None, lambda: out_q.get(timeout=0.25))
+            except _thread_queue.Empty:
+                continue
+            except asyncio.CancelledError:
+                raise
+
             if item is _SENTINEL:
-                if _producer_failed:
-                    log.error('[dispatcher] producer failed — closing all pipes')
-                else:
-                    log.debug('[dispatcher] generator exhausted')
                 break
 
             target = None
             while target is None and self._running:
                 target = self._least_loaded()
                 if target is None:
-                    self._resume.clear()
+                    # все pipe полные — консьюмеры отстают; короткий сон вместо
+                    # refill-callback'ов (спам set() на каждый get ниже watermark)
                     log.debug('[dispatcher] all pipes full — paused')
-                    await self._resume.wait()
+                    await asyncio.sleep(0.005)
 
             if target:
                 await target.put(item)
 
-        # При ошибке producer — закрыть pipes без sentinel (прервать цепочку)
-        if _producer_failed:
+        # producer-поток завершится сам: _produce проверяет self._running
+        # и кладёт sentinel в finally
+
+        # Ошибка producer — пометить pipes как упавшие (B4): консьюмер
+        # получает ИСХОДНОЕ исключение, а не «успешный» конец потока
+        if state['failed']:
+            reason = state['error'] or RuntimeError('generator failed')
             for pipe in self.pipes.values():
-                pipe.close()
+                pipe.fail(reason)
             log.error('[dispatcher] aborted due to producer failure')
         else:
-            # закрываем все pipes sentinel'ом чтобы PipeTransport отправил EOF
+            # закрываем все pipes чтобы PipeTransport отправил EOF.
+            # put_nowait вместо await put: при остановке pipe может быть полон
+            # и некому читать — await висел бы вечно (второй дедлок).
+            # close() сам гарантирует StopAsyncIteration после вычитки хвоста.
             for pipe in self.pipes.values():
-                await pipe.put(_SENTINEL)
+                try:
+                    pipe.put_nowait(_SENTINEL)
+                except asyncio.QueueFull:
+                    pass
                 pipe.close()
 
         log.info('[dispatcher] finished')
@@ -229,7 +317,6 @@ class Dispatcher:
 
     def stop(self):
         self._running = False
-        self._resume.set()
 
 
 class MemoryModule(ModuleGeneric):
@@ -264,9 +351,6 @@ class MemoryModule(ModuleGeneric):
         log.debug(f'pipe created: {pipe_id}')
         return pipe
 
-    def create_pipes(self, buff: int = 10, count: int = 1) -> list:
-        return [self.create_pipe(buff) for _ in range(count)]
-
     def create_dispatcher(self, pipes: list[Pipe]) -> Dispatcher:
         d = Dispatcher(pipes)
         self.dispatchers.append(d)
@@ -285,29 +369,6 @@ class MemoryModule(ModuleGeneric):
         self._transports.append(pt)
         pt.start()
         return pt
-
-    # ------------------------------------------------------------------ #
-    #  Network pipe: inbound (remote → локальный pipe)
-    # ------------------------------------------------------------------ #
-
-    def pipe_from_stream(self, label: str, buff: int = 10) -> Pipe:
-        """
-        Создать pipe привязанный к входящему стриму по label.
-        Router будет класть STREAM_CHUNK в эту pipe через feed_chunk().
-        """
-        pipe = self.create_pipe(buff)
-        pipe._stream_label = label  # маркер для Router
-        self.log.debug(f'inbound pipe created for label={label[:8]}')
-        return pipe
-
-    async def feed_chunk(self, pipe: Pipe, chunk):
-        """Router вызывает это при получении STREAM_CHUNK."""
-        await pipe.put(chunk)
-
-    async def close_stream(self, pipe: Pipe):
-        """Router вызывает это при получении STREAM_EOF."""
-        await pipe.put(_SENTINEL)
-        pipe.close()
 
 
 """

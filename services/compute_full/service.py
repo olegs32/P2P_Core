@@ -37,8 +37,8 @@ class Compute(ModuleGeneric):
         multiplier = data.get('multiplier', 1)
         buff       = data.get('buff', 3)
 
-        node = self.ctx.network.nodes_manager.get(target)
-        if not node:
+        # B8: цель может быть и client-side соседом — Router умеет в оба направления
+        if not self.ctx.network.router.get_transport_to(target):
             return {'error': f'node {target} not found'}
 
         generated = 0
@@ -100,16 +100,20 @@ class Compute(ModuleGeneric):
         if label:
             await router.send_stream_ack(label, buff)
 
+        # Батчевый ACK: раз на buff потреблённых чанков (кумулятивно),
+        # а не на каждый чанк — экономит пакет туда-обратно на чанк
+        consumed_since_ack = 0
+
         async for chunk in pipe:
             ctx['index'] += 1
             index      = ctx['index']
-            queue_size = pipe.size
 
-            self.log.info(f'CONSUME #{index} data={chunk} queue={queue_size}')
+            self.log.info(f'CONSUME #{index} data={chunk}')
 
-            # prefetch — запросить следующую порцию пока считаем
-            if label and queue_size < buff and not ctx.get('eof'):
+            consumed_since_ack += 1
+            if label and consumed_since_ack >= buff:
                 await router.send_stream_ack(label, buff)
+                consumed_since_ack = 0
 
             await asyncio.sleep(0.1)
             result = chunk[0] * multiplier

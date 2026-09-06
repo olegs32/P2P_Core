@@ -1,11 +1,16 @@
 # services/webpanel/_streamlit_app.py — Streamlit entry point
 # Единая панель управления: sidebar навигация + выбор ноды + динамический рендер
-
+import asyncio
+import logging
 import os
 import sys
+import time
 from pathlib import Path
 
 import streamlit as st
+
+if not os.environ.get('RUNNING', 'False') == 'True':
+    raise ImportError("Этот модуль можно запускать только через подпроцесс.")
 
 # ------------------------------------------------------------------ #
 #  sys.path — чтобы импорты из корня проекта работали в subprocess
@@ -16,12 +21,14 @@ if PROJECT_ROOT not in sys.path:
 
 from services.webpanel.rpc_client import NodeRPC
 from services.webpanel.service_meta import SERVICE_META, GROUP_ORDER
+from services.webpanel.auth import check_authentication, is_auth_enabled, render_login_page, logout as auth_logout
 
 # ------------------------------------------------------------------ #
 #  Директория сервисов
 # ------------------------------------------------------------------ #
 SERVICES_DIR = Path(__file__)
-
+logging.getLogger("streamlit.runtime.scriptrunner_utils.script_run_context").setLevel(logging.ERROR)
+logging.getLogger("streamlit.runtime.state.session_state_proxy").setLevel(logging.ERROR)
 
 # ------------------------------------------------------------------ #
 #  NodeRPC — singleton через session_state
@@ -30,7 +37,13 @@ def get_rpc() -> NodeRPC:
     rpc_exists = 'rpc' in st.session_state
     if rpc_exists and (st.session_state.rpc.connected or st.session_state.rpc.reconnecting):
         return st.session_state.rpc
-    host = '127.0.0.1'
+    if rpc_exists:
+        # R9: заменяемый экземпляр не должен течь (поток + loop + сокет)
+        try:
+            st.session_state.rpc.close()
+        except Exception:
+            pass
+    host = os.environ.get('P2P_WS_HOST', '127.0.0.1')
     port = int(os.environ.get('P2P_WS_PORT', 9000))
     target = os.environ.get('P2P_NODE_ID', 'Node0')
     node_id = f"webpanel_{target}"
@@ -50,8 +63,11 @@ class RPCProxy:
     def __init__(self, rpc: NodeRPC):
         self._rpc = rpc
 
-    def call(self, service: str, method: str, data=None, timeout: int = 10):
-        dst = st.session_state.get('selected_node')
+    def call(self, service: str, method: str, data=None, timeout: int = 10,
+             dst=None):
+        # явный dst имеет приоритет (RPC-консоль), иначе — узел из сайдбара
+        if dst is None:
+            dst = st.session_state.get('selected_node')
         local_node = self._rpc.node
         if dst is None or dst == local_node:
             dst = None
@@ -76,11 +92,21 @@ st.set_page_config(
 )
 
 # ------------------------------------------------------------------ #
+#  Auth guard — не меняет основную функциональность:
+#  если webpanel.auth.enabled=false -> прозрачный проход.
+#  Если enabled=true и нет сессии -> рендер формы и st.stop().
+# ------------------------------------------------------------------ #
+if is_auth_enabled() and not check_authentication():
+    render_login_page()
+    st.stop()
+
+# ------------------------------------------------------------------ #
 #  Sidebar
 # ------------------------------------------------------------------ #
 local_node, rpc = None, None
 with st.sidebar:
     try:
+        # time.sleep(4)
         rpc = get_rpc()
         local_node = rpc.node
     except Exception as e:
@@ -89,6 +115,7 @@ with st.sidebar:
         st.stop()
 
     # ---- Выбор узла ----
+    status = {}
     try:
         status = rpc.call('webpanel', 'node_status')
         connected_nodes = [n.get('node_id', '?') for n in status.get('connected', [])]
@@ -112,7 +139,9 @@ with st.sidebar:
 
     if prev_node is not None and prev_node != selected_node:
         _PRESERVED = {'rpc', 'current_page', '_prev_selected_node',
-                       'selected_node_select'}
+                       'selected_node_select',
+                       '_auth_authenticated', '_auth_user', '_auth_error',
+                       '_auth_login_input', '_auth_pwd_input'}
         for key in list(st.session_state.keys()):
             if key not in _PRESERVED:
                 del st.session_state[key]
@@ -128,15 +157,24 @@ with st.sidebar:
     st.divider()
 
     # ---- Сервисы с UI ----
+    _svc_cache_key = f'_svc_cache_{selected_node}'
     try:
         if selected_node == local_node:
             ui_services = rpc.call('webpanel', 'discover_ui_services')
         else:
-            svc_list = rpc.call('netinfo', 'services', dst=selected_node)
-            ui_services = list(svc_list or [])
+            # Сервисы берутся из NeighborTable (голосование) — отдельный RPC не нужен
+            ui_services = []
+            for n in status.get('connected', []) + status.get('known', []):
+                if n.get('node_id') == selected_node:
+                    ui_services = list(n.get('services', []))
+                    break
+        if ui_services:
+            st.session_state[_svc_cache_key] = ui_services
+        elif _svc_cache_key in st.session_state:
+            ui_services = st.session_state[_svc_cache_key]
     except Exception as e:
         st.warning(f"Сервисы недоступны: {e}")
-        ui_services = []
+        ui_services = st.session_state.get(_svc_cache_key, [])
 
     # ---- Текущая страница ----
     if 'current_page' not in st.session_state:
@@ -144,7 +182,7 @@ with st.sidebar:
 
     # ---- Главная — кнопка ----
     is_home = st.session_state.current_page == 'home'
-    if st.button("🏠  Главная", use_container_width=True, type="primary" if is_home else "secondary"):
+    if st.button("🏠  Главная", width='stretch', type="primary" if is_home else "secondary"):
         st.session_state.current_page = 'home'
         st.rerun()
 
@@ -169,7 +207,7 @@ with st.sidebar:
         for svc_name, icon, desc in items:
             is_active = st.session_state.current_page == svc_name
             btn_type = "primary" if is_active else "secondary"
-            if st.button(f"{icon}  {svc_name}", use_container_width=True, type=btn_type,
+            if st.button(f"{icon}  {svc_name}", width='stretch', type=btn_type,
                          key=f"nav_{svc_name}"):
                 st.session_state.current_page = svc_name
                 st.rerun()
@@ -181,7 +219,7 @@ with st.sidebar:
         for svc_name, icon, desc in ungrouped:
             is_active = st.session_state.current_page == svc_name
             btn_type = "primary" if is_active else "secondary"
-            if st.button(f"{icon}  {svc_name}", use_container_width=True, type=btn_type,
+            if st.button(f"{icon}  {svc_name}", width='stretch', type=btn_type,
                          key=f"nav_{svc_name}"):
                 st.session_state.current_page = svc_name
                 st.rerun()
@@ -189,6 +227,14 @@ with st.sidebar:
     # ---- Статус (компактно) ----
     st.divider()
     st.caption(f"🌐 {len(all_nodes)} узлов  •  📦 {len(ui_services)} сервисов")
+
+    # ---- Auth: пользователь + выход (только если включена) ----
+    if is_auth_enabled() and st.session_state.get("_auth_authenticated"):
+        st.divider()
+        st.caption(f"👤 {st.session_state.get('_auth_user', '?')}")
+        if st.button("🚪 Выйти", width='stretch', key="auth_logout"):
+            auth_logout()
+            st.rerun()
 
 # ------------------------------------------------------------------ #
 #  Content — роутинг

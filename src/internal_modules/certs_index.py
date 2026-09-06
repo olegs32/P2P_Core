@@ -129,6 +129,10 @@ class CertsIndex:
             if entry.installed_locally and tp not in local_thumbprints:
                 entry.installed_locally = False
 
+        # D3: локальное изменение индекса = новая версия — иначе push-обновления
+        # метаданных на удалённых узлах блокировались merge по строгому '>'
+        self._sync_version += 1
+
     # ------------------------------------------------------------------ #
     #  Запросы
     # ------------------------------------------------------------------ #
@@ -137,16 +141,6 @@ class CertsIndex:
         """Сертификаты из сети, не установленные локально (не stale)."""
         return [e for e in self._entries.values()
                 if not e.installed_locally and e.available_on and not e.stale]
-
-    def get_all(self) -> list[CertEntry]:
-        """Все записи (включая установленные и stale)."""
-        return list(self._entries.values())
-
-    def get_by_subject_cn(self, subject_cn: str) -> list[CertEntry]:
-        """Найти записи по subject_cn (case-insensitive)."""
-        q = subject_cn.lower()
-        return [e for e in self._entries.values()
-                if q in e.subject_cn.lower()]
 
     def get_by_thumbprint(self, thumbprint: str) -> CertEntry | None:
         return self._entries.get(thumbprint)
