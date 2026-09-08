@@ -33,20 +33,26 @@ class Spawner(ModuleGeneric):
         def _generator():
             yield from gen_fn(init_data)
 
-        nodes = list(self.ctx.network.nodes_manager.nodes.values())
-        if len(nodes) < workers_count:
-            return {'error': f'need {workers_count} nodes, have {len(nodes)}'}
+        # B8: берём connected из таблицы соседей и проверяем транспорт через
+        # Router — client-side соседи раньше считались «not found»
+        router = self.ctx.network.router
+        reachable = [
+            n.node_id for n in self.ctx.network.neighbor_table.connected()
+            if router.get_transport_to(n.node_id)
+        ]
+        if len(reachable) < workers_count:
+            return {'error': f'need {workers_count} nodes, have {len(reachable)}'}
 
-        nodes = nodes[:workers_count]
+        targets = reachable[:workers_count]
         pipes = [self.ctx.memory.create_pipe(buff=buff) for _ in range(workers_count)]
         dispatcher = self.ctx.memory.create_dispatcher(pipes)
         labels = []
 
-        for index, node in enumerate(nodes):
+        for index, node_id in enumerate(targets):
             label = str(uuid.uuid4())
             template = MsgPack(
                 source=self.ctx.NODE,
-                dst=node.node_id,
+                dst=node_id,
                 service=target_service,
                 method=target_method,
                 label=label,
@@ -57,7 +63,7 @@ class Spawner(ModuleGeneric):
                 pipes[index], template, self.ctx.network.router
             )
             labels.append(label)
-            self.log.info(f'Pipe → {node.node_id} gen={service_name}.{generator_name}')
+            self.log.info(f'Pipe → {node_id} gen={service_name}.{generator_name}')
 
         dispatcher.start(_generator)
         self.log.info(f'Spawned {workers_count} workers')

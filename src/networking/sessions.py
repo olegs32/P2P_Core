@@ -25,29 +25,18 @@ class SessionTable:
         self._meta[label]  = SessionMeta(service, method)  # ← новое
         return f
 
-    def register_stream(self, label: str) -> asyncio.Queue:
-        q = asyncio.Queue()
-        self._table[label] = q
-        return q
-
-    def has(self, label: str) -> bool:
-        return label in self._table
-
     def resolve(self, label: str, data: Any):
         session = self._table.get(label)
         if isinstance(session, asyncio.Future) and not session.done():
             session.set_result(data)
             self._table.pop(label, None)
+            # R4: meta тоже чистим — иначе словарь растёт вечно (утечка
+            # на каждый RPC); queue-сессии живут долго, их meta остаётся
+            self._meta.pop(label, None)
         elif isinstance(session, asyncio.Queue):
             session.put_nowait(data)
             # Queue sessions: не удаляем из _table —
-            # close_stream() или cancel() должны быть вызваны явно
-
-    def close_stream(self, label: str):
-        session = self._table.get(label)
-        if isinstance(session, asyncio.Queue):
-            session.put_nowait(None)  # sentinel
-            self._table.pop(label)
+            # cancel() должен быть вызван явно
 
     def cancel(self, label: str):
         self._meta.pop(label, None)

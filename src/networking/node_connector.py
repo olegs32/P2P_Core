@@ -1,7 +1,6 @@
 # GRID/node_connector.py
 
 import asyncio
-import json
 import logging
 import time
 import uuid
@@ -9,8 +8,15 @@ import uuid
 import websockets
 
 from src.internal_modules.base import ModuleGeneric
-from src.networking.neighbor_table import PROTOCOL_VERSION
-from src.networking.protocol import MsgPack, PackType
+from src.networking.neighbor_table import PROTOCOL_VERSION, ROLE_NODE
+from src.networking.protocol import (
+    MAX_FRAME_SIZE,
+    MsgPack,
+    PackType,
+    UnknownPackTypeError,
+    decode_pack,
+    encode_pack,
+)
 from src.networking.transport import WebSocketTransport
 log = logging.getLogger('NodeConnector')
 
@@ -30,18 +36,23 @@ class NodeConnector(ModuleGeneric):
         self._ws          = None
         self._connect_task   = None
         self._keepalive_task = None
+        self._last_lex_reject = False
 
     # ------------------------------------------------------------------ #
     #  Lifecycle
     # ------------------------------------------------------------------ #
 
     async def start(self):
-        if self._already_connected():
+        # Reverse-HELLO: HELLO уходит всегда независимо от lex (проверка
+        # перенесена на сервер — NetworkModule.websocket_endpoint отвечает
+        # HELLO_REJECT+reverse dial если больший узел получил HELLO от
+        # меньшего). Это позволяет инициировать связь с меньшего узла.
+        if not self._already_connected():
+            self._connect_task = asyncio.create_task(self._connect_loop())
+        else:
             self.log.info(
-                f'Skip connect to {self.peer_node_id} (already connected)'
+                f'Already connected to {self.peer_node_id} — dial deferred'
             )
-            return
-        self._connect_task   = asyncio.create_task(self._connect_loop())
         self._keepalive_task = asyncio.create_task(self._keepalive_loop())
         self.log.info(f'Connector started → {self.target_uri}')
 
@@ -59,21 +70,32 @@ class NodeConnector(ModuleGeneric):
     # ------------------------------------------------------------------ #
 
     def _already_connected(self) -> bool:
-        """Узел уже подключен — не пытаться подключиться повторно."""
-        return self.ctx.network.neighbor_table.get(self.peer_node_id) is not None and \
-               self.ctx.network.neighbor_table.get(self.peer_node_id).status.value == 'connected'
+        """Узел уже подключен — клиентским или серверным каналом.
+
+        Проверяем и статус таблицы, и фактический транспорт в Router:
+        запись может быть CONNECTED при уже отвалившемся сокете и наоборот.
+        """
+        info = self.ctx.network.neighbor_table.get(self.peer_node_id)
+        if info and info.status.value == 'connected':
+            return True
+        return self.ctx.network.router.get_transport_to(self.peer_node_id) is not None
 
     # ------------------------------------------------------------------ #
     #  Подключение
     # ------------------------------------------------------------------ #
 
     async def _connect_loop(self):
+        backoff = 5  # R8: экспоненциальный отступ при повторных отказах handshake
         while True:
             if self._already_connected():
                 await asyncio.sleep(5)
                 continue
             try:
-                async with websockets.connect(self.target_uri) as ws:
+                # max_size обязателен: дефолт websockets (1 МБ) уронит
+                # соединение на больших чанках
+                async with websockets.connect(
+                    self.target_uri, max_size=MAX_FRAME_SIZE
+                ) as ws:
                     self._ws = ws
                     # Регистрируем client-side WS в Router для ACK и маршрутизации
                     self.ctx.network.router.register_client_ws(self.peer_node_id, ws)
@@ -81,21 +103,51 @@ class NodeConnector(ModuleGeneric):
                     # handshake
                     accepted = await self._handshake(ws)
                     if not accepted:
-                        self.log.warning(f'Handshake rejected by {self.peer_node_id}')
-                        await asyncio.sleep(10)
+                        # lex-отказ — сервер сейчас dial'ит обратно, не
+                        # наращиваем backoff, ждём inbound
+                        if getattr(self, '_last_lex_reject', False):
+                            self._last_lex_reject = False
+                            backoff = 5
+                            self.log.info(
+                                f'Lex reject from {self.peer_node_id} — '
+                                f'waiting reverse dial 5s'
+                            )
+                            await asyncio.sleep(5)
+                            continue
+                        # R8: перманентный отказ не должен долбить каждые ~15с
+                        backoff = min(backoff * 2, 300)
+                        self.log.warning(
+                            f'Handshake rejected by {self.peer_node_id} '
+                            f'(retry in {backoff}s)'
+                        )
+                        await asyncio.sleep(backoff)
                         continue
 
                     self.log.info(f'Connected to {self.peer_node_id}')
+                    backoff = 5
 
                     async for raw in ws:
-                        data = json.loads(raw)
-                        pack = MsgPack(**data)
+                        try:
+                            pack = decode_pack(raw)
+                        except UnknownPackTypeError as e:
+                            self.log.warning(
+                                f'Unknown pack type {e.type_value!r} '
+                                f'from {self.peer_node_id} — dropped'
+                            )
+                            continue
 
-                        # обновить last_ts при любом входящем трафике
-                        self.ctx.network.neighbor_table.touch(pack.source)
+                        # D4: touch делается в router.handle() для всех типов
+                        # пакетов — дубли здесь давали тройное обновление last_ts
 
                         transport = WebSocketTransport(ws)
-                        await self.ctx.network.router.handle(pack, transport)
+                        # B3: сбой обработки пакета не рвёт соединение
+                        try:
+                            await self.ctx.network.router.handle(pack, transport)
+                        except Exception:
+                            self.log.exception(
+                                f'handle() failed for {pack.type.value} '
+                                f'from {self.peer_node_id} label={pack.label[:8]}'
+                            )
 
             except websockets.exceptions.ConnectionClosedError as e:
                 self.log.warning(f'Connection to {self.peer_node_id} closed: {e}')
@@ -107,7 +159,9 @@ class NodeConnector(ModuleGeneric):
             finally:
                 self._ws = None
                 self.ctx.network.router.unregister_client_ws(self.peer_node_id)
-                self.ctx.network.neighbor_table.mark_unreachable(self.peer_node_id)
+                # пир может оставаться подключенным входящим каналом
+                if not self.ctx.network.router.get_transport_to(self.peer_node_id):
+                    self.ctx.network.neighbor_table.mark_unreachable(self.peer_node_id)
                 await asyncio.sleep(5)
 
     async def _handshake(self, ws) -> bool:
@@ -119,27 +173,39 @@ class NodeConnector(ModuleGeneric):
             dst    = self.peer_node_id,
             data   = {
                 'node_id':    self.ctx.NODE,
-                'host':       cfg.network.host,
+                'host':       self.ctx.network.local_ip(),
                 'port':       cfg.network.port,
                 'version':    PROTOCOL_VERSION,
                 'session_id': str(uuid.uuid4()),
                 'services':   list(self.ctx.services.services.keys()),
+                'enc':        'msgpack',  # информационное поле
             }
         )
-        await ws.send(hello.model_dump_json())
+        await ws.send(encode_pack(hello))
 
         try:
             raw  = await asyncio.wait_for(ws.recv(), timeout=10)
-            pack = MsgPack(**json.loads(raw))
+            pack = decode_pack(raw)
 
             if pack.type == PackType.HELLO_ACK:
                 await self._on_hello_ack(pack)
                 return True
             elif pack.type == PackType.HELLO_REJECT:
+                data = pack.data or {}
+                is_lex = bool(data.get('lex_rule'))
+                self._last_lex_reject = is_lex
                 self.log.warning(
                     f'HELLO_REJECT from {self.peer_node_id}: '
-                    f'{pack.data.get("reason")}'
+                    f'{data.get("reason")}'
+                    + (' [lex_reverse expected]' if is_lex else '')
                 )
+                # lex-отказ — не перманентная ошибка: сервер сейчас dial'ит
+                # обратно по host/port из нашего HELLO, ждём inbound
+                if is_lex:
+                    self.log.info(
+                        f'Lex reverse: {self.peer_node_id} should dial back '
+                        f'(waiting inbound)'
+                    )
                 return False
         except asyncio.TimeoutError:
             self.log.error(f'Handshake timeout with {self.peer_node_id}')
@@ -157,6 +223,7 @@ class NodeConnector(ModuleGeneric):
             session_id = data.get('session_id', ''),
             version    = data.get('version', PROTOCOL_VERSION),
             services   = data.get('services', []),
+            role       = data.get('role', ROLE_NODE),
         )
 
         # смержить таблицу соседей
@@ -173,6 +240,15 @@ class NodeConnector(ModuleGeneric):
     #  Keepalive
     # ------------------------------------------------------------------ #
 
+    async def _close_local_ws(self):
+        """R7: закрыть полумёртвый client-side сокет — иначе connect_loop
+        висит в приёме, а reconnect идёт параллельно со старым соединением."""
+        if self._ws:
+            try:
+                await self._ws.close()
+            except Exception:
+                pass
+
     async def _keepalive_loop(self):
         while True:
             await asyncio.sleep(KEEPALIVE_INTERVAL)
@@ -181,21 +257,32 @@ class NodeConnector(ModuleGeneric):
                 continue
 
             elapsed = time.time() - info.last_ts
+            if elapsed <= KEEPALIVE_TIMEOUT:
+                continue
 
-            if elapsed > DEAD_TIMEOUT:
-                self.log.warning(
-                    f'{self.peer_node_id} no traffic {elapsed:.0f}s → unreachable'
-                )
-                self.ctx.network.neighbor_table.mark_unreachable(self.peer_node_id)
+            # соединение с пиром может обслуживаться его входящим каналом
+            # (WS-сервер), а не этим коннектором — проверяем оба пути через
+            # Router, иначе можно похоронить живого соседа
+            transport = self.ctx.network.router.get_transport_to(self.peer_node_id)
 
-            elif elapsed > KEEPALIVE_TIMEOUT and self._ws:
-                self.log.debug(f'Ping {self.peer_node_id} (no traffic {elapsed:.0f}s)')
-                try:
-                    transport = WebSocketTransport(self._ws)
-                    await transport.send(MsgPack(
-                        type   = PackType.PING,
-                        source = self.ctx.NODE,
-                        dst    = self.peer_node_id,
-                    ))
-                except Exception as e:
-                    self.log.error(f'Keepalive ping failed: {e}')
+            if not transport:
+                if elapsed > DEAD_TIMEOUT:
+                    self.log.warning(
+                        f'{self.peer_node_id} no traffic {elapsed:.0f}s → unreachable'
+                    )
+                    self.ctx.network.neighbor_table.mark_unreachable(self.peer_node_id)
+                    await self._close_local_ws()
+                continue
+
+            self.log.debug(f'Ping {self.peer_node_id} (no traffic {elapsed:.0f}s)')
+            try:
+                await transport.send(MsgPack(
+                    type   = PackType.PING,
+                    source = self.ctx.NODE,
+                    dst    = self.peer_node_id,
+                ))
+            except Exception as e:
+                self.log.error(f'Keepalive ping failed: {e}')
+                if elapsed > DEAD_TIMEOUT:
+                    self.ctx.network.neighbor_table.mark_unreachable(self.peer_node_id)
+                    await self._close_local_ws()

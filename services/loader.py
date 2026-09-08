@@ -1,5 +1,6 @@
 # GRID/services/loader.py
 
+import asyncio
 import importlib
 import importlib.util
 import inspect
@@ -20,7 +21,7 @@ log = logging.getLogger('ServiceLoader')
 class ServiceLoader:
     def __init__(self, services_path: Path, context, services_manager):
         self.path     = Path(services_path)
-        self.context  = context
+        self.ctx  = context
         self.manager  = services_manager
         self._observer: Observer | None = None
 
@@ -84,28 +85,86 @@ class ServiceLoader:
                 continue
 
             service_name = cls.__name__.lower()
-            # log.info(f'{service_name} detected')
 
             # отменяем pending RPC если сервис уже был зарегистрирован
             self._cancel_pending(service_name)
 
-            instance     = cls(name=service_name, context=self.context)
+            instance     = cls(name=service_name, context=self.ctx)
             rpc_methods  = get_rpc_methods(instance)
 
             if not rpc_methods:
                 log.warning(f'{cls.__name__}: no @rpc methods found')
                 continue
 
-            self.manager.register_service(instance)
-            for method_name, method in rpc_methods.items():
-                self.manager.register_method(instance, method_name, method)
-            # Регистрация в lifecycle для корректного start()/stop()
-            self.context.register(instance)
-            log.info(f'Registered {service_name}.{method_name}')
+            old = self.manager.get_service(service_name)
+            if old is not None and old is not instance:
+                # D5: полноценный hot-reload — stop() старого, затем
+                # регистрация и start() нового (в главном event loop)
+                self._schedule_swap(old, instance, rpc_methods)
+            else:
+                self._activate(instance, rpc_methods)
+                log.info(f'Registered {service_name} ({len(rpc_methods)} rpc methods)')
+
+    def _activate(self, instance: ModuleGeneric, rpc_methods: dict):
+        """Первичная регистрация сервиса (start() вызовет startup())."""
+        self.manager.register_service(instance)
+        for method_name, method in rpc_methods.items():
+            self.manager.register_method(instance, method_name, method)
+        # Регистрация в lifecycle для корректного start()/stop()
+        self.ctx.register(instance)
+
+    def _schedule_swap(self, old: ModuleGeneric, new: ModuleGeneric,
+                       rpc_methods: dict):
+        coro = self._swap_async(old, new, rpc_methods)
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+
+        if loop is not None:
+            # находимся в главном потоке с живым loop
+            loop.create_task(coro)
+        else:
+            main_loop = getattr(self.ctx, 'loop', None)
+            if main_loop is not None and main_loop.is_running():
+                asyncio.run_coroutine_threadsafe(coro, main_loop)
+                log.info(f'Service {new.name} reload scheduled on main loop')
+            else:
+                log.warning(
+                    f'No running loop — {new.name} replaced without '
+                    f'lifecycle swap (old instance kept in ctx._modules)'
+                )
+                self._activate(new, rpc_methods)
+
+    async def _swap_async(self, old: ModuleGeneric, new: ModuleGeneric,
+                          rpc_methods: dict):
+        log.info(f'Reloading service {new.name}: stopping old instance...')
+        try:
+            await old.stop()
+        except Exception:
+            log.exception(f'{old.name}.stop() failed during reload')
+
+        # заменить старый инстанс в lifecycle-списке
+        modules = getattr(self.ctx, '_modules', [])
+        for i, m in enumerate(modules):
+            if m is old:
+                modules[i] = new
+                break
+
+        # перерегистрация методов/генераторов (старые затираются)
+        self.manager.replace_service(new)
+        for method_name, method in rpc_methods.items():
+            self.manager.register_method(new, method_name, method)
+
+        try:
+            await new.start()
+            log.info(f'Service {new.name} reloaded: old stopped, new started')
+        except Exception:
+            log.exception(f'{new.name}.start() failed after reload')
 
     def _cancel_pending(self, service_name: str):
         """Отменить все pending futures для данного сервиса."""
-        sessions = getattr(self.context, 'network', None)
+        sessions = getattr(self.ctx, 'network', None)
         if not sessions:
             return
         router = getattr(sessions, 'router', None)
