@@ -38,5 +38,5 @@
 - certstool
   - not only direct connected certs, join from gossip adv
 
-- ### exotik:
-  - emulate SMB share from files
+- ### exotic:
+  - emulate FTP from BytesIO

@@ -1,7 +1,7 @@
 # P2P_Core — База знаний для AI-ассистента
 
 > Быстрый справочник по архитектуре, конвенциям и ключевым паттернам проекта.
-> Обновлено: 2026-08-26
+> Обновлено: 2026-09-22 (сверено с кодом; детали защиты — только в src/se/AGENTS.md)
 
 ---
 ## Важно: здесь запрещено делать любые записи и упоминания о системе безопасности этого проекта. Для этого существует src/se/AGENTS.md 
@@ -19,8 +19,8 @@ P2P mesh-сеть на WebSocket + бинарный MessagePack. Узлы сое
 | RPC | Встроенный: `@rpc` декоратор, `LocalExecutor`, `Router` |
 | Streaming | Mesh: StreamRoute cache, PipeTransport через Router, ACK через backward_path |
 | Web UI | Streamlit subprocess на порту 8501, подключается как WS-клиент |
-| Config | YAML (pydantic-settings модели, двухфайловая система) |
-| Hot-reload | watchdog мониторинг `services/` |
+| Config | YAML, один файл `config.yaml` (pydantic-модели, `_deep_fill` недостающих ключей) |
+| Hot-reload | watchdog-мониторинг `services/` реализован в `ServiceLoader`, но в `main.py` запуск `loader.watch()` currently закомментирован (автоперезагрузка не активна) |
 
 ## 3. Точка входа
 
@@ -28,21 +28,21 @@ P2P mesh-сеть на WebSocket + бинарный MessagePack. Узлы сое
 
 Порядок регистрации модулей в `AppContext._modules` = порядок `start()`. Обратный порядок для `stop()`.
 
-ServiceLoader.scan() вызывает `ctx.register(instance)` — ручная регистрация сервисов из `services/` в main.py больше не нужна. Spawner остаётся ручным (не в `services/`).
+ServiceLoader.scan() вызывает `ctx.register(instance)` — ручная регистрация сервисов из `services/` в main.py больше не нужна. Вручную регистрируются только: Spawner (не в `services/`) и Updater — ядерный модуль `src/internal_modules/updater.py` (в `services/updater/` остался только `web_ui.py`). `main.py` сканирует два источника: frozen-путь `sys._MEIPASS/services` (если сборка) + `services.search_paths` из конфига (по умолчанию `./services`); `loader.watch()` currently закомментирован (автоперезагрузка не активна, на shutdown вызывается `loader.stop_watch()`).
 
 ## 4. Ключевые классы
 
 ### AppContext (`src/internal_modules/context.py`)
-Центральный объект. Содержит: `config`, `NODE`, `services` (ServiceManager), `network` (NetworkModule), `memory` (MemoryModule), `spawn` (Spawner), `certs_index` (CertsIndex).
+Центральный объект. Содержит: `config`, `config_manager`, `NODE`, `peers`, `services` (ServiceManager), `network` (NetworkModule), `memory` (MemoryModule), `spawn` (Spawner), `updater` (ядерный `Updater`), `certs_index` (CertsIndex), `loop`. Регистрация через `register()`; `startup()` идёт в порядке `_modules`, `shutdown()` — в обратном.
 
 ### ModuleGeneric (`src/internal_modules/base.py`)
 Базовый класс всех модулей. Поля: `name`, `ctx` (=AppContext), `log`. Методы: `async start()`, `async stop()`.
 
 ### MsgPack + PackType (`src/networking/protocol.py`)
-Единый формат пакета. PackType — enum: `HELLO`, `HELLO_ACK`, `HELLO_REJECT`, `REQUEST`, `RESPONSE`, `FORWARDED`, `STREAM_OPEN/READY/CHUNK/ACK/EOF`, `ERROR`, `PING/PONG`, `GOSSIP`, `ANNOUNCE`, `CERT_SYNC`.
-MsgPack: `type`, `source`, `dst`, `service`, `method`, `data`, `label` (UUID), `path: list[str]`, `ttl: int=16`.
+Единый формат пакета. PackType — enum (`src/networking/protocol.py`): `HELLO`, `HELLO_ACK`, `HELLO_REJECT`, `REQUEST`, `RESPONSE`, `FORWARDED`, `STREAM_OPEN/READY/CHUNK/ACK/EOF`, `ERROR`, `PING/PONG`, `GOSSIP`, `ANNOUNCE`, `CERT_SYNC` (полный перечень — по коду enum; дополнительные типы задокументированы в `src/se/AGENTS.md`).
+MsgPack: `type`, `source`, `dst`, `service`, `method`, `data`, `label` (UUID), `error: str | None`, `path: list[str]`, `ttl: int=16`. `PROTOCOL_VERSION = "2.0"` определён в `src/networking/neighbor_table.py` (не в `protocol.py`).
 
-Сериализация — только через хелперы `encode_pack(pack) -> bytes` / `decode_pack(raw) -> bytes` (прямые `msgpack.packb/unpackb` в других модулях запрещены). `MAX_FRAME_SIZE` = 32 МБ. **Запрещён `model_dump(mode='json')`** для wire-кадров — он не представит `bytes`. В `data` допустимы msgpack-натуральные типы: dict/list/str/int/float/bool/None/**bytes**; ExtType/datetime/timestamps — нет (нужен timestamp → float epoch, как `ts`). str-enum'ы пакуются своим строковым значением, pydantic восстанавливает enum при decode.
+Сериализация — только через хелперы `encode_pack(pack) -> bytes` / `decode_pack(raw) -> MsgPack` (прямые `msgpack.packb/unpackb` в других модулях запрещены). `MAX_FRAME_SIZE` = 32 МБ. **Запрещён `model_dump(mode='json')`** для wire-кадров — он не представит `bytes`. В `data` допустимы msgpack-натуральные типы: dict/list/str/int/float/bool/None/**bytes**; ExtType/datetime/timestamps — нет (нужен timestamp → float epoch, как `ts`). str-enum'ы пакуются своим строковым значением, pydantic восстанавливает enum при decode.
 
 ### Wire-формат
 - Фрейминг: **1 binary WS frame = 1 msgpack-словарь** `MsgPack.model_dump()`. Префиксы длины не нужны — WS message-oriented.
@@ -66,9 +66,10 @@ MsgPack: `type`, `source`, `dst`, `service`, `method`, `data`, `label` (UUID), `
 - `call(dst, service, method, data, timeout)` — публичный API: локальный shortcut или mesh-вызов
 - `stream(dst, service, method, data, timeout)` — публичный API: открыть mesh-стрим, вернуть `_MeshStreamIterator`
 - `send_stream_ack(label, buff)` — отправить ACK генератору через mesh по cached backward_path
-- `_ws_pending: dict[str, tuple[WebSocketTransport, float]]` — для ответов WS-клиентам (webpanel); хранит `(transport, created_ts)` для TTL-чистки через `sweep_ws_pending()`
+- `_ws_pending: dict[str, tuple[WebSocketTransport, float]]` — для ответов WS-клиентам (webpanel); хранит `(transport, created_ts)` для TTL-чистки через `sweep_ws_pending(max_age=180.0)`
 - `_client_ws: dict[str, Any]` — client-side WS маппинг (от NodeConnector)
 - `_stream_routes: dict[str, StreamRoute]` — кэш маршрутов стримов (TTL=300с)
+- `_transport_cache` — кэш резолвленных транспортов; инвалидируется через `invalidate_transport(node_id)` при смене server-side сокета/reconnect
 
 #### StreamRoute (dataclass)
 Кэшированный маршрут стрима: `label`, `source` (генератор), `dst` (consumer), `forward_path` (source→dst), `backward_path` (dst→source), `established_at`. Свойство `expired` — TTL=300с, **скользящий**: `get_stream_route()` продлевает `established_at` при каждом обращении (долгая передача не теряет маршрут посреди потока). На STREAM_EOF маршрут удаляется сразу; поздние ACK хвостовых чанков после EOF логируются debug-ом (warning — только если стрим ещё жив в StreamRegistry).
@@ -76,7 +77,7 @@ MsgPack: `type`, `source`, `dst`, `service`, `method`, `data`, `label` (UUID), `
 Маршрут кэшируется:
 - На consumer-узле при получении STREAM_OPEN (`_cache_stream_route_on_open`)
 - На generator-узле при получении STREAM_READY (`_cache_stream_route_on_ready`)
-- На промежуточных узлах при транзите STREAM_OPEN (`_forward_stream_open`)
+- На промежуточных узлах при транзите STREAM_OPEN (`_forward_stream_open` — кэширует только `forward_path`, без `backward_path`; транзитные CHUNK/EOF идут через общий `_forward()`, кэш краёв не используется)
 
 #### Mesh streaming flow
 ```
@@ -89,10 +90,10 @@ Consumer                          Intermediate                    Generator
 ```
 
 #### _MeshStreamIterator
-Async iterator, возвращаемый `Router.stream()`. Читает чанки из Pipe, после каждого чанка вызывает `send_stream_ack()`. При `_SENTINEL` — StopAsyncIteration.
+Async iterator, возвращаемый `Router.stream()`. Читает чанки из Pipe, ACK — кумулятивный: раз на `buff_len` чанков (`_since_ack >= pipe.buff_len` → `send_stream_ack(label, buff_len)`). При `_SENTINEL` — StopAsyncIteration.
 
 ### NetworkModule (`src/networking/network.py`)
-FastAPI + uvicorn. WS endpoint `/ws/{node_id}`. HELLO-handshake → NeighborTable.register_connected → HELLO_ACK. При дубликате node_id — reconnect (закрыть старое, принять новое). Периодические: gossip (30с), announce (60с). On-connect CERT_SYNC если у узла есть `certstool`.
+FastAPI + uvicorn. WS endpoint `/ws/{node_id}`. HELLO-handshake → NeighborTable.register_connected → HELLO_ACK. При дубликате node_id — reconnect (сначала регистрируется новое WS, затем закрывается старое; `router.invalidate_transport(node_id)`). Периодические: gossip (30с), announce (60с). On-connect CERT_SYNC если у узла есть `certstool`.
 - `call(dst, service, method, data, timeout)` — thin wrapper вокруг Router.call()
 - `stream(dst, service, method, data, timeout)` — thin wrapper вокруг Router.stream()
 - `local_ip()` — локальный IP интерфейса mesh (LocalIPResolver, TTL-кэш)
@@ -100,8 +101,6 @@ FastAPI + uvicorn. WS endpoint `/ws/{node_id}`. HELLO-handshake → NeighborTabl
 - `local_sessions()` — снапшот сессий узла с направлением каналов (`direction`: inbound/outbound/inbound+outbound/'' и `age_sec`); единый источник для `system.sessions()` и `netinfo.topology()`
 
 HELLO_ACK содержит `host` = `self.local_ip()` — реальный IP интерфейса mesh, `neighbors` — текущая таблица соседей (для первичного пополнения `NeighborTable` у нового узла). HELLO с несовпадающим `dst:name` отклоняется (HELLO_REJECT). HELLO.data несёт `role`: `'node'` (дефолт) или `'client'` (webpanel и др. служебные WS-клиенты) — сохраняется в NeighborInfo.role.
-
-`ConnectionManager` — DEAD CODE (broadcast() не используется, рассылка через neighbor_table + Router).
 
 ### LocalIPResolver (`src/internal_modules/local_ip.py`)
 Вычисляет локальный IP интерфейса mesh по запросу, кэш на `network.ip_ttl_sec` (по умолчанию 60с). Приоритет источников:
@@ -112,19 +111,19 @@ HELLO_ACK содержит `host` = `self.local_ip()` — реальный IP и
 Используется для announce/handshake: узлы сообщают друг другу реальные адреса вместо hostname.
 
 ### NeighborTable (`src/networking/neighbor_table.py`)
-Статусы: `CONNECTED` (прямое WS), `KNOWN` (через gossip), `UNREACHABLE`. Хранит `via` (next-hop) и `role` ('node'/'client', из HELLO.data; клиенты в карту сети попадают серым, BFS их не опрашивает). `merge_gossip()` — слияние таблиц от других узлов (role, host, port, services, version переносятся из свежего gossip). При `incoming_hops < existing.hops` — полное обновление; при `incoming_hops == existing.hops` и `via` различается — обновляет via только если `existing.via == UNREACHABLE` (failover), иначе сохраняет для стабильности (нет флаппинга). Метаданные (host, port, services, version, role) обновляются всегда при поступлении свежего gossip. `find_by_service()` — поиск узлов с нужным сервисом.
+Статусы: `CONNECTED` (прямое WS), `KNOWN` (через gossip), `UNREACHABLE`. Хранит `via` (next-hop) и `role` ('node'/'client', из HELLO.data; клиенты в карту сети попадают серым, BFS их не опрашивает). `merge_gossip()` — слияние таблиц от других узлов (role, host, port, services, version переносятся из свежего gossip). При `incoming_hops < existing.hops` — полное обновление; при `incoming_hops == existing.hops` и `via` различается — обновляет via только если `existing.via == UNREACHABLE` (failover), иначе сохраняет для стабильности (нет флаппинга). Метаданные (host, port, services, version, role) обновляются всегда при поступлении свежего gossip. `find_by_service()` — поиск узлов с нужным сервисом. Дополнительно: loop-guard отбрасывает gossip с `via == self` (включая 2-hop петлю), свои CONNECTED-записи никогда не перезаписываются, `sweep(ttl_known=90, ttl_unreach=300)` вызывается из gossip-цикла NetworkModule.
 
 ### NodeConnector (`src/networking/node_connector.py`)
-Исходящее подключение. Всегда пытается соединиться с пиром; лексикографическое правило (`self.NODE > peer_node_id`) принудительно применяется **сервером** при входящем HELLO: сервер отвечает `HELLO_REJECT lex_rule` и запускает `_lex_reverse_keep_inbound()` (reverse dial обратно к меньшему узлу). `NodeConnector` не блокируется при lex-отказе — ждёт reverse-dial или inbound. HELLO-handshake, receive-loop → Router, keepalive ping (`PING` каждые 20с, таймаут 60с без трафика → ping, 90с → `mark_unreachable`). При connect — `router.register_client_ws()`, при disconnect — `router.unregister_client_ws()`.
+Исходящее подключение. Всегда пытается соединиться с пиром; лексикографическое правило (`self.NODE > peer_node_id`) принудительно применяется **сервером** при входящем HELLO: сервер принимает HELLO и запускает `_lex_reverse_keep_inbound()` (reverse dial обратно к меньшему узлу, при успехе inbound закрывается в пользу lex-правильного outbound, иначе inbound сохраняется; `HELLO_REJECT lex_rule` сервером не отправляется). `NodeConnector` не блокируется — ждёт reverse-dial или inbound. HELLO-handshake, receive-loop → Router, keepalive ping (`PING` каждые 20с, таймаут 60с без трафика → ping, 90с → `mark_unreachable`). При connect — `router.register_client_ws()`, при disconnect — `router.unregister_client_ws()`.
 
 ### CertsIndex (`src/internal_modules/certs_index.py`)
-Индекс сертификатов сети: `thumbprint → CertEntry`. `CertEntry`: subject_cn, valid_to, available_on[], installed_locally, stale (TTL=180с). `last_updated` = `field(default_factory=time.monotonic)`. Методы: `merge_cert_sync()`, `update_local()` (только для `installed_locally=True`), `get_network_available()`, `get_digest_for_sync()`.
+Индекс сертификатов сети: `thumbprint → CertEntry`. `CertEntry`: subject_cn, valid_to, available_on[], installed_locally, stale (TTL=180с). `last_updated` = `field(default_factory=time.monotonic)`. Методы: `merge_cert_sync()`, `update_local()` (только для `installed_locally=True`), `get_network_available()`, `get_digest_for_sync()`. Версионность синка: `CertEntry.sync_version` + `CertsIndex.sync_version`.
 
 ### ServiceManager (`services/manager.py`)
 Реестр: `services: dict[str, Any]`, методы в `services[name]` dict. Авторегистрация `@generator` при `register_service`. Генераторы с префиксом `__gen__`.
 
 ### ServiceLoader (`services/loader.py`)
-Сканирует `services/`: директории без `_`-префикса, импортирует .py, находит подклассы `ModuleGeneric`, регистрирует `@rpc` методы. Вызывает `ctx.register(instance)` для lifecycle management. Hot-reload через watchdog: при изменении — reimport + `cancel_by_service`.
+Сканирует `services/` (или `search_paths` из конфига): директории без `_`-префикса, импортирует .py, находит подклассы `ModuleGeneric`, регистрирует `@rpc` методы. Вызывает `ctx.register(instance)` для lifecycle management. Hot-reload через watchdog: при изменении — reimport + `cancel_by_service`. В текущей `main.py` `loader.watch()` закомментирован — автоперезагрузка не активна.
 
 ### LocalExecutor (`src/internal_modules/executor.py`)
 `execute(pack)` — резолвит `service.method` из ServiceManager, вызывает, возвращает RESPONSE MsgPack. `open_stream(pack)` — регистрирует inbound-стрим в StreamRegistry, передаёт `label` в consumer ctx для ACK через Router.
@@ -174,7 +173,7 @@ class MyService(ModuleGeneric):
 **Выполнение (D6):**
 - async @rpc — выполняются в event loop; внутри ЗАПРЕЩЕНЫ блокирующие вызовы
   (`time.sleep`, sync-сокеты, тяжёлые файловые операции) — только await-able API.
-- sync @rpc — автоматически выполняются через `asyncio.to_thread` (не блокируют loop);
+- sync @rpc — автоматически выполняются через `asyncio.to_thread` (реализация — в `src/internal_modules/executor.py`, не в `services/rpc.py`; не блокируют loop);
   блокирующий I/O в них разрешён. CPU-тяжёлый код → `ProcessPoolExecutor` вручную
   (`to_thread` не обходит GIL). Внимание: `asyncio.create_task(sync_call)` НЕ спасает —
   task исполняется в том же loop-потоке.
@@ -194,15 +193,16 @@ class MyService(ModuleGeneric):
 ### Архитектура
 ```
 WebPanel (service.py) — запускает subprocess
-  └── _streamlit_app.py — entry point Streamlit
+  └── streamlit_app.py — entry point Streamlit (заголовок внутри файла legacy: `_streamlit_app.py`)
        ├── rpc_client.py — NodeRPC (синхронный WS RPC в отдельном потоке)
-       ├── RPCProxy — подставляет dst из session_state['selected_node']
+       ├── RPCProxy (класс внутри streamlit_app.py) — подставляет dst из session_state['selected_node']
+       ├── auth.py — авторизация панели (включение: config.yaml → webpanel.auth)
        ├── views/home.py — главная: метрики + таблица соседей + сервисы
        └── views/service_view.py — динамический import services/<name>/web_ui.py → render(rpc)
 ```
 
 ### Контракт web_ui.py
-Каждый сервис с UI: `services/<name>/web_ui.py` с функцией `render(rpc)`, где `rpc` — `RPCProxy`.
+Каждый сервис с UI: `services/<name>/web_ui.py` с функцией `render(rpc)`, где `rpc` — `RPCProxy`. У части сервисов `render` определён внутри `if st is not None:` — в headless-импорте без streamlit атрибута нет (импорт не падает); `service_view.py` проверяет `hasattr(web_ui, 'render')`.
 
 ### Реестр сервисов (иконки и группы)
 Определён в `services/webpanel/service_meta.py` (единственный источник):
@@ -215,15 +215,17 @@ SERVICE_META = {
     'config':       ('🛠️', 'Система',      'Удалённое редактирование config.yaml узла'),
     'updater':      ('⬆️', 'Система',      'Обновление узла по mesh'),
     'purge':        ('☢️', 'Система',      'Аварийное удаление узла с хоста'),
-    'eyesauron':    ('👁', 'Система',      'Мониторинг экранов: сбор и просмотр кадров'),
     'compute_full': ('⚡', 'Вычисления',   'Генератор + консьюмер'),
     'generator':    ('📤', 'Вычисления',   'Генератор стримов'),
     'test':         ('🧪', 'Диагностика',  'Тестовый echo-сервис'),
+    'logs':         ('📜', 'Диагностика',  'Логи консоли узла с фильтрами'),
+    'speedtest':    ('🚀', 'Диагностика',  'Замер скорости до узла (ping/throughput)'),
+    'deployer':     ('🏗️', 'Система',      'Сборка (pyarmor/pyinstaller) и массовый деплой на ноды'),
     'demo':         ('🎓', 'Примеры',      'Эталонный сервис: все возможности с пояснениями'),
 }
 GROUP_ORDER = ['Система', 'Сеть', 'Сертификаты', 'Вычисления', 'Диагностика', 'Примеры']
 ```
-Импортируется в `_streamlit_app.py` и `service_view.py` из `service_meta.py`.
+Импортируется в `streamlit_app.py` и `service_view.py` из `service_meta.py`. Полный реестр в коде может содержать дополнительные записи — они задокументированы в `src/se/AGENTS.md` и здесь не перечисляются.
 
 ### Сервис logs (`services/logs/`) — просмотр логов консоли
 `RingBufferHandler` (сквозной id записей) цепляется к root logger в `start()`; параметры — из config.yaml → `logs` (buffer_size / max_msg_len / max_traceback_len, применяются при подключении). RPC: `get_logs({since_id, levels, search, regex, loggers, since_ts/until_ts, limit})` — инкрементальный поллинг по since_id + серверные фильтры, ответ несёт `last_id`/`gap` (обрыв буфера между опросами), `get_loggers`, `clear_buffer`. UI: лента в `st.fragment(run_every=2s)` с тумблером автообновления; смена фильтров меняет сигнатуру `lv_sig` и сбрасывает накопленную ленту (`session_state.lv_rows`, новые записи сверху); экспорт CSV/TXT через download_button. Ограничение: видны только записи, доходящие до root logger (уровень = logging.level из конфига); propagate=False и логи Streamlit-процесса не попадают.
@@ -239,7 +241,7 @@ GROUP_ORDER = ['Система', 'Сеть', 'Сертификаты', 'Вычи
 
 Адресация: `ref = {share, path}` или content-addressed `{id}` (sha256 считается лениво, кэш по size+mtime_ns). Resume: докачка `.part` через `offset`; повторный download целого файла мгновенно отвечает done. Локальный шорткат dst=self → shutil.copyfile.
 
-RPC-методы: `list_shares` (имена/объём, без локальных путей), `find({share?, pattern?, limit})`, `stat({share,path}|{id})`, `serve`, `download({dst, ref, save_as?, resume?})`, `downloads()` (статусы для UI), `cancel_download({label})`; управление шарами из UI: `list_local_dirs({path})` (браузер каталогов, абсолютные пути), `add_share({path, name?, allow?, chunk_size?})`, `remove_share({name})`.
+RPC-методы: `list_shares` (имена/объём, без локальных путей), `find({share?, pattern?, limit})`, `stat({share,path}|{id})`, `read` (чтение файла, используется updater), `serve`, `download({dst, ref, save_as?, resume?})`, `downloads()` (статусы для UI), `cancel_download({label})`; управление шарами из UI: `list_local_dirs({path})` (браузер каталогов, абсолютные пути), `add_share({path, name?, allow?, chunk_size?})`, `remove_share({name})`.
 
 Расшаривание из UI: `_persist_shares()` пишет через `ConfigManager.update(files__shares=…)` и **синхронизирует `ctx.config.files.shares` на месте** — update() создаёт новый объект cfg, и без этого `ctx.config` расходился бы с `config_manager.cfg`. `_cfg()` читает первично из `config_manager.cfg`.
 
@@ -251,8 +253,8 @@ RPC-методы: `list_shares` (имена/объём, без локальны�
 ### Сервис demo (`services/demo/`) — эталонный пример
 Учебный сервис с подробными пояснениями в комментариях. Демонстрирует: жизненный цикл (start/stop), @rpc sync/async, mesh-RPC из кода (find_by_service + network.call), @generator, push-стрим (Pipe + Dispatcher + attach_transport), приём стрима (@stream_wrapper/@stream_consumer + ACK prefetch), вызов Spawner'а через локальный шорткат. UI: три вкладки (проверка связи, стрим, распределённые вычисления). Новые сервисы делать по его образцу.
 
-### Сервис updater (`services/updater/`) — обновление узла по mesh
-Тонкий клиент над files-транспортом + локальный applier. Версия узла: `version.txt` (frozen — из бандла, генерирует compile.py из `VERSION` + счётчика `BUILD_NUMBER`; dev — корень проекта, fallback `0.0.0-dev`), читается `src/internal_modules/app_version.py` (формат `MAJOR.MINOR.PATCH[-buildN]`).
+### Сервис updater (`src/internal_modules/updater.py` + `services/updater/web_ui.py`) — обновление узла по mesh
+Ядерный модуль `Updater` (`src/internal_modules/updater.py`, регистрируется в `main.py` вручную как `ctx.updater`); в `services/updater/` остался только `web_ui.py`. Тонкий клиент над files-транспортом + локальный applier. Версия узла: `version.txt` (frozen — из бандла, генерирует compile.py из `VERSION` + счётчика `BUILD_NUMBER`; dev — корень проекта, fallback `0.0.0-dev`), читается `src/internal_modules/app_version.py` (формат `MAJOR.MINOR.PATCH[-buildN]`).
 
 Релиз на админской ноде = каталог в шаре (расшаривается через files UI): `<ver>/Node_P2P_Core.exe` + `<ver>/manifest.json` `{version, exe_sha256|id, exe_name?, size?, notes?, min_compatible?}`.
 
@@ -268,12 +270,15 @@ Boot-confirm/rollback: новая версия инкрементирует `att
 RPC-методы:
 | Метод | Описание |
 |-------|----------|
-| `connect_to_node` | Исходящее подключение к узлу `{host, port, node_id}`; разрешено если удалённый НЕ подключен к локальному И соблюдено лексикографическое правило (`NODE > node_id`, иначе `{ok: False, lex_rule: True}` без создания коннектора); при успехе пир сохраняется в config.yaml → local.peers |
+| `connect_to_node` | Исходящее подключение к узлу `{host, port, node_id}`; отказ если пир уже `connected` в NeighborTable; hard-block по lex снят — HELLO уходит всегда, lex разруливается на принимающей стороне silent reverse-dial (`_lex_reverse_keep_inbound`, без `HELLO_REJECT lex_rule`); при успехе пир сохраняется в config.yaml → local.peers |
 | `list_connectors` | Активные исходящие коннекторы (модули `Connector_*`) |
 | `node_detail` | Обзор узла: own, connected, known, ws_connections, services |
 | `config_peers` | Пиры из config.yaml → local.peers |
-| `sessions` | Все сессии узла: записи NeighborTable любого статуса (connected/known/unreachable) + session_id из HELLO-рукопожатия (тот же, что в логе «Node X accepted (session=…)»), direction (inbound по nodes_manager / outbound по Router.has_client_ws), age_sec, counts. Строки строит общий `NetworkModule.local_sessions()` |
+| `remove_peer` | Удаление пира из config.yaml → local.peers |
+| `rename_node` | Переименование узла |
+| `sessions` | Все сессии узла: записи NeighborTable любого статуса (connected/known/unreachable) + session_id из HELLO-рукопожатия (тот же, что в логе «Node X accepted (session=…)»), direction (inbound/outbound/inbound+outbound/''), age_sec, counts. Строки строит общий `NetworkModule.local_sessions()` |
 | `ctx_map` | Интроспекция AppContext для разработчика: по каждому атрибуту — тип, назначение (CTX_ATTR_DOCS в service.py), публичные методы с сигнатурами; router/neighbor_table/nodes_manager раскрыты на уровень глубже; для services — реестр сервисов с методами и @generator; каждый entry/child несёт `rpc_service`. pydantic-модели и списки (config, peers) отдаются значениями (`data`, рекурсивно; поля secret/password/token/key маскируются) |
+| `autorun_status` / `autorun_enable` / `autorun_disable` | Статус и управление задачей автозапуска Windows |
 
 Веб-интерфейс (`web_ui.py`): вкладки «Управление узлами» (метрики + таблицы соседей + RPC-консоль с известными методами `KNOWN_METHODS` и подсказками аргументов), «Подключение» (форма подключения + текущие коннекторы + пиры из конфига; после попытки подключения — `st.rerun()` с перезапросом всех таблиц, результат попытки показывается после рерана из `session_state['sys_connect_result']`), «🧵 Сессии» (таблица всех сессий узла с session_id/направлением/возрастом, автообновление через st.fragment, полный JSON в expander) и «🧭 Контекст» (карта self.ctx; клик по методу сервиса подставляет его в RPC-консоль через `session_state['ctx_pick']`). Импорт streamlit обёрнут в try/except — сервис работает и в headless-сборке.
 
@@ -313,17 +318,6 @@ RPC:
 
 UI (`web_ui.py`): таблица целей с мультивыбором (st.dataframe on_select multi-row), кнопки «🗑 Удалить выбранное» и «☢️ Удалить ВСЁ» (все present-пункты), обязательный checkbox-подтверждение; предупреждение при выборе фатальных пунктов; потеря связи с узлом трактуется как ожидаемый исход. Результат показывается после st.rerun из `session_state['purge_result']`.
 
-### Сервис eyesauron (`services/eyesauron/`) — мониторинг экранов EyeSauron
-Порт проекта EyeSauron в mesh (анализ и план — `docs/eyeSauron.md`). Две независимые роли, включаются в config.yaml → `eyesauron`. По умолчанию ВЫКЛЮЧЕН (`eyesauron.enabled: false`, по аналогии с purge).
-
-- **Роль collect (коллектор)**: RPC `ingest({meta:{hostname,timestamp,title}, png}, data несёт bytes)` → raw PNG в `store_path/<host>/<date>/<ts>__<title>.png` (через `asyncio.to_thread`, NAS медленный); `browse({level:'hosts'|'dates'|'images', host?, date?, filter?})`; `image({file})` → bytes PNG (только относительные пути внутри store_path, `_safe_rel`); `stats()` (полный обход, долгий).
-- **Роль capture (агент)**: узел в session 0 не видит рабочий стол → сервис через WTS-инъекцию (`_wts.py`, порт launcher.py: WTSEnumerateSessions + WTSQueryUserToken + CreateProcessAsUserW, флаг CREATE_NO_WINDOW) запускает хелпер `_session_helper.py` в каждой активной сессии. Хелпер: захват (mss → PIL.ImageGrab → ctypes GDI), валидация (PNG ≥ 10KB, детект чёрного экрана), дедуп собственным average_hash на numpy (без пакета imagehash), заголовок активного окна через ctypes; кадры пишет в spool `<local.work_dir>/eyesauron/spool/<md5>` + `.meta` (формат офлайн-кэша оригинала). Сервис разбирает spool: шлёт коллектору `eyesauron.ingest` по mesh, при недоступности копит буфер (потолок `max_spool_mb`, старейшие вытесняются); пауза между отправками `send_delay_sec` (щадит NAS). Хелпер держит mutex `Local\EyeSauronCaptureMutex` (per-session namespace) и сам выходит при завершении своей сессии.
-- Запуск хелпера: frozen — тот же exe с ключом `--eye-sauron-helper` (argv-хук в начале main.py до инициализации узла); dev — `python <script>` c bootstrap sys.path.
-- RPC `status()` (роли, хелперы по сессиям, spool), `test_capture()` (прямой захват из процесса узла — только dev/интерактивная сессия). UI: вкладка «👁 EyeSauron» — статус агента + просмотр архива (host → date → filter → таблица кадров → st.image).
-- Зависимости: `mss`, `pillow`, `numpy` (+ vendor `_vendor_chunk_store.py` — снимок ChunkStore как образец).
-- **Пакованное дедуп-хранилище (РЕАЛИЗОВАНО, спека `docs/eyesauron_storage.md`)**: движок `_pack_store.py` — иммутабельные тома `.pack/.idx/.bloom` (append-only, seal → одна последовательная заливка на NAS с докачкой `.part` и sha256-верификацией), манифест `volumes.json`, карты кадров в дневных сегментах `maps/seg-*.mseg`. Включается `eyesauron.store.enabled: true` (по умолчанию выкл — ingest пишет raw PNG). Ключи: `store.volume_size_gb/local_cache_gb(100)/max_age_hours/bloom_enabled/root`. Дедуп через границы seal/рестартов (hot-кэш + per-volume idx binsearch + bloom опционально). Журнал staging — коммит на кадр; краш теряет максимум хвост журнала. Каталог host/date выводится из мет сегментов + доскан хвостов. RPC `seal_now`; в `status()` блок `store`+`telemetry`.
-- **Телеметрия скролла** (`_telemetry.py`, на коллекторе): детект вертикального сдвига между соседними кадрами хоста (downscale 96×128, ±15 строк); файлы `<work_dir>/eyesauron/telemetry/<день>.jsonl` (строка на наблюдение) + `summary.json` (агрегаты по дням/хостам, атомарная перезапись раз в минуту, ротация 90 дней). Метрика решает включение CDC-томов (порог ~15% — docs/eyesauron_storage.md §7). Бенчмарк стратегий чанкинга — `_bench_cdc.py`: chunker v1 = grid256 (CDC проиграл на спокойных потоках из-за компрессии сырых чанков, выиграл только скролл; cdc_png опровергнут каскадом deflate).
-
 ### Сервис netinfo (`services/netinfo/`) — диагностика сети и карта топологии
 RPC: `neighbors`, `nodes`, `services`, `find_service`, `topology`.
 
@@ -355,12 +349,12 @@ Generator Node                   Intermediate Node(s)          Consumer Node
 
 | Компонент | Роль |
 |-----------|------|
-| **Pipe** | asyncio.Queue с buff_len, low_watermark, refill callback |
+| **Pipe** | asyncio.Queue с buff (`create_pipe(buff=10)`), low_watermark, refill callback |
 | **Dispatcher** | Распределяет элементы генератора по N Pipe; при ошибке producer — close() без sentinel |
 | **PipeTransport** | Подключен к Router (не к WS напрямую). _handshake_and_pump → router._forward(STREAM_OPEN). _pump → router._send_pack(CHUNK/EOF). Ждёт ACK через router.sessions |
 | **StreamRoute** | Кэшированный маршрут: forward_path + backward_path для быстрого форвардинга |
 | **Router.send_stream_ack()** | Consumer вызывает для отправки ACK генератору через mesh (backward_path) |
-| **_MeshStreamIterator** | Async iterator: читает из Pipe, после каждого чанка — ACK |
+| **_MeshStreamIterator** | Async iterator: читает из Pipe, ACK кумулятивный раз на `buff_len` чанков |
 | **MemoryModule** | Фабрика: `create_pipe()`, `create_dispatcher()`, `attach_transport(pipe, template, router)` |
 | **StreamRegistry** | Реестр inbound-стримов: label → Pipe |
 
@@ -413,7 +407,7 @@ async for chunk in await ctx.network.stream(
 
 ## 9. Конфигурация
 
-Один файл — `config.yaml`; настройки узла живут в его секции `local`. Если файла нет — `_ensure_config()` создаёт его с дефолтами (`node` = hostname машины). Если файл есть, но не хватает секций/полей (например, после обновления кода) — `ConfigManager._load()` достраивает их дефолтами при загрузке (`_deep_fill`: добавляются только отсутствующие ключи, существующие значения не трогаются, пустая секция `key:` трактуется как отсутствующая) и перезаписывает файл с `log.info` о добавленных путях; операция идемпотентна. Pydantic-модели: `Config` → `NetworkConfig`, `MemoryConfig`, `LoggingConfig`, `ServicesConfig`, `LocalConfig`.
+Один файл — `config.yaml`; настройки узла живут в его секции `local`. Если файла нет — `_ensure_config()` создаёт его с дефолтами (`node` = hostname машины). Если файл есть, но не хватает секций/полей (например, после обновления кода) — `ConfigManager._load()` достраивает их дефолтами при загрузке (`_deep_fill`: добавляются только отсутствующие ключи, существующие значения не трогаются, пустая секция `key:` трактуется как отсутствующая) и перезаписывает файл с `log.info` о добавленных путях; операция идемпотентна. Pydantic-модели: `Config` → `NetworkConfig`, `MemoryConfig`, `LoggingConfig` (+`uvicorn_level`/`websockets_level`), `LogsConfig`, `FilesConfig`/`ShareConfig`, `UpdateConfig`/`UpdateSource`, `PurgeConfig`, `WebPanelConfig`/`WebPanelAuthConfig`, `ServicesConfig`, `LocalConfig`. Идентификаторы узлов/пиров канонизируются к lower при загрузке и валидации.
 
 ```yaml
 node: Node0            # default: hostname
@@ -425,6 +419,8 @@ memory:
   default_buff: 10
 logging:
   level: INFO
+  uvicorn_level: WARNING
+  websockets_level: WARNING
 logs:                    # LogsConfig — буфер логов для веб-панели
   buffer_size: 2000      # ёмкость кольцевого буфера
   max_msg_len: 4000      # обрезка одного сообщения
@@ -444,24 +440,13 @@ update:                  # UpdateConfig — обновление узла (се�
   health_confirm_sec: 90   # время до boot_ok после апдейта
 purge:
   enabled: true            # аварийное удаление узла (сервис purge) — включён по умолчанию
-eyesauron:                 # EyesauronConfig — мониторинг экранов (сервис eyesauron)
-  enabled: false             # ВКЛЮЧАТЬ ОСОЗНАННО (аналог purge.enabled)
-  collect: true              # роль коллектора: приём кадров + raw PNG в store_path
-  capture: false             # роль агента: захват экранов машины (хелпер в сессии)
-  store_path: \\192.168.53.21\photo\screens  # <host>/<date>/<ts>__<title>.png
-  collector_node: ''         # для capture: узел-коллектор ('' = копить в spool)
-  interval_sec: 5.0          # период захвата, сек
-  send_delay_sec: 0.5        # пауза между отправками коллектору (щадит NAS)
-  max_spool_mb: 500          # потолок офлайн-буфера агента
-  store:                     # пакованное дедуп-хранилище (см. docs/eyesauron_storage.md)
-    enabled: false             # вкл → ingest пишет в тома .pack вместо raw PNG
-    root: \\192.168.53.21\photo\store\packs   # NAS: готовые тома + манифест
-    volume_size_gb: 10         # цель seal по размеру
-    local_cache_gb: 100        # кэш готовых томов локально (LRU)
-    max_age_hours: 24          # seal полупустого тома
-    bloom_enabled: false       # поиск по bloom (файлы пишутся всегда)
+webpanel:
+  auth:
+    enabled: true
+    users: {}               # {login: sha256(password)}
 services:
-  path: services/
+  search_paths: [services/]  # multipath ServiceLoader; второй путь — см. src/se/AGENTS.md
+config_confirm_sec: 15
 local:                 # LocalConfig — параметры деплоя/автозапуска
   alias: <hostname>
   name: Core           # имя задачи планировщика / ключа реестра
@@ -476,7 +461,6 @@ local:                 # LocalConfig — параметры деплоя/авт�
 ### ConfigManager (`src/internal_modules/config.py`)
 Автосохранение в config.yaml при каждой модификации:
 - `update(network__port=9001, ...)` — обновление любых полей, вложенность через `__`
-- `get_local(key)` / `set_local(key, value)`
 - `add_peer(node_id, uri)` / `remove_peer(node_id)` / `list_peers()` — пиры в local.peers; именно сюда сервис `system.connect_to_node` сохраняет пиров
 
 ## 9a. Сборка и подпись дистрибутива
@@ -490,11 +474,11 @@ local:                 # LocalConfig — параметры деплоя/авт�
 
 После сборки каждый exe подписывается через `sign/signer.py` (osslsigncode, нужны `sign/ca_cert.pem` + `sign/ca_key.pem` — gitignored). Подписанный файл перемещается обратно в `dist/<name>.exe`.
 
-Frozen-режим: встроенные сервисы грузятся из `sys._MEIPASS/services` (ServiceLoader), локальные из `./services`. В headless-сборке webpanel исключается также через `LocalConfig.excluded_autoload_services`.
+Frozen-режим: встроенные сервисы грузятся из `sys._MEIPASS/services` (ветка в `main.py`, не в самом `ServiceLoader`), локальные — из `services.search_paths` конфига (`./services` по умолчанию). В headless-сборке webpanel исключается также через `LocalConfig.excluded_autoload_services`. Node-сборка собирает сервисы по `--collect-all services.<name>` поштучно и исключает их `web_ui`; `compile.py` после сборки вызывает `make_manifest(version)` (каталог `dist/<version>/` + `manifest.json` с sha256/size для updater).
 
 ## 9b. Roadmap
 
-`roadmap.md` — текущие TODO: обновление сервисов/core по сети, autorun-модуль, self-removing, рефакторинг eye-sauron как локального сервиса (анализ проекта и план интеграции — **`docs/eyeSauron.md`**), панель управления через политики.
+`docs/roadmap.md` — текущие TODO (корневого `roadmap.md` нет). Детали защиты — только в `src/se/AGENTS.md`.
 
 ## 10. Конвенции
 
@@ -542,6 +526,7 @@ class MyService(ModuleGeneric):
 ## 12. Известные проблемы / TODO
 
 - `debug_client.py` — legacy на JSON: против msgpack-узлов не работает (перевести отдельной задачей)
+- Stale-комментарий в `services/system/service.py:88-91` утверждает, что сервер отвечает `HELLO_REJECT lex_rule` — фактически сервер lex-REJECT не отправляет (silent `_lex_reverse_keep_inbound` в `src/networking/network.py:224-277`); док выше описывает фактическое поведение
 - Удалённые сервисы в webpanel: sidebar теперь берёт `services` из NeighborTable (gossip, `node_status`), отдельный RPC `netinfo.services` больше не вызывается для удалённых нод; fallback на кэш `session_state` при временной недоступности узла. `web_ui.py` проверяется локально (`service_view.py`) — для рендера нужен файл на UI-ноде (обычно уже есть в codebase, т.к. UI актуальной версии); если сервис есть только на конкретной удалённой ноде и не закомичен в UI — при клике покажет fallback. Ограничение #fixed 4c68d425 on 01.09.2026
 - CERT_SYNC on-connect — проверка services в HELLO предотвращает timeout
 - StreamRoute cache TTL=300с скользящий (продлевается обращениями через get_stream_route) — устаревание возможно только при простое стрима дольше TTL
