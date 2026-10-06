@@ -75,3 +75,10 @@ dist/services/plot
 /config.yaml.backups/
 /src/se/
 /services/eyesauron/*
+
+# Beads / Dolt files (added by bd init)
+.dolt/
+*.db
+.beads-credential-key
+.beads/proxieddb/
+*.gate.lock*

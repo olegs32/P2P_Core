@@ -1,0 +1,7 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "embedded",
+  "dolt_database": "P2P_Core",
+  "project_id": "7fd9cb84-638d-4af1-8140-21c9b7798008"
+}
