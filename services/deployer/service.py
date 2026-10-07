@@ -490,8 +490,8 @@ class Deployer(ModuleGeneric):
 
     @rpc
     async def get_status(self, data: dict) -> dict:
-        # История сборок из dist
-        builds = self._list_builds()[:20]
+        # История сборок из dist (блокирующий обход — в потоке, не в event loop)
+        builds = (await asyncio.to_thread(self._list_builds))[:20]
         # Включаем build_status для UI polling после смены вкладки
         return {"ok": True, "builds": builds, "last_build": self._last_build, "build_status": dict(self._build_status), "node": self.ctx.NODE}
 
@@ -907,8 +907,12 @@ class Deployer(ModuleGeneric):
             sess_node = canon_node_id(node) if node else None
         except ValueError:
             return {"ok": False, "error": "bad node id"}
+        def _list_keys() -> dict:
+            with self._agent_auth_guard:
+                return self._agent_registry.list()
+
         return {"ok": True,
                 "statuses": self._agent_sessions.status(sess_node),
-                "keys": await asyncio.to_thread(self._agent_registry.list),
+                "keys": await asyncio.to_thread(_list_keys),
                 "mode": self._admin_mode(),
                 "admin_ws": f"ws://{await asyncio.to_thread(self.ctx.network.local_ip)}:{self.ctx.config.network.port}"}
