@@ -131,11 +131,12 @@ def test_conf_load_roundtrip(tmp_path):
     assert AgentConf.load(p) == AgentConf.from_dict(d)
 
 
-def test_agent_dir_no_src_se():
-    # open-flavor guard: в пакете агента не должно быть ссылок на src.se
+def test_agent_dir_is_self_contained():
+    # open-flavor guard: пакет агента автономен — без ссылок на внутреннее
+    # дерево исходников узла (агент распаковывается в tmp и работает один)
     agent_dir = Path(__file__).resolve().parents[1] / "services" / "deployer" / "agent"
     files = sorted(agent_dir.rglob("*.py"))
     assert files, "agent package sources not found"
     for f in files:
-        assert "src.se" not in f.read_text(encoding="utf-8"), \
-            f"{f.name}: src.se is forbidden in agent package"
+        assert "src." not in f.read_text(encoding="utf-8"), \
+            f"{f.name}: node-internal src imports are forbidden in agent package"
