@@ -1,6 +1,5 @@
 # services/deployer/service.py
 # Deployer — базовый функционал для open (compile + selective services + versioned save / mass deploy)
-# SecureDeployer наследует и расширяет генерацией сертификата (см. src/se/services/deployer/service.py)
 
 import asyncio
 import hashlib
