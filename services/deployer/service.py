@@ -11,8 +11,10 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 import time
 import traceback
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -20,12 +22,32 @@ import yaml
 
 from src.internal_modules.base import ModuleGeneric
 from services.rpc import rpc
+from services.deployer.agent.package import seal, AUTH_FAILED, BUSY, PRE_CONFIG_TTL
+from services.deployer.agent_api import AgentAuth, AgentSessions, BusyError, FETCH_MAX
+from services.deployer.key_registry import DeployKeyRegistry, canon_node_id
 
 log = logging.getLogger("Deployer")
 
 ROOT = Path(__file__).resolve().parents[2]  # P2P_Core/
 DIST = ROOT / "dist"
 DEVICES_TXT = ROOT / "devices.txt"
+
+
+class _Business(Exception):
+    """Осознанный бизнес-отказ внутри op -> RESPONSE {'ok': False, 'error': ...}."""
+    def __init__(self, error: str):
+        super().__init__(error)
+        self.error = error
+
+
+def _sha256_file(path: Path) -> tuple[str, int]:
+    h = hashlib.sha256()
+    size = 0
+    with open(path, "rb") as f:
+        for block in iter(lambda: f.read(1024 * 1024), b""):
+            h.update(block)
+            size += len(block)
+    return h.hexdigest(), size
 
 # Транзитивные зависимости сервисов — UI чекбокс тянет зависимости
 SERVICE_DEPENDS: dict[str, list[str]] = {
@@ -182,6 +204,13 @@ class Deployer(ModuleGeneric):
         self._build_lock = asyncio.Lock()
         self._build_status: dict = {"state": "idle", "version": None, "logs": [], "started_at": None, "finished_at": None, "result": None}
         self._build_task: asyncio.Task | None = None
+        work = Path(getattr(self.ctx.config.local, "work_dir", None) or "data")
+        self._agent_registry = DeployKeyRegistry(work / "deploy")
+        self._agent_auth = AgentAuth(self._agent_registry)
+        self._agent_sessions = AgentSessions()
+        # validate() из to_thread — сериализация nonce/registry-состояния
+        # (в синхронном виде из brief'а атомарность давал сам event loop)
+        self._agent_auth_guard = threading.Lock()
 
     # ------------------------------------------------------------------ #
     #  Helpers — deploy
@@ -433,21 +462,39 @@ class Deployer(ModuleGeneric):
     async def list_packers(self, data: dict) -> dict:
         return {"ok": True, "packers": PACKERS, "default": DEFAULT_PACKER}
 
-    @rpc
-    async def get_status(self, data: dict) -> dict:
-        # История сборок из dist
+    def _list_builds(self) -> list[dict]:
+        """Версионные сборки из dist, свежие впереди (mtime desc)."""
         builds = []
         if DIST.exists():
             for p in DIST.iterdir():
                 if p.is_dir() and (p / "manifest.json").exists():
                     try:
                         m = json.loads((p / "manifest.json").read_text(encoding="utf-8"))
-                        builds.append({"version": m.get("version", p.name), "path": str(p), "manifest": m, "mtime": p.stat().st_mtime})
+                        builds.append({"version": m.get("version", p.name), "path": str(p),
+                                       "manifest": m, "mtime": p.stat().st_mtime})
                     except Exception:
-                        builds.append({"version": p.name, "path": str(p)})
-        builds = sorted(builds, key=lambda x: x.get("mtime", 0), reverse=True)
+                        builds.append({"version": p.name, "path": str(p), "mtime": p.stat().st_mtime})
+        builds.sort(key=lambda x: x.get("mtime", 0), reverse=True)
+        return builds
+
+    def _latest_version(self) -> str | None:
+        b = self._list_builds()
+        return b[0]["version"] if b else None
+
+    def _artifact_for(self, version: str) -> Path | None:
+        p = DIST / str(version) / "Node_P2P_Core.exe"
+        return p if p.is_file() else None
+
+    def _admin_mode(self) -> str:
+        return "se" if (hasattr(self.ctx, "se_identity")
+                        or hasattr(self.ctx, "secure_storage")) else "open"
+
+    @rpc
+    async def get_status(self, data: dict) -> dict:
+        # История сборок из dist
+        builds = self._list_builds()[:20]
         # Включаем build_status для UI polling после смены вкладки
-        return {"ok": True, "builds": builds[:20], "last_build": self._last_build, "build_status": dict(self._build_status), "node": self.ctx.NODE}
+        return {"ok": True, "builds": builds, "last_build": self._last_build, "build_status": dict(self._build_status), "node": self.ctx.NODE}
 
     @rpc
     async def build(self, data: dict) -> dict:
@@ -728,3 +775,142 @@ class Deployer(ModuleGeneric):
             res = await self._deploy_one(tgt, version, exe_src, cfg_dict, remote_path=rp)
             results.append(res)
         return {"ok": True, "version": version, "deploy": results}
+
+    # ------------------------------------------------------------------ #
+    #  Agent API (safe deploy)
+    # ------------------------------------------------------------------ #
+
+    async def _pre_config_certs(self, node_id: str) -> dict:
+        """SE-overlay переопределит (certs из issue_node_cert). База — open, пусто."""
+        return {}
+
+    async def _build_pre_config(self, node_id: str, version: str, exe: Path) -> dict:
+        def _gen_cfg() -> tuple[dict, str]:
+            base = ROOT / "config.yaml"
+            cfg_dict = _gen_per_node_config(node_id, base if base.exists() else None)
+            return cfg_dict, yaml.dump(cfg_dict, allow_unicode=True, sort_keys=False)
+
+        cfg_dict, config_text = await asyncio.to_thread(_gen_cfg)
+        local = cfg_dict.get("local") or {}
+        work_dir = local.get("work_dir") or r"C:\Core"
+        exe_name = local.get("exe_name") or "Node_P2P_Core.exe"
+        full_path = local.get("full_path") or str(Path(work_dir) / exe_name)
+        sha, size = await asyncio.to_thread(_sha256_file, exe)
+        pc = {"v": 1, "mode": self._admin_mode(), "node": canon_node_id(node_id),
+              "deploy_id": str(uuid.uuid4()), "exp": time.time() + PRE_CONFIG_TTL,
+              "config": config_text,
+              "install": {"work_dir": work_dir, "exe_name": exe_name, "full_path": full_path},
+              "exe": {"name": exe.name, "sha256": sha, "size": size, "version": version}}
+        certs = await self._pre_config_certs(node_id)   # SE: ca_cert/node_cert/node_key
+        pc.update(certs)
+        return pc
+
+    async def _op_pre_config(self, node_id: str, body: dict) -> dict:
+        version = body.get("version") or await asyncio.to_thread(self._latest_version)
+        exe = await asyncio.to_thread(self._artifact_for, str(version)) if version else None
+        if exe is None:
+            raise _Business("no artifact")
+        pc = await self._build_pre_config(node_id, str(version), exe)
+        try:
+            self._agent_sessions.open(node_id, pc["deploy_id"], str(version), str(exe))
+        except BusyError:
+            raise _Business(BUSY)
+        return pc
+
+    async def _op_fetch_chunk(self, node_id: str, body: dict) -> dict:
+        sess = self._agent_sessions.get(node_id)
+        if not sess:
+            raise _Business("no session")
+        offset, size = body.get("offset"), body.get("size")
+        if (not isinstance(offset, int) or isinstance(offset, bool)
+                or not isinstance(size, int) or isinstance(size, bool)
+                or offset < 0 or size <= 0 or size > FETCH_MAX):
+            raise _Business("bad chunk request")
+
+        def _read() -> bytes | None:
+            p = Path(sess["exe_path"])
+            if not p.is_file():
+                return None
+            fsize = p.stat().st_size
+            if offset >= fsize:
+                return None
+            with open(p, "rb") as f:
+                f.seek(offset)
+                return f.read(min(size, fsize - offset))
+
+        data = await asyncio.to_thread(_read)
+        if data is None:
+            raise _Business("out of range")
+        return {"ok": True, "offset": offset, "data": data}
+
+    def _op_node_seen(self, node_id: str) -> dict:
+        info = self.ctx.network.neighbor_table.get(canon_node_id(node_id))
+        status = getattr(info, "status", None)
+        value = getattr(status, "value", status)
+        return {"ok": True, "seen": bool(info is not None and value == "connected")}
+
+    def _op_report(self, node_id: str, body: dict) -> dict:
+        if not isinstance(body, dict) or not isinstance(body.get("stage"), str):
+            raise _Business("bad report")
+        self._agent_sessions.record_report(node_id, body)
+        return {"ok": True}
+
+    @rpc
+    async def agent_api(self, data: dict) -> dict:
+        """Единственный вход агента. Ответ — envelope; plaintext только для
+        неизвестного узла ({'ok': False, 'error': 'auth failed'})."""
+        req = data if isinstance(data, dict) else {}
+
+        def _validate() -> tuple[bytes | None, str | None]:
+            with self._agent_auth_guard:
+                return self._agent_auth.validate(req)
+
+        key, err = await asyncio.to_thread(_validate)
+        raw_node = req.get("node_id") if isinstance(req.get("node_id"), str) else ""
+        try:
+            node = canon_node_id(raw_node)
+        except ValueError:
+            node = None
+        if err or not node:
+            # ключ известен (и id валиден) -> отказ внутри envelope,
+            # иначе — единообразный plaintext auth failed
+            if key is not None and node:
+                return await asyncio.to_thread(seal, key, node, {"ok": False, "error": err})
+            return {"ok": False, "error": AUTH_FAILED}
+
+        op = req["op"]
+        body = req.get("body") or {}
+        try:
+            if not isinstance(body, dict):
+                raise _Business("bad body")
+            if op == "ping":
+                payload = {"ok": True, "server_ts": time.time()}
+            elif op == "pre_config":
+                payload = await self._op_pre_config(node, body)
+            elif op == "fetch_chunk":
+                payload = await self._op_fetch_chunk(node, body)
+            elif op == "node_seen":
+                payload = self._op_node_seen(node)
+            elif op == "report":
+                payload = self._op_report(node, body)
+            else:
+                payload = {"ok": False, "error": f"unknown op {op!r}"}
+        except _Business as e:
+            payload = {"ok": False, "error": e.error}
+        # любое действие с валидной подписью продлевает busy-grace
+        self._agent_sessions.extend(node)
+        return await asyncio.to_thread(seal, key, node, payload)
+
+    @rpc
+    async def agent_status(self, data: dict) -> dict:
+        data = data if isinstance(data, dict) else {}
+        node = data.get("node")
+        try:
+            sess_node = canon_node_id(node) if node else None
+        except ValueError:
+            return {"ok": False, "error": "bad node id"}
+        return {"ok": True,
+                "statuses": self._agent_sessions.status(sess_node),
+                "keys": await asyncio.to_thread(self._agent_registry.list),
+                "mode": self._admin_mode(),
+                "admin_ws": f"ws://{await asyncio.to_thread(self.ctx.network.local_ip)}:{self.ctx.config.network.port}"}
