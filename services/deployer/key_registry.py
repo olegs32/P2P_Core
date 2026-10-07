@@ -1,4 +1,8 @@
-"""Реестр per-node ключей агента: <work_dir>/deploy/<node_id>.json, атомарная запись."""
+"""Реестр per-node ключей агента: <work_dir>/deploy/<node_id>.json, атомарная запись.
+
+Инвариант: get/get_or_create рассчитаны на один event loop; из потоков
+(asyncio.to_thread) нужна внешняя сериализация.
+"""
 from __future__ import annotations
 
 import json
@@ -8,7 +12,10 @@ from pathlib import Path
 
 
 def canon_node_id(node_id: str) -> str:
-    return str(node_id).strip().lower()
+    c = str(node_id).strip().lower()
+    if any(ch in c for ch in "/\\:"):
+        raise ValueError("недопустимые символы в идентификаторе узла")
+    return c
 
 
 class DeployKeyRegistry:
@@ -20,11 +27,9 @@ class DeployKeyRegistry:
 
     def get(self, node_id: str) -> bytes | None:
         p = self._path(node_id)
-        if not p.is_file():
-            return None
         try:
             return bytes.fromhex(json.loads(p.read_text(encoding="utf-8"))["key"])
-        except Exception:
+        except FileNotFoundError:
             return None
 
     def get_or_create(self, node_id: str) -> tuple[bytes, bool]:
@@ -71,5 +76,8 @@ class DeployKeyRegistry:
     def _atomic_write(self, path: Path, obj: dict) -> None:
         self.root.mkdir(parents=True, exist_ok=True)
         tmp = path.with_name(path.name + ".tmp")
-        tmp.write_text(json.dumps(obj, ensure_ascii=False), encoding="utf-8")
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(obj, f, ensure_ascii=False)
+            f.flush()
+            os.fsync(f.fileno())
         os.replace(tmp, path)
