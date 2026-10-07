@@ -57,7 +57,7 @@ SERVICE_DEPENDS: dict[str, list[str]] = {
     "audit": ["files"],          # audit может шарить логи через files
 }
 
-# Допустимые packer'ы — pyarmor дефолт (согласовано)
+# Допустимые packer'ы — pyarmor дефолт
 PACKERS = ["pyarmor", "pyinstaller"]
 DEFAULT_PACKER = "pyarmor"
 
@@ -781,7 +781,6 @@ class Deployer(ModuleGeneric):
     # ------------------------------------------------------------------ #
 
     async def _pre_config_certs(self, node_id: str) -> dict:
-        """SE-overlay переопределит (certs из issue_node_cert). База — open, пусто."""
         return {}
 
     async def _build_pre_config(self, node_id: str, version: str, exe: Path) -> dict:

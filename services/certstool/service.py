@@ -575,7 +575,7 @@ class CertsTool(ModuleGeneric):
                 if certs:
                     break
         try:
-            self.log.info(f'list_certificates session={sid} csp_path={self.csp_path} outputs={outputs} total={len(certs)}')
+            self.log.debug(f'list_certificates session={sid} csp_path={self.csp_path} outputs={outputs} total={len(certs)}')
             if certs:
                 # head первого непустого для диагностики
                 for store, l in outputs:

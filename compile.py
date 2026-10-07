@@ -169,7 +169,7 @@ def build(name, ui=True, services: list[str] | None = None, extra_args: list[str
         if services is not None:
             # выборочные сервисы (deployer) — без webpanel, без лишних web_ui если headless
             for svc in services:
-                if svc in ('webpanel', 'deployer', 'demo'):
+                if svc in ('webpanel', 'deployer', ):
                     continue
                 current_args.extend(['--collect-all', f'services.{svc}'])
                 # if (Path("./services") / svc / "web_ui.py").exists():

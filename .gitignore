@@ -82,3 +82,7 @@ dist/services/plot
 .beads-credential-key
 .beads/proxieddb/
 *.gate.lock*
+/.claude/
+/.codex/
+/.cursor/
+/.ua/
