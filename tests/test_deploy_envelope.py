@@ -132,11 +132,19 @@ def test_conf_load_roundtrip(tmp_path):
 
 
 def test_agent_dir_is_self_contained():
-    # open-flavor guard: пакет агента автономен — без ссылок на внутреннее
-    # дерево исходников узла (агент распаковывается в tmp и работает один)
+    # open-flavor guard: пакет агента автономен — в импортах нет ссылок на
+    # внутреннее дерево исходников узла. Исключение — wire-кодек:
+    # src.networking.protocol/neighbor_table входят в agent-сборку
+    # (AGENT_HIDDEN в compile.py) и нужны AgentApiClient для кадров.
     agent_dir = Path(__file__).resolve().parents[1] / "services" / "deployer" / "agent"
     files = sorted(agent_dir.rglob("*.py"))
     assert files, "agent package sources not found"
+    allowed = ("src.networking.protocol", "src.networking.neighbor_table")
     for f in files:
-        assert "src." not in f.read_text(encoding="utf-8"), \
-            f"{f.name}: node-internal src imports are forbidden in agent package"
+        for line in f.read_text(encoding="utf-8").splitlines():
+            stripped = line.strip()
+            if not stripped.startswith(("from ", "import ")):
+                continue
+            if "src." in stripped:
+                assert any(a in stripped for a in allowed), \
+                    f"{f.name}: node-internal src imports are forbidden in agent package: {stripped}"
