@@ -2,12 +2,39 @@
 """Конечный автомат агента: happy/откаты/busy/auth/админ недоступен/sha-retry."""
 import asyncio
 import hashlib
+import sys
 import time
 import uuid
+from pathlib import Path
 
 import pytest
 
 from services.deployer.agent.package import AgentConf
+
+_REAL_NEW = Path(r"C:\Core\Node_P2P_Core.exe.new")
+_REAL_BAK = Path(r"C:\Core\.deploy_bak")
+_BAK_ROOT = r"C:\Core\.deploy_bak"          # подменяется фикстурой на tmp_path
+
+
+def _fs_state(p: Path) -> tuple:
+    return (p.exists(), p.stat().st_mtime_ns if p.exists() else None)
+
+
+@pytest.fixture(autouse=True)
+def _paths_in_tmp(tmp_path, monkeypatch):
+    """Все пути фикстур — внутри tmp_path; пост-чек реального диска."""
+    before = (_fs_state(_REAL_NEW), _fs_state(_REAL_BAK))
+    monkeypatch.setitem(PC, "install", {
+        "work_dir": str(tmp_path),
+        "exe_name": "Node_P2P_Core.exe",
+        "full_path": str(tmp_path / "Node_P2P_Core.exe"),
+    })
+    monkeypatch.setattr(sys.modules[__name__], "_BAK_ROOT",
+                        str(tmp_path / ".deploy_bak"))
+    yield
+    assert (_fs_state(_REAL_NEW), _fs_state(_REAL_BAK)) == before, \
+        "тест записал файлы вне tmp_path"
+
 
 CONF_D = {
     "protocol": 1, "mode": "open", "admin_ws": "ws://10.0.0.1:9000",
@@ -92,7 +119,7 @@ class FakeHost:
 
     async def backup(self, deploy_id, pc, plan):
         self.calls.append("backup")
-        return "C:\\Core\\.deploy_bak\\" + deploy_id if self.backup_ok else None
+        return str(Path(_BAK_ROOT) / deploy_id) if self.backup_ok else None
 
     async def write(self, pc, plan):
         self.calls.append("write")
@@ -203,7 +230,7 @@ def test_auth_rejected_is_10():
     assert code == 10
 
 
-def test_exp_node_tamper_is_10():
+def test_exp_node_mismatch_is_10():
     bad = dict(PC, node="node8")
     code = _run(_conf(), FakeClient(pc=bad), FakeHost())
     assert code == 10
@@ -240,3 +267,35 @@ def test_watch_timeout_live_process_rolls_back(monkeypatch):
     code = _run(_conf(deploy_timeout=2), NeverSeen(), host)
     assert code == 13
     assert any(isinstance(c, tuple) and c[0] == "restore" for c in host.calls)
+
+
+def test_report_always_failing_still_returns_code():
+    class DeadReport(FakeClient):
+        def __init__(self):
+            super().__init__()
+            self.attempts = 0
+
+        async def report(self, data):
+            self.attempts += 1
+            raise RuntimeError("report channel down")
+
+    client, host = DeadReport(), FakeHost()
+    code = _run(_conf(), client, host)
+    assert isinstance(code, int) and code == 0
+    assert client.attempts == 6               # 3 ретрая × отчёты (pre_config, done)
+    assert ("terminate", 0) in host.calls     # FSM всё равно дошёл до SELF_TERMINATE
+
+
+def test_launch_exception_triggers_rollback():
+    class LaunchFailHost(FakeHost):
+        async def launch(self, pc):
+            self.calls.append("launch")
+            raise RuntimeError("spawn failed")
+
+    client = FakeClient()
+    host = LaunchFailHost(backup=True)
+    code = _run(_conf(), client, host)
+    assert code == 13
+    assert any(isinstance(c, tuple) and c[0] == "restore" for c in host.calls)
+    assert client.reports[-1]["stage"] in ("rolled_back", "failed")
+    assert ("terminate", 13) in host.calls     # запись была -> cleanup

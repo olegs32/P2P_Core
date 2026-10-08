@@ -1,8 +1,9 @@
 # services/deployer/agent/machine.py
 """Конечный автомат deploy-агента.
 
-Открытый флоу: детект/запись SE-storage делегированы host-адаптеру (Task 8/9),
-крипто и форматы — agent/package.py. run() возвращает exit-code и не бросает.
+Открытый флоу: детект и запись на диск делегированы host-адаптеру (Task 8/9),
+формат пакета и проверка подписи — agent/package.py. run() возвращает
+exit-code и не бросает.
 """
 from __future__ import annotations
 
@@ -114,7 +115,13 @@ class DeployMachine:
             self._backup = await self.host.backup(self.deploy_id, self.pc, self._plan)
             await self.host.write(self.pc, self._plan)        # WRITE (os.replace .new)
             self._wrote_disk = True
-            self._pid = await self.host.launch(self.pc)       # LAUNCH
+            try:
+                self._pid = await self.host.launch(self.pc)   # LAUNCH
+            except Exception as e:
+                # запись на диске уже сделана — откат тем же путём, что WATCH-fail
+                err = str(e) or type(e).__name__
+                await self._rollback_and_report(err)
+                return await self._finish(EXIT_FAIL, err)
 
             ok, error = await self._watch()                   # WATCH
             if ok:
@@ -122,9 +129,7 @@ class DeployMachine:
                 await self._terminal("done", True)
             else:
                 code = EXIT_FAIL
-                rolled = await self._rollback() if self._backup else False
-                await self._terminal("rolled_back" if rolled else "failed",
-                                     False, error=error)
+                await self._rollback_and_report(error)
         except AuthRejected as e:
             code, error = e.exit_code, str(e)
             # 10/11/busy: отчёт НЕ шлём (админ либо недоступен, либо отверг)
@@ -137,7 +142,7 @@ class DeployMachine:
         except NeedSystem as e:
             code, error = e.exit_code, str(e)
         except (PreConfigError,) as e:
-            # протухший exp / подмена node - tamper -> 10, пакет сохраняем
+            # протухший exp / чужой node -> 10, пакет сохраняем
             code, error = EXIT_AUTH, str(e)
         except Exception as e:                                # DeployMachineError и прочее
             code = getattr(e, "exit_code", EXIT_FAIL)
@@ -147,7 +152,9 @@ class DeployMachine:
 
         if code == EXIT_FAIL and self.deploy_id and not error:
             await self._terminal("failed", False, error="deploy failed")
+        return await self._finish(code, error)
 
+    async def _finish(self, code: int, error: str | None) -> int:
         # Cleanup-гейт (Delta 4): только после записи на диск или успеха;
         # 10/11/12/14 -> пакет остаётся для повторного запуска оператором.
         cleanup = code == EXIT_DONE or (code == EXIT_FAIL and self._wrote_disk)
@@ -225,6 +232,12 @@ class DeployMachine:
         except Exception as e:
             log.warning("rollback failed: %s", e)
         return False
+
+    async def _rollback_and_report(self, error: str) -> None:
+        # сам rollback не пробрасывает исключения (см. _rollback) —
+        # исходный код выхода не маскируется
+        rolled = await self._rollback() if self._backup else False
+        await self._terminal("rolled_back" if rolled else "failed", False, error=error)
 
     async def _report(self, stage: str, ok: bool, error: str | None = None,
                       pid: int | None = None) -> None:
