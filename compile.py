@@ -1,4 +1,4 @@
-import datetime
+import argparse
 import hashlib
 import json
 import logging
@@ -101,17 +101,81 @@ BASE_ARGS = [
 ]
 
 
-def build(name, ui=True, services: list[str] | None = None, extra_args: list[str] | str | None = None, packer: str = "pyinstaller"):
+def detect_flavor(explicit: str | None, has_se_dir: bool) -> str:
+    """SE/open для любой цели сборки: явный флаг > наличие src/se на билд-машине."""
+    if explicit in ("se", "open"):
+        return explicit
+    return "se" if has_se_dir else "open"
+
+
+def flavor_excludes(flavor: str) -> list[str]:
+    """open = полное отсутствие SE в бинарнике (общий флаг для node/webui/agent)."""
+    return ["--exclude-module", "src.se"] if flavor == "open" else []
+
+
+AGENT_HIDDEN = [
+    "websockets", "msgpack", "msgpack.fallback", "cryptography",
+    "cryptography.hazmat.primitives.ciphers.aead", "pydantic",
+    "src.networking.protocol", "src.networking.neighbor_table",
+    "services.deployer.agent.package", "services.deployer.agent.machine",
+]
+
+AGENT_EXCLUDES = [
+    "--exclude-module", "fastapi", "--exclude-module", "uvicorn",
+    "--exclude-module", "streamlit", "--exclude-module", "pandas",
+    "--exclude-module", "watchdog", "--exclude-module", "tkinter",
+    "--exclude-module", "_tkinter", "--exclude-module", "FixTk",
+]
+
+# модули deployer, не нужные агенту (агент = CLI, не RPC-сервис)
+_DEPLOYER_SKIP = ("service", "web_ui", "agent_api", "key_registry")
+
+
+def service_excludes() -> list[str]:
+    """Исключения соседних сервисов — поимённо, агенту нужны только services.deployer.agent.*.
+
+    Пакетный --exclude-module services недопустим: PyInstaller гасит подмодули
+    (hidden-import services.deployer.agent.* → "not found"), поэтому исключаем
+    каждое имя отдельно, а родительские пакеты services/services.deployer оставляем.
+    """
+    args: list[str] = []
+    services_dir = Path("services")
+    if services_dir.is_dir():
+        for p in sorted(services_dir.iterdir()):
+            if p.is_dir() and p.name != "deployer" and p.name != "__pycache__":
+                args += ["--exclude-module", f"services.{p.name}"]
+        for mod in _DEPLOYER_SKIP:
+            if (services_dir / "deployer" / f"{mod}.py").is_file():
+                args += ["--exclude-module", f"services.deployer.{mod}"]
+    return args
+
+
+def agent_args(flavor: str) -> list[str]:
+    """Полный список аргументов PyInstaller для DeployAgent."""
+    args = [
+        "services/deployer/agent/main.py",
+        "--onefile", "--clean",
+        "--paths", ".",
+        "--name", "DeployAgent_se" if flavor == "se" else "DeployAgent",
+    ] + flavor_excludes(flavor) + AGENT_EXCLUDES + service_excludes()
+    for mod in AGENT_HIDDEN:
+        args += ["--hidden-import", mod]
+    return args
+
+
+def build(name, ui=True, services: list[str] | None = None, extra_args: list[str] | str | None = None, packer: str = "pyinstaller", flavor: str = "se"):
     """Сборка с поддержкой deployer: выборочные сервисы, extra_args, packer выбор.
 
     services: None → как раньше (все), иначе — только указанные + транзитивные зависимости уже разрешены вызывающим.
     extra_args: строка или список доп. флагов для pack -e (whitelist проверяет deployer).
     packer: "pyinstaller" (дефолт CLI) или "pyarmor" (дефолт deployer) — пока оба идут через PyInstaller, pyarmor ветка — через `pyarmor pack` если доступен.
+    flavor: "se"/"open" — open-сборка не включает src.se.
     """
-    log.info(f"Building P2P_Core (UI={ui}, packer={packer}, services={services or 'all'})...")
+    log.info(f"Building P2P_Core (UI={ui}, packer={packer}, services={services or 'all'}, flavor={flavor})...")
 
     # Создаем КОПИЮ базовых аргументов для текущей сборки
     current_args = BASE_ARGS.copy()
+    current_args.extend(flavor_excludes(flavor))
 
     # version.txt внутрь bundle (читает src.internal_modules.app_version)
     version_txt = ROOT / 'version.txt'
@@ -219,31 +283,42 @@ def build(name, ui=True, services: list[str] | None = None, extra_args: list[str
 
 
 
-def build_one():
-    # 1. Сборка приложения с UI
-    build('WebUI_P2P_Core', ui=True)
-    log.info("Signing WebUI_P2P_Core...")
-    sign_exe(Path('dist/WebUI_P2P_Core.exe'), SIGNED_DIR)
-    # Предполагается, что sign_exe создает файл с префиксом signed_ внутри SIGNED_DIR
-    if os.path.exists('dist/WebUI_P2P_Core.exe'):
-        os.remove('dist/WebUI_P2P_Core.exe')
+def sign_in_place(name: str) -> bool:
+    """Подпись exe в dist: signed_<name>.exe → <name>.exe (как в старых build_one/build_two)."""
+    exe = Path(f'dist/{name}.exe')
+    if not exe.is_file():
+        log.error(f'{exe} не найден — подпись пропущена')
+        return False
+    sign_exe(exe, SIGNED_DIR)
+    signed = Path(f'dist/signed_{name}.exe')
+    if signed.exists():
+        exe.unlink()
+        shutil.move(str(signed), str(exe))
+        return True
+    log.warning(f'signed_{name}.exe не создан — {exe} остался неподписанным')
+    return False
 
-    if os.path.exists('dist/signed_WebUI_P2P_Core.exe'):
-        shutil.move('dist/signed_WebUI_P2P_Core.exe', 'dist/WebUI_P2P_Core.exe')
 
-
-def build_two():
-    # 2. Сборка приложения БЕЗ UI (Node)
-    build('Node_P2P_Core', ui=False)
-    log.info("Signing Node_P2P_Core...")
-    sign_exe(Path('dist/Node_P2P_Core.exe'), SIGNED_DIR)
+def build_agent(flavor: str) -> bool:
+    """Сборка DeployAgent: agent_args() + подпись, как у node/webui."""
+    name = "DeployAgent_se" if flavor == "se" else "DeployAgent"
+    log.info(f"Building {name} (flavor={flavor})...")
+    if not Path("services/deployer/agent/main.py").is_file():
+        # бизнес-отказ: entry агента отсутствует
+        log.error("services/deployer/agent/main.py не найден — агент не собран")
+        return False
     try:
-        os.remove('dist/Node_P2P_Core.exe')
-    except Exception as e:
-        print(e)
-
-    if os.path.exists('dist/signed_Node_P2P_Core.exe'):
-        shutil.move('dist/signed_Node_P2P_Core.exe', 'dist/Node_P2P_Core.exe')
+        PyInstaller.__main__.run(agent_args(flavor))
+    except (Exception, SystemExit):
+        # SystemExit у PyInstaller = фатальная ошибка конвейера
+        log.error(traceback.format_exc())
+        return False
+    exe = Path(f"dist/{name}.exe")
+    if not exe.is_file():
+        log.error(f"{exe} не создан")
+        return False
+    sign_in_place(name)
+    return True
 
 
 def make_manifest(version: str, services: list[str] | None = None, packer: str | None = None):
@@ -287,23 +362,50 @@ def make_manifest(version: str, services: list[str] | None = None, packer: str |
     log.info(f'manifest создан: {ver_dir / "manifest.json"} (services={services}, packer={packer})')
 
 
-if __name__ == '__main__':
+def arg_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(description="Сборка P2P_Core")
+    p.add_argument("--type", choices=["node", "webui", "agent", "all"], default="all")
+    p.add_argument("--flavor", choices=["auto", "se", "open"], default="auto")
+    return p
+
+
+def _build_node(flavor: str) -> None:
+    # цель Process: на Windows spawn нужен вызов в Process (lambda не пиклится)
+    if build("Node_P2P_Core", ui=False, flavor=flavor):
+        sign_in_place("Node_P2P_Core")
+
+
+def _build_webui(flavor: str) -> None:
+    if build("WebUI_P2P_Core", ui=True, flavor=flavor):
+        sign_in_place("WebUI_P2P_Core")
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = arg_parser().parse_args(argv)
+    flavor = detect_flavor(args.flavor, (ROOT / "src" / "se").is_dir())
     logging.basicConfig(level=logging.INFO)
-    log = logging.getLogger('Compiler')
     os.makedirs(SIGNED_DIR, exist_ok=True)
-
-
     version = make_version_txt()
-    log.info(f'Building version {version}')
+    log.info(f"Building version {version} (flavor={flavor})")
 
-    ths = [Process(target=build_one), Process(target=build_two)]
-    ths[0].start()
-    ths[1].start()
-    ths[0].join()
-    ths[1].join()
+    wanted = {"node", "webui"} if args.type == "all" else {args.type}
+    ths = []
+    if "node" in wanted:
+        ths.append(Process(target=_build_node, args=(flavor,)))
+    if "webui" in wanted:
+        ths.append(Process(target=_build_webui, args=(flavor,)))
+    for t in ths:
+        t.start()
+    for t in ths:
+        t.join()
+    if "node" in wanted:
+        make_manifest(version)
+    if "agent" in wanted:
+        if not build_agent(flavor):
+            return 1
+    log.info(f"Время выполнения: {time.time() - start_time:.6f} сек")
+    return 0
 
-    make_manifest(version)
 
-    end_time = time.time()
-    execution_time = end_time - start_time
-    print(f"Время выполнения: {execution_time:.6f} секунд, завершено в {datetime.datetime.now()}")
+if __name__ == "__main__":
+    raise SystemExit(main())
