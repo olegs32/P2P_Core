@@ -8,7 +8,6 @@ import logging
 import os
 import re
 import shutil
-import subprocess
 import sys
 import threading
 import time
@@ -51,7 +50,7 @@ def _sha256_file(path: Path) -> tuple[str, int]:
 # Транзитивные зависимости сервисов — UI чекбокс тянет зависимости
 SERVICE_DEPENDS: dict[str, list[str]] = {
     "updater": ["files"],        # updater.check/download → files.find/read
-    "deployer": ["system"],      # деплой — system.node_detail + psexec
+    "deployer": ["system"],      # деплой — system.node_detail
     "eyesauron": ["files"],      # spool → files при желании шарить кадры
     "audit": ["files"],          # audit может шарить логи через files
 }
@@ -212,214 +211,6 @@ class Deployer(ModuleGeneric):
         self._agent_auth_guard = threading.Lock()
 
     # ------------------------------------------------------------------ #
-    #  Helpers — deploy
-    # ------------------------------------------------------------------ #
-
-    def _remote_path_for(self, target: str) -> str:
-        """Remote path из LocalConfig.full_path цели (если доступна через RPC), иначе C:\\Core\\Node_P2P_Core.exe"""
-        default = r"C:\Core\Node_P2P_Core.exe"
-        try:
-            # Пытаемся спросить цель через system.node_detail (если онлайн)
-            # Синхронно нельзя — пробуем кэш neighbor_table
-            # Для MVP — дефолт, UI позволяет поправить
-            return default
-        except Exception:
-            return default
-
-    async def _deploy_one(self, target: str, version: str, exe_src: Path, config_dict: dict, remote_path: str | None = None, cert_pem: bytes | None = None, launch: bool = True) -> dict:
-        """Деплой одного узла: SMB copy + psexec. Возвращает статус."""
-        # remote_path: полный путь к exe на цели, e.g. C:\Core\Node_P2P_Core.exe
-        if not remote_path:
-            remote_path = self._remote_path_for(target)
-        # Нормализуем UNC
-        # \\target\C$\Core\Node_P2P_Core.exe  — из C:\Core\... → C$\Core\...
-        # target может быть host или node_id — пробуем резолвить host из neighbor_table
-        host = target
-        try:
-            # если target — node_id, ищем host в neighbor_table
-            info = self.ctx.network.neighbor_table.get(target)
-            if info and info.host:
-                host = info.host
-        except Exception:
-            pass
-
-        # Для локального теста: если host == localhost/127.0.0.1 или target == self.NODE — копируем локально
-        is_local = host in ("127.0.0.1", "localhost", self.ctx.NODE) or target.strip().lower() == self.ctx.NODE.strip().lower()
-
-        # Директория назначения
-        if ":" in remote_path:
-            # C:\Core\Node_P2P_Core.exe → dir
-            remote_dir = str(Path(remote_path).parent)
-            exe_name = Path(remote_path).name
-        else:
-            remote_dir = remote_path
-            exe_name = "Node_P2P_Core.exe"
-            remote_path = str(Path(remote_dir) / exe_name)
-
-        # UNC путь
-        if is_local:
-            unc_exe = Path(remote_path)
-            unc_cfg = unc_exe.parent / "config.yaml"
-            unc_cert_dir = unc_exe.parent / "certs"
-        else:
-            # C:\Core → \\host\C$\Core
-            try:
-                drive, tail = remote_dir.split(":", 1)
-                tail = tail.lstrip("\\/")
-                unc_base = f"\\\\{host}\\{drive}$\\{tail}"
-            except Exception:
-                unc_base = f"\\\\{host}\\C$\\Core"
-            unc_exe = Path(unc_base) / exe_name
-            unc_cfg = Path(unc_base) / "config.yaml"
-            unc_cert_dir = Path(unc_base) / "certs"
-
-        result: dict[str, Any] = {"target": target, "host": host, "remote_path": remote_path, "unc_exe": str(unc_exe)}
-        try:
-            # 1. Создать директории
-            unc_exe.parent.mkdir(parents=True, exist_ok=True)
-
-            # 2. Копирование exe (с версионированием на цели — бэкап .old)
-            if not exe_src.exists():
-                return {**result, "ok": False, "error": f"build artifact not found: {exe_src}"}
-            # бэкап существующего — rename trick для занятого exe (Windows позволяет rename running exe)
-            if unc_exe.exists():
-                try:
-                    backup = unc_exe.with_suffix(".exe.old")
-                    # удалить старый бэкап
-                    try:
-                        if backup.exists():
-                            backup.unlink(missing_ok=True)
-                    except Exception:
-                        pass
-                    try:
-                        # rename — освобождает путь даже если процесс ещё жив
-                        unc_exe.rename(backup)
-                    except PermissionError:
-                        # fallback — copy если rename не удался (редко)
-                        try:
-                            shutil.copy2(unc_exe, backup)
-                        except Exception:
-                            pass
-                    except Exception:
-                        try:
-                            shutil.copy2(unc_exe, backup)
-                        except Exception:
-                            pass
-                except Exception:
-                    pass
-            # ретрай при WinError 32 (файл занят) — процесс ещё завершается после taskkill
-            _last_err = None
-            for _attempt in range(6):
-                try:
-                    shutil.copy2(exe_src, unc_exe)
-                    _last_err = None
-                    break
-                except PermissionError as e:
-                    _last_err = e
-                    # ждём освобождения файла
-                    try:
-                        import time as _t
-                        _t.sleep(1.5)
-                    except Exception:
-                        pass
-                except OSError as e:
-                    # WinError 32 обёрнут как PermissionError, но на всякий — ретрай только 32
-                    if getattr(e, 'winerror', None) == 32:
-                        _last_err = e
-                        import time as _t
-                        _t.sleep(1.5)
-                        continue
-                    raise
-            if _last_err is not None:
-                raise _last_err
-            # hash verify
-            h_src = hashlib.sha256(exe_src.read_bytes()).hexdigest()
-            h_dst = hashlib.sha256(unc_exe.read_bytes()).hexdigest()
-            if h_src != h_dst:
-                return {**result, "ok": False, "error": "hash mismatch after copy"}
-
-            # 3. Конфиг пер-нодовый
-            unc_cfg.parent.mkdir(parents=True, exist_ok=True)
-            cfg_text = yaml.dump(config_dict, allow_unicode=True, default_flow_style=False, sort_keys=False)
-            unc_cfg.write_text(cfg_text, encoding="utf-8")
-
-            # 4. Сертификат если есть (SE)
-            if cert_pem:
-                unc_cert_dir.mkdir(parents=True, exist_ok=True)
-                # cert уже в config? кладём рядом как node.pem для ручной установки
-                (unc_cert_dir / f"{target}.pem").write_bytes(cert_pem if isinstance(cert_pem, bytes) else cert_pem.encode())
-
-            # 4b. CA сертификат — копируем ca.cer с админ-ноды (нужен SecureStorage при старте)
-            ca_cert_src = ROOT / "sign" / "ca_cert.pem"
-            ca_key_src = ROOT / "sign" / "ca_key.pem"
-            if ca_cert_src.exists():
-                unc_work = unc_exe.parent
-                unc_work.mkdir(parents=True, exist_ok=True)
-                (unc_work / "ca.cer").write_bytes(ca_cert_src.read_bytes())
-                # Выпускаем node_cert.pem/node_key.pem только если хранилище отсутствует (первый деплой)
-                p2p_secure_remote = unc_work / "p2p_secure.bin"
-                if not p2p_secure_remote.exists() and ca_key_src.exists():
-                    try:
-                        from src.se.cert_signer import issue_node_cert
-                        ca_cert_data = ca_cert_src.read_bytes()
-                        ca_key_data = ca_key_src.read_bytes()
-                        node_cert_pem, node_key_pem = issue_node_cert(ca_cert_data, ca_key_data, target)
-                        (unc_work / "node_cert.pem").write_bytes(node_cert_pem)
-                        (unc_work / "node_key.pem").write_bytes(node_key_pem)
-                        log.info(f"Node cert/key issued for {target} → {unc_work}")
-                    except Exception as e:
-                        log.warning(f"Node cert issuance for {target} skipped: {e}")
-                elif p2p_secure_remote.exists():
-                    log.info(f"Node {target} already has SecureStorage — skipping cert re-issuance")
-
-            # 5. Остановка старого процесса + запуск нового через psexec
-            if launch:
-                psexec = shutil.which("psexec")
-                if psexec and not is_local:
-                    # 5a. Убиваем старый процесс ноды на удалённой машине
-                    try:
-                        kill_cmd = [psexec, "-s", f"\\\\{host}", "taskkill", "/f", "/im", "Node_P2P_Core.exe"]
-                        kill_proc = await asyncio.to_thread(subprocess.run, kill_cmd, capture_output=True, timeout=15)
-                        kill_out = (kill_proc.stdout or b"").decode(errors="ignore")[:300]
-                        kill_err = (kill_proc.stderr or b"").decode(errors="ignore")[:300]
-                        result["kill_out"] = kill_out
-                        result["kill_err"] = kill_err
-                        if kill_proc.returncode != 0:
-                            log.warning(f"taskkill {target} code {kill_proc.returncode}: {kill_err}")
-                        else:
-                            log.info(f"Old process on {target} killed")
-                        # Ждём освобождения порта/процесса
-                        await asyncio.to_thread(__import__("time").sleep, 3)
-                    except Exception as e:
-                        result["kill_error"] = str(e)
-                        log.warning(f"taskkill failed for {target}: {e}")
-                    # 5b. Запускаем новый exe
-                    try:
-                        cmd = [psexec, "-s", f"\\\\{host}", remote_path]
-                        proc = await asyncio.to_thread(subprocess.run, cmd, capture_output=True, timeout=30)
-                        out = (proc.stdout or b"").decode(errors="ignore")[:500]
-                        err = (proc.stderr or b"").decode(errors="ignore")[:500]
-                        result["psexec_out"] = out
-                        result["psexec_err"] = err
-                        result["psexec_code"] = proc.returncode
-                        if proc.returncode != 0:
-                            log.warning(f"psexec {target} code {proc.returncode}: {err}")
-                    except Exception as e:
-                        result["psexec_error"] = str(e)
-                elif is_local:
-                    result["note"] = "local copy — psexec skipped (same host)"
-            else:
-                result["note"] = "copy only — launch deferred (ca.cer deployment pending)"
-
-            result["ok"] = True
-            return result
-        except Exception as e:
-            result["ok"] = False
-            result["error"] = f"{type(e).__name__}: {e}"
-            result["trace"] = traceback.format_exc()[-1000:]
-            return result
-
-    # ------------------------------------------------------------------ #
     #  RPC
     # ------------------------------------------------------------------ #
 
@@ -570,7 +361,6 @@ class Deployer(ModuleGeneric):
         targets: list[str] = data.get("targets") or []
         if isinstance(targets, str):
             targets = [t.strip() for t in targets.split(",") if t.strip()]
-        remote_path_tpl = data.get("remote_path") or data.get("remote_path_template") or ""
         version_notes = data.get("version_notes") or data.get("notes") or ""
 
         # Валидация extra_args
@@ -725,55 +515,123 @@ class Deployer(ModuleGeneric):
 
         if action == "deploy":
             if not targets:
-                return {**result, "ok": False, "error": "targets required for deploy", "deploy": []}
-            # Mass deploy — exe один, конфиги пер-нодовые
-            deploy_results = []
-            # Генерируем пер-нодовые конфиги заранее
-            base_cfg_path = ROOT / "config.yaml"
-            for tgt in targets:
-                cfg_dict = _gen_per_node_config(tgt, base_cfg_path if base_cfg_path.exists() else None)
-                # remote_path per target — если шаблон содержит {node}
-                rp = remote_path_tpl
-                if rp and "{node}" in rp:
-                    rp = rp.replace("{node}", tgt)
-                # cert_pem — пока None, SecureDeployer переопределит
-                res = await self._deploy_one(tgt, version, exe_src, cfg_dict, remote_path=rp or None)
-                deploy_results.append(res)
-
-            result["deploy"] = deploy_results
-            result["note"] = f"deployed to {len([r for r in deploy_results if r.get('ok')])}/{len(targets)}"
-            # success если хотя бы один ok? Но возвращаем полный список
+                return {**result, "ok": False,
+                        "error": "targets required for deploy", "deploy": []}
+            # Деплой = генерация agent-пакетов (push/SMB удалён, Task 5)
+            pkg = await self.gen_agent_package(
+                {**data, "version": version, "targets": targets})
+            if pkg.get("ok"):
+                result["deploy"] = pkg["packages"]
+                result["note"] = pkg.get("note")
+            else:
+                result.update(ok=False, error=pkg.get("error"), deploy=[])
             return result
 
         return {"ok": False, "error": f"unknown action {action!r}"}
 
-    # Совместимость: отдельный deploy для уже собранного build_id
+    # ------------------------------------------------------------------ #
+    #  Agent packages (safe deploy)
+    # ------------------------------------------------------------------ #
+
+    def _agent_exe_name(self, mode: str) -> str:
+        return "DeployAgent_se.exe" if mode == "se" else "DeployAgent.exe"
+
+    def _agent_exe_src(self, mode: str) -> Path | None:
+        p = DIST / self._agent_exe_name(mode)
+        if p.is_file():
+            return p
+        if os.environ.get("P2P_DUMMY_BUILD") == "1":
+            DIST.mkdir(parents=True, exist_ok=True)
+            p.write_bytes(b"MZ dummy agent (P2P_DUMMY_BUILD)")
+            return p
+        return None
+
     @rpc
-    async def deploy(self, data: dict) -> dict:
-        """Деплой уже собранной версии (без пересборки). Для mass — передавайте targets[]."""
-        version = data.get("version") or (self._last_build or {}).get("version")
-        if not version:
-            return {"ok": False, "error": "version required (no last build)"}
-        # Найти exe
-        exe_src = DIST / version / "Node_P2P_Core.exe"
-        if not exe_src.exists():
-            exe_src = DIST / "Node_P2P_Core.exe"
-            if not exe_src.exists():
-                return {"ok": False, "error": f"artifact not found for {version}"}
-        targets = data.get("targets") or ([data.get("target")] if data.get("target") else [])
+    async def gen_agent_package(self, data: dict) -> dict:
+        """Пакет = папка dist/<ver>/agent/<node_id>/ (agent.conf + копия agent.exe)."""
+        data = data if isinstance(data, dict) else {}
+        targets = data.get("targets") or []
         if isinstance(targets, str):
             targets = [targets]
+        try:
+            targets = [canon_node_id(t) for t in targets if str(t).strip()]
+        except ValueError as e:
+            # D9: невалидный node_id — бизнес-отказ, не исключение
+            return {"ok": False, "error": str(e)}
         if not targets:
             return {"ok": False, "error": "targets required"}
-        remote_path_tpl = data.get("remote_path") or ""
-        base_cfg_path = ROOT / "config.yaml"
-        results = []
-        for tgt in targets:
-            cfg_dict = _gen_per_node_config(tgt, base_cfg_path if base_cfg_path.exists() else None)
-            rp = remote_path_tpl.replace("{node}", tgt) if remote_path_tpl and "{node}" in remote_path_tpl else (remote_path_tpl or None)
-            res = await self._deploy_one(tgt, version, exe_src, cfg_dict, remote_path=rp)
-            results.append(res)
-        return {"ok": True, "version": version, "deploy": results}
+        version = str(data.get("version") or (await asyncio.to_thread(self._latest_version)) or "")
+        if not version or await asyncio.to_thread(self._artifact_for, version) is None:
+            return {"ok": False, "error": "no artifact for version — соберите ноду сначала"}
+        mode = self._admin_mode()
+        agent_src = await asyncio.to_thread(self._agent_exe_src, mode)
+        if agent_src is None:
+            return {"ok": False,
+                    "error": f"agent artifact not found: {self._agent_exe_name(mode)} — "
+                             f"соберите: python compile.py --type agent"}
+        admin_ws = data.get("admin_ws") or \
+            f"ws://{await asyncio.to_thread(self.ctx.network.local_ip)}:{self.ctx.config.network.port}"
+        admin_node = data.get("admin_node") or self.ctx.NODE
+        try:
+            deploy_timeout = int(data.get("deploy_timeout") or 120)
+        except (TypeError, ValueError):
+            return {"ok": False, "error": f"bad deploy_timeout {data.get('deploy_timeout')!r}"}
+
+        def _write_packages() -> list[dict]:
+            pkgs = []
+            for t in targets:
+                # реестр из потока — внешняя сериализация (инвариант key_registry)
+                with self._agent_auth_guard:
+                    key, created = self._agent_registry.get_or_create(t)
+                conf = {"protocol": 1, "mode": mode, "admin_ws": str(admin_ws),
+                        "admin_node": str(admin_node), "node_id": t, "key": key.hex(),
+                        "version": version, "deploy_timeout": deploy_timeout}
+                pkg_dir = DIST / version / "agent" / t
+                pkg_dir.mkdir(parents=True, exist_ok=True)
+                (pkg_dir / "agent.conf").write_text(
+                    json.dumps(conf, ensure_ascii=False, indent=2), encoding="utf-8")
+                shutil.copy2(agent_src, pkg_dir / "agent.exe")
+                pkgs.append({"node": t, "path": str(pkg_dir),
+                             "key_status": "created" if created else "existing"})
+            return pkgs
+
+        pkgs = await asyncio.to_thread(_write_packages)
+        return {"ok": True, "version": version, "mode": mode,
+                "admin_ws": str(admin_ws), "packages": pkgs}
+
+    @rpc
+    async def rotate_agent_key(self, data: dict) -> dict:
+        data = data if isinstance(data, dict) else {}
+        try:
+            node = canon_node_id(data.get("node") or data.get("target") or "")
+        except ValueError as e:
+            # D9: невалидный node_id — бизнес-отказ, не исключение
+            return {"ok": False, "error": str(e)}
+        if not node:
+            return {"ok": False, "error": "node required"}
+
+        def _rotate() -> None:
+            with self._agent_auth_guard:
+                self._agent_registry.rotate(node)
+
+        await asyncio.to_thread(_rotate)
+        return {"ok": True, "node": node, "rotated": True}
+
+    @rpc
+    async def deploy(self, data: dict) -> dict:
+        """Деплой = генерация agent-пакетов для targets[] (без сборки)."""
+        data = data if isinstance(data, dict) else {}
+        version = data.get("version") or (self._last_build or {}).get("version") \
+            or (await asyncio.to_thread(self._latest_version))
+        if not version:
+            return {"ok": False, "error": "no builds"}
+        targets = data.get("targets") or ([data.get("target")] if data.get("target") else [])
+        if not targets:
+            return {"ok": False, "error": "targets required"}
+        res = await self.gen_agent_package({**data, "version": version, "targets": targets})
+        if res.get("ok"):
+            res["note"] = f"packages for {len(res['packages'])} target(s)"
+        return res
 
     # ------------------------------------------------------------------ #
     #  Agent API (safe deploy)
@@ -799,7 +657,7 @@ class Deployer(ModuleGeneric):
               "config": config_text,
               "install": {"work_dir": work_dir, "exe_name": exe_name, "full_path": full_path},
               "exe": {"name": exe.name, "sha256": sha, "size": size, "version": version}}
-        certs = await self._pre_config_certs(node_id)   # SE: ca_cert/node_cert/node_key
+        certs = await self._pre_config_certs(node_id)   # certs: ca_cert/node_cert/node_key
         pc.update(certs)
         return pc
 
