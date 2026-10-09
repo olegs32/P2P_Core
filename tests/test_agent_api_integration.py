@@ -189,6 +189,21 @@ def test_report_warning_hoisted_to_status(tmp_path, monkeypatch):
     assert st["statuses"]["node7"]["stage"] == "done"
 
 
+def test_report_warning_survives_report_without_key(tmp_path, monkeypatch):
+    """(broad-fixes 4) отчёт БЕЗ ключа warning не затирает ранее накопленный:
+    warning — накапливаемое состояние статуса, сбрасывается только новым deploy (open)."""
+    svc, _, _ = make_deployer(tmp_path, monkeypatch)
+    key, _ = svc._agent_registry.get_or_create("node7")
+    run(svc.agent_api(_req(key, "report",
+                           {"stage": "DETECT", "ok": True, "deploy_id": "d1",
+                            "warning": "legacy storage unreadable under SYSTEM"})))
+    run(svc.agent_api(_req(key, "report",
+                           {"stage": "FETCH_EXE", "ok": True, "deploy_id": "d1"})))
+    st = run(svc.agent_status({"node": "node7"}))
+    assert st["statuses"]["node7"]["warning"] == "legacy storage unreadable under SYSTEM"
+    assert st["statuses"]["node7"]["stage"] == "FETCH_EXE"
+
+
 def test_node_seen_from_neighbor_table(tmp_path, monkeypatch):
     svc, _, ctx = make_deployer(tmp_path, monkeypatch)
     key, _ = svc._agent_registry.get_or_create("node7")

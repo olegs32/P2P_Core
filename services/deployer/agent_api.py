@@ -122,12 +122,16 @@ class AgentSessions:
             "error": None, "warning": None, "pid": None, "duration": None,
             "ts": self.now(), "history": [], "last_report": None})
         stage = body.get("stage")
-        # warning — top-level статуса: UI читает s['warning'] напрямую
-        st.update({"deploy_id": body.get("deploy_id") or st.get("deploy_id"),
-                   "stage": stage, "ok": body.get("ok"), "error": body.get("error"),
-                   "warning": body.get("warning"),
-                   "pid": body.get("pid"), "duration": body.get("duration"),
-                   "ts": self.now()})
+        # warning — top-level статуса: UI читает s['warning'] напрямую.
+        # Кладём ТОЛЬКО при наличии ключа: отчёт без warning не затирает
+        # ранее накопленный (сбрасывается только новым deploy в open())
+        upd = {"deploy_id": body.get("deploy_id") or st.get("deploy_id"),
+               "stage": stage, "ok": body.get("ok"), "error": body.get("error"),
+               "pid": body.get("pid"), "duration": body.get("duration"),
+               "ts": self.now()}
+        if "warning" in body:
+            upd["warning"] = body.get("warning")
+        st.update(upd)
         if isinstance(stage, str) and (not st["history"] or st["history"][-1] != stage):
             st["history"].append(stage)
         st["last_report"] = dict(body)

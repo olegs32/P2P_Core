@@ -1,4 +1,6 @@
 import json
+from pathlib import Path
+
 import pytest
 
 from services.deployer.agent.package import AgentConf
@@ -98,8 +100,13 @@ def _gen_and_pre_config(svc, dist, base_cfg: dict, gen_data: dict, monkeypatch):
 
 
 def test_pre_config_injects_admin_peer(tmp_path, monkeypatch):
-    """(broad-review 1а) конфиг жертвы обязан содержать админ-пир (uri == admin_ws):
-    bootstrap ранее неизвестной ноды иначе не даёт node_seen на админе."""
+    """(broad-review 1а) конфиг жертвы обязан содержать админ-пир с каноническим
+    uri (ws://h:port/ws/ — main.py склеивает peer.uri + NODE): bootstrap ранее
+    неизвестной ноды иначе не даёт node_seen на админе.
+
+    agent.conf при этом хранит admin_ws в исходной bare-форме: агент сам
+    дописывает /ws/<src> (machine.py:302), нормализация нужна ТОЛЬКО в peers.
+    """
     svc, dist, ctx = make_deployer(tmp_path, monkeypatch)
     res, cfg = _gen_and_pre_config(
         svc, dist,
@@ -111,17 +118,60 @@ def test_pre_config_injects_admin_peer(tmp_path, monkeypatch):
         gen_data={"targets": ["Node7"]}, monkeypatch=monkeypatch)
     peers = cfg["local"]["peers"]
     admin = [p for p in peers if p["node_id"] == "admin0"]
-    assert admin == [{"node_id": "admin0", "uri": res["admin_ws"]}]
+    assert admin == [{"node_id": "admin0", "uri": "ws://127.0.0.1:9000/ws/"}]
+    assert res["admin_ws"] == "ws://127.0.0.1:9000"          # bare, без /ws/
+    # agent.conf жертвы несёт admin_ws той же bare-формой, как её передали
+    conf = AgentConf.load(Path(res["packages"][0]["path"]) / "agent.conf")
+    assert conf.admin_ws == "ws://127.0.0.1:9000"
     assert not any(p["node_id"] == "node7" for p in peers)   # self не задублирован
     assert any(p["node_id"] == "nodex" for p in peers)       # чужие пиры не теряем
     assert cfg["network"]["port"] == 9000
+
+
+def test_admin_peer_uri_never_bare(tmp_path, monkeypatch):
+    """(broad-fixes 2.1) существующий админ-пир не затирается сломанным bare-адресом:
+    и инжект, и dedup-ветка пишут канонический ws://h:port/ws/."""
+    svc, dist, ctx = make_deployer(tmp_path, monkeypatch)
+    _, cfg = _gen_and_pre_config(
+        svc, dist,
+        base_cfg={"node": "admin0", "network": {"port": 9000},
+                  "local": {"peers": [
+                      {"node_id": "Admin0", "uri": "ws://10.0.0.5:9000/ws/"}]}},
+        gen_data={"targets": ["Node7"]}, monkeypatch=monkeypatch)
+    admin = [p for p in cfg["local"]["peers"] if p["node_id"] == "admin0"]
+    assert len(admin) == 1, f"админ-пир задублирован: {cfg['local']['peers']}"
+    assert admin == [{"node_id": "admin0", "uri": "ws://127.0.0.1:9000/ws/"}]
+    # повторный gen поверх канонического peer — uri остаётся каноническим
+    _, cfg2 = _gen_and_pre_config(
+        svc, dist,
+        base_cfg={"node": "admin0", "network": {"port": 9000},
+                  "local": {"peers": list(cfg["local"]["peers"])}},
+        gen_data={"targets": ["Node7"]}, monkeypatch=monkeypatch)
+    admin2 = [p for p in cfg2["local"]["peers"] if p["node_id"] == "admin0"]
+    assert admin2 == [{"node_id": "admin0", "uri": "ws://127.0.0.1:9000/ws/"}]
+    assert all(p["uri"].rstrip("/").endswith("/ws")
+               for p in cfg2["local"]["peers"] if p["node_id"] == "admin0")
+
+
+def test_ports_override_scoped_to_gen_session(tmp_path, monkeypatch):
+    """(broad-fixes 3) ports-override прошлого деплоя не протекает в следующий gen:
+    после gen без ports жертва получает дефолтный порт из config.yaml."""
+    svc, dist, ctx = make_deployer(tmp_path, monkeypatch)
+    base = {"node": "admin0", "network": {"port": 9000}, "local": {"peers": []}}
+    _, cfg1 = _gen_and_pre_config(
+        svc, dist, base,
+        {"targets": ["Node7"], "ports": {"node7": 9101}}, monkeypatch=monkeypatch)
+    assert cfg1["network"]["port"] == 9101
+    _, cfg2 = _gen_and_pre_config(
+        svc, dist, base, {"targets": ["Node7"]}, monkeypatch=monkeypatch)
+    assert cfg2["network"]["port"] == 9000, "override прошлого деплоя протёк в gen"
 
 
 def test_admin_peer_dedup_and_port_override(tmp_path, monkeypatch):
     """(broad-review 1б) админ уже в peers -> без дубля (uri актуализируется);
     per-target ports {node: port} -> network.port жертвы переопределён."""
     svc, dist, ctx = make_deployer(tmp_path, monkeypatch)
-    res, cfg = _gen_and_pre_config(
+    _, cfg = _gen_and_pre_config(
         svc, dist,
         base_cfg={"node": "admin0", "network": {"port": 9000},
                   "local": {"peers": [{"node_id": "Admin0", "uri": "ws://old:9000"}]}},
@@ -130,6 +180,7 @@ def test_admin_peer_dedup_and_port_override(tmp_path, monkeypatch):
     peers = cfg["local"]["peers"]
     admin = [p for p in peers if p["node_id"] == "admin0"]
     assert len(admin) == 1, f"админ-пир задублирован: {peers}"
-    assert admin[0]["uri"] == res["admin_ws"]
+    # uri актуализируется в канонический вид, а не копируется bare admin_ws
+    assert admin[0]["uri"] == "ws://127.0.0.1:9000/ws/"
     assert cfg["network"]["port"] == 9101
     assert cfg["node"] == "node7"

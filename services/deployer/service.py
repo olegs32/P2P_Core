@@ -151,6 +151,20 @@ def _dummy_build(version: str, services: list[str]) -> Path:
     return exe_path
 
 
+def _peer_uri(uri: str) -> str:
+    """Канон local.peers[].uri = ws://h:port/ws/ — main.py склеивает
+    f'{peer.uri}{ctx.NODE}', поэтому bare ws://h:port даёт ws://h:portnode7.
+
+    Идемпотентна к уже-каноничным значениям (.../ws/ -> .../ws/, без .../ws//ws/).
+    Нормализация нужна ТОЛЬКО при записи в local.peers: в agent.conf admin_ws
+    остаётся bare (агент сам дописывает /ws/<src>, machine.py:302).
+    """
+    s = str(uri).rstrip("/")
+    if not s.endswith("/ws"):
+        s += "/ws"
+    return s + "/"
+
+
 def _gen_per_node_config(target_node: str, base_cfg_path: Path | None = None,
                          admin_node: str | None = None, admin_ws: str | None = None,
                          port: int | None = None) -> dict:
@@ -190,10 +204,16 @@ def _gen_per_node_config(target_node: str, base_cfg_path: Path | None = None,
              and _canon_node(p.get("node_id", "")) != canon]
     if admin_node and admin_ws and _canon_node(str(admin_node)) != canon:
         admin_canon = _canon_node(str(admin_node))
-        uri = str(admin_ws)
+        uri = _peer_uri(admin_ws)          # канон для local.peers[].uri
         for p in peers:   # уже есть — не дублируем, только актуализируем uri
             if _canon_node(p.get("node_id", "")) == admin_canon:
-                p["uri"] = uri
+                # обе стороны нормализованы перед сравнением: корректный
+                # существующий peer не затирается сломанным bare-адресом
+                cur = _peer_uri(p.get("uri") or "")
+                if cur != uri:
+                    p["uri"] = uri        # адрес устарел/другой — актуализируем
+                elif p.get("uri") != cur:
+                    p["uri"] = cur        # то же значение, но запись не-канонична
                 break
         else:
             peers.append({"node_id": admin_canon, "uri": uri})
@@ -570,7 +590,8 @@ class Deployer(ModuleGeneric):
     def _cfg_hint(self) -> dict:
         """Подсказки для генерации конфига жертвы (pre_config идёт отдельным
         вызовом ПОСЛЕ gen_agent_package): admin-адрес для админ-пира в
-        local.peers + per-target port overrides.
+        local.peers (bare admin_ws; канон .../ws/ применяет _gen_per_node_config)
+        + per-target port overrides (скоуп gen-сессии — каждый gen их перезаписывает).
 
         Создание через getattr — SE-инстансы в тестах собираются через __new__
         и не проходят __init__.
@@ -595,8 +616,7 @@ class Deployer(ModuleGeneric):
             return {"ok": False, "error": str(e)}
         if not targets:
             return {"ok": False, "error": "targets required"}
-        # per-target port override (опционально): {node: port} — накапливается
-        # (не затирается следующим gen) и применяется в _gen_per_node_config
+        # per-target port override (опционально): {node: port} — см. скоуп ниже
         ports_raw = data.get("ports") or {}
         if not isinstance(ports_raw, dict):
             return {"ok": False,
@@ -615,8 +635,9 @@ class Deployer(ModuleGeneric):
                 return {"ok": False,
                         "error": f"bad port {raw_port!r} for {raw_node!r} (1-65535)"}
             port_overrides[pnode] = pval
-        if port_overrides:
-            self._cfg_hint()["ports"].update(port_overrides)
+        # скоуп ports — gen-сессия: каждый gen задаёт набор override'ов заново
+        # (не накапливается instance-level); пустой -> дефолтный порт config.yaml
+        self._cfg_hint()["ports"] = dict(port_overrides)
         version = str(data.get("version") or (await asyncio.to_thread(self._latest_version)) or "")
         if not version or await asyncio.to_thread(self._artifact_for, version) is None:
             return {"ok": False, "error": "no artifact for version — соберите ноду сначала"}
