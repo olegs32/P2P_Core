@@ -522,7 +522,6 @@ class Deployer(ModuleGeneric):
                 {**data, "version": version, "targets": targets})
             if pkg.get("ok"):
                 result["deploy"] = pkg["packages"]
-                result["note"] = pkg.get("note")
             else:
                 result.update(ok=False, error=pkg.get("error"), deploy=[])
             return result

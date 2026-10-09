@@ -385,10 +385,15 @@ def main(argv: list[str] | None = None) -> int:
     flavor = detect_flavor(args.flavor, (ROOT / "src" / "se").is_dir())
     logging.basicConfig(level=logging.INFO)
     os.makedirs(SIGNED_DIR, exist_ok=True)
-    version = make_version_txt()
-    log.info(f"Building version {version} (flavor={flavor})")
-
     wanted = {"node", "webui"} if args.type == "all" else {args.type}
+    if "node" in wanted:
+        # бамп BUILD_NUMBER + version.txt только для node-сборки:
+        # --type webui/agent не должен двигать версию
+        version = make_version_txt()
+        log.info(f"Building version {version} (flavor={flavor})")
+    else:
+        version = ""
+        log.info(f"Building type={args.type} (flavor={flavor}, version без бампа)")
     ths = []
     if "node" in wanted:
         ths.append(Process(target=_build_node, args=(flavor,)))

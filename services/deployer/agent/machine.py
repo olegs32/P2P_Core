@@ -86,7 +86,7 @@ class HostProto(Protocol):
     async def backup(self, deploy_id: str, pc: dict, plan: dict) -> str | None: ...
     async def write(self, pc: dict, plan: dict) -> None: ...
     async def launch(self, pc: dict) -> int: ...
-    async def pid_alive(self, pid: int) -> bool: ...
+    def pid_alive(self, pid: int | None) -> bool: ...   # sync: контракт HostOpsWindows
     async def restore(self, backup_dir: str, pc: dict) -> None: ...
     async def self_terminate(self, code: int) -> None: ...
 
@@ -209,7 +209,7 @@ class DeployMachine:
                     chunk = await self.client.fetch_chunk(offset, n)
                     if not chunk:
                         raise DeployMachineError("пустой чанк exe")
-                    f.write(chunk)
+                    await asyncio.to_thread(f.write, chunk)  # D6: пишем exe до ~35МБ из thread
                     digest.update(chunk)
                     offset += len(chunk)
                     await asyncio.sleep(FETCH_PAUSE)
@@ -226,8 +226,8 @@ class DeployMachine:
             now = time.monotonic()
             if now >= next_pid:
                 next_pid = now + PID_POLL
-                # HostOpsWindows.pid_alive — sync (ctypes), фейки Task 7 — async:
-                # принимаем оба варианта контракта HostProto
+                # HostProto.pid_alive — sync (контракт HostOpsWindows, ctypes);
+                # async-реализации (тест-фейки/расширения) принимаем через мост
                 alive = self.host.pid_alive(self._pid)
                 if inspect.isawaitable(alive):
                     alive = await alive
@@ -585,13 +585,17 @@ class HostOpsWindows:
             return None
         broot = Path(pc["install"]["work_dir"]) / ".deploy_bak"
         bdir = broot / deploy_id
-        bdir.mkdir(parents=True, exist_ok=True)
-        for p in existing:
-            shutil.copy2(p, bdir / p.name)
-        dirs = sorted(broot.iterdir(), key=lambda d: d.stat().st_mtime, reverse=True)
-        for old in dirs[3:]:                    # ротация: хранить последние 3
-            shutil.rmtree(old, ignore_errors=True)
-        return str(bdir)
+
+        def _sync() -> str:
+            bdir.mkdir(parents=True, exist_ok=True)
+            for p in existing:
+                shutil.copy2(p, bdir / p.name)   # копии exe до ~35МБ — в thread
+            dirs = sorted(broot.iterdir(), key=lambda d: d.stat().st_mtime, reverse=True)
+            for old in dirs[3:]:                 # ротация: хранить последние 3
+                shutil.rmtree(old, ignore_errors=True)
+            return str(bdir)
+
+        return await asyncio.to_thread(_sync)    # D6: файловый I/O в thread
 
     async def write(self, pc: dict, plan: dict) -> None:
         install = Path(pc["install"]["full_path"])
@@ -638,13 +642,16 @@ class HostOpsWindows:
     async def restore(self, backup_dir: str, pc: dict) -> None:
         bdir = Path(backup_dir)
         install = Path(pc["install"]["full_path"])
-        for name, dst in ((install.name, install),
-                          ("config.yaml", install.parent / "config.yaml"),
-                          ("p2p_secure.bin",
-                           Path(pc["install"]["work_dir"]) / "p2p_secure.bin")):
-            src = bdir / name
-            if src.is_file():
-                shutil.copy2(src, dst)
+
+        def _sync() -> None:
+            for name, dst in ((install.name, install),
+                              ("config.yaml", install.parent / "config.yaml"),
+                              ("p2p_secure.bin",
+                               Path(pc["install"]["work_dir"]) / "p2p_secure.bin")):
+                src = bdir / name
+                if src.is_file():
+                    shutil.copy2(src, dst)      # копии exe до ~35МБ — в thread
+        await asyncio.to_thread(_sync)          # D6: файловый I/O в thread
 
     async def self_terminate(self, code: int) -> None:
         own = Path(sys.executable if getattr(sys, "frozen", False)

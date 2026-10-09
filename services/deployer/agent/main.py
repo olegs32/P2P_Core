@@ -51,14 +51,19 @@ def main(argv: list[str] | None = None) -> int:
         return EXIT_BUSINESS
     client = AgentApiClient(conf)
     host = HostOpsWindows(conf, conf_path, system_run=args.system_run)
-    try:
-        code = asyncio.run(DeployMachine(conf, client, host).run())
-    finally:
+
+    async def _run() -> int:
         try:
-            asyncio.run(client.close())
-        except Exception:
-            pass
-    return int(code)
+            return await DeployMachine(conf, client, host).run()
+        finally:
+            # закрытие клиента в ТОМ ЖЕ loop: второй asyncio.run мог получить
+            # уже закрытый loop/sock (ws.close() падал и глушился except'ом)
+            try:
+                await client.close()
+            except Exception:
+                pass
+
+    return int(asyncio.run(_run()))
 
 
 if __name__ == "__main__":

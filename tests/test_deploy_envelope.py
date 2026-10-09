@@ -1,4 +1,5 @@
 import json
+import re
 import time
 import uuid
 from pathlib import Path
@@ -147,7 +148,9 @@ def test_agent_dir_is_self_contained():
             stripped = line.strip()
             if not stripped.startswith(("from ", "import ")):
                 continue
-            if "src." not in stripped:
+            # токен src (не подстрока "src."): ловит и `from src import se`,
+            # и `import src`, и прочие формы без точки после src
+            if not re.search(r"\bsrc\b", stripped):
                 continue
             if len(line) - len(line.lstrip()) > 0:
                 continue                          # ленивый импорт внутри функции — ок

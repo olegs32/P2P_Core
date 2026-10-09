@@ -28,7 +28,14 @@ def test_deployer_webui_static():
         assert marker in ui, f"нет маркера секции генерации: {marker}"
 
     for name in RPC_NAMES:
-        assert name in ui, f"RPC-имя отсутствует как строка в web_ui: {name}"
+        if name == "deploy":
+            # вакуумная подстрока: "deploy" всегда матчится внутри "deployer",
+            # поэтому в web_ui проверяем негативом — UI этот RPC не вызывает
+            # (deploy = генерация пакетов, Task 5)
+            assert not re.search(r"""["']deployer["'],\s*["']deploy["']""", ui), \
+                "web_ui не должен вызывать rpc.call('deployer', 'deploy')"
+        else:
+            assert name in ui, f"RPC-имя отсутствует как строка в web_ui: {name}"
         assert re.search(rf"@rpc\s*\n\s*(?:async\s+)?def\s+{name}\b", svc), \
             f"нет @rpc-метода {name} в services/deployer/service.py"
 
