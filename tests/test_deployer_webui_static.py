@@ -32,6 +32,9 @@ def test_deployer_webui_static():
             # вакуумная подстрока: "deploy" всегда матчится внутри "deployer",
             # поэтому в web_ui проверяем негативом — UI этот RPC не вызывает
             # (deploy = генерация пакетов, Task 5)
+            # ВНИМАНИЕ: покрытие частичное — ловится только литеральная форма
+            # rpc.call('deployer', 'deploy'); косвенные вызовы (через переменную
+            # с именем метода, getattr, eval-подобные конструирования) не проверяются.
             assert not re.search(r"""["']deployer["'],\s*["']deploy["']""", ui), \
                 "web_ui не должен вызывать rpc.call('deployer', 'deploy')"
         else:

@@ -100,8 +100,9 @@ class AgentSessions:
         }
         # новый deploy_id -> чистый timeline
         self._status[node] = {"deploy_id": deploy_id, "stage": None, "ok": None,
-                              "error": None, "pid": None, "duration": None,
-                              "ts": self.now(), "history": [], "last_report": None}
+                              "error": None, "warning": None, "pid": None,
+                              "duration": None, "ts": self.now(), "history": [],
+                              "last_report": None}
 
     def get(self, node_id: str) -> dict | None:
         return self._sessions.get(canon_node_id(node_id))
@@ -118,11 +119,13 @@ class AgentSessions:
         node = canon_node_id(node_id)
         st = self._status.setdefault(node, {
             "deploy_id": body.get("deploy_id"), "stage": None, "ok": None,
-            "error": None, "pid": None, "duration": None, "ts": self.now(),
-            "history": [], "last_report": None})
+            "error": None, "warning": None, "pid": None, "duration": None,
+            "ts": self.now(), "history": [], "last_report": None})
         stage = body.get("stage")
+        # warning — top-level статуса: UI читает s['warning'] напрямую
         st.update({"deploy_id": body.get("deploy_id") or st.get("deploy_id"),
                    "stage": stage, "ok": body.get("ok"), "error": body.get("error"),
+                   "warning": body.get("warning"),
                    "pid": body.get("pid"), "duration": body.get("duration"),
                    "ts": self.now()})
         if isinstance(stage, str) and (not st["history"] or st["history"][-1] != stage):

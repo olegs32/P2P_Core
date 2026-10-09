@@ -151,9 +151,13 @@ def _dummy_build(version: str, services: list[str]) -> Path:
     return exe_path
 
 
-def _gen_per_node_config(target_node: str, base_cfg_path: Path | None = None) -> dict:
+def _gen_per_node_config(target_node: str, base_cfg_path: Path | None = None,
+                         admin_node: str | None = None, admin_ws: str | None = None,
+                         port: int | None = None) -> dict:
     """Сгенерировать config dict для целевого узла на основе текущего конфига админа.
-    node/alias подменяются на target_node, peers — без self.
+    node/alias подменяются на target_node, peers — без self + обязательный
+    админ-пир (bootstrap ранее неизвестной ноды без ручного peer на админе
+    не даёт node_seen), port — per-target override (два узла на одном хосте).
     """
     from src.internal_modules.config import Config, _deep_fill, _default_config_dict, _canon_node
     # Базовый cfg — из текущего ctx или из файла
@@ -177,11 +181,29 @@ def _gen_per_node_config(target_node: str, base_cfg_path: Path | None = None) ->
     # name остаётся как был (имя задачи планировщика) — не трогаем
     # work_dir/full_path — оставляем дефолт C:\Core, но UI может переопределить remote_path
 
-    # Peers — можно оставить как есть, но убрать self если был
+    # Peers — убрать self, затем гарантировать админ-пир (bootstrap жертвы -> админ)
     peers = base_dict["local"].get("peers") or []
-    # Фильтруем запись где node_id == canon
-    peers = [p for p in peers if _canon_node(p.get("node_id", "")) != canon]
+    if not isinstance(peers, list):
+        peers = []
+    # Фильтруем запись где node_id == canon (не дублируем саму жертву)
+    peers = [p for p in peers if isinstance(p, dict)
+             and _canon_node(p.get("node_id", "")) != canon]
+    if admin_node and admin_ws and _canon_node(str(admin_node)) != canon:
+        admin_canon = _canon_node(str(admin_node))
+        uri = str(admin_ws)
+        for p in peers:   # уже есть — не дублируем, только актуализируем uri
+            if _canon_node(p.get("node_id", "")) == admin_canon:
+                p["uri"] = uri
+                break
+        else:
+            peers.append({"node_id": admin_canon, "uri": uri})
     base_dict["local"]["peers"] = peers
+
+    # Per-target port override (два узла на одном хосте -> bind-конфликт без него)
+    if port is not None:
+        if not isinstance(base_dict.get("network"), dict):
+            base_dict["network"] = {}
+        base_dict["network"]["port"] = int(port)
 
     # Валидация + backfill
     _deep_fill(base_dict, _default_config_dict())
@@ -545,6 +567,20 @@ class Deployer(ModuleGeneric):
             return p
         return None
 
+    def _cfg_hint(self) -> dict:
+        """Подсказки для генерации конфига жертвы (pre_config идёт отдельным
+        вызовом ПОСЛЕ gen_agent_package): admin-адрес для админ-пира в
+        local.peers + per-target port overrides.
+
+        Создание через getattr — SE-инстансы в тестах собираются через __new__
+        и не проходят __init__.
+        """
+        hint = getattr(self, "_agent_cfg_hint", None)
+        if hint is None:
+            hint = {"admin_ws": None, "admin_node": None, "ports": {}}
+            self._agent_cfg_hint = hint
+        return hint
+
     @rpc
     async def gen_agent_package(self, data: dict) -> dict:
         """Пакет = папка dist/<ver>/agent/<node_id>/ (agent.conf + копия agent.exe)."""
@@ -559,6 +595,28 @@ class Deployer(ModuleGeneric):
             return {"ok": False, "error": str(e)}
         if not targets:
             return {"ok": False, "error": "targets required"}
+        # per-target port override (опционально): {node: port} — накапливается
+        # (не затирается следующим gen) и применяется в _gen_per_node_config
+        ports_raw = data.get("ports") or {}
+        if not isinstance(ports_raw, dict):
+            return {"ok": False,
+                    "error": f"bad ports {ports_raw!r} — expected dict {{node: port}}"}
+        port_overrides: dict[str, int] = {}
+        for raw_node, raw_port in ports_raw.items():
+            try:
+                pnode = canon_node_id(str(raw_node))
+            except ValueError as e:
+                return {"ok": False, "error": str(e)}
+            try:
+                pval = int(raw_port)
+            except (TypeError, ValueError):
+                return {"ok": False, "error": f"bad port {raw_port!r} for {raw_node!r}"}
+            if not 1 <= pval <= 65535:
+                return {"ok": False,
+                        "error": f"bad port {raw_port!r} for {raw_node!r} (1-65535)"}
+            port_overrides[pnode] = pval
+        if port_overrides:
+            self._cfg_hint()["ports"].update(port_overrides)
         version = str(data.get("version") or (await asyncio.to_thread(self._latest_version)) or "")
         if not version or await asyncio.to_thread(self._artifact_for, version) is None:
             return {"ok": False, "error": "no artifact for version — соберите ноду сначала"}
@@ -571,6 +629,10 @@ class Deployer(ModuleGeneric):
         admin_ws = data.get("admin_ws") or \
             f"ws://{await asyncio.to_thread(self.ctx.network.local_ip)}:{self.ctx.config.network.port}"
         admin_node = data.get("admin_node") or self.ctx.NODE
+        # адрес админа нужен позже в _build_pre_config (админ-пир конфига жертвы)
+        hint = self._cfg_hint()
+        hint["admin_ws"] = str(admin_ws)
+        hint["admin_node"] = str(admin_node)
         try:
             deploy_timeout = int(data.get("deploy_timeout") or 120)
         except (TypeError, ValueError):
@@ -640,9 +702,21 @@ class Deployer(ModuleGeneric):
         return {}
 
     async def _build_pre_config(self, node_id: str, version: str, exe: Path) -> dict:
+        hint = self._cfg_hint()
+        admin_node = hint.get("admin_node") or str(self.ctx.NODE)
+        admin_ws = hint.get("admin_ws") or (
+            f"ws://{await asyncio.to_thread(self.ctx.network.local_ip)}:"
+            f"{self.ctx.config.network.port}")
+        try:
+            port_override = hint.get("ports", {}).get(canon_node_id(node_id))
+        except ValueError:
+            port_override = None
+
         def _gen_cfg() -> tuple[dict, str]:
             base = ROOT / "config.yaml"
-            cfg_dict = _gen_per_node_config(node_id, base if base.exists() else None)
+            cfg_dict = _gen_per_node_config(
+                node_id, base if base.exists() else None,
+                admin_node=admin_node, admin_ws=admin_ws, port=port_override)
             return cfg_dict, yaml.dump(cfg_dict, allow_unicode=True, sort_keys=False)
 
         cfg_dict, config_text = await asyncio.to_thread(_gen_cfg)

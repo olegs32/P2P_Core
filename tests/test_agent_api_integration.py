@@ -169,6 +169,26 @@ def test_fetch_chunk_rejections(tmp_path, monkeypatch):
     assert r == {"ok": False, "error": "out of range"}
 
 
+def test_report_warning_hoisted_to_status(tmp_path, monkeypatch):
+    """warning из тела отчёта агента поднимается в top-level статуса (UI читает его)."""
+    svc, _, _ = make_deployer(tmp_path, monkeypatch)
+    key, _ = svc._agent_registry.get_or_create("node7")
+    st = run(svc.agent_status({}))
+    assert st["statuses"] == {}                          # до отчётов статуса нет
+    run(svc.agent_api(_req(key, "report",
+                           {"stage": "DETECT", "ok": True, "deploy_id": "d1",
+                            "warning": "legacy storage unreadable under SYSTEM"})))
+    st = run(svc.agent_status({"node": "node7"}))
+    assert st["statuses"]["node7"]["warning"] == "legacy storage unreadable under SYSTEM"
+    # терминальный отчёт агента несёт warning повторно -> остаётся в статусе
+    run(svc.agent_api(_req(key, "report",
+                           {"stage": "done", "ok": True, "deploy_id": "d1",
+                            "warning": "legacy storage unreadable under SYSTEM"})))
+    st = run(svc.agent_status({"node": "node7"}))
+    assert st["statuses"]["node7"]["warning"] == "legacy storage unreadable under SYSTEM"
+    assert st["statuses"]["node7"]["stage"] == "done"
+
+
 def test_node_seen_from_neighbor_table(tmp_path, monkeypatch):
     svc, _, ctx = make_deployer(tmp_path, monkeypatch)
     key, _ = svc._agent_registry.get_or_create("node7")
