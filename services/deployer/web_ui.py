@@ -1,4 +1,4 @@
-"""Deployer Web UI — open base (packer pyarmor дефолт, чекбоксы сервисов, multi-target, remote_path)."""
+"""Deployer Web UI — open base: сборка (packer pyarmor, чекбоксы сервисов) + генерация agent-пакетов."""
 
 def render(rpc):
     try:
@@ -10,7 +10,6 @@ def render(rpc):
     # Загрузка данных
     try:
         svc_info = rpc.call("deployer", "list_services", {})
-        dev_info = rpc.call("deployer", "list_devices", {})
         status = rpc.call("deployer", "get_status", {})
     except Exception as e:
         st.error(f"deployer unavailable: {e}")
@@ -20,7 +19,6 @@ def render(rpc):
     default_packer = svc_info.get("default_packer", "pyarmor")
     services = svc_info.get("services", [])
     depends = svc_info.get("depends", {})
-    devices = dev_info.get("devices", [])
 
     # Packer dropdown — pyarmor дефолт
     packer = st.selectbox("Packer", packers, index=packers.index(default_packer) if default_packer in packers else 0)
@@ -71,34 +69,14 @@ def render(rpc):
             st.caption(f"Транзитивно добавлены: {sorted(expanded - set(selected))}")
             st.caption(f"Итого в сборке: {sorted(expanded)}")
 
-    # Действие
-    action = st.radio("Действие после сборки", ["save", "deploy"], format_func=lambda x: "Сохранить версионно (dist/<ver>/)" if x=="save" else "Деплой на ноды", horizontal=True)
-
-    targets = []
-    remote_path = ""
-    if action == "deploy":
-        st.subheader("Цели деплоя (мультивыбор)")
-        if not devices:
-            st.warning("devices.txt пуст и нет живых нод в mesh — добавьте хосты в devices.txt")
-        targets = st.multiselect("Целевые узлы (host / node_id)", devices, help="EXE собирается единожды, конфиги пер-нодовые")
-        # remote_path из LocalConfig.full_path цели — подставляем дефолт, можно править
-        # Для MVP — один шаблон для всех, поддерживает {node}
-        remote_path = st.text_input("Remote path (на цели)", value=r"C:\Core\Node_P2P_Core.exe", help="Можно {node}: C:\\Core\\{node}\\Node_P2P_Core.exe, иначе один для всех")
-        st.caption("Путь создастся при необходимости, запуск через psexec -s \\\\host path")
-
     # Build button
-    if st.button("🔨 Собрать" + (" и деплоить" if action=="deploy" else ""), type="primary", use_container_width=True):
-        if action == "deploy" and not targets:
-            st.error("Выберите хотя бы одну цель для деплоя")
-            return
+    if st.button("🔨 Собрать", type="primary", use_container_width=True):
         payload = {
             "packer": packer,
             "services": selected,
             "extra_args": extra_args,
             "build_webui": build_webui,
-            "action": action,
-            "targets": targets,
-            "remote_path": remote_path,
+            "action": "save",
         }
         with st.spinner("Запуск сборки..."):
             try:
@@ -120,15 +98,80 @@ def render(rpc):
             st.success(f"✅ v{res.get('version')} packer={res.get('packer')} services={res.get('services')}")
             if res.get("logs"):
                 st.code("\n".join(res["logs"][-20:]))
-            if action == "deploy":
-                for r in res.get("deploy", []):
-                    if r.get("ok"):
-                        st.success(f"{r['target']} → {r['remote_path']} OK")
-                    else:
-                        st.error(f"{r['target']} FAIL: {r.get('error')}")
-            else:
-                st.info(f"Сохранено: dist/{res.get('version')}/ — далее можно деплоить через deploy()")
+            st.info(f"Сохранено: dist/{res.get('version')}/ — далее можно сгенерировать пакеты ниже")
             st.session_state["deployer_last_logs"] = res.get("logs", [])
+
+    st.divider()
+    st.subheader("📦 Генерация agent-пакетов")
+    info = rpc.call("deployer", "agent_status", {}) or {}
+    devices = rpc.call("deployer", "list_devices", {}) or {}
+    builds = (rpc.call("deployer", "get_status", {}) or {}).get("builds") or []
+
+    cols = st.columns(2)
+    with cols[0]:
+        targets = st.multiselect("Целевые ноды",
+                                 options=devices.get("devices") or devices.get("list") or [],
+                                 key="agp_targets")
+        versions = [b.get("version") for b in builds] or [""]
+        version = st.selectbox("Версия", versions, key="agp_version")
+    with cols[1]:
+        admin_ws = st.text_input("Адрес админа (admin_ws)",
+                                 value=info.get("admin_ws") or "",
+                                 help="ws://<ip>:<port> — поправьте, если агент в другой подсети")
+        admin_node = st.text_input("Имя админ-ноды (admin_node)",
+                                   value=st.session_state.get("agp_admin_node") or "",
+                                   key="agp_admin_node",
+                                   help="HELLO dst: должен совпасть с NODE/alias сервера")
+        st.caption(f"режим сборки: `{info.get('mode')}`")
+
+    col_a, col_b = st.columns(2)
+    if col_a.button("📦 Сгенерировать пакеты", type="primary",
+                    disabled=not targets, key="agp_gen"):
+        res = rpc.call("deployer", "gen_agent_package",
+                       {"targets": targets, "version": version,
+                        "admin_ws": admin_ws, "admin_node": admin_node})
+        st.session_state["agp_result"] = res
+    if col_b.button("🔁 Rotate ключа", key="agp_rotate"):
+        rotated = []
+        for t in targets:
+            r = rpc.call("deployer", "rotate_agent_key", {"node": t})
+            if (r or {}).get("ok"):
+                rotated.append(t)
+        st.session_state["agp_rotate"] = rotated
+
+    res = st.session_state.get("agp_result")
+    if res:
+        if not res.get("ok"):
+            st.error(res.get("error"))
+        else:
+            for p in res.get("packages") or []:
+                st.success(
+                    f"**{p['node']}** → `{p['path']}`  (ключ: {p['key_status']})\n\n"
+                    "Доставка: положите папку на цель любым каналом (SMB/USB/вручную) "
+                    "и запустите `agent.exe`.")
+
+    @st.fragment(run_every=st.session_state.get("agp_live", 2))
+    def _agent_live():
+        st.subheader("📡 Прогресс деплоев")
+        info = rpc.call("deployer", "agent_status", {}) or {}
+        statuses = info.get("statuses") or {}
+        keys = info.get("keys") or {}
+        if not statuses:
+            st.caption("отчётов пока нет")
+        for node, s in statuses.items():
+            mark = "✅" if s.get("ok") and s.get("stage") == "done" else "⏳"
+            st.markdown(f"{mark} **{node}** — `{s.get('stage')}` "
+                        f"{('⚠ ' + str(s.get('error'))) if s.get('error') else ''}"
+                        f"{' · ⚠ ' + str(s.get('warning')) if s.get('warning') else ''}"
+                        f" · ключ: {'created' if node in keys else '?'}")
+            with st.expander("история стадий"):
+                st.json(s.get("history") or [])
+        det = rpc.call("system", "node_detail", {}) or {}
+        connected = {n.get("node_id") for n in det.get("connected") or [] if isinstance(n, dict)}
+        for node in statuses:
+            if node in connected:
+                st.markdown(f"✅ `{node}` — online (в connected на админе)")
+    _agent_live()
 
     st.divider()
     # Логи паковщика — чекбокс автообновления 1с + ручная кнопка
@@ -167,12 +210,6 @@ def render(rpc):
                 elif state == "done" and result:
                     if result.get("version"):
                         st.success(f"✅ Готово v{result.get('version')} packer={result.get('packer')}")
-                    # Показать деплой если был
-                    for r in (result.get("deploy") or []):
-                        if r.get("ok"):
-                            st.success(f"{r['target']} → {r['remote_path']} OK")
-                        else:
-                            st.error(f"{r['target']} FAIL: {r.get('error')}")
             else:
                 st.caption("Логов нет — выполните сборку")
         except Exception as e:
@@ -195,37 +232,3 @@ def render(rpc):
             st.code(f"{b.get('version')} — {b.get('path')} — {b.get('manifest', {}).get('services', [])}")
     else:
         st.caption("Пока нет сборок в dist/")
-
-    st.divider()
-    st.subheader("📦 Только деплой (без сборки)")
-    st.caption("Использует уже собранный dist/<версия>/Node_P2P_Core.exe — без вызова паковщика")
-    if not builds:
-        st.caption("Нет сборок — сначала соберите")
-    else:
-        versions = [b.get("version") for b in builds if b.get("version")]
-        sel_ver = st.selectbox("Версия для деплоя", versions, key="deploy_only_ver")
-        deploy_targets = st.multiselect("Цели (без сборки)", devices, key="deploy_only_targets")
-        deploy_rpath = st.text_input("Remote path (без сборки)", value=r"C:\Core\Node_P2P_Core.exe", key="deploy_only_rpath")
-        if st.button("🚀 Деплоить без сборки", type="secondary", use_container_width=True, key="deploy_only_btn"):
-            if not deploy_targets:
-                st.error("Выберите цели")
-            elif not sel_ver:
-                st.error("Выберите версию")
-            else:
-                payload = {"version": sel_ver, "targets": deploy_targets, "remote_path": deploy_rpath}
-                with st.spinner(f"Деплой {sel_ver} → {deploy_targets} ..."):
-                    try:
-                        res = rpc.call("deployer", "deploy", payload, timeout=180)
-                    except Exception as e:
-                        st.error(f"deploy failed: {e}")
-                        res = None
-                if res is not None:
-                    if not res.get("ok"):
-                        st.error(f"Deploy error: {res.get('error')}")
-                    else:
-                        st.success(f"✅ Деплой {sel_ver} — {res.get('note','')}")
-                        for r in res.get("deploy", []):
-                            if r.get("ok"):
-                                st.success(f"{r['target']} → {r['remote_path']} OK")
-                            else:
-                                st.error(f"{r['target']} FAIL: {r.get('error')}")
