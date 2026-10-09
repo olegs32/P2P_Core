@@ -101,6 +101,7 @@ class DeployMachine:
         self._wrote_disk = False
         self._backup: str | None = None
         self._plan: dict = {}
+        self._warning: str | None = None
         self._pid: int | None = None
 
     # ------------------------------------------------------------------ run
@@ -124,6 +125,7 @@ class DeployMachine:
 
             await self._stage_pre_config()                    # PRE_CONFIG + validate
             self._plan = self.host.detect(self.pc)            # DETECT
+            self._warning = (self._plan or {}).get("warning")
             await self._stage_fetch()                         # FETCH_EXE -> .new
             await self.host.stop_node(self.pc["install"]["exe_name"])   # STOP_NODE
             self._backup = await self.host.backup(self.deploy_id, self.pc, self._plan)
@@ -266,6 +268,8 @@ class DeployMachine:
                    "pid": pid if pid is not None else self._pid,
                    "duration": round(time.time() - self._started, 3),
                    "deploy_id": self.deploy_id}
+        if self._warning is not None:
+            payload["warning"] = self._warning       # rebuild и прочие предупреждения
         for i in range(REPORT_RETRIES):                        # best-effort, админ мог упасть
             try:
                 await self.client.report(payload)
@@ -514,9 +518,37 @@ class HostOpsWindows:
 
     # ---- стадии
     def detect(self, pc: dict) -> dict:
-        # open: storage-логики нет; SE-стратегии (bootstrap/redeploy/rebuild)
-        # реализуются в Task 9 через lazy import src.se
-        return {"strategy": pc.get("mode", "open")}
+        """План записи: open-режим без storage; иначе bootstrap/redeploy/rebuild."""
+        if pc.get("mode", "open") == "open":
+            return {"strategy": "open"}
+        install = Path(pc["install"]["full_path"])
+        near_cfg = install.parent / "p2p_secure.bin"     # каталог config.yaml (kernel-правило)
+        in_work = Path(pc["install"]["work_dir"]) / "p2p_secure.bin"
+        bin_path = near_cfg if near_cfg.exists() else (in_work if in_work.exists() else near_cfg)
+        plan = {"strategy": "bootstrap", "bin_path": str(bin_path), "warning": None}
+        if bin_path.exists():
+            if self._archive_opens(bin_path):
+                plan["strategy"] = "redeploy"
+            else:
+                plan["strategy"] = "rebuild"
+                plan["warning"] = ("legacy storage unreadable under SYSTEM "
+                                   "(admin-vs-SYSTEM) - rebuilt")
+        return plan
+
+    @staticmethod
+    def _archive_opens(bin_path: Path) -> bool:
+        """Открывается ли существующий bin: иначе — rebuild c warning."""
+        try:
+            from src.se.secure_storage import HEADER_SIZE, PerFileArchive
+            # файл меньше заголовка нечитаем (битый/обрезанный) — сразу rebuild
+            if not bin_path.exists() or bin_path.stat().st_size < HEADER_SIZE:
+                return False
+            from src.se.storage import KeyManager
+            master = KeyManager(bin_path).load_or_create()
+            PerFileArchive(bin_path, master)        # бросит HMAC/master_key mismatch
+            return True
+        except Exception:
+            return False
 
     async def ensure_system(self) -> str:
         if self._is_system():
@@ -571,10 +603,28 @@ class HostOpsWindows:
         tmp.write_text(pc["config"], encoding="utf-8")
         os.replace(tmp, cfg)
         if pc.get("mode") == "se":
-            await self._write_storage(pc, plan)     # Task 9; до неё — ImportError
+            await self._write_storage(pc, plan)     # bootstrap/redeploy/rebuild
 
     async def _write_storage(self, pc: dict, plan: dict) -> None:
-        raise NotImplementedError("SE storage — Task 9")
+        """Запись storage напрямую в финальный бин (без промежуточных файлов)."""
+        def _sync():
+            from src.se.storage import KeyManager
+            from src.se.secure_storage import PerFileArchive
+            bin_path = Path(plan["bin_path"])
+            if plan["strategy"] == "rebuild" and bin_path.exists():
+                bin_path.unlink(missing_ok=True)        # старое содержимое нечитаемо
+            master = KeyManager(bin_path).load_or_create()
+            arch = PerFileArchive(bin_path, master)
+            # обновляем ТОЛЬКО конфиг и certs; state/audit/crl/keys не трогаем
+            arch.write("/config/app.yaml", pc["config"].encode("utf-8"))
+            for key, name in (("ca_cert", "/certs/ca_cert.pem"),
+                              ("node_cert", "/certs/node_cert.pem"),
+                              ("node_key", "/certs/node_key.pem")):
+                if pc.get(key):
+                    arch.write(name, bytes(pc[key]))
+            if arch._dirty:
+                arch.flush()                           # атомарная перезапись bin
+        await asyncio.to_thread(_sync)                 # D6: файловый I/O в thread
 
     async def launch(self, pc: dict) -> int:
         target = Path(pc["install"]["full_path"])
