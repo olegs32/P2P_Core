@@ -12,6 +12,18 @@ except ModuleNotFoundError:
     from test_agent_api_integration import make_deployer, run, VER, EXE
 
 
+@pytest.fixture(autouse=True)
+def _no_smb_delivery(monkeypatch):
+    """Тесты генерации не ходят по сети: SMB-копирование заглушено
+    (реальная доставка покрыта в tests/test_agent_delivery.py)."""
+    from services.deployer.service import Deployer
+
+    def _stub(self, pkg_dir, dest):
+        raise OSError("SMB недоступен в тесте")
+
+    monkeypatch.setattr(Deployer, "_delivery_copy", _stub)
+
+
 @pytest.fixture()
 def agent_exe(tmp_path, monkeypatch):
     import services.deployer.service as ds
@@ -118,11 +130,11 @@ def test_pre_config_injects_admin_peer(tmp_path, monkeypatch):
         gen_data={"targets": ["Node7"]}, monkeypatch=monkeypatch)
     peers = cfg["local"]["peers"]
     admin = [p for p in peers if p["node_id"] == "admin0"]
-    assert admin == [{"node_id": "admin0", "uri": "ws://127.0.0.1:9000/ws/"}]
-    assert res["admin_ws"] == "ws://127.0.0.1:9000"          # bare, без /ws/
+    assert admin == [{"node_id": "admin0", "uri": "ws://admin0:9000/ws/"}]
+    assert res["admin_ws"] == "ws://admin0:9000"             # bare, имя ноды, без /ws/
     # agent.conf жертвы несёт admin_ws той же bare-формой, как её передали
     conf = AgentConf.load(Path(res["packages"][0]["path"]) / "agent.conf")
-    assert conf.admin_ws == "ws://127.0.0.1:9000"
+    assert conf.admin_ws == "ws://admin0:9000"
     assert not any(p["node_id"] == "node7" for p in peers)   # self не задублирован
     assert any(p["node_id"] == "nodex" for p in peers)       # чужие пиры не теряем
     assert cfg["network"]["port"] == 9000
@@ -140,7 +152,7 @@ def test_admin_peer_uri_never_bare(tmp_path, monkeypatch):
         gen_data={"targets": ["Node7"]}, monkeypatch=monkeypatch)
     admin = [p for p in cfg["local"]["peers"] if p["node_id"] == "admin0"]
     assert len(admin) == 1, f"админ-пир задублирован: {cfg['local']['peers']}"
-    assert admin == [{"node_id": "admin0", "uri": "ws://127.0.0.1:9000/ws/"}]
+    assert admin == [{"node_id": "admin0", "uri": "ws://admin0:9000/ws/"}]
     # повторный gen поверх канонического peer — uri остаётся каноническим
     _, cfg2 = _gen_and_pre_config(
         svc, dist,
@@ -148,7 +160,7 @@ def test_admin_peer_uri_never_bare(tmp_path, monkeypatch):
                   "local": {"peers": list(cfg["local"]["peers"])}},
         gen_data={"targets": ["Node7"]}, monkeypatch=monkeypatch)
     admin2 = [p for p in cfg2["local"]["peers"] if p["node_id"] == "admin0"]
-    assert admin2 == [{"node_id": "admin0", "uri": "ws://127.0.0.1:9000/ws/"}]
+    assert admin2 == [{"node_id": "admin0", "uri": "ws://admin0:9000/ws/"}]
     assert all(p["uri"].rstrip("/").endswith("/ws")
                for p in cfg2["local"]["peers"] if p["node_id"] == "admin0")
 
@@ -181,6 +193,6 @@ def test_admin_peer_dedup_and_port_override(tmp_path, monkeypatch):
     admin = [p for p in peers if p["node_id"] == "admin0"]
     assert len(admin) == 1, f"админ-пир задублирован: {peers}"
     # uri актуализируется в канонический вид, а не копируется bare admin_ws
-    assert admin[0]["uri"] == "ws://127.0.0.1:9000/ws/"
+    assert admin[0]["uri"] == "ws://admin0:9000/ws/"
     assert cfg["network"]["port"] == 9101
     assert cfg["node"] == "node7"

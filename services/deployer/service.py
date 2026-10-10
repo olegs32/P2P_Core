@@ -8,6 +8,7 @@ import logging
 import os
 import re
 import shutil
+import subprocess
 import sys
 import threading
 import time
@@ -602,6 +603,71 @@ class Deployer(ModuleGeneric):
             self._agent_cfg_hint = hint
         return hint
 
+    def _delivery_copy(self, pkg_dir: Path, dest: Path) -> None:
+        """Копирование пакета в целевой каталог (блокирует — только из to_thread)."""
+        dest.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(pkg_dir, dest, dirs_exist_ok=True)
+
+    async def _deliver_agent(self, node: str, pkg_dir: Path) -> dict:
+        """Авто-доставка agent-пакета: локальная копия или UNC (SMB) + psexec.
+
+        Порядок — copy-then-psexec: копирование идёт первым, поэтому при
+        отсутствии PsTools пакет уже лежит на цели (ответ ok=False с подсказкой,
+        D9-словарь, не исключение). Хост резолвится из neighbor_table (info.host),
+        локальная цель копируется в <work_dir>/agent/<node> без psexec.
+        """
+        pkg_dir = Path(pkg_dir)
+        host = str(node)
+        try:
+            info = self.ctx.network.neighbor_table.get(node)
+            if info is not None and getattr(info, "host", None):
+                host = str(info.host)
+        except Exception:
+            pass
+        is_local = (host in ("127.0.0.1", "localhost", str(self.ctx.NODE))
+                    or str(node).strip().lower() == str(self.ctx.NODE).strip().lower())
+        result: dict[str, Any] = {"ok": False, "host": host, "unc": None,
+                                  "psexec_code": None, "error": None,
+                                  "local": bool(is_local)}
+        try:
+            if is_local:
+                # та же машина (или резолв в себя) — копия локально, без psexec
+                work = Path(getattr(self.ctx.config.local, "work_dir", None) or "data")
+                dest = work / "agent" / str(node)
+                await asyncio.to_thread(self._delivery_copy, pkg_dir, dest)
+                result.update(ok=True, unc=str(dest))
+                return result
+            # C:\Core\agent\<node> → \\host\C$\Core\agent\<node> (admin share)
+            remote_dir = rf"C:\Core\agent\{node}"
+            drive, tail = remote_dir.split(":", 1)
+            dest = Path(f"\\\\{host}\\{drive}$\\{tail.lstrip(chr(92))}")
+            await asyncio.to_thread(self._delivery_copy, pkg_dir, dest)
+            result["unc"] = str(dest)
+            psexec = shutil.which("psexec")
+            if not psexec:
+                result["error"] = ("psexec не найден на админ-ноде (установите PsTools) "
+                                   "— доставьте папку вручную")
+                return result
+            # -w: рабочий каталог на цели (нужен для любых относительных
+            # операций агента); agent.conf сам резолвится рядом с exe
+            # (agent/main.py:28-31), поэтому доп. аргументы (--conf) не нужны
+            remote_exe = str(Path(remote_dir) / "agent.exe")
+            cmd = [psexec, "-s", f"\\\\{host}", "-w", remote_dir, remote_exe]
+            proc = await asyncio.to_thread(subprocess.run, cmd,
+                                           capture_output=True, timeout=60)
+            result["psexec_code"] = proc.returncode
+            if proc.returncode != 0:
+                err = (proc.stderr or b"").decode(errors="ignore").strip()[:300]
+                out = (proc.stdout or b"").decode(errors="ignore").strip()[:300]
+                result["error"] = err or out or f"psexec code {proc.returncode}"
+                return result
+            result["ok"] = True
+            return result
+        except Exception as e:
+            # D9: отказ доставки — словарь, не исключение
+            result["error"] = f"{type(e).__name__}: {e}"
+            return result
+
     @rpc
     async def gen_agent_package(self, data: dict) -> dict:
         """Пакет = папка dist/<ver>/agent/<node_id>/ (agent.conf + копия agent.exe)."""
@@ -648,7 +714,7 @@ class Deployer(ModuleGeneric):
                     "error": f"agent artifact not found: {self._agent_exe_name(mode)} — "
                              f"соберите: python compile.py --type agent"}
         admin_ws = data.get("admin_ws") or \
-            f"ws://{await asyncio.to_thread(self.ctx.network.local_ip)}:{self.ctx.config.network.port}"
+            f"ws://{self.ctx.NODE}:{self.ctx.config.network.port}"
         admin_node = data.get("admin_node") or self.ctx.NODE
         # адрес админа нужен позже в _build_pre_config (админ-пир конфига жертвы)
         hint = self._cfg_hint()
@@ -678,8 +744,42 @@ class Deployer(ModuleGeneric):
             return pkgs
 
         pkgs = await asyncio.to_thread(_write_packages)
+        # авто-доставка пакетов: отказ доставки не валит генерацию (пакет уже
+        # создан, поле delivery добавляется в карточку — контракт не ломается)
+        for pkg in pkgs:
+            try:
+                pkg["delivery"] = await self._deliver_agent(
+                    pkg["node"], Path(pkg["path"]))
+            except Exception as e:
+                pkg["delivery"] = {"ok": False, "error": str(e)}
         return {"ok": True, "version": version, "mode": mode,
                 "admin_ws": str(admin_ws), "packages": pkgs}
+
+    @rpc
+    async def deliver_agent(self, data: dict) -> dict:
+        """Повторная доставка уже сгенерированного пакета: dist/<ver>/agent/<node>."""
+        data = data if isinstance(data, dict) else {}
+        try:
+            node = canon_node_id(data.get("node") or "")
+        except ValueError as e:
+            # D9: невалидный node_id — бизнес-отказ, не исключение
+            return {"ok": False, "error": str(e)}
+        if not node:
+            return {"ok": False, "error": "node required"}
+        version = str(data.get("version")
+                      or (await asyncio.to_thread(self._latest_version)) or "")
+        if not version:
+            return {"ok": False, "error": "no builds"}
+        # path traversal guard: каталог пакета обязан лежать внутри dist/
+        dist_root = DIST.resolve()
+        pkg_dir = (DIST / version / "agent" / node).resolve()
+        if pkg_dir != dist_root and dist_root not in pkg_dir.parents:
+            return {"ok": False, "error": f"bad version {version!r} — путь вне dist/"}
+        if not pkg_dir.is_dir():
+            return {"ok": False,
+                    "error": f"пакет не найден: {version}/agent/{node} — "
+                             f"сгенерируйте сначала"}
+        return await self._deliver_agent(node, pkg_dir)
 
     @rpc
     async def rotate_agent_key(self, data: dict) -> dict:
@@ -725,9 +825,8 @@ class Deployer(ModuleGeneric):
     async def _build_pre_config(self, node_id: str, version: str, exe: Path) -> dict:
         hint = self._cfg_hint()
         admin_node = hint.get("admin_node") or str(self.ctx.NODE)
-        admin_ws = hint.get("admin_ws") or (
-            f"ws://{await asyncio.to_thread(self.ctx.network.local_ip)}:"
-            f"{self.ctx.config.network.port}")
+        admin_ws = hint.get("admin_ws") or \
+            f"ws://{self.ctx.NODE}:{self.ctx.config.network.port}"
         try:
             port_override = hint.get("ports", {}).get(canon_node_id(node_id))
         except ValueError:
@@ -867,4 +966,8 @@ class Deployer(ModuleGeneric):
                 "statuses": self._agent_sessions.status(sess_node),
                 "keys": await asyncio.to_thread(_list_keys),
                 "mode": self._admin_mode(),
-                "admin_ws": f"ws://{await asyncio.to_thread(self.ctx.network.local_ip)}:{self.ctx.config.network.port}"}
+                # name-based адрес: HELLO dst сверяется с NODE сервера,
+                # имя ноды вместо IP (ip-резолв здесь больше не нужен)
+                "admin_ws": f"ws://{self.ctx.NODE}:{self.ctx.config.network.port}",
+                "admin_port": self.ctx.config.network.port,
+                "admin_node": str(self.ctx.NODE)}

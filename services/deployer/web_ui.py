@@ -115,11 +115,20 @@ def render(rpc):
         versions = [b.get("version") for b in builds] or [""]
         version = st.selectbox("Версия", versions, key="agp_version")
     with cols[1]:
+        # порт: admin_port из agent_status, иначе парсим admin_ws, фоллбэк 9000
+        try:
+            admin_port = int(info.get("admin_port")
+                             or str(info.get("admin_ws") or "").rsplit(":", 1)[1])
+        except (IndexError, ValueError):
+            admin_port = 9000
+        sel_node = st.session_state.get("selected_node") or info.get("admin_node") or ""
         admin_ws = st.text_input("Адрес админа (admin_ws)",
-                                 value=info.get("admin_ws") or "",
-                                 help="ws://<ip>:<port> — поправьте, если агент в другой подсети")
+                                 value=f"ws://{sel_node}:{admin_port}",
+                                 help="ws://<имя ноды>:<port> — поправьте, если агент в другой подсети")
+        # default только при первом создании — пользовательский ввод не затирается
+        st.session_state.setdefault("agp_admin_node",
+                                    st.session_state.get("selected_node") or "")
         admin_node = st.text_input("Имя админ-ноды (admin_node)",
-                                   value=st.session_state.get("agp_admin_node") or "",
                                    key="agp_admin_node",
                                    help="HELLO dst: должен совпасть с NODE/alias сервера")
         st.caption(f"режим сборки: `{info.get('mode')}`")
@@ -144,11 +153,43 @@ def render(rpc):
         if not res.get("ok"):
             st.error(res.get("error"))
         else:
+            def _show_delivery(p, d):
+                """Карточка пакета: статус авто-доставки либо ручная инструкция."""
+                node = p["node"]
+                if d and d.get("ok"):
+                    mode = ("локально" if d.get("local")
+                            else f"psexec code {d.get('psexec_code')}")
+                    st.success(f"**{node}** → `{p['path']}` · ✅ доставлено ({mode})")
+                    st.caption(f"ключ: {p['key_status']}")
+                elif d:
+                    st.warning(f"**{node}** → `{p['path']}` · "
+                               f"⚠ доставка не выполнена: {d.get('error')}")
+                    st.caption(f"ключ: {p['key_status']} · Доставка: положите папку "
+                               "на цель любым каналом (SMB/USB/вручную) и запустите "
+                               "`agent.exe`.")
+                else:
+                    # старый ответ без поля delivery — не падаем
+                    st.success(
+                        f"**{node}** → `{p['path']}`  (ключ: {p['key_status']})\n\n"
+                        "Доставка: положите папку на цель любым каналом (SMB/USB/вручную) "
+                        "и запустите `agent.exe`.")
+
             for p in res.get("packages") or []:
-                st.success(
-                    f"**{p['node']}** → `{p['path']}`  (ключ: {p['key_status']})\n\n"
-                    "Доставка: положите папку на цель любым каналом (SMB/USB/вручную) "
-                    "и запустите `agent.exe`.")
+                node = p["node"]
+                # результат повторной доставки переживает ререны, иначе — из gen
+                d = st.session_state.get(f"agp_deliv_{node}") or p.get("delivery")
+                _show_delivery(p, d)
+                if d and not d.get("ok"):
+                    if st.button("🔁 Повторить доставку",
+                                 key=f"agp_redeliver_{node}"):
+                        try:
+                            r = rpc.call("deployer", "deliver_agent",
+                                         {"node": node, "version": version}) or \
+                                {"ok": False, "error": "нет ответа от узла"}
+                        except Exception as e:
+                            r = {"ok": False, "error": str(e)}
+                        st.session_state[f"agp_deliv_{node}"] = r
+                        _show_delivery(p, r)   # показ в том же реренере
 
     @st.fragment(run_every=st.session_state.get("agp_live", 2))
     def _agent_live():

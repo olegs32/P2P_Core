@@ -7,14 +7,16 @@ ROOT = Path(__file__).resolve().parent.parent
 UI = ROOT / "services" / "deployer" / "web_ui.py"
 SERVICE = ROOT / "services" / "deployer" / "service.py"
 
-SMB_MARKS = ("remote_path", "deploy_only", "psexec")
+# "psexec" убран из маркеров: UI теперь легально упоминает psexec code в
+# статусе доставки (Task 14); старая SMB push-механика по-прежнему удалена.
+SMB_MARKS = ("remote_path", "deploy_only")
 SECTION_MARKS = ("Генерация agent-пакетов", "gen_agent_package", "agent_status", "fragment")
-# RPC-имена из брифа Task 11 (Tasks 4-5)
+# RPC-имена из брифа Task 11 (Tasks 4-5) + deliver_agent (Task 14)
 RPC_NAMES = ("gen_agent_package", "deploy", "agent_status",
-             "rotate_agent_key", "list_devices", "get_status")
+             "rotate_agent_key", "list_devices", "get_status", "deliver_agent")
 # из этих RPC-имён web_ui обязан делать прямые вызовы deployer'а
 CALLED_RPC = ("gen_agent_package", "agent_status", "rotate_agent_key",
-              "list_devices", "get_status")
+              "list_devices", "get_status", "deliver_agent")
 
 
 def test_deployer_webui_static():
