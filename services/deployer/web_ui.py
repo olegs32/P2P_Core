@@ -183,13 +183,16 @@ def render(rpc):
                     if st.button("🔁 Повторить доставку",
                                  key=f"agp_redeliver_{node}"):
                         try:
+                            # версия берётся из gen-ответа, а не из selectbox:
+                            # смена дропдауна не должна доставлять другую версию
                             r = rpc.call("deployer", "deliver_agent",
-                                         {"node": node, "version": version}) or \
+                                         {"node": node,
+                                          "version": res.get("version") or version}) or \
                                 {"ok": False, "error": "нет ответа от узла"}
                         except Exception as e:
                             r = {"ok": False, "error": str(e)}
                         st.session_state[f"agp_deliv_{node}"] = r
-                        _show_delivery(p, r)   # показ в том же реренере
+                        st.rerun()   # карточка рендерится один раз (после ререна)
 
     @st.fragment(run_every=st.session_state.get("agp_live", 2))
     def _agent_live():

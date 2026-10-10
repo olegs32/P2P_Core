@@ -608,6 +608,18 @@ class Deployer(ModuleGeneric):
         dest.mkdir(parents=True, exist_ok=True)
         shutil.copytree(pkg_dir, dest, dirs_exist_ok=True)
 
+    @staticmethod
+    def _node_segment_error(node: str) -> str | None:
+        r"""Отказ для node как одного path-компонента (текст D9-ответа) либо None.
+
+        canon_node_id отсекает только `/\:` — `.`, `..` и `\x00` проходят мимо
+        и ломают path-guard: `(DIST/ver/"agent"/"..").resolve()` остаётся внутри
+        dist, а копия уходит в `\\host\C$\Core\agent\..` (= `C:\Core` цели).
+        """
+        if node in (".", "..") or "\x00" in node:
+            return f"bad node {node!r} — недопустимый идентификатор узла"
+        return None
+
     async def _deliver_agent(self, node: str, pkg_dir: Path) -> dict:
         """Авто-доставка agent-пакета: локальная копия или UNC (SMB) + psexec.
 
@@ -615,6 +627,11 @@ class Deployer(ModuleGeneric):
         отсутствии PsTools пакет уже лежит на цели (ответ ok=False с подсказкой,
         D9-словарь, не исключение). Хост резолвится из neighbor_table (info.host),
         локальная цель копируется в <work_dir>/agent/<node> без psexec.
+
+        Семантика ok=True: «скопировано и запущено», НЕ «завершено» — psexec
+        идёт с -d (detached) и возвращается сразу после старта агента, поэтому
+        локальный timeout покрывает только запуск. Финальный статус деплоя —
+        live-фрагмент прогресса (agent_status / _agent_live в web_ui).
         """
         pkg_dir = Path(pkg_dir)
         host = str(node)
@@ -651,10 +668,12 @@ class Deployer(ModuleGeneric):
             # -w: рабочий каталог на цели (нужен для любых относительных
             # операций агента); agent.conf сам резолвится рядом с exe
             # (agent/main.py:28-31), поэтому доп. аргументы (--conf) не нужны
+            # -d: detached — psexec не ждёт завершения агента (он работает
+            # дольше локального таймаута), возвращается сразу после запуска
             remote_exe = str(Path(remote_dir) / "agent.exe")
-            cmd = [psexec, "-s", f"\\\\{host}", "-w", remote_dir, remote_exe]
+            cmd = [psexec, "-s", "-d", f"\\\\{host}", "-w", remote_dir, remote_exe]
             proc = await asyncio.to_thread(subprocess.run, cmd,
-                                           capture_output=True, timeout=60)
+                                           capture_output=True, timeout=30)
             result["psexec_code"] = proc.returncode
             if proc.returncode != 0:
                 err = (proc.stderr or b"").decode(errors="ignore").strip()[:300]
@@ -680,6 +699,12 @@ class Deployer(ModuleGeneric):
         except ValueError as e:
             # D9: невалидный node_id — бизнес-отказ, не исключение
             return {"ok": False, "error": str(e)}
+        for t in targets:
+            # тот же path-guard, что в deliver_agent: ".." создал бы пакет в
+            # dist/<ver>/ и доставил его в C:\Core\agent\.. на цели
+            bad = self._node_segment_error(t)
+            if bad:
+                return {"ok": False, "error": bad}
         if not targets:
             return {"ok": False, "error": "targets required"}
         # per-target port override (опционально): {node: port} — см. скоуп ниже
@@ -757,7 +782,12 @@ class Deployer(ModuleGeneric):
 
     @rpc
     async def deliver_agent(self, data: dict) -> dict:
-        """Повторная доставка уже сгенерированного пакета: dist/<ver>/agent/<node>."""
+        r"""Повторная доставка уже сгенерированного пакета: dist/<ver>/agent/<node>.
+
+        Path-guard: node — ровно один сегмент пути; `.`, `..`, пустая строка и
+        `\x00` отклоняются ДО resolve (иначе guard видит путь внутри dist и
+        пропускает копию в `\\host\C$\Core\agent\..` на цели).
+        """
         data = data if isinstance(data, dict) else {}
         try:
             node = canon_node_id(data.get("node") or "")
@@ -766,16 +796,25 @@ class Deployer(ModuleGeneric):
             return {"ok": False, "error": str(e)}
         if not node:
             return {"ok": False, "error": "node required"}
+        bad = self._node_segment_error(node)
+        if bad:
+            return {"ok": False, "error": bad}
         version = str(data.get("version")
                       or (await asyncio.to_thread(self._latest_version)) or "")
         if not version:
             return {"ok": False, "error": "no builds"}
         # path traversal guard: каталог пакета обязан лежать внутри dist/
         dist_root = DIST.resolve()
-        pkg_dir = (DIST / version / "agent" / node).resolve()
-        if pkg_dir != dist_root and dist_root not in pkg_dir.parents:
+        try:
+            pkg_dir = (DIST / version / "agent" / node).resolve()
+            in_dist = pkg_dir == dist_root or dist_root in pkg_dir.parents
+            is_pkg_dir = pkg_dir.is_dir()
+        except (ValueError, OSError) as e:
+            # D9: некорректный сегмент пути (например \x00 в version)
+            return {"ok": False, "error": f"bad version {version!r} — {e}"}
+        if not in_dist:
             return {"ok": False, "error": f"bad version {version!r} — путь вне dist/"}
-        if not pkg_dir.is_dir():
+        if not is_pkg_dir:
             return {"ok": False,
                     "error": f"пакет не найден: {version}/agent/{node} — "
                              f"сгенерируйте сначала"}

@@ -79,10 +79,10 @@ def test_deliver_remote_unc_and_psexec_args(tmp_path, monkeypatch):
     assert res["unc"] == r"\\10.0.0.5\C$\Core\agent\node7"
     assert copied == [Path(r"\\10.0.0.5\C$\Core\agent\node7")]
     cmd, cap, tmo = cmds[0]
-    assert cmd == [r"C:\Tools\psexec.exe", "-s", r"\\10.0.0.5",
+    assert cmd == [r"C:\Tools\psexec.exe", "-s", "-d", r"\\10.0.0.5",
                    "-w", r"C:\Core\agent\node7",
                    r"C:\Core\agent\node7\agent.exe"]
-    assert cap is True and tmo == 60
+    assert cap is True and tmo == 30, "-d (detached) -> локальный таймаут только на запуск"
     assert res["psexec_code"] == 0
 
 
@@ -131,6 +131,36 @@ def test_deliver_agent_rpc_path_guard(tmp_path, monkeypatch):
     res = run(svc.deliver_agent({"node": "Node7", "version": VER}))
     assert res["ok"] is False and "psexec" in res["error"]
     assert res["unc"] == r"\\node7\C$\Core\agent\node7"
+
+
+def test_deliver_agent_rejects_dot_segments(tmp_path, monkeypatch):
+    r"""(review 1) `.`, `..`, пустой node и `\x00` — явный reject ДО resolve.
+
+    canon_node_id отсекает только `/\:`, поэтому `..` проходит guard:
+    `(DIST/ver/"agent"/"..").resolve()` = dist/<ver> (внутри dist), и копия ушла бы
+    в `\\host\C$\Core\agent\..` = `C:\Core` цели любым mesh-узлом через RPC.
+    """
+    svc, dist, ctx = make_deployer(tmp_path, monkeypatch)
+    # dist/<VER> создаёт make_deployer; dist/<VER>/agent — чтобы '.' тоже
+    # проходил is_dir() и без guard'а доставка реально вызывалась
+    (dist / VER / "agent").mkdir(parents=True, exist_ok=True)
+    delivered = []
+
+    def _fake_deliver(node, pkg_dir):
+        delivered.append(node)
+        return asyncio.sleep(0, result={"ok": True})
+
+    monkeypatch.setattr(svc, "_deliver_agent", _fake_deliver)
+    for bad in ("..", ".", " .. ", "..\x00", "\x00", "", None):
+        res = run(svc.deliver_agent({"node": bad, "version": VER}))
+        assert res["ok"] is False and res.get("error"), (bad, res)
+    assert delivered == [], f"path-guard пропустил dot-компонент: {delivered}"
+    # тот же компонент закрыт и в gen_agent_package (не создаёт пакет в dist/<ver>)
+    res = run(svc.gen_agent_package({"targets": [".."], "version": VER}))
+    assert res["ok"] is False and res.get("error")
+    res = run(svc.gen_agent_package({"targets": ["."], "version": VER}))
+    assert res["ok"] is False and res.get("error")
+    assert delivered == []
 
 
 def test_agent_status_admin_ws_name_based(tmp_path, monkeypatch):
