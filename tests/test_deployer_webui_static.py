@@ -17,6 +17,10 @@ RPC_NAMES = ("gen_agent_package", "deploy", "agent_status",
 # из этих RPC-имён web_ui обязан делать прямые вызовы deployer'а
 CALLED_RPC = ("gen_agent_package", "agent_status", "rotate_agent_key",
               "list_devices", "get_status", "deliver_agent")
+# Task 15: фоновая доставка — живая секция deliveries в UI + отсутствие
+# блокирующего `await _deliver_agent` внутри gen_agent_package
+DELIVERY_MARKS = ("deliveries", "Доставка пакетов", "в очереди на доставку",
+                  "Повторить доставку")
 
 
 def test_deployer_webui_static():
@@ -28,6 +32,18 @@ def test_deployer_webui_static():
 
     for marker in SECTION_MARKS:
         assert marker in ui, f"нет маркера секции генерации: {marker}"
+
+    for marker in DELIVERY_MARKS:
+        assert marker in ui, f"нет маркера фоновой доставки: {marker}"
+
+    # gen_agent_package не должен ждать доставку (блокирующий await в RPC)
+    m = re.search(r"async def gen_agent_package\(.*?(?=\n    @rpc|\n    async def )",
+                  svc, re.S)
+    assert m, "gen_agent_package не найдена в services/deployer/service.py"
+    assert "_deliver_agent" not in m.group(0), \
+        "gen_agent_package блокируется доставкой (нет фонового паттерна)"
+    assert "async def _run_deliveries" in svc, "нет фонового воркера доставки"
+    assert '"deliveries"' in svc, "agent_status не отдаёт deliveries"
 
     for name in RPC_NAMES:
         if name == "deploy":

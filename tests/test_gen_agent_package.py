@@ -6,10 +6,10 @@ import pytest
 from services.deployer.agent.package import AgentConf
 
 try:
-    from tests.test_agent_api_integration import make_deployer, run, VER, EXE
+    from tests.test_agent_api_integration import make_deployer, run, run_gen, VER, EXE
 except ModuleNotFoundError:
     # на этой машине site-packages содержит пакет 'tests' (shadowing) — sibling-import
-    from test_agent_api_integration import make_deployer, run, VER, EXE
+    from test_agent_api_integration import make_deployer, run, run_gen, VER, EXE
 
 
 @pytest.fixture(autouse=True)
@@ -40,7 +40,7 @@ def agent_exe(tmp_path, monkeypatch):
 def test_gen_agent_package(tmp_path, monkeypatch):
     svc, dist, ctx = make_deployer(tmp_path, monkeypatch)
     (dist / "DeployAgent.exe").write_bytes(b"MZ-agent")
-    res = run(svc.gen_agent_package({"targets": ["Node7"]}))
+    res = run_gen(svc, {"targets": ["Node7"]})
     assert res["ok"] and res["version"] == VER and res["mode"] == "open"
     assert res["admin_ws"].startswith("ws://")
     pkg = res["packages"][0]
@@ -52,39 +52,39 @@ def test_gen_agent_package(tmp_path, monkeypatch):
     assert len(conf.key) == 32 and conf.admin_node == ctx.NODE
     assert (pdir / "agent.exe").read_bytes() == b"MZ-agent"
     # идемпотентность ключа
-    res2 = run(svc.gen_agent_package({"targets": ["Node7"]}))
+    res2 = run_gen(svc, {"targets": ["Node7"]})
     assert res2["packages"][0]["key_status"] == "existing"
     # ротация -> старые пакеты получат auth-fail
     run(svc.rotate_agent_key({"node": "node7"}))
-    res3 = run(svc.gen_agent_package({"targets": ["node7"]}))
+    res3 = run_gen(svc, {"targets": ["node7"]})
     assert res3["packages"][0]["key_status"] == "existing"
     assert res3["packages"][0]["path"]              # папка перезаписана новым conf
 
 
 def test_gen_agent_package_errors(tmp_path, monkeypatch):
     svc, dist, _ = make_deployer(tmp_path, monkeypatch)
-    res = run(svc.gen_agent_package({"targets": []}))
+    res = run_gen(svc, {"targets": []})
     assert res["ok"] is False and "targets" in res["error"]
     # артефакта агента нет -> business-error с инструкцией
-    res = run(svc.gen_agent_package({"targets": ["n1"]}))
+    res = run_gen(svc, {"targets": ["n1"]})
     assert res["ok"] is False and "compile.py --type agent" in res["error"]
     # dummy-режим создаёт артефакт
     monkeypatch.setenv("P2P_DUMMY_BUILD", "1")
-    res = run(svc.gen_agent_package({"targets": ["n1"]}))
+    res = run_gen(svc, {"targets": ["n1"]})
     assert res["ok"] is True
     # невалидный per-target port override -> бизнес-отказ (D9), не исключение
-    res = run(svc.gen_agent_package({"targets": ["n1"], "ports": {"n1": "abc"}}))
+    res = run_gen(svc, {"targets": ["n1"], "ports": {"n1": "abc"}})
     assert res["ok"] is False and "port" in res["error"]
-    res = run(svc.gen_agent_package({"targets": ["n1"], "ports": {"n1": 99999}}))
+    res = run_gen(svc, {"targets": ["n1"], "ports": {"n1": 99999}})
     assert res["ok"] is False and "port" in res["error"]
-    res = run(svc.gen_agent_package({"targets": ["n1"], "ports": "9101"}))
+    res = run_gen(svc, {"targets": ["n1"], "ports": "9101"})
     assert res["ok"] is False and "ports" in res["error"]
 
 
 def test_deploy_rpc_is_package_generation(tmp_path, monkeypatch):
     svc, dist, _ = make_deployer(tmp_path, monkeypatch)
     (dist / "DeployAgent.exe").write_bytes(b"MZ-agent")
-    res = run(svc.deploy({"version": VER, "targets": ["Node7"]}))
+    res = run_gen(svc, {"version": VER, "targets": ["Node7"]}, method="deploy")
     assert res["ok"] and res["packages"][0]["node"] == "node7"
     assert "note" in res
 
@@ -104,7 +104,7 @@ def _gen_and_pre_config(svc, dist, base_cfg: dict, gen_data: dict, monkeypatch):
     (root / "config.yaml").write_text(
         yaml.safe_dump(base_cfg, allow_unicode=True), encoding="utf-8")
     (dist / "DeployAgent.exe").write_bytes(b"MZ-agent")
-    res = run(svc.gen_agent_package(gen_data))
+    res = run_gen(svc, gen_data)
     assert res["ok"], res
     target = res["packages"][0]["node"]
     pc = run(svc._build_pre_config(target, VER, dist / VER / "Node_P2P_Core.exe"))

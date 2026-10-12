@@ -1,13 +1,16 @@
 # tests/test_agent_delivery.py
-# Авто-доставка agent-пакетов (SMB copy + psexec) и name-based admin_ws (Task 14).
+# Авто-доставка agent-пакетов (SMB copy + psexec), name-based admin_ws (Task 14)
+# и ФОНОВАЯ доставка с live-статусом/логами (Task 15).
 import asyncio
 from pathlib import Path
 
 try:
-    from tests.test_agent_api_integration import make_deployer, run, VER
+    from tests.test_agent_api_integration import (
+        make_deployer, run, VER, run_gen)
 except ModuleNotFoundError:
     # на этой машине site-packages содержит пакет 'tests' (shadowing) — sibling-import
-    from test_agent_api_integration import make_deployer, run, VER
+    from test_agent_api_integration import (
+        make_deployer, run, VER, run_gen)
 
 
 def _mk_pkg(tmp_path: Path) -> Path:
@@ -86,28 +89,133 @@ def test_deliver_remote_unc_and_psexec_args(tmp_path, monkeypatch):
     assert res["psexec_code"] == 0
 
 
-def test_gen_agent_package_includes_delivery(tmp_path, monkeypatch):
-    """gen_agent_package кладёт поле delivery; отказ доставки не валит генерацию."""
+def test_gen_agent_package_queues_background_delivery(tmp_path, monkeypatch):
+    """(Task 15) gen отвечает ДО копирования: delivery.state == queued, фоновая
+    задача создана; само копирование идёт в _run_deliveries после ответа RPC."""
     svc, dist, ctx = make_deployer(tmp_path, monkeypatch)
     (dist / "DeployAgent.exe").write_bytes(b"MZ-agent")
     copied = []
     monkeypatch.setattr(svc, "_delivery_copy",
                         lambda pkg_dir, dest: copied.append(dest))
     monkeypatch.setattr("services.deployer.service.shutil.which", lambda name: None)
+
+    captured = []
+
+    class _StubTask:
+        """Захваченная, но НЕ запланированная задача — воркер не стартует."""
+        def done(self):
+            return False
+
+        def add_done_callback(self, cb):
+            pass
+
+    def _capture(coro, *args, **kwargs):
+        captured.append(coro)
+        return _StubTask()
+
+    real_create_task = asyncio.create_task
+    monkeypatch.setattr(asyncio, "create_task", _capture)
     res = run(svc.gen_agent_package({"targets": ["Node7"]}))
     assert res["ok"] is True                       # ok гена не зависит от delivery
-    d = res["packages"][0]["delivery"]
-    assert d["ok"] is False and "psexec" in d["error"]
-    assert copied and copied[0] == Path(r"\\node7\C$\Core\agent\node7")
-    # даже исключение внутри _deliver_agent не валит генерацию
-    def _boom(node, pkg_dir):
-        raise RuntimeError("boom")
+    assert res["packages"][0]["delivery"] == {"state": "queued"}
+    assert captured, "фоновая задача доставки не создана"
+    assert copied == [], "gen скопировал пакет до ответа RPC"
+    st = svc._delivery_status["node7"]
+    assert st["state"] == "queued" and st["version"] == VER
+    assert st["logs"] and st["logs"][0].startswith("queued:")
+    assert svc._deliver_tasks.get("node7") is not None, "guard задачи не записан"
+    for c in captured:
+        c.close()
 
-    monkeypatch.setattr(svc, "_deliver_agent", _boom)
-    res2 = run(svc.gen_agent_package({"targets": ["Node7"]}))
-    assert res2["ok"] is True
-    assert res2["packages"][0]["delivery"]["ok"] is False
-    assert "boom" in res2["packages"][0]["delivery"]["error"]
+    # дренаж (шпиона create_task снимаем): доставка доходит до конца,
+    # результат и логи оказываются в _delivery_status
+    monkeypatch.setattr(asyncio, "create_task", real_create_task)
+    svc._deliver_tasks.clear()
+    svc._deliver_task = None
+    run_gen(svc, {"targets": ["Node7"]})
+    st = svc._delivery_status["node7"]
+    assert st["state"] == "error" and st["result"]["ok"] is False
+    assert "psexec" in st["result"]["error"]
+    assert copied and copied[0] == Path(r"\\node7\C$\Core\agent\node7")
+
+
+def test_run_deliveries_isolates_nodes_and_writes_logs(tmp_path, monkeypatch):
+    """(Task 15) _run_deliveries: все ноды обработаны, done/error + result +
+    непустые логи; исключение одной ноды не роняет остальные."""
+    svc, dist, ctx = make_deployer(tmp_path, monkeypatch)
+    (dist / "DeployAgent.exe").write_bytes(b"MZ-agent")
+
+    async def _fake(node, pkg_dir, on_log=None):
+        if node == "boom":
+            raise RuntimeError("boom")
+        if node == "node7":
+            if on_log:
+                on_log(r"copy → \\node7\C$\Core\agent\node7")
+            return {"ok": False, "error": "psexec missing"}
+        if on_log:
+            on_log("copy → local")
+        return {"ok": True, "local": True, "unc": r"C:\Core\agent\admin0"}
+
+    monkeypatch.setattr(svc, "_deliver_agent", _fake)
+    res = run_gen(svc, {"targets": ["Node7", "Boom", "Admin0"]})
+    assert res["ok"] is True
+    m = svc._delivery_status
+    assert m["node7"]["state"] == "error" and m["node7"]["result"]["ok"] is False
+    assert m["boom"]["state"] == "error"
+    assert "boom" in m["boom"]["result"]["error"]
+    assert any("exception" in ln for ln in m["boom"]["logs"])
+    assert m["admin0"]["state"] == "done" and m["admin0"]["result"]["ok"] is True
+    assert m["admin0"]["result"]["unc"] == r"C:\Core\agent\admin0"
+    for node in ("node7", "boom", "admin0"):
+        assert m[node]["logs"], f"нет логов доставки для {node}"
+        assert m[node]["finished_at"] is not None, f"нет finished_at для {node}"
+    assert svc._deliver_tasks == {}, "guard не очищен после завершения воркера"
+
+
+def test_deliver_retry_busy_and_gen_does_not_overwrite(tmp_path, monkeypatch):
+    """(Task 15) retry при живой доставке -> D9 «уже выполняется»;
+    gen при running не перетирает запись и её логи."""
+    svc, dist, ctx = make_deployer(tmp_path, monkeypatch)
+    (dist / VER / "agent" / "node7").mkdir(parents=True, exist_ok=True)
+    (dist / "DeployAgent.exe").write_bytes(b"MZ-agent")
+
+    async def _go():
+        gate = asyncio.Event()
+        live = asyncio.create_task(gate.wait())     # «живая» задача ноды
+        svc._deliver_tasks["node7"] = live
+        svc._delivery_status["node7"] = {
+            "state": "running", "version": VER, "logs": ["start"],
+            "started_at": 0.0, "finished_at": None, "result": None}
+        res = await svc.deliver_agent({"node": "node7", "version": VER})
+        assert res["ok"] is False and "уже выполняется" in res["error"], res
+        res2 = await svc.gen_agent_package({"targets": ["Node7"], "version": VER})
+        assert res2["ok"] is True
+        assert res2["packages"][0]["delivery"]["state"] == "running"
+        assert svc._delivery_status["node7"]["state"] == "running"
+        assert svc._delivery_status["node7"]["logs"] == ["start"]
+        live.cancel()
+        try:
+            await live
+        except asyncio.CancelledError:
+            pass
+
+    run(_go())
+
+
+def test_agent_status_reports_deliveries(tmp_path, monkeypatch):
+    """(Task 15) agent_status отдаёт ключ deliveries с полными записями,
+    существующие ключи не ломаются."""
+    svc, dist, ctx = make_deployer(tmp_path, monkeypatch)
+    (dist / "DeployAgent.exe").write_bytes(b"MZ-agent")
+    monkeypatch.setattr(svc, "_delivery_copy", lambda pkg_dir, dest: None)
+    monkeypatch.setattr("services.deployer.service.shutil.which", lambda name: None)
+    run_gen(svc, {"targets": ["Node7"]})
+    st = run(svc.agent_status({}))
+    for k in ("statuses", "keys", "mode", "admin_ws", "admin_port", "deliveries"):
+        assert k in st, f"нет ключа {k} в agent_status"
+    d = st["deliveries"]["node7"]
+    assert d["state"] == "error" and d["result"]["ok"] is False
+    assert d["version"] == VER and d["logs"] and d["finished_at"] is not None
 
 
 def test_deliver_agent_rpc_path_guard(tmp_path, monkeypatch):
@@ -122,15 +230,17 @@ def test_deliver_agent_rpc_path_guard(tmp_path, monkeypatch):
     # пакета нет
     res = run(svc.deliver_agent({"node": "node7", "version": VER}))
     assert res["ok"] is False
-    # валидный пакет -> уходит в обычную доставку
+    # валидный пакет -> мгновенный started, доставка уходит в фон
     pkg = dist / VER / "agent" / "node7"
     pkg.mkdir(parents=True)
     (pkg / "agent.exe").write_bytes(b"MZ-agent")
     monkeypatch.setattr(svc, "_delivery_copy", lambda pkg_dir, dest: None)
     monkeypatch.setattr("services.deployer.service.shutil.which", lambda name: None)
-    res = run(svc.deliver_agent({"node": "Node7", "version": VER}))
-    assert res["ok"] is False and "psexec" in res["error"]
-    assert res["unc"] == r"\\node7\C$\Core\agent\node7"
+    res = run_gen(svc, {"node": "Node7", "version": VER}, method="deliver_agent")
+    assert res["ok"] is True and res["started"] is True and res["state"] == "queued"
+    st = svc._delivery_status["node7"]
+    assert st["state"] == "error" and "psexec" in st["result"]["error"]
+    assert st["result"]["unc"] == r"\\node7\C$\Core\agent\node7"
 
 
 def test_deliver_agent_rejects_dot_segments(tmp_path, monkeypatch):
@@ -146,7 +256,7 @@ def test_deliver_agent_rejects_dot_segments(tmp_path, monkeypatch):
     (dist / VER / "agent").mkdir(parents=True, exist_ok=True)
     delivered = []
 
-    def _fake_deliver(node, pkg_dir):
+    def _fake_deliver(node, pkg_dir, on_log=None):
         delivered.append(node)
         return asyncio.sleep(0, result={"ok": True})
 
@@ -173,6 +283,6 @@ def test_agent_status_admin_ws_name_based(tmp_path, monkeypatch):
     # фоллбэк gen (без admin_ws в data) — тоже имя ноды, без IP
     (dist / "DeployAgent.exe").write_bytes(b"MZ-agent")
     monkeypatch.setattr(svc, "_deliver_agent",
-                        lambda n, p: asyncio.sleep(0, result={"ok": True}))
-    res = run(svc.gen_agent_package({"targets": ["Node7"]}))
+                        lambda n, p, on_log=None: asyncio.sleep(0, result={"ok": True}))
+    res = run_gen(svc, {"targets": ["Node7"]})
     assert res["admin_ws"] == f"ws://{ctx.NODE}:{ctx.config.network.port}"

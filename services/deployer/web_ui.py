@@ -153,46 +153,48 @@ def render(rpc):
         if not res.get("ok"):
             st.error(res.get("error"))
         else:
-            def _show_delivery(p, d):
-                """Карточка пакета: статус авто-доставки либо ручная инструкция."""
+            # живые записи доставки — info уже получен выше (agent_status);
+            # карточка рендерится ОДИН раз, live-подробности и retry-кнопка
+            # во фрагменте _agent_live ниже (урок прошлого ревью)
+            live_deliv = info.get("deliveries") or {}
+
+            def _show_delivery(p):
+                """Карточка пакета: путь/ключ + маркер состояния доставки."""
                 node = p["node"]
-                if d and d.get("ok"):
-                    mode = ("локально" if d.get("local")
-                            else f"psexec code {d.get('psexec_code')}")
-                    st.success(f"**{node}** → `{p['path']}` · ✅ доставлено ({mode})")
-                    st.caption(f"ключ: {p['key_status']}")
-                elif d:
-                    st.warning(f"**{node}** → `{p['path']}` · "
-                               f"⚠ доставка не выполнена: {d.get('error')}")
-                    st.caption(f"ключ: {p['key_status']} · Доставка: положите папку "
-                               "на цель любым каналом (SMB/USB/вручную) и запустите "
-                               "`agent.exe`.")
+                d = live_deliv.get(node) or p.get("delivery")
+                head = f"**{node}** → `{p['path']}` (ключ: {p['key_status']})"
+                state = d.get("state") if isinstance(d, dict) else None
+                if state in ("queued", "running"):
+                    # async-контракт gen (Task 15): доставка ушла в фон
+                    st.markdown(f"{head} · ⏳ в очереди на доставку")
+                elif state == "done":
+                    rd = d.get("result") or {}
+                    mode = ("локально" if rd.get("local")
+                            else f"psexec code {rd.get('psexec_code')}")
+                    st.success(f"{head} · ✅ доставлено ({mode})")
+                elif state == "error":
+                    st.warning(f"{head} · ❌ доставка не выполнена — повтор "
+                               "и логи ниже, в «Прогресс деплоев»")
+                elif isinstance(d, dict) and "ok" in d:
+                    # старый ответ (полный результат доставки) — прежняя семантика
+                    if d.get("ok"):
+                        mode = ("локально" if d.get("local")
+                                else f"psexec code {d.get('psexec_code')}")
+                        st.success(f"{head} · ✅ доставлено ({mode})")
+                    else:
+                        st.warning(f"{head} · ⚠ доставка не выполнена: "
+                                   f"{d.get('error')}")
+                        st.caption("Доставка: положите папку на цель любым каналом "
+                                   "(SMB/USB/вручную) и запустите `agent.exe`.")
                 else:
                     # старый ответ без поля delivery — не падаем
-                    st.success(
-                        f"**{node}** → `{p['path']}`  (ключ: {p['key_status']})\n\n"
-                        "Доставка: положите папку на цель любым каналом (SMB/USB/вручную) "
-                        "и запустите `agent.exe`.")
+                    st.markdown(
+                        f"{head}\n\n"
+                        "Доставка: положите папку на цель любым каналом "
+                        "(SMB/USB/вручную) и запустите `agent.exe`.")
 
             for p in res.get("packages") or []:
-                node = p["node"]
-                # результат повторной доставки переживает ререны, иначе — из gen
-                d = st.session_state.get(f"agp_deliv_{node}") or p.get("delivery")
-                _show_delivery(p, d)
-                if d and not d.get("ok"):
-                    if st.button("🔁 Повторить доставку",
-                                 key=f"agp_redeliver_{node}"):
-                        try:
-                            # версия берётся из gen-ответа, а не из selectbox:
-                            # смена дропдауна не должна доставлять другую версию
-                            r = rpc.call("deployer", "deliver_agent",
-                                         {"node": node,
-                                          "version": res.get("version") or version}) or \
-                                {"ok": False, "error": "нет ответа от узла"}
-                        except Exception as e:
-                            r = {"ok": False, "error": str(e)}
-                        st.session_state[f"agp_deliv_{node}"] = r
-                        st.rerun()   # карточка рендерится один раз (после ререна)
+                _show_delivery(p)
 
     @st.fragment(run_every=st.session_state.get("agp_live", 2))
     def _agent_live():
@@ -200,6 +202,47 @@ def render(rpc):
         info = rpc.call("deployer", "agent_status", {}) or {}
         statuses = info.get("statuses") or {}
         keys = info.get("keys") or {}
+        # Живой статус фоновой доставки пакетов (Task 15): state + последняя
+        # строка лога + retry при ошибке (сервер держит guard от двойного запуска)
+        deliveries = info.get("deliveries") or {}
+        if deliveries:
+            st.markdown("**Доставка пакетов:**")
+            for node in sorted(deliveries):
+                d = deliveries.get(node) or {}
+                state = d.get("state")
+                logs = d.get("logs") or []
+                last = logs[-1] if logs else ""
+                rd = d.get("result") or {}
+                if state in ("queued", "running"):
+                    st.markdown(f"⏳ **{node}** — `{state}`"
+                                + (f" · `{last}`" if last else ""))
+                elif state == "done":
+                    mode = ("локально" if rd.get("local")
+                            else f"psexec code {rd.get('psexec_code')}")
+                    st.markdown(f"✅ **{node}** — доставлено ({mode})")
+                else:
+                    err = rd.get("error") or d.get("error") or "неизвестная ошибка"
+                    st.markdown(f"❌ **{node}** — ошибка: {err}")
+                    st.caption("Положите папку пакета на цель любым каналом "
+                               "(SMB/USB/вручную) и запустите `agent.exe`.")
+                    if st.button("🔁 Повторить доставку",
+                                 key=f"agp_retry_{node}"):
+                        try:
+                            # версия — из записи доставки (не из selectbox):
+                            # смена дропдауна не должна доставлять другую версию
+                            r = rpc.call("deployer", "deliver_agent",
+                                         {"node": node,
+                                          "version": d.get("version")
+                                          or (res or {}).get("version")}) or {}
+                        except Exception as e:
+                            r = {"ok": False, "error": str(e)}
+                        if r.get("ok"):
+                            # мгновенный started — копирование ушло в фон
+                            st.info(f"🚀 {node}: доставка поставлена в очередь "
+                                    "— статус обновится в этом блоке")
+                        else:
+                            # двойной клик -> серверный D9 «уже выполняется»
+                            st.info(f"ℹ️ {r.get('error') or 'нет ответа от узла'}")
         if not statuses:
             st.caption("отчётов пока нет")
         for node, s in statuses.items():

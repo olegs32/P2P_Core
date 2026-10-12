@@ -245,6 +245,13 @@ class Deployer(ModuleGeneric):
         self._build_lock = asyncio.Lock()
         self._build_status: dict = {"state": "idle", "version": None, "logs": [], "started_at": None, "finished_at": None, "result": None}
         self._build_task: asyncio.Task | None = None
+        # Фоновая доставка пакетов (аналог _build_status, Task 15):
+        # node → {state, version, logs, started_at, finished_at, result}
+        self._delivery_status: dict[str, dict] = {}
+        # guard от двойного запуска: node → живая фоновая задача доставки
+        self._deliver_tasks: dict[str, asyncio.Task] = {}
+        # последняя запущенная задача доставки (gen создаёт одну на батч)
+        self._deliver_task: asyncio.Task | None = None
         work = Path(getattr(self.ctx.config.local, "work_dir", None) or "data")
         self._agent_registry = DeployKeyRegistry(work / "deploy")
         self._agent_auth = AgentAuth(self._agent_registry)
@@ -608,6 +615,121 @@ class Deployer(ModuleGeneric):
         dest.mkdir(parents=True, exist_ok=True)
         shutil.copytree(pkg_dir, dest, dirs_exist_ok=True)
 
+    # ------------------------------------------------------------------ #
+    #  Фоновая доставка (Task 15): статусы + guard + воркер
+    # ------------------------------------------------------------------ #
+
+    def _deliv_map(self) -> dict:
+        """Ленивая карта _delivery_status (SE-инстансы собираются через __new__)."""
+        m = getattr(self, "_delivery_status", None)
+        if not isinstance(m, dict):
+            m = {}
+            self._delivery_status = m
+        return m
+
+    def _deliver_guard(self) -> dict:
+        """Ленивая карта guard'ов _deliver_tasks (см. _deliv_map)."""
+        g = getattr(self, "_deliver_tasks", None)
+        if not isinstance(g, dict):
+            g = {}
+            self._deliver_tasks = g
+        return g
+
+    def _dlog(self, node: str, msg: str) -> None:
+        """Лог доставки для UI: append в _delivery_status[node]["logs"]."""
+        st = self._deliv_map().get(node)
+        if not isinstance(st, dict):
+            return
+        logs = st.setdefault("logs", [])
+        logs.append(msg)
+        if len(logs) > 200:                     # кольцевой потолок, не растём вечно
+            del logs[: len(logs) - 200]
+
+    def _delivery_queued(self, node: str, version: str, pkg_dir: Path) -> None:
+        """Свежая запись queued (перетирает предыдущую — вызывается только
+        при отсутствии живой задачи, см. _delivery_busy)."""
+        self._deliv_map()[node] = {
+            "state": "queued", "version": str(version),
+            "logs": [f"queued: pkg {pkg_dir}"],
+            "started_at": time.time(), "finished_at": None, "result": None,
+        }
+
+    def _delivery_busy(self, node: str) -> bool:
+        """Живая фоновая задача уже ведёт эту ноду? (guard от двойного запуска)."""
+        t = self._deliver_guard().get(node)
+        return t is not None and not t.done()
+
+    def _start_deliveries(self, version: str, nodes: list[str]) -> None:
+        """Одна фоновая задача на батч нод; guard пишется на каждую ноду,
+        чистится per-node в воркере (finally) + done-callback'ом (cancel/skip)."""
+        task = asyncio.create_task(self._run_deliveries(str(version), list(nodes)))
+        guard = self._deliver_guard()
+        for n in nodes:
+            guard[n] = task
+
+        def _cleanup(t, ns=tuple(nodes)):
+            g = self._deliver_guard()
+            for n in ns:
+                if g.get(n) is t:
+                    g.pop(n, None)
+
+        task.add_done_callback(_cleanup)
+        self._deliver_task = task
+
+    async def _run_deliveries(self, version: str, nodes: list[str]) -> None:
+        r"""Фоновый воркер доставки (аналог _run_build): последовательно по нодам.
+
+        Ошибка/исключение одной ноды не роняет остальные — state=error и переход
+        к следующей. Логи ноды (start/copy/error) — в _delivery_status[node].
+        Блокирующий I/O остаётся в _deliver_agent (D6: to_thread).
+        """
+        cur = asyncio.current_task()
+        guard = self._deliver_guard()
+        for node in nodes:
+            busy = guard.get(node)
+            if busy is not None and busy is not cur and not busy.done():
+                # живая чужая задача уже ведёт эту ноду — пропуск с логом
+                self.log.info(f"delivery skip {node}: уже выполняется")
+                continue
+            st = self._deliv_map().get(node)
+            if not isinstance(st, dict):
+                st = {"state": "queued", "version": str(version), "logs": []}
+                self._deliv_map()[node] = st
+            st["state"] = "running"
+            st.setdefault("version", str(version))
+            st.setdefault("logs", [])
+            st.setdefault("started_at", time.time())
+            pkg_dir = DIST / str(version) / "agent" / node
+            try:
+                self._dlog(node, f"start: pkg {pkg_dir}")
+                try:
+                    res = await self._deliver_agent(
+                        node, pkg_dir,
+                        on_log=lambda msg, n=node: self._dlog(n, msg))
+                except asyncio.CancelledError:
+                    # задачу гасят (рестарт/тесты) — статус не должен врать «running»
+                    st["state"] = "error"
+                    st["result"] = {"ok": False, "error": "delivery cancelled"}
+                    st["finished_at"] = time.time()
+                    self._dlog(node, "cancelled")
+                    raise
+                except Exception as e:
+                    # D9: сбой одной ноды — словарь, остальные ноды продолжаются
+                    res = {"ok": False, "error": f"{type(e).__name__}: {e}"}
+                    self._dlog(node, f"exception: {e}")
+                    self.log.exception(f"Deployer delivery failed for {node}")
+                st["result"] = res
+                st["finished_at"] = time.time()
+                st["state"] = "done" if res.get("ok") else "error"
+                if res.get("ok"):
+                    self._dlog(node, f"done: {res.get('unc') or res.get('host') or ''}")
+                else:
+                    self._dlog(node, f"error: {res.get('error')}")
+                self.log.info(f"delivery {node}: {st['state']}")
+            finally:
+                if guard.get(node) is cur:      # отпускаем ноду для retry/gen
+                    guard.pop(node, None)
+
     @staticmethod
     def _node_segment_error(node: str) -> str | None:
         r"""Отказ для node как одного path-компонента (текст D9-ответа) либо None.
@@ -620,7 +742,7 @@ class Deployer(ModuleGeneric):
             return f"bad node {node!r} — недопустимый идентификатор узла"
         return None
 
-    async def _deliver_agent(self, node: str, pkg_dir: Path) -> dict:
+    async def _deliver_agent(self, node: str, pkg_dir: Path, on_log=None) -> dict:
         """Авто-доставка agent-пакета: локальная копия или UNC (SMB) + psexec.
 
         Порядок — copy-then-psexec: копирование идёт первым, поэтому при
@@ -628,11 +750,23 @@ class Deployer(ModuleGeneric):
         D9-словарь, не исключение). Хост резолвится из neighbor_table (info.host),
         локальная цель копируется в <work_dir>/agent/<node> без psexec.
 
+        `on_log(msg)` — callback живых логов доставки (копирование/psexec) для
+        _delivery_status[node]["logs"]; вызывается только из фонового воркера
+        (_run_deliveries), при прямых вызовах допустим None.
+
         Семантика ok=True: «скопировано и запущено», НЕ «завершено» — psexec
         идёт с -d (detached) и возвращается сразу после старта агента, поэтому
         локальный timeout покрывает только запуск. Финальный статус деплоя —
         live-фрагмент прогресса (agent_status / _agent_live в web_ui).
         """
+        def _log(msg: str) -> None:
+            if on_log is None:
+                return
+            try:
+                on_log(msg)
+            except Exception:
+                pass
+
         pkg_dir = Path(pkg_dir)
         host = str(node)
         try:
@@ -651,6 +785,7 @@ class Deployer(ModuleGeneric):
                 # та же машина (или резолв в себя) — копия локально, без psexec
                 work = Path(getattr(self.ctx.config.local, "work_dir", None) or "data")
                 dest = work / "agent" / str(node)
+                _log(f"copy → {dest}")
                 await asyncio.to_thread(self._delivery_copy, pkg_dir, dest)
                 result.update(ok=True, unc=str(dest))
                 return result
@@ -658,10 +793,12 @@ class Deployer(ModuleGeneric):
             remote_dir = rf"C:\Core\agent\{node}"
             drive, tail = remote_dir.split(":", 1)
             dest = Path(f"\\\\{host}\\{drive}$\\{tail.lstrip(chr(92))}")
+            _log(f"copy → {dest}")
             await asyncio.to_thread(self._delivery_copy, pkg_dir, dest)
             result["unc"] = str(dest)
             psexec = shutil.which("psexec")
             if not psexec:
+                _log("psexec не найден (PsTools) — копирование выполнено")
                 result["error"] = ("psexec не найден на админ-ноде (установите PsTools) "
                                    "— доставьте папку вручную")
                 return result
@@ -672,9 +809,11 @@ class Deployer(ModuleGeneric):
             # дольше локального таймаута), возвращается сразу после запуска
             remote_exe = str(Path(remote_dir) / "agent.exe")
             cmd = [psexec, "-s", "-d", f"\\\\{host}", "-w", remote_dir, remote_exe]
+            _log(f"psexec → \\\\{host}")
             proc = await asyncio.to_thread(subprocess.run, cmd,
                                            capture_output=True, timeout=30)
             result["psexec_code"] = proc.returncode
+            _log(f"psexec code {proc.returncode}")
             if proc.returncode != 0:
                 err = (proc.stderr or b"").decode(errors="ignore").strip()[:300]
                 out = (proc.stdout or b"").decode(errors="ignore").strip()[:300]
@@ -685,11 +824,16 @@ class Deployer(ModuleGeneric):
         except Exception as e:
             # D9: отказ доставки — словарь, не исключение
             result["error"] = f"{type(e).__name__}: {e}"
+            _log(f"{type(e).__name__}: {e}")
             return result
 
     @rpc
     async def gen_agent_package(self, data: dict) -> dict:
-        """Пакет = папка dist/<ver>/agent/<node_id>/ (agent.conf + копия agent.exe)."""
+        """Пакет = папка dist/<ver>/agent/<node_id>/ (agent.conf + копия agent.exe).
+
+        Доставка фоновая (Task 15): ответ несёт delivery={"state": "queued"},
+        копирование идёт в _run_deliveries, статус/логи — agent_status→deliveries.
+        """
         data = data if isinstance(data, dict) else {}
         targets = data.get("targets") or []
         if isinstance(targets, str):
@@ -769,14 +913,26 @@ class Deployer(ModuleGeneric):
             return pkgs
 
         pkgs = await asyncio.to_thread(_write_packages)
-        # авто-доставка пакетов: отказ доставки не валит генерацию (пакет уже
-        # создан, поле delivery добавляется в карточку — контракт не ломается)
+        # авто-доставка — ФОНОВАЯ (Task 15, паттерн build()): RPC отвечает
+        # сразу, SMB-копирование + psexec идут в _run_deliveries, live-статус
+        # и логи — в _delivery_status[node] (agent_status → deliveries → UI).
+        # Отказ доставки не валит генерацию: пакет уже создан, в карточку
+        # кладётся только marker состояния (совместимость UI).
+        queued: list[str] = []
         for pkg in pkgs:
-            try:
-                pkg["delivery"] = await self._deliver_agent(
-                    pkg["node"], Path(pkg["path"]))
-            except Exception as e:
-                pkg["delivery"] = {"ok": False, "error": str(e)}
+            node = pkg["node"]
+            if self._delivery_busy(node):
+                # живая задача уже ведёт ноду — запись и логи не перетираем
+                self.log.info(f"delivery skip {node}: уже выполняется (gen)")
+                pkg["delivery"] = {"state": self._deliv_map().get(node, {})
+                                   .get("state", "queued")}
+                continue
+            self._delivery_queued(node, version, Path(pkg["path"]))
+            pkg["delivery"] = {"state": "queued"}
+            queued.append(node)
+        if queued:
+            # одна фоновая задача на весь батч нод
+            self._start_deliveries(version, queued)
         return {"ok": True, "version": version, "mode": mode,
                 "admin_ws": str(admin_ws), "packages": pkgs}
 
@@ -787,6 +943,9 @@ class Deployer(ModuleGeneric):
         Path-guard: node — ровно один сегмент пути; `.`, `..`, пустая строка и
         `\x00` отклоняются ДО resolve (иначе guard видит путь внутри dist и
         пропускает копию в `\\host\C$\Core\agent\..` на цели).
+
+        Контракт started (Task 15): мгновенный {"ok": True, "started": True},
+        доставка идёт в фоне; при живой задаче — D9-отказ «уже выполняется».
         """
         data = data if isinstance(data, dict) else {}
         try:
@@ -818,7 +977,14 @@ class Deployer(ModuleGeneric):
             return {"ok": False,
                     "error": f"пакет не найден: {version}/agent/{node} — "
                              f"сгенерируйте сначала"}
-        return await self._deliver_agent(node, pkg_dir)
+        if self._delivery_busy(node):
+            # D9: живая задача уже ведёт ноду — двойной запуск запрещён
+            return {"ok": False, "error": "доставка уже выполняется",
+                    "state": self._deliv_map().get(node, {}).get("state")}
+        self._delivery_queued(node, version, pkg_dir)
+        self._start_deliveries(version, [node])
+        return {"ok": True, "started": True, "state": "queued",
+                "node": node, "version": version}
 
     @rpc
     async def rotate_agent_key(self, data: dict) -> dict:
@@ -1009,4 +1175,8 @@ class Deployer(ModuleGeneric):
                 # имя ноды вместо IP (ip-резолв здесь больше не нужен)
                 "admin_ws": f"ws://{self.ctx.NODE}:{self.ctx.config.network.port}",
                 "admin_port": self.ctx.config.network.port,
-                "admin_node": str(self.ctx.NODE)}
+                "admin_node": str(self.ctx.NODE),
+                # живые записи фоновой доставки пакетов (Task 15):
+                # node → {state, version, logs, started_at, finished_at, result}
+                "deliveries": {n: {**st, "logs": list(st.get("logs") or [])}
+                               for n, st in self._deliv_map().items()}}

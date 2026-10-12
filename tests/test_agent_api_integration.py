@@ -18,6 +18,34 @@ def run(coro):
     return asyncio.run(coro)
 
 
+async def drain_deliveries(svc):
+    """Дождаться всех фоновых задач доставки (async-контракт Task 15).
+
+    gen/retry отвечают сразу, не дожидаясь копирования; тесты дренируют
+    созданные задачи, чтобы проверить состояние _delivery_status.
+    """
+    seen: set = set()
+    while True:
+        pend = [t for t in list(getattr(svc, "_deliver_tasks", {}).values())
+                if t is not None and not t.done() and t not in seen]
+        last = getattr(svc, "_deliver_task", None)
+        if last is not None and not last.done() and last not in seen:
+            pend.append(last)
+        if not pend:
+            return
+        await asyncio.gather(*pend)
+        seen.update(pend)
+
+
+def run_gen(svc, data, method="gen_agent_package"):
+    """RPC генерации/доставки + дренаж фоновых задач доставки."""
+    async def _go():
+        res = await getattr(svc, method)(data)
+        await drain_deliveries(svc)
+        return res
+    return run(_go())
+
+
 class _NT:
     def __init__(self):
         self.entries = {}
