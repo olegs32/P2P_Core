@@ -172,6 +172,64 @@ def test_run_deliveries_isolates_nodes_and_writes_logs(tmp_path, monkeypatch):
     assert svc._deliver_tasks == {}, "guard не очищен после завершения воркера"
 
 
+def test_run_deliveries_cancel_marks_leftovers_error(tmp_path, monkeypatch):
+    """(review 6yy.15) Отмена батча посреди очереди: недоеденные ноды — error,
+    а не queued навсегда (UI давал только ⏳, retry-кнопка есть лишь в error);
+    guard снят -> retry после отмены реально стартует."""
+    svc, dist, ctx = make_deployer(tmp_path, monkeypatch)
+    (dist / "DeployAgent.exe").write_bytes(b"MZ-agent")
+    nodes = ["node1", "node2", "node3"]
+    for n in nodes:
+        pkg = dist / VER / "agent" / n
+        pkg.mkdir(parents=True, exist_ok=True)
+        (pkg / "agent.exe").write_bytes(b"MZ-agent")
+
+    async def _fake(node, pkg_dir, on_log=None):
+        if node == "node2":
+            await asyncio.Event().wait()       # отмена придёт именно сюда
+        return {"ok": True, "local": True, "unc": r"C:\Core\agent"}
+
+    monkeypatch.setattr(svc, "_deliver_agent", _fake)
+
+    async def _go():
+        for n in nodes:
+            svc._delivery_queued(n, VER, dist / VER / "agent" / n)
+        svc._start_deliveries(VER, nodes)
+        task = svc._deliver_task
+        for _ in range(200):                    # дождаться: node1 done, node2 running
+            if svc._delivery_status["node2"].get("state") == "running":
+                break
+            await asyncio.sleep(0)
+        else:
+            raise AssertionError("воркер не дошёл до node2")
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+        m = svc._delivery_status
+        assert m["node1"]["state"] == "done", m["node1"]
+        assert m["node2"]["state"] == "error", m["node2"]
+        assert m["node3"]["state"] == "error", \
+            f"leftover остался {m['node3']['state']!r} вместо error"
+        assert m["node3"]["result"]["ok"] is False
+        assert "прервана" in m["node3"]["result"]["error"], m["node3"]["result"]
+        assert m["node3"]["finished_at"] is not None
+        assert any("прервана" in ln for ln in m["node3"]["logs"]), m["node3"]["logs"]
+        # guard снят done-callback'ом -> retry не упирается «уже выполняется»
+        assert svc._deliver_tasks == {}, svc._deliver_tasks
+        assert svc._delivery_busy("node3") is False
+        res = await svc.deliver_agent({"node": "node3", "version": VER})
+        assert res["ok"] is True and res["started"] is True, res
+        while not svc._deliver_task.done():
+            await asyncio.sleep(0)
+        assert svc._delivery_status["node3"]["state"] == "done", \
+            svc._delivery_status["node3"]
+
+    run(_go())
+
+
 def test_deliver_retry_busy_and_gen_does_not_overwrite(tmp_path, monkeypatch):
     """(Task 15) retry при живой доставке -> D9 «уже выполняется»;
     gen при running не перетирает запись и её логи."""

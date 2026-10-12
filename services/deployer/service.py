@@ -682,53 +682,96 @@ class Deployer(ModuleGeneric):
         Ошибка/исключение одной ноды не роняет остальные — state=error и переход
         к следующей. Логи ноды (start/copy/error) — в _delivery_status[node].
         Блокирующий I/O остаётся в _deliver_agent (D6: to_thread).
+
+        Отмена батча (рестарт узла) помечает ВСЕ ещё queued/running ноды как
+        error (см. _abort_leftovers) — иначе они навсегда остаются «⏳ queued»
+        без живой задачи: guard уже снят done-callback'ом, а retry-кнопка в UI
+        есть только в ветке state=error.
         """
         cur = asyncio.current_task()
         guard = self._deliver_guard()
-        for node in nodes:
-            busy = guard.get(node)
-            if busy is not None and busy is not cur and not busy.done():
-                # живая чужая задача уже ведёт эту ноду — пропуск с логом
-                self.log.info(f"delivery skip {node}: уже выполняется")
-                continue
-            st = self._deliv_map().get(node)
-            if not isinstance(st, dict):
-                st = {"state": "queued", "version": str(version), "logs": []}
-                self._deliv_map()[node] = st
-            st["state"] = "running"
-            st.setdefault("version", str(version))
-            st.setdefault("logs", [])
-            st.setdefault("started_at", time.time())
-            pkg_dir = DIST / str(version) / "agent" / node
-            try:
-                self._dlog(node, f"start: pkg {pkg_dir}")
+        skipped: set[str] = set()              # ноды, ведомые чужой живой задачей
+        try:
+            for node in nodes:
+                busy = guard.get(node)
+                if busy is not None and busy is not cur and not busy.done():
+                    # живая чужая задача уже ведёт эту ноду — пропуск с логом
+                    self.log.info(f"delivery skip {node}: уже выполняется")
+                    skipped.add(node)
+                    continue
+                st = self._deliv_map().get(node)
+                if not isinstance(st, dict):
+                    st = {"state": "queued", "version": str(version), "logs": []}
+                    self._deliv_map()[node] = st
+                st["state"] = "running"
+                st.setdefault("version", str(version))
+                st.setdefault("logs", [])
+                st.setdefault("started_at", time.time())
+                pkg_dir = DIST / str(version) / "agent" / node
                 try:
-                    res = await self._deliver_agent(
-                        node, pkg_dir,
-                        on_log=lambda msg, n=node: self._dlog(n, msg))
-                except asyncio.CancelledError:
-                    # задачу гасят (рестарт/тесты) — статус не должен врать «running»
-                    st["state"] = "error"
-                    st["result"] = {"ok": False, "error": "delivery cancelled"}
+                    self._dlog(node, f"start: pkg {pkg_dir}")
+                    try:
+                        res = await self._deliver_agent(
+                            node, pkg_dir,
+                            on_log=lambda msg, n=node: self._dlog(n, msg))
+                    except asyncio.CancelledError:
+                        # задачу гасят (рестарт/тесты) — статус не должен врать «running»
+                        st["state"] = "error"
+                        st["result"] = {"ok": False, "error": "delivery cancelled"}
+                        st["finished_at"] = time.time()
+                        self._dlog(node, "cancelled")
+                        raise
+                    except Exception as e:
+                        # D9: сбой одной ноды — словарь, остальные ноды продолжаются
+                        res = {"ok": False, "error": f"{type(e).__name__}: {e}"}
+                        self._dlog(node, f"exception: {e}")
+                        self.log.exception(f"Deployer delivery failed for {node}")
+                    st["result"] = res
                     st["finished_at"] = time.time()
-                    self._dlog(node, "cancelled")
-                    raise
-                except Exception as e:
-                    # D9: сбой одной ноды — словарь, остальные ноды продолжаются
-                    res = {"ok": False, "error": f"{type(e).__name__}: {e}"}
-                    self._dlog(node, f"exception: {e}")
-                    self.log.exception(f"Deployer delivery failed for {node}")
-                st["result"] = res
-                st["finished_at"] = time.time()
-                st["state"] = "done" if res.get("ok") else "error"
-                if res.get("ok"):
-                    self._dlog(node, f"done: {res.get('unc') or res.get('host') or ''}")
-                else:
-                    self._dlog(node, f"error: {res.get('error')}")
-                self.log.info(f"delivery {node}: {st['state']}")
-            finally:
-                if guard.get(node) is cur:      # отпускаем ноду для retry/gen
-                    guard.pop(node, None)
+                    st["state"] = "done" if res.get("ok") else "error"
+                    if res.get("ok"):
+                        self._dlog(node, f"done: {res.get('unc') or res.get('host') or ''}")
+                    else:
+                        self._dlog(node, f"error: {res.get('error')}")
+                    self.log.info(f"delivery {node}: {st['state']}")
+                finally:
+                    if guard.get(node) is cur:      # отпускаем ноду для retry/gen
+                        guard.pop(node, None)
+        except asyncio.CancelledError:
+            # пробрасываем дальше — shutdown/тесты ждут отмену задачи
+            self.log.info(f"delivery batch прерван: {len(nodes)} нод(ы) в батче")
+            raise
+        finally:
+            # общий финал (в т.ч. отмена): недоеденные ноды батча — error,
+            # иначе зависшая очередь «⏳ queued» без пути retry (review 6yy.15)
+            self._abort_leftovers(nodes, skipped, cur)
+
+    def _abort_leftovers(self, nodes: list[str], skipped: set, task) -> None:
+        r"""Недоеденные ноды батча → `state=error` (отмена/остановка воркера).
+
+        Помечает только queued/running записи этого батча: текущая нода уже
+        терминальна (per-node finally), пропущенные (skipped) ведёт чужая задача.
+        Отмена прерывает батч, но не врёт UI: у каждой ноды есть finished_at,
+        result.ok=False и retry-кнопка (ветка state=error).
+        """
+        if not nodes:
+            return
+        guard = self._deliver_guard()
+        msg = "доставка прервана (остановка узла)"
+        for n in nodes:
+            if n in skipped:
+                continue
+            g = guard.get(n)
+            if g is not None and g is not task and not g.done():
+                continue                          # чужая живая задача ведёт ноду
+            st = self._deliv_map().get(n)
+            if not isinstance(st, dict) or st.get("state") not in ("queued", "running"):
+                continue                          # уже терминальна (done/error)
+            st["state"] = "error"
+            st["result"] = {"ok": False, "error": msg}
+            st["finished_at"] = st.get("finished_at") or time.time()
+            self._dlog(n, f"aborted: {msg}")
+            self.log.info(f"delivery {n}: aborted — {msg}")
 
     @staticmethod
     def _node_segment_error(node: str) -> str | None:

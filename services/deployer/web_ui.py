@@ -195,6 +195,9 @@ def render(rpc):
 
             for p in res.get("packages") or []:
                 _show_delivery(p)
+            # карточка рендерится один раз и может отставать от живого
+            # фрагмента до полного rerun'а — статус смотри ниже
+            st.caption("Статус — в секции «Доставка пакетов» ниже")
 
     @st.fragment(run_every=st.session_state.get("agp_live", 2))
     def _agent_live():
