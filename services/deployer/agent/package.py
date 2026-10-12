@@ -45,6 +45,9 @@ class AgentConf:
     key: bytes           # 32B, hex в файле
     version: str
     deploy_timeout: int = 120
+    # Вариант A: никаких PEM рядом с agent.conf. Агент ходит на отдельный
+    # bootstrap-порт SE-админа без клиентского серта (HMAC + envelope —
+    # авторизация); certs получает только в шифрованном pre_config.
 
     @classmethod
     def from_dict(cls, d: dict) -> "AgentConf":

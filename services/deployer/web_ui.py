@@ -107,6 +107,42 @@ def render(rpc):
     devices = rpc.call("deployer", "list_devices", {}) or {}
     builds = (rpc.call("deployer", "get_status", {}) or {}).get("builds") or []
 
+    # Вариант A: пакет без key material; SE-админ принимает агента
+    # на bootstrap-порту (agent_ws), certs — только в pre_config.
+    st.caption(f"режим: `{info.get('mode')}` · агент идёт на `{info.get('agent_ws') or info.get('admin_ws') or '?'}`")
+
+    st.subheader("🔨 Сборка агента")
+    # Пакет встраивает КОПИЮ dist/DeployAgent.exe на момент генерации —
+    # после правок services/deployer/agent/* пересоберите агента здесь,
+    # затем сгенерируйте пакеты заново (retry развозит старый пакет)
+    _mode = info.get("mode") or "open"
+    _axe = info.get("agent_exe") or {}
+    if _axe.get("exists"):
+        st.caption(f"Сейчас в dist: `{_axe.get('name')}` "
+                   f"{(_axe.get('size') or 0) / 1048576:.1f} МБ")
+    else:
+        st.warning(f"Агент не собран ({_axe.get('name') or 'DeployAgent.exe'}) — "
+                   "генерация пакетов невозможна")
+    _flavors = ["open", "se"]
+    _flavor = st.selectbox("Flavor агента", _flavors,
+                           index=_flavors.index(_mode) if _mode in _flavors else 0,
+                           key="agp_agent_flavor",
+                           help=f"Должен совпадать с режимом админа (сейчас: {_mode})")
+    if st.button("🔨 Собрать агента", type="primary", key="agp_build_agent"):
+        try:
+            _br = rpc.call("deployer", "build_agent_exe",
+                           {"flavor": _flavor}) or {}
+        except Exception as e:
+            _br = {"ok": False, "error": str(e)}
+        st.session_state["agp_agent_build"] = _br
+    _br = st.session_state.get("agp_agent_build")
+    if _br:
+        if not _br.get("ok"):
+            st.error(_br.get("error"))
+        elif _br.get("started"):
+            st.info(f"🚀 Сборка агента ({_br.get('flavor')}) запущена — "
+                    "статус ниже в «Прогрессе деплоев»")
+
     cols = st.columns(2)
     with cols[0]:
         targets = st.multiselect("Целевые ноды",
@@ -123,8 +159,8 @@ def render(rpc):
             admin_port = 9000
         sel_node = st.session_state.get("selected_node") or info.get("admin_node") or ""
         admin_ws = st.text_input("Адрес админа (admin_ws)",
-                                 value=f"ws://{sel_node}:{admin_port}",
-                                 help="ws://<имя ноды>:<port> — поправьте, если агент в другой подсети")
+                                 value=info.get("agent_ws") or f"ws://{sel_node}:{admin_port}",
+                                 help="SE: bootstrap-порт без mTLS (agent_ws); open: mesh-порт. Поправьте, если агент в другой подсети")
         # default только при первом создании — пользовательский ввод не затирается
         st.session_state.setdefault("agp_admin_node",
                                     st.session_state.get("selected_node") or "")
@@ -220,14 +256,27 @@ def render(rpc):
                     st.markdown(f"⏳ **{node}** — `{state}`"
                                 + (f" · `{last}`" if last else ""))
                 elif state == "done":
-                    mode = ("локально" if rd.get("local")
-                            else f"psexec code {rd.get('psexec_code')}")
+                    if rd.get("local"):
+                        mode = "локально"
+                    elif rd.get("remote_pid"):
+                        # -d: errorlevel psexec = PID процесса, не код ошибки
+                        mode = f"pid {rd['remote_pid']}"
+                    else:
+                        mode = f"psexec code {rd.get('psexec_code')}"
                     st.markdown(f"✅ **{node}** — доставлено ({mode})")
                 else:
                     err = rd.get("error") or d.get("error") or "неизвестная ошибка"
                     st.markdown(f"❌ **{node}** — ошибка: {err}")
                     st.caption("Положите папку пакета на цель любым каналом "
                                "(SMB/USB/вручную) и запустите `agent.exe`.")
+                    with st.expander("📜 полный лог доставки"):
+                        st.text("\n".join(logs) if logs else "логов нет")
+                        if rd.get("psexec_stdout"):
+                            st.markdown("**psexec stdout:**")
+                            st.code(rd["psexec_stdout"], language="text")
+                        if rd.get("psexec_stderr"):
+                            st.markdown("**psexec stderr:**")
+                            st.code(rd["psexec_stderr"], language="text")
                     if st.button("🔁 Повторить доставку",
                                  key=f"agp_retry_{node}"):
                         try:
@@ -246,6 +295,23 @@ def render(rpc):
                         else:
                             # двойной клик -> серверный D9 «уже выполняется»
                             st.info(f"ℹ️ {r.get('error') or 'нет ответа от узла'}")
+        ab = info.get("agent_build") or {}
+        if ab.get("state") not in (None, "idle"):
+            st.markdown("**Сборка агента:**")
+            _abl = ab.get("logs") or []
+            if ab.get("state") == "running":
+                st.markdown(f"⏳ `{_abl[-1] if _abl else 'running'}`")
+            elif ab.get("state") == "done":
+                _ar = ab.get("result") or {}
+                st.markdown(f"✅ `{_ar.get('exe', 'agent')}` "
+                            f"{(_ar.get('size') or 0) / 1048576:.1f} МБ")
+            else:
+                _ab_err = ((ab.get("result") or {}).get("error")
+                           or ab.get("error") or "failed")
+                st.markdown(f"❌ сборка агента: {_ab_err}")
+                if _abl:
+                    with st.expander("лог сборки агента"):
+                        st.code("\n".join(_abl[-50:]), language="text")
         if not statuses:
             st.caption("отчётов пока нет")
         for node, s in statuses.items():

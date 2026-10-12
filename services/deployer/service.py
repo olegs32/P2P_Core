@@ -245,6 +245,11 @@ class Deployer(ModuleGeneric):
         self._build_lock = asyncio.Lock()
         self._build_status: dict = {"state": "idle", "version": None, "logs": [], "started_at": None, "finished_at": None, "result": None}
         self._build_task: asyncio.Task | None = None
+        # Фоновая сборка DeployAgent (кнопка в UI вместо ручного
+        # `compile.py --type agent`; пакет встраивает копию exe на момент
+        # генерации, поэтому пересборка ноды её не обновляет):
+        self._agent_build_status: dict = {"state": "idle", "flavor": None, "logs": [], "started_at": None, "finished_at": None, "result": None}
+        self._agent_build_task: asyncio.Task | None = None
         # Фоновая доставка пакетов (аналог _build_status, Task 15):
         # node → {state, version, logs, started_at, finished_at, result}
         self._delivery_status: dict[str, dict] = {}
@@ -329,6 +334,36 @@ class Deployer(ModuleGeneric):
         return "se" if (hasattr(self.ctx, "se_identity")
                         or hasattr(self.ctx, "secure_storage")) else "open"
 
+    def _agent_ws(self) -> str:
+        """Адрес для agent.conf: куда стучится агент.
+
+        Base = mesh-порт (open: mTLS нет, bootstrap не нужен).
+        SE перекрывает: отдельный bootstrap-порт без клиентского серта.
+        """
+        return f"ws://{self.ctx.NODE}:{self.ctx.config.network.port}"
+
+    def _mesh_admin_ws(self, admin_ws: str) -> str:
+        """Адрес админа для local.peers жертвы (mesh-порт, mTLS).
+
+        Base = как есть. SE перекрывает: хост из agent_ws + mesh-порт,
+        иначе жертва получит пира на bootstrap-порт и не войдёт в mesh
+        (bootstrap принимает только deploy_*-агентов).
+        """
+        return str(admin_ws)
+
+    def _agent_exe_info(self) -> dict:
+        """Какой агент сейчас лежит в dist (для UI: свежесть артефакта)."""
+        name = self._agent_exe_name(self._admin_mode())
+        p = DIST / name
+        try:
+            if p.is_file():
+                st = p.stat()
+                return {"name": name, "exists": True, "size": st.st_size,
+                        "mtime": st.st_mtime, "path": str(p)}
+        except OSError:
+            pass
+        return {"name": name, "exists": False, "path": str(p)}
+
     @rpc
     async def get_status(self, data: dict) -> dict:
         # История сборок из dist (блокирующий обход — в потоке, не в event loop)
@@ -391,6 +426,98 @@ class Deployer(ModuleGeneric):
                 self._build_status["logs"].append(f"exception: {e}")
                 self._build_status["result"] = {"ok": False, "error": str(e), "trace": traceback.format_exc()[-2000:]}
                 self.log.exception("Deployer _run_build failed")
+
+    @rpc
+    async def build_agent_exe(self, data: dict) -> dict:
+        """Пересборка DeployAgent — фоновая (PyInstaller идёт минуты).
+
+        flavor: "open" | "se", дефолт — _admin_mode() (агент обязан совпадать
+        с режимом админа: gen_agent_package пакует именно этот вариант).
+        Возвращает сразу {"ok": True, "started": True}; статус — через
+        agent_build_status (и живьём в agent_status → UI-фрагмент).
+        PyInstaller один за раз: делит _build_lock со сборкой ноды.
+        """
+        data = data if isinstance(data, dict) else {}
+        flavor = str(data.get("flavor") or self._admin_mode()).strip().lower()
+        if flavor not in ("open", "se"):
+            return {"ok": False, "error": f"bad flavor {flavor!r} — expected open/se"}
+        if self._agent_build_task and not self._agent_build_task.done():
+            return {"ok": False, "error": "agent build already running",
+                    "status": dict(self._agent_build_status)}
+        if self._build_task and not self._build_task.done():
+            return {"ok": False, "error": "node build already running — агент ждёт",
+                    "status": dict(self._agent_build_status)}
+        self._agent_build_status = {"state": "running", "flavor": flavor,
+                                    "logs": [f"queued flavor={flavor}"],
+                                    "started_at": time.time(),
+                                    "finished_at": None, "result": None}
+        self._agent_build_task = asyncio.create_task(self._run_agent_build(flavor))
+        return {"ok": True, "started": True, "state": "running", "flavor": flavor,
+                "logs": self._agent_build_status["logs"]}
+
+    @rpc
+    async def agent_build_status(self, data: dict) -> dict:
+        """Статус фоновой сборки агента — для polling UI."""
+        st = dict(self._agent_build_status)
+        if self._agent_build_task and self._agent_build_task.done() \
+                and self._agent_build_task.exception():
+            st["error"] = str(self._agent_build_task.exception())
+        return {"ok": True, **st}
+
+    async def _run_agent_build(self, flavor: str):
+        """Фоновый воркер — compile.build_agent под общим _build_lock."""
+        async with self._build_lock:
+            st = self._agent_build_status
+            try:
+                st["logs"].append("agent build started")
+                import logging as _logging
+
+                class _ListHandler(_logging.Handler):
+                    def emit(self, record):
+                        try:
+                            st["logs"].append(self.format(record))
+                        except Exception:
+                            pass
+
+                _handler = _ListHandler()
+                _handler.setFormatter(_logging.Formatter(
+                    "%(asctime)s [%(name)s] %(message)s", datefmt="%H:%M:%S"))
+                _handler.setLevel(logging.INFO)
+                _loggers = [logging.getLogger("PyInstaller"),
+                            logging.getLogger("Compiler"),
+                            logging.getLogger("Deployer")]
+                for _lg in _loggers:
+                    _lg.addHandler(_handler)
+                    _lg.setLevel(logging.INFO)
+                try:
+                    import compile as comp
+                    ok = await asyncio.to_thread(comp.build_agent, flavor)
+                finally:
+                    for _lg in _loggers:
+                        try:
+                            _lg.removeHandler(_handler)
+                        except Exception:
+                            pass
+                exe = DIST / self._agent_exe_name(flavor)
+                if ok and exe.is_file():
+                    st["result"] = {"ok": True, "flavor": flavor,
+                                    "exe": str(exe), "size": exe.stat().st_size,
+                                    "mtime": exe.stat().st_mtime}
+                    st["state"] = "done"
+                    st["logs"].append(f"agent built: {exe} ({exe.stat().st_size} B)")
+                else:
+                    st["result"] = {"ok": False, "flavor": flavor,
+                                    "error": f"compile.build_agent({flavor!r}) failed — см. логи выше"}
+                    st["state"] = "failed"
+                st["finished_at"] = time.time()
+                self.log.info(f"Deployer agent build finished: {st['state']} flavor={flavor}")
+            except Exception as e:
+                st["state"] = "failed"
+                st["finished_at"] = time.time()
+                st["logs"].append(f"exception: {e}")
+                st["result"] = {"ok": False, "flavor": flavor, "error": str(e),
+                                "trace": traceback.format_exc()[-2000:]}
+                self.log.exception("Deployer _run_agent_build failed")
 
     async def _do_build(self, data: dict) -> dict:
         packer = (data.get("packer") or DEFAULT_PACKER).strip().lower()
@@ -822,7 +949,8 @@ class Deployer(ModuleGeneric):
                     or str(node).strip().lower() == str(self.ctx.NODE).strip().lower())
         result: dict[str, Any] = {"ok": False, "host": host, "unc": None,
                                   "psexec_code": None, "error": None,
-                                  "local": bool(is_local)}
+                                  "local": bool(is_local),
+                                  "launched": False, "remote_pid": None}
         try:
             if is_local:
                 # та же машина (или резолв в себя) — копия локально, без psexec
@@ -857,10 +985,34 @@ class Deployer(ModuleGeneric):
                                            capture_output=True, timeout=30)
             result["psexec_code"] = proc.returncode
             _log(f"psexec code {proc.returncode}")
+            # Полный вывод (без [:300]): хвост несёт причину, обрезка
+            # посреди IP лишь маскировала её в UI
+            err = (proc.stderr or b"").decode(errors="ignore").strip()
+            out = (proc.stdout or b"").decode(errors="ignore").strip()
+            result["psexec_stdout"] = out
+            result["psexec_stderr"] = err
+            # PsExec -d кладёт в errorlevel PID запущенного процесса
+            # («... started on HOST with process ID N»), а не код ошибки —
+            # «started on» = запуск удался при ЛЮБОМ returncode.
+            # Прогресс (включая started-строку) PsExec пишет в STDERR,
+            # баннер — в stdout: ищем по обоим потокам
+            combined = f"{out}\n{err}"
+            launched = "started on" in combined.lower()
+            result["launched"] = launched
+            if launched:
+                m = re.search(r"process ID (\d+)", combined, re.IGNORECASE)
+                result["remote_pid"] = int(m.group(1)) if m else None
+                result["ok"] = True
+                _log("agent started" + (f" pid={result['remote_pid']}"
+                                        if result["remote_pid"] else ""))
+                return result
             if proc.returncode != 0:
-                err = (proc.stderr or b"").decode(errors="ignore").strip()[:300]
-                out = (proc.stdout or b"").decode(errors="ignore").strip()[:300]
-                result["error"] = err or out or f"psexec code {proc.returncode}"
+                hint = (f"psexec не смог запустить агента "
+                        f"(код {proc.returncode})")
+                detail = err or out
+                result["error"] = (f"{hint}: ...{detail[-500:]}"
+                                   if detail else hint)
+                _log(result["error"])
                 return result
             result["ok"] = True
             return result
@@ -925,8 +1077,7 @@ class Deployer(ModuleGeneric):
             return {"ok": False,
                     "error": f"agent artifact not found: {self._agent_exe_name(mode)} — "
                              f"соберите: python compile.py --type agent"}
-        admin_ws = data.get("admin_ws") or \
-            f"ws://{self.ctx.NODE}:{self.ctx.config.network.port}"
+        admin_ws = data.get("admin_ws") or self._agent_ws()
         admin_node = data.get("admin_node") or self.ctx.NODE
         # адрес админа нужен позже в _build_pre_config (админ-пир конфига жертвы)
         hint = self._cfg_hint()
@@ -943,11 +1094,14 @@ class Deployer(ModuleGeneric):
                 # реестр из потока — внешняя сериализация (инвариант key_registry)
                 with self._agent_auth_guard:
                     key, created = self._agent_registry.get_or_create(t)
+                pkg_dir = DIST / version / "agent" / t
+                pkg_dir.mkdir(parents=True, exist_ok=True)
                 conf = {"protocol": 1, "mode": mode, "admin_ws": str(admin_ws),
                         "admin_node": str(admin_node), "node_id": t, "key": key.hex(),
                         "version": version, "deploy_timeout": deploy_timeout}
-                pkg_dir = DIST / version / "agent" / t
-                pkg_dir.mkdir(parents=True, exist_ok=True)
+                # Вариант A: пакет = agent.conf + agent.exe, без key material.
+                # Certs — только в шифрованном pre_config (агент пишет из RAM
+                # в DPAPI, на диске цели ключей нет).
                 (pkg_dir / "agent.conf").write_text(
                     json.dumps(conf, ensure_ascii=False, indent=2), encoding="utf-8")
                 shutil.copy2(agent_src, pkg_dir / "agent.exe")
@@ -955,7 +1109,11 @@ class Deployer(ModuleGeneric):
                              "key_status": "created" if created else "existing"})
             return pkgs
 
-        pkgs = await asyncio.to_thread(_write_packages)
+        try:
+            pkgs = await asyncio.to_thread(_write_packages)
+        except Exception as e:
+            # D9: отказ генерации пакета — словарь, не исключение
+            return {"ok": False, "error": f"package write failed: {e}"}
         # авто-доставка — ФОНОВАЯ (Task 15, паттерн build()): RPC отвечает
         # сразу, SMB-копирование + psexec идут в _run_deliveries, live-статус
         # и логи — в _delivery_status[node] (agent_status → deliveries → UI).
@@ -1073,8 +1231,8 @@ class Deployer(ModuleGeneric):
     async def _build_pre_config(self, node_id: str, version: str, exe: Path) -> dict:
         hint = self._cfg_hint()
         admin_node = hint.get("admin_node") or str(self.ctx.NODE)
-        admin_ws = hint.get("admin_ws") or \
-            f"ws://{self.ctx.NODE}:{self.ctx.config.network.port}"
+        admin_ws = self._mesh_admin_ws(
+            hint.get("admin_ws") or self._agent_ws())
         try:
             port_override = hint.get("ports", {}).get(canon_node_id(node_id))
         except ValueError:
@@ -1214,6 +1372,9 @@ class Deployer(ModuleGeneric):
                 "statuses": self._agent_sessions.status(sess_node),
                 "keys": await asyncio.to_thread(_list_keys),
                 "mode": self._admin_mode(),
+                # Вариант A: bootstrap-порт SE-админа (без mTLS) — агент идёт
+                # сюда; на open-ноде совпадает с mesh-портом.
+                "agent_ws": self._agent_ws(),
                 # name-based адрес: HELLO dst сверяется с NODE сервера,
                 # имя ноды вместо IP (ip-резолв здесь больше не нужен)
                 "admin_ws": f"ws://{self.ctx.NODE}:{self.ctx.config.network.port}",
@@ -1222,4 +1383,8 @@ class Deployer(ModuleGeneric):
                 # живые записи фоновой доставки пакетов (Task 15):
                 # node → {state, version, logs, started_at, finished_at, result}
                 "deliveries": {n: {**st, "logs": list(st.get("logs") or [])}
-                               for n, st in self._deliv_map().items()}}
+                               for n, st in self._deliv_map().items()},
+                # статус фоновой сборки DeployAgent + свежесть артефакта
+                # (пакет встраивает копию exe на момент генерации)
+                "agent_build": dict(self._agent_build_status),
+                "agent_exe": self._agent_exe_info()}

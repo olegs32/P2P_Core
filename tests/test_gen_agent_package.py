@@ -45,6 +45,7 @@ def test_gen_agent_package(tmp_path, monkeypatch):
     assert res["admin_ws"].startswith("ws://")
     pkg = res["packages"][0]
     assert pkg["node"] == "node7" and pkg["key_status"] == "created"
+    assert "tls" not in pkg                       # вариант A: triple удалён
     pdir = __import__("pathlib").Path(pkg["path"])
     assert pdir == dist / VER / "agent" / "node7"
     conf = AgentConf.load(pdir / "agent.conf")
@@ -93,6 +94,26 @@ def test_deploy_one_removed():
     from services.deployer.service import Deployer
     assert not hasattr(Deployer, "_deploy_one")
     assert not hasattr(Deployer, "_remote_path_for")
+
+
+def test_package_contains_no_key_material(tmp_path, monkeypatch):
+    """Вариант A: пакет агента = agent.conf + agent.exe, и точка.
+
+    Никаких PEM/ключей на диске (triple удалён — certs идут только
+    в шифрованном pre_config envelope, агент пишет их из RAM в DPAPI).
+    """
+    svc, dist, _ = make_deployer(tmp_path, monkeypatch)
+    (dist / "DeployAgent.exe").write_bytes(b"MZ-agent")
+    res = run_gen(svc, {"targets": ["Node7"]})
+    assert res["ok"], res
+    pkg = res["packages"][0]
+    assert "tls" not in pkg
+    assert "_package_extra_files" not in dir(type(svc))
+    pdir = Path(pkg["path"])
+    assert sorted(p.name for p in pdir.iterdir()) == ["agent.conf", "agent.exe"]
+    raw = json.loads((pdir / "agent.conf").read_text(encoding="utf-8"))
+    assert not [k for k in raw if k.startswith("tls_")]
+    assert not hasattr(AgentConf.load(pdir / "agent.conf"), "tls_ca_cert")
 
 
 def _gen_and_pre_config(svc, dist, base_cfg: dict, gen_data: dict, monkeypatch):

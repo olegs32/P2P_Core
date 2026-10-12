@@ -14,10 +14,13 @@ import logging
 import os
 import secrets
 import shutil
+import socket
 import subprocess
 import sys
+import ssl
 import time
 import uuid as _uuid
+from urllib.parse import urlsplit
 from pathlib import Path
 from typing import Protocol
 
@@ -77,6 +80,96 @@ class ApiClientProto(Protocol):
     async def fetch_chunk(self, offset: int, size: int) -> bytes: ...
     async def node_seen(self) -> bool: ...
     async def report(self, data: dict) -> None: ...
+
+
+def tls_cert_probe(host: str, port: int, timeout: float = 5.0) -> dict | None:
+    """Кто держит порт, если HTTP молчит: снять subject/issuer серта.
+
+    Best-effort: любой исход (включая «не TLS») — тоже диагноз.
+    """
+    import ssl as _ssl
+    try:
+        raw = socket.create_connection((host, port), timeout=timeout)
+    except Exception as e:
+        return {"error": f"{type(e).__name__}: {e}"}
+    try:
+        ctx = _ssl.SSLContext(_ssl.PROTOCOL_TLS_CLIENT)
+        ctx.check_hostname = False
+        ctx.verify_mode = _ssl.CERT_NONE
+        tls = ctx.wrap_socket(raw, server_hostname=host)
+        try:
+            tls.settimeout(timeout)
+            tls.do_handshake()
+            der = tls.getpeercert(binary_form=True)
+        finally:
+            try:
+                tls.close()
+            except Exception:
+                pass
+        if not der:
+            return {"error": "handshake ok, no cert presented"}
+        try:
+            from cryptography import x509 as _x509
+            c = _x509.load_der_x509_certificate(der)
+            try:
+                exp = c.not_valid_after_utc.isoformat()
+            except AttributeError:
+                exp = str(c.not_valid_after)
+            return {"subject": c.subject.rfc4514_string(),
+                    "issuer": c.issuer.rfc4514_string(),
+                    "not_after": exp}
+        except Exception as e:
+            return {"error": f"cert parse failed: {type(e).__name__}: {e}"}
+    except Exception as e:
+        try:
+            raw.close()
+        except Exception:
+            pass
+        return {"error": f"{type(e).__name__}: {e}"}
+
+
+def preflight_report(host: str, port: int, timeout: float = 5.0) -> dict:
+    """Диагностика границы цель→админ (best-effort, connect не валит).
+
+    Что реально видит агент: резолв имени, прокси-окружение процесса,
+    сырой баннер порта (uvicorn отдаёт валидный HTTP, чужак/прокси — нет).
+    """
+    rep: dict = {"host": host, "port": port, "ips": [], "proxy": {},
+                 "banner": None, "tcp": None, "tls_cert": None}
+    try:
+        rep["ips"] = sorted({ai[4][0] for ai in
+                             socket.getaddrinfo(host, port,
+                                                type=socket.SOCK_STREAM)})
+    except Exception as e:
+        rep["ips_error"] = f"{type(e).__name__}: {e}"
+    for var in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
+                "http_proxy", "https_proxy", "all_proxy", "no_proxy"):
+        val = os.environ.get(var)
+        if val:
+            rep["proxy"][var] = val
+    try:
+        s = socket.create_connection((host, port), timeout=timeout)
+    except Exception as e:
+        rep["tcp"] = f"{type(e).__name__}: {e}"
+        return rep
+    try:
+        s.settimeout(timeout)
+        s.sendall(f"GET / HTTP/1.0\r\nHost: {host}\r\n\r\n".encode())
+        data = s.recv(512)
+        rep["tcp"] = "open"
+        rep["banner"] = data[:200].decode("utf-8", "replace") if data else "<empty>"
+    except Exception as e:
+        rep["tcp"] = f"open, banner read failed: {type(e).__name__}: {e}"
+    finally:
+        try:
+            s.close()
+        except Exception:
+            pass
+    if rep["banner"] in (None, "<empty>"):
+        # порт молчит по HTTP — спросить, кто он по TLS (имя сквоттера
+        # обычно прямо в subject/issuer самоподписанного серта)
+        rep["tls_cert"] = tls_cert_probe(host, port, timeout=timeout)
+    return rep
 
 
 class HostProto(Protocol):
@@ -300,16 +393,41 @@ class AgentApiClient:
 
     async def connect(self):
         uri = self.conf.admin_ws.rstrip("/") + "/ws/" + self.src
+        # URI без секретов (ключ в handshake-HMAC, не в URI) — логируем
+        # целиком: при exit=11 иначе неизвестно, куда агент стучался
+        log.info("connecting to %s (admin_node=%s)", uri, self.conf.admin_node)
+        parts = urlsplit(uri)
+        rep = await asyncio.to_thread(
+            preflight_report, parts.hostname or "",
+            parts.port or (443 if parts.scheme == "wss" else 80))
+        log.info("preflight %s:%s ips=%s proxy=%s tcp=%s banner=%r tls_cert=%s",
+                 rep["host"], rep["port"], rep.get("ips") or rep.get("ips_error"),
+                 rep.get("proxy") or "-", rep.get("tcp"),
+                 (rep.get("banner") or "")[:120], rep.get("tls_cert"))
+        kwargs: dict = {"max_size": MAX_FRAME_SIZE}
+        if uri.lower().startswith("wss://"):
+            # Bootstrap-контекст, вариант A (прецедент — webpanel rpc_client
+            # fallback): агент идёт на отдельный bootstrap-порт SE-админа БЕЗ
+            # клиентского серта. PKI mesh-узлов самоподписанная, личность
+            # админа проверяет HMAC-конверт, а не TLS-цепочка — иначе любой
+            # wss-админ даёт exit=11 SSLCertVerificationError
+            # (Missing Authority Key Identifier).
+            ssl_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+            ssl_ctx.check_hostname = False
+            ssl_ctx.verify_mode = ssl.CERT_NONE
+            kwargs["ssl"] = ssl_ctx
+            log.warning("wss без проверки сертификата (self-signed mesh PKI)")
         last = None
         for i in range(self.retries):
             try:
-                self.ws = await websockets.connect(uri, max_size=MAX_FRAME_SIZE)
+                self.ws = await websockets.connect(uri, **kwargs)
                 break
             except Exception as e:
                 last = e
                 await asyncio.sleep(self.retry_delay * (i + 1))
         else:
-            raise AdminUnreachable(f"connect failed: {last}")
+            raise AdminUnreachable(
+                f"connect {uri} failed [{type(last).__name__}]: {last}")
         await self._handshake()                    # recv_loop — ТОЛЬКО после ACK
 
     async def _handshake(self):

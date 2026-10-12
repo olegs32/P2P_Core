@@ -299,3 +299,263 @@ def test_launch_exception_triggers_rollback():
     assert any(isinstance(c, tuple) and c[0] == "restore" for c in host.calls)
     assert client.reports[-1]["stage"] in ("rolled_back", "failed")
     assert ("terminate", 13) in host.calls     # запись была -> cleanup
+
+
+def test_connect_error_carries_uri_and_exc_type(monkeypatch):
+    """connect failed обязан нести URI и тип исключения: голое
+    «did not receive a valid HTTP response» не говорит, куда агент
+    стучался (имя ноды вместо IP, чужой порт, прокси)."""
+    from services.deployer.agent import machine as M
+
+    class FakeHandshakeErr(Exception):
+        pass
+
+    async def _boom(*a, **k):
+        raise FakeHandshakeErr("did not receive a valid HTTP response")
+
+    monkeypatch.setattr(M.websockets, "connect", _boom)
+    client = M.AgentApiClient(_conf(), retries=1, retry_delay=0)
+    with pytest.raises(M.AdminUnreachable) as ei:
+        asyncio.run(client.connect())
+    msg = str(ei.value)
+    assert "ws://10.0.0.1:9000" in msg          # куда стучался
+    assert "FakeHandshakeErr" in msg            # чем отвалилось
+    assert "did not receive a valid HTTP response" in msg  # исходный текст цел
+
+
+def test_connect_wss_uses_unverified_ssl_context(monkeypatch):
+    """wss к mesh-узлу с self-signed PKI: агент обязан передать websockets
+    клиентский SSL-контекст без верификации (личность админа проверяет
+    HMAC-конверт, не TLS-цепочка; прецедент — webpanel rpc_client fallback).
+    Иначе exit=11 SSLCertVerificationError на любом wss-админе."""
+    import ssl as _ssl
+    from services.deployer.agent import machine as M
+
+    seen: dict = {}
+
+    async def _boom(*a, **k):
+        seen.update(k)
+        raise RuntimeError("nope")
+
+    monkeypatch.setattr(M.websockets, "connect", _boom)
+    client = M.AgentApiClient(_conf(admin_ws="wss://sysadmin-pc:9000"),
+                              retries=1, retry_delay=0)
+    with pytest.raises(M.AdminUnreachable):
+        asyncio.run(client.connect())
+    ctx = seen.get("ssl")
+    assert isinstance(ctx, _ssl.SSLContext)
+    assert ctx.verify_mode == _ssl.CERT_NONE
+    assert ctx.check_hostname is False
+
+
+def test_connect_ws_passes_no_ssl_context(monkeypatch):
+    """ws (без TLS) — никакого ssl-аргумента, поведение не меняется."""
+    from services.deployer.agent import machine as M
+
+    seen: dict = {}
+
+    async def _boom(*a, **k):
+        seen.update(k)
+        raise RuntimeError("nope")
+
+    monkeypatch.setattr(M.websockets, "connect", _boom)
+    client = M.AgentApiClient(_conf(admin_ws="ws://10.0.0.1:9000"),
+                              retries=1, retry_delay=0)
+    with pytest.raises(M.AdminUnreachable):
+        asyncio.run(client.connect())
+    assert "ssl" not in seen
+
+
+def test_agent_conf_has_no_tls_fields():
+    """Вариант A: triple удалён — у AgentConf нет tls_*-полей, старые
+    пакеты с tls_*-ключами грузятся (ключи игнорируются)."""
+    c = _conf()
+    assert not hasattr(c, "tls_ca_cert")
+    c2 = _conf(tls_ca_cert="ca_cert.pem", tls_node_cert="node_cert.pem",
+               tls_node_key="node_key.pem")
+    assert not hasattr(c2, "tls_ca_cert")
+
+
+def test_connect_wss_without_client_cert(tmp_path, monkeypatch):
+    """Вариант A: агент идёт на bootstrap-порт БЕЗ клиентского серта —
+    контекст CERT_NONE, личность админа проверяет HMAC-конверт."""
+    import ssl as _ssl
+    from services.deployer.agent import machine as M
+
+    seen: dict = {}
+
+    async def _boom(*a, **k):
+        seen.update(k)
+        raise RuntimeError("nope")
+
+    monkeypatch.setattr(M.websockets, "connect", _boom)
+    conf = _conf(admin_ws="wss://sysadmin-pc:9100")
+    client = M.AgentApiClient(conf, retries=1, retry_delay=0)
+    with pytest.raises(M.AdminUnreachable):
+        asyncio.run(client.connect())
+    ctx = seen.get("ssl")
+    assert isinstance(ctx, _ssl.SSLContext)
+    assert ctx.verify_mode == _ssl.CERT_NONE
+    assert ctx.check_hostname is False
+
+
+def test_preflight_reports_banner_and_ips():
+    """Локальный TCP-сервер с HTTP-ответом: ips, tcp=open, banner виден."""
+    import socket as _sock
+    import threading
+    from services.deployer.agent import machine as M
+
+    srv = _sock.socket(_sock.AF_INET, _sock.SOCK_STREAM)
+    srv.setsockopt(_sock.SOL_SOCKET, _sock.SO_REUSEADDR, 1)
+    srv.bind(("127.0.0.1", 0))
+    srv.listen(1)
+    port = srv.getsockname()[1]
+
+    def _serve():
+        try:
+            c, _ = srv.accept()
+            c.settimeout(5)
+            try:
+                c.recv(256)
+            except Exception:
+                pass
+            c.sendall(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n")
+            c.close()
+        except Exception:
+            pass
+        finally:
+            try:
+                srv.close()
+            except Exception:
+                pass
+
+    t = threading.Thread(target=_serve, daemon=True)
+    t.start()
+    rep = M.preflight_report("127.0.0.1", port)
+    t.join(timeout=10)
+    assert rep["ips"] == ["127.0.0.1"]
+    assert rep["tcp"] == "open"
+    assert "404" in (rep["banner"] or "")
+
+
+def test_preflight_reports_closed_port():
+    """Закрытый порт: tcp несёт причину, баннера нет, исключений наружу нет."""
+    import socket as _sock
+    from services.deployer.agent import machine as M
+
+    s = _sock.socket()
+    s.bind(("127.0.0.1", 0))
+    port = s.getsockname()[1]
+    s.close()
+    rep = M.preflight_report("127.0.0.1", port)
+    assert rep["banner"] is None
+    assert "Refused" in (rep["tcp"] or "")
+
+
+def test_preflight_reports_proxy_env(monkeypatch):
+    """Прокси-окружение процесса попадает в отчёт (подозреваемый №1
+    при «did not receive a valid HTTP response» с тишиной на ноде)."""
+    from services.deployer.agent import machine as M
+
+    monkeypatch.setenv("HTTPS_PROXY", "http://proxy.local:3128")
+    rep = M.preflight_report("127.0.0.1", 9)
+    assert rep["proxy"].get("HTTPS_PROXY") == "http://proxy.local:3128"
+
+
+def test_tls_cert_probe_names_squatter(tmp_path):
+    """Порт молчит по HTTP, но делает TLS: зонд отдаёт subject/issuer
+    самоподписанного серта — имя сквоттера порта."""
+    import datetime
+    import socket as _sock
+    import ssl as _ssl
+    import threading
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+    from cryptography.x509.oid import NameOID
+    from services.deployer.agent import machine as M
+
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "squatter-test")])
+    cert = (x509.CertificateBuilder().subject_name(name).issuer_name(name)
+            .public_key(key.public_key()).serial_number(x509.random_serial_number())
+            .not_valid_before(datetime.datetime.now(datetime.timezone.utc)
+                              - datetime.timedelta(days=1))
+            .not_valid_after(datetime.datetime.now(datetime.timezone.utc)
+                             + datetime.timedelta(days=30))
+            .sign(key, hashes.SHA256()))
+    cert_f, key_f = tmp_path / "c.pem", tmp_path / "k.pem"
+    cert_f.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
+    key_f.write_bytes(key.private_bytes(serialization.Encoding.PEM,
+                                         serialization.PrivateFormat.TraditionalOpenSSL,
+                                         serialization.NoEncryption()))
+    srv = _sock.socket(_sock.AF_INET, _sock.SOCK_STREAM)
+    srv.setsockopt(_sock.SOL_SOCKET, _sock.SO_REUSEADDR, 1)
+    srv.bind(("127.0.0.1", 0))
+    srv.listen(1)
+    port = srv.getsockname()[1]
+    sctx = _ssl.SSLContext(_ssl.PROTOCOL_TLS_SERVER)
+    sctx.load_cert_chain(certfile=str(cert_f), keyfile=str(key_f))
+
+    def _serve():
+        try:
+            c, _ = srv.accept()
+            try:
+                t = sctx.wrap_socket(c, server_side=True)
+                t.do_handshake()
+                t.close()
+            except Exception:
+                try:
+                    c.close()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        finally:
+            try:
+                srv.close()
+            except Exception:
+                pass
+
+    t = threading.Thread(target=_serve, daemon=True)
+    t.start()
+    rep = M.tls_cert_probe("127.0.0.1", port)
+    t.join(timeout=10)
+    assert "squatter-test" in (rep.get("subject") or "")
+    assert "squatter-test" in (rep.get("issuer") or "")
+
+
+def test_tls_cert_probe_reports_non_tls():
+    """Порт без TLS: зонд возвращает error, исключений наружу нет."""
+    import socket as _sock
+    import threading
+    from services.deployer.agent import machine as M
+
+    srv = _sock.socket(_sock.AF_INET, _sock.SOCK_STREAM)
+    srv.setsockopt(_sock.SOL_SOCKET, _sock.SO_REUSEADDR, 1)
+    srv.bind(("127.0.0.1", 0))
+    srv.listen(1)
+    port = srv.getsockname()[1]
+
+    def _serve():
+        try:
+            c, _ = srv.accept()
+            c.settimeout(5)
+            try:
+                c.recv(256)
+            except Exception:
+                pass
+            c.close()                       # молча вешаем трубку, как сквоттер
+        except Exception:
+            pass
+        finally:
+            try:
+                srv.close()
+            except Exception:
+                pass
+
+    t = threading.Thread(target=_serve, daemon=True)
+    t.start()
+    rep = M.tls_cert_probe("127.0.0.1", port)
+    t.join(timeout=10)
+    assert rep.get("subject") is None and rep.get("error")
