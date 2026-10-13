@@ -376,6 +376,23 @@ def test_agent_conf_has_no_tls_fields():
     assert not hasattr(c2, "tls_ca_cert")
 
 
+def test_http_status_detail_extracts_body():
+    """Диагностика handshake-отказов: статус+тело ответа в строке ошибки."""
+    from services.deployer.agent import machine as M
+
+    assert M._http_status_detail(RuntimeError("x")) == ""
+    assert M._http_status_detail(None) == ""
+
+    class _Resp:
+        status_code = 403
+        body = b"Forbidden"
+
+    assert M._http_status_detail(M.AdminUnreachable("y")) == ""
+    e = M.AdminUnreachable("y")
+    e.response = _Resp()
+    assert M._http_status_detail(e) == " http=403 body=b'Forbidden'"
+
+
 def test_connect_wss_without_client_cert(tmp_path, monkeypatch):
     """Вариант A: агент идёт на bootstrap-порт БЕЗ клиентского серта —
     контекст CERT_NONE, личность админа проверяет HMAC-конверт."""

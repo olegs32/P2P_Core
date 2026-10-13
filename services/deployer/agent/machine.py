@@ -128,6 +128,19 @@ def tls_cert_probe(host: str, port: int, timeout: float = 5.0) -> dict | None:
         return {"error": f"{type(e).__name__}: {e}"}
 
 
+def _http_status_detail(exc: BaseException | None) -> str:
+    """Тело HTTP-отказа handshake (403/404 от чужого сервиса на порту) в лог:
+    иначе exit=11 недиагностируем (урок bootstrap 403 — close до accept)."""
+    resp = getattr(exc, "response", None)
+    if resp is None:
+        return ""
+    try:
+        body = bytes(getattr(resp, "body", b"") or b"")[:300]
+        return f" http={getattr(resp, 'status_code', '?')} body={body!r}"
+    except Exception:
+        return ""
+
+
 def preflight_report(host: str, port: int, timeout: float = 5.0) -> dict:
     """Диагностика границы цель→админ (best-effort, connect не валит).
 
@@ -427,7 +440,8 @@ class AgentApiClient:
                 await asyncio.sleep(self.retry_delay * (i + 1))
         else:
             raise AdminUnreachable(
-                f"connect {uri} failed [{type(last).__name__}]: {last}")
+                f"connect {uri} failed [{type(last).__name__}]: {last}"
+                f"{_http_status_detail(last)}")
         await self._handshake()                    # recv_loop — ТОЛЬКО после ACK
 
     async def _handshake(self):
