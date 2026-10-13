@@ -182,7 +182,11 @@ def render(rpc):
             r = rpc.call("deployer", "rotate_agent_key", {"node": t})
             if (r or {}).get("ok"):
                 rotated.append(t)
-        st.session_state["agp_rotate"] = rotated
+        st.session_state["agp_rotate_result"] = rotated
+
+    _rotated = st.session_state.get("agp_rotate_result")
+    if _rotated:
+        st.success(f"🔁 Ключ ротирован для: {', '.join(_rotated)}")
 
     res = st.session_state.get("agp_result")
     if res:

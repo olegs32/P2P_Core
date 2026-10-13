@@ -89,6 +89,78 @@ def test_deliver_remote_unc_and_psexec_args(tmp_path, monkeypatch):
     assert res["psexec_code"] == 0
 
 
+def test_deliver_remote_psexec_d_pid_is_success(tmp_path, monkeypatch):
+    """PsExec -d кладёт в errorlevel PID запущенного процесса
+    («... started on HOST with process ID N»), а не код ошибки —
+    «started on» в stdout = запуск удался при ЛЮБОМ returncode.
+    Реальный лог: psexec code 16472 + «with process ID 16472»."""
+    svc, dist, ctx = make_deployer(tmp_path, monkeypatch)
+    pkg = _mk_pkg(tmp_path)
+    monkeypatch.setattr(svc, "_delivery_copy", lambda pkg_dir, dest: None)
+    monkeypatch.setattr("services.deployer.service.shutil.which",
+                        lambda name: r"C:\Tools\psexec.exe")
+    # реальный расклад PsExec v2.43: баннер — в stdout, прогресс
+    # и «started on ... with process ID» — в stderr
+    banner = (
+        "PsExec v2.43 - Execute processes remotely\r\n"
+        "Copyright (C) 2001-2023 Mark Russinovich\r\n"
+        "Sysinternals - www.sysinternals.com\r\n"
+    )
+    progress = (
+        "Connecting to 192.168.53.142...\r\n\r\n"
+        "Starting PSEXESVC service on 192.168.53.142...\r\n\r\n"
+        "Copying authentication key to 192.168.53.142...\r\n\r\n"
+        "Connecting with PsExec service on 192.168.53.142...\r\n\r\n"
+        "Starting C:\\Core\\agent\\43-img\\agent.exe "
+        "on 192.168.53.142...\r\n\r\n"
+        "C:\\Core\\agent\\43-img\\agent.exe started on 192.168.53.142 "
+        "with process ID 16472."
+    )
+    assert len(progress) > 300, "фикстура обязана быть длиннее старого [:300]"
+
+    class _Proc:
+        returncode = 16472                  # PID, не ошибка
+        stdout = banner.encode()
+        stderr = progress.encode()
+
+    monkeypatch.setattr("services.deployer.service.subprocess.run",
+                        lambda *a, **k: _Proc())
+    res = run(svc._deliver_agent("43-img", pkg))
+    assert res["ok"] is True and res["error"] is None
+    assert res["launched"] is True
+    assert res["remote_pid"] == 16472
+    assert res["psexec_code"] == 16472
+    # прогресс целиком — в stderr, баннер — в stdout
+    assert res["psexec_stderr"] == progress
+    assert res["psexec_stdout"] == banner.strip()
+
+
+def test_deliver_remote_psexec_stderr_preferred_and_tail(tmp_path, monkeypatch):
+    """При ненулевом коде без «started on» (запуск не удался): в ошибке —
+    stderr целиком (хвост) и код; stdout сохранён отдельно для разбора."""
+    svc, dist, ctx = make_deployer(tmp_path, monkeypatch)
+    pkg = _mk_pkg(tmp_path)
+    monkeypatch.setattr(svc, "_delivery_copy", lambda pkg_dir, dest: None)
+    monkeypatch.setattr("services.deployer.service.shutil.which",
+                        lambda name: r"C:\Tools\psexec.exe")
+    long_err = "Connecting to 10.0.0.5...\r\n" + "noise\r\n" * 80 + \
+        "Could not start agent.exe on 10.0.0.5: Access is denied."
+
+    class _Proc:
+        returncode = 2
+        stdout = b"Connecting to 10.0.0.5..."
+        stderr = long_err.encode()
+
+    monkeypatch.setattr("services.deployer.service.subprocess.run",
+                        lambda *a, **k: _Proc())
+    res = run(svc._deliver_agent("node7", pkg))
+    assert res["ok"] is False and res["psexec_code"] == 2
+    assert "Access is denied" in res["error"]        # хвост stderr, не начало
+    assert res["launched"] is False
+    assert res["psexec_stderr"] == long_err
+    assert res["psexec_stdout"] == "Connecting to 10.0.0.5..."
+
+
 def test_gen_agent_package_queues_background_delivery(tmp_path, monkeypatch):
     """(Task 15) gen отвечает ДО копирования: delivery.state == queued, фоновая
     задача создана; само копирование идёт в _run_deliveries после ответа RPC."""

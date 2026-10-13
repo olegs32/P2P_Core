@@ -10,13 +10,15 @@ SERVICE = ROOT / "services" / "deployer" / "service.py"
 # "psexec" убран из маркеров: UI теперь легально упоминает psexec code в
 # статусе доставки (Task 14); старая SMB push-механика по-прежнему удалена.
 SMB_MARKS = ("remote_path", "deploy_only")
-SECTION_MARKS = ("Генерация agent-пакетов", "gen_agent_package", "agent_status", "fragment")
-# RPC-имена из брифа Task 11 (Tasks 4-5) + deliver_agent (Task 14)
+SECTION_MARKS = ("Генерация agent-пакетов", "gen_agent_package", "agent_status", "fragment",
+                 "Сборка агента", "build_agent_exe")
+# RPC-имена из брифа Task 11 (Tasks 4-5) + deliver_agent (Task 14) + build_agent_exe (сборка агента из UI)
 RPC_NAMES = ("gen_agent_package", "deploy", "agent_status",
-             "rotate_agent_key", "list_devices", "get_status", "deliver_agent")
+             "rotate_agent_key", "list_devices", "get_status", "deliver_agent",
+             "build_agent_exe")
 # из этих RPC-имён web_ui обязан делать прямые вызовы deployer'а
 CALLED_RPC = ("gen_agent_package", "agent_status", "rotate_agent_key",
-              "list_devices", "get_status", "deliver_agent")
+              "list_devices", "get_status", "deliver_agent", "build_agent_exe")
 # Task 15: фоновая доставка — живая секция deliveries в UI + отсутствие
 # блокирующего `await _deliver_agent` внутри gen_agent_package
 DELIVERY_MARKS = ("deliveries", "Доставка пакетов", "в очереди на доставку",

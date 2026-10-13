@@ -125,6 +125,22 @@ class ServiceLoader:
 
             old = self.manager.get_service(service_name)
             if old is not None and old is not instance:
+                _new_cls = type(instance)
+                # Overlay-наследник (SecureDeployer и т.п., ставит se.activate
+                # ДО scan): скан базового класса НЕ даунгрейдит специализацию.
+                # _import_fresh грузит модуль в новый namespace — классы-дубликаты
+                # с тем же именем, поэтому isinstance недостаточно: смотрим MRO
+                # по паре (имя класса, модуль). Reimport того же сервиса даёт то
+                # же имя И тот же модуль (_services.*) — hot-reload идёт дальше.
+                _keep = isinstance(old, _new_cls) or any(
+                    b.__name__ == _new_cls.__name__
+                    and b.__module__ != _new_cls.__module__
+                    for b in type(old).__mro__[1:]
+                )
+                if _keep:
+                    log.info(f'{service_name}: keep specialized {type(old).__name__}, '
+                             f'skip base {_new_cls.__name__}')
+                    continue
                 # D5: полноценный hot-reload — stop() старого, затем
                 # регистрация и start() нового (в главном event loop)
                 self._schedule_swap(old, instance, rpc_methods)

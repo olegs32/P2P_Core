@@ -25,3 +25,5 @@
 
 - ### exotic:
   - emulate FTP from BytesIO
+  - 
+- safe deployments — закрыто: ТЗ docs/superpowers/specs/2026-10-06-safe-deploy-design.md, план docs/superpowers/plans/2026-10-06-safe-deploy.md
