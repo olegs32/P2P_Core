@@ -318,6 +318,11 @@ class Deployer(ModuleGeneric):
         """
         return f"ws://{self.ctx.NODE}:{self.ctx.config.network.port}"
 
+    async def _check_gen_allowed(self) -> str | None:
+        """Отказ генерации пакетов либо None. Base: разрешено всем (open —
+        бес-CA режим, деплоит любой). SE перекрывает: только CA-ключ."""
+        return None
+
     def _mesh_admin_ws(self, admin_ws: str) -> str:
         """Адрес админа для local.peers жертвы (mesh-порт, mTLS).
 
@@ -997,6 +1002,12 @@ class Deployer(ModuleGeneric):
                 return {"ok": False, "error": bad}
         if not targets:
             return {"ok": False, "error": "targets required"}
+        # capability-gate генерации (SE: только нода с CA-ключом; open: всем).
+        # Проверяется ключевой материал, не флаг: подмена в памяти бесполезна —
+        # без настоящего CA-ключа pre_config всё равно упадёт.
+        gate_err = await self._check_gen_allowed()
+        if gate_err:
+            return {"ok": False, "error": gate_err}
         # per-target port override (опционально): {node: port} — см. скоуп ниже
         ports_raw = data.get("ports") or {}
         if not isinstance(ports_raw, dict):
