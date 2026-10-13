@@ -683,19 +683,29 @@ class HostOpsWindows:
             return False
 
     async def ensure_system(self) -> str:
-        if self._is_system():
+        sys_flag = self._is_system()
+        log.info("ensure_system: is_system=%s system_run=%s task=%s",
+                 sys_flag, self.system_run, self.task_name)
+        if sys_flag:
             return "ok"
         if self.system_run:
             return "denied"                     # повтор без SYSTEM -> сразу 14
-        own = sys.executable if getattr(sys, "frozen", False) else \
-            f'"{sys.executable}" "{Path(sys.argv[0]).resolve()}"'
-        tr = f'{own} --conf "{self.conf_path}" --system-run'
-        code, _ = await self._run(["schtasks", "/create", "/tn", self.task_name,
-                                   "/ru", "SYSTEM", "/rl", "HIGHEST",
-                                   "/tr", tr, "/f"])
+        if getattr(sys, "frozen", False):
+            own = f'"{sys.executable}"'         # путь с пробелами — в кавычках
+            tr = f'{own} --conf "{self.conf_path}" --system-run'
+        else:
+            own = f'"{sys.executable}" "{Path(sys.argv[0]).resolve()}"'
+            tr = f'{own} --conf "{self.conf_path}" --system-run'
+        code, out = await self._run(["schtasks", "/create", "/tn", self.task_name,
+                                     "/ru", "SYSTEM", "/rl", "HIGHEST",
+                                     "/tr", tr, "/f"])
+        # Вывод НЕ глотаем: exit=14 без причины недиагностируем (прод 13.10:
+        # SYSTEM-шелл, а задача не создалась — нужен код и текст schtasks).
+        log.info("ensure_system schtasks create: code=%s out=%.500s", code, out)
         if code != 0:
             return "denied"
-        code, _ = await self._run(["schtasks", "/run", "/tn", self.task_name])
+        code, out = await self._run(["schtasks", "/run", "/tn", self.task_name])
+        log.info("ensure_system schtasks run: code=%s out=%.500s", code, out)
         if code != 0:
             return "denied"
         return "relaunched"                     # родитель: exit 0, без cleanup
