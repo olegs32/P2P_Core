@@ -51,3 +51,21 @@ def test_stale_banner_dirty_divergence_or_flag():
     assert pv.stale_banner(dirty=False, draft_version=3, server_version=4, stale_flag=False) is False
     assert pv.stale_banner(dirty=True, draft_version=4, server_version=4, stale_flag=True) is True
     assert pv.stale_banner(dirty=False, draft_version=4, server_version=4, stale_flag=False) is False
+
+
+def test_star_means_any_in_every_field():
+    import src.se.services.security_dashboard.policy_view as pv2
+    r = pv2.canon_rule({"service": "*", "methods": ["*"], "allow_from": ["*"], "allow_to": ["*"]})
+    assert r == {"service": "*", "methods": [], "allow_from": [], "allow_to": []}
+
+
+def test_star_method_matches_any_method():
+    from src.se.network.firewall import FirewallEngine
+    from src.networking.protocol import MsgPack
+    fw = FirewallEngine(rules_data={"defaults": {"deny_untrusted": True}, "rules": [
+        {"service": "*", "methods": ["get_policy"], "allow_from": ["trusted_nodes"], "allow_to": []},
+    ]})
+    pack = MsgPack(service="security_dashboard", method="get_policy", source="n1")
+    assert fw.check(pack, trusted_peers={"n1"}) is True
+    pack2 = MsgPack(service="files", method="get_policy", source="n1")
+    assert fw.check(pack2, trusted_peers={"n1"}) is True
