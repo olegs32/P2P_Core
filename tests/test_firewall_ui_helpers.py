@@ -59,6 +59,12 @@ def test_star_means_any_in_every_field():
     assert r == {"service": "*", "methods": [], "allow_from": [], "allow_to": []}
 
 
+def test_draft_keys_namespaced_by_node():
+    import src.se.services.security_dashboard.web_ui as w
+    assert w.draft_key("fw_draft_rules", "AdminNode") == "fw_draft_rules:adminnode"
+    assert w.draft_key("fw_draft_rules", "AdminNode") != w.draft_key("fw_draft_rules", "Node2")
+
+
 def test_star_method_matches_any_method():
     from src.se.network.firewall import FirewallEngine
     from src.networking.protocol import MsgPack
