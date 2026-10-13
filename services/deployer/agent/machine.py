@@ -592,7 +592,13 @@ class HostOpsWindows:
 
     @staticmethod
     def _sid_is_system() -> bool:
-        """Токен процесса == S-1-5-18 (SYSTEM). ctypes, без pywin32."""
+        """Токен процесса == S-1-5-18 (SYSTEM). ctypes, без pywin32.
+
+        КРИТИЧНО: argtypes/restype обязательны. Без них ctypes режет
+        64-битные указатели до c_int: SID-указатель из кучи (>4 ГБ)
+        усекался → ConvertSidToStringSidW падал → всегда False даже
+        под настоящим SYSTEM (прод 13.10: scheduler-дитя с exit=14).
+        """
         import ctypes
         import ctypes.wintypes as wt
         TOKEN_QUERY, TokenUser = 0x0008, 1
@@ -604,6 +610,20 @@ class HostOpsWindows:
             _fields_ = [("User", SID_AND_ATTRIBUTES)]
 
         advapi, kernel = ctypes.windll.advapi32, ctypes.windll.kernel32
+        kernel.GetCurrentProcess.restype = wt.HANDLE
+        kernel.GetCurrentProcess.argtypes = []
+        advapi.OpenProcessToken.argtypes = [wt.HANDLE, wt.DWORD,
+                                            ctypes.POINTER(wt.HANDLE)]
+        advapi.OpenProcessToken.restype = wt.BOOL
+        advapi.GetTokenInformation.argtypes = [wt.HANDLE, ctypes.c_int,
+                                               wt.LPVOID, wt.DWORD,
+                                               ctypes.POINTER(wt.DWORD)]
+        advapi.GetTokenInformation.restype = wt.BOOL
+        advapi.ConvertSidToStringSidW.argtypes = [wt.LPVOID,
+                                                  ctypes.POINTER(wt.LPWSTR)]
+        advapi.ConvertSidToStringSidW.restype = wt.BOOL
+        kernel.CloseHandle.argtypes = [wt.HANDLE]
+        kernel.CloseHandle.restype = wt.BOOL
         token = wt.HANDLE()
         if not advapi.OpenProcessToken(kernel.GetCurrentProcess(), TOKEN_QUERY,
                                        ctypes.byref(token)):
@@ -616,7 +636,7 @@ class HostOpsWindows:
                                               ctypes.byref(size)):
                 return False
             sid = ctypes.cast(buf, ctypes.POINTER(TOKEN_USER)).contents.User.Sid
-            sid_str = ctypes.c_wchar_p()
+            sid_str = wt.LPWSTR()
             if not advapi.ConvertSidToStringSidW(sid, ctypes.byref(sid_str)):
                 return False
             return sid_str.value == "S-1-5-18"
@@ -629,8 +649,16 @@ class HostOpsWindows:
         if not pid:
             return False
         import ctypes
+        import ctypes.wintypes as wt
         PROCESS_QUERY_LIMITED_INFORMATION, STILL_ACTIVE = 0x1000, 259
         kernel = ctypes.windll.kernel32
+        kernel.OpenProcess.argtypes = [wt.DWORD, wt.BOOL, wt.DWORD]
+        kernel.OpenProcess.restype = wt.HANDLE
+        kernel.GetExitCodeProcess.argtypes = [wt.HANDLE,
+                                              ctypes.POINTER(wt.DWORD)]
+        kernel.GetExitCodeProcess.restype = wt.BOOL
+        kernel.CloseHandle.argtypes = [wt.HANDLE]
+        kernel.CloseHandle.restype = wt.BOOL
         h = kernel.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
         if not h:
             return False

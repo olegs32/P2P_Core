@@ -95,6 +95,22 @@ def test_ensure_system_paths(tmp_path):
     assert asyncio.run(h.ensure_system()) == "denied"
 
 
+def test_sid_check_does_not_crash():
+    """Дымовой тест _sid_is_system: обязан вернуть bool, не упасть.
+
+    Прод 13.10: без argtypes ctypes резал 64-битный SID-указатель до c_int
+    → ConvertSidToStringSidW падал → всегда False даже под SYSTEM.
+    Прямую True-ветку в CI не проверить (нужен SYSTEM), но smoke
+    на win32 ловит регрессию сигнатур/падений.
+    """
+    import sys as _sys
+    if not getattr(_sys, "winver", None) and __import__("os").name != "nt":
+        import pytest as _pt
+        _pt.skip("SID check — только Windows")
+    from services.deployer.agent.machine import HostOpsWindows
+    assert isinstance(HostOpsWindows._sid_is_system(), bool)
+
+
 def test_pid_alive_self_and_dead():
     from services.deployer.agent.machine import HostOpsWindows
     h = HostOpsWindows(_conf(), conf_path=Path("x"), runner=lambda a: (0, ""),
