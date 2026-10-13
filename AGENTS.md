@@ -1,7 +1,7 @@
 # P2P_Core — База знаний для AI-ассистента
 
 > Быстрый справочник по архитектуре, конвенциям и ключевым паттернам проекта.
-> Обновлено: 2026-09-22 (сверено с кодом; детали защиты — только в src/se/AGENTS.md)
+> Обновлено: 2026-10-13 (сверено с кодом; детали защиты — только в src/se/AGENTS.md)
 
 ---
 ## Важно: здесь запрещено делать любые записи и упоминания о системе безопасности этого проекта. Для этого существует src/se/AGENTS.md 
@@ -465,16 +465,20 @@ local:                 # LocalConfig — параметры деплоя/авт�
 
 ## 9a. Сборка и подпись дистрибутива
 
-`compile.py` — PyInstaller onefile, две сборки:
+`compile.py` — PyInstaller onefile, три цели (`--type {node,webui,agent}`):
 
 | Бинарь | UI | Особенности |
 |--------|----|-------------|
 | `WebUI_P2P_Core.exe` | Streamlit | `--collect-all services`, `--collect-all streamlit_agraph`, streamlit hidden-imports |
 | `Node_P2P_Core.exe` | нет | excludes: `services.webpanel`, `streamlit`; остальные сервисы через `--collect-all` |
+| `DeployAgent[_se].exe` | нет | entry `services/deployer/agent/main.py`; без FastAPI/uvicorn/streamlit; flavor обязан совпадать с режимом админа (пакет встраивает копию exe на момент генерации — после правок агента пересобрать кнопкой «🔨 Собрать агента», затем regen пакетов) |
 
 После сборки каждый exe подписывается через `sign/signer.py` (osslsigncode, нужны `sign/ca_cert.pem` + `sign/ca_key.pem` — gitignored). Подписанный файл перемещается обратно в `dist/<name>.exe`.
 
 Frozen-режим: встроенные сервисы грузятся из `sys._MEIPASS/services` (ветка в `main.py`, не в самом `ServiceLoader`), локальные — из `services.search_paths` конфига (`./services` по умолчанию). В headless-сборке webpanel исключается также через `LocalConfig.excluded_autoload_services`. Node-сборка собирает сервисы по `--collect-all services.<name>` поштучно и исключает их `web_ui`; `compile.py` после сборки вызывает `make_manifest(version)` (каталог `dist/<version>/` + `manifest.json` с sha256/size для updater).
+
+### Деплой новых нод (safe deploy, pull-model)
+Деплой — не SMB-push, а одноразовый агент: `gen_agent_package({targets, version?})` → `dist/<ver>/agent/<node>/` = **`agent.conf` + копия `DeployAgent[_se].exe`, и точка** (никаких PEM/ключей в пакете — certs идут только в шифрованном `pre_config` envelope, агент пишет их из RAM; жертве в `local.peers` пишется mesh-порт админа, агенту в conf — bootstrap-порт). RPC: `gen_agent_package` / `deploy` (= генерация пакетов), `deliver_agent` (фоновая доставка SMB/psexec + retry), `rotate_agent_key`, `agent_status` (включая `agent_ws`), `agent_api` (единственный вход агента: HMAC + envelope; ops `ping/pre_config/fetch_chunk/node_seen/report`), `build_agent_exe` + `agent_build_status` (фоновая пересборка агента из UI). Агент: `services/deployer/agent/{main,machine,package}.py`, стадии ENSURE_SYSTEM → PRE_CONFIG → FETCH → STOP → WRITE → LAUNCH → WATCH → REPORT → SELF_TERMINATE, exit-коды 0/10/11/12/13/14; cleanup/самоудаление только на {0,13}, на 10/11/12/14 пакет сохраняется для повтора. Детали канала и криптографии — только в `src/se/AGENTS.md`.
 
 ## 9b. Roadmap
 
