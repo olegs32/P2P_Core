@@ -19,10 +19,8 @@
     - [fixed 2026-10-12, проверено в проде 13.10] bootstrap HTTP 403 (InvalidStatus): endpoint делал проверки ДО accept(), а Starlette первым отдаёт websocket.connect без bytes → close до accept uvicorn превращает в HTTP 403 (websockets_impl: initial_response=FORBIDDEN), transport.send до accept — RuntimeError. Фикс: accept() строго первым (как mesh-эндпоинт), проверки после; регресс-тесты handshake во src/se/tests/test_agent_bootstrap.py; агент при InvalidStatus теперь пишет http-статус+тело ответа (_http_status_detail)
     - [fixed 2026-10-13, проверено в проде 13.10] bootstrap HTTP 403, часть 2: у agent_endpoint не было аннотации `websocket: WebSocket` (в отличие от mesh) → FastAPI считал его query-параметром → WebSocketRequestValidationError до accept → тот же пустой 403, молча (диагностика: curl GET / → наш FastAPI 404, а WS-upgrade → 403/empty). Фикс: аннотация + e2e-тест handshake через TestClient (без аннотации падает тем же WebSocketDisconnect, проверено)
     - [retracted 2026-10-12] гипотеза «порт 9000 держит сквоттер» — НЕВЕРНА (ошибка диагностики: смотрел только open network.py, а админ — SE: SecureNetworkModule wss-only mTLS; plain HTTP он роняет молча по дизайну, серт CN=sysadmin-pc — его собственный). Урок: preflight `banner='<empty>'` + tls_cert с валидным CN админа = mTLS, а не чужак
-    - Сборка failed: agent artifact not found: DeployAgent_se.exe — соберите: python compile.py --type agent. Даже после ручной сборки агента
       - [fixed 2026-10-13] автоматическая сборка деплой-агента из UI: кнопка «🔨 Собрать агента» (build_agent_exe) — проверено в проде 13.10, ручная сборка больше не нужна
-    - _dummy_build() -?
-      - if os.environ.get("P2P_DUMMY_BUILD") == "1": - удалить  
+    - [removed 2026-10-13] _dummy_build() + P2P_DUMMY_BUILD: тестовый фолбэк поддельных exe удалён полностью (прод без env и так падал в честную ошибку; тесты кладут артефакты вручную)
     - Параллельная сборка Web-UI NODE если галка - собирается последовательно, баг
     - \# exe_src теперь указывает на версионный exe - удалить
     - custom Exception to exceptions  

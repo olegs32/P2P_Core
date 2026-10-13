@@ -128,30 +128,6 @@ def _build_args_for_services(services: list[str], ui: bool = False, extra_args: 
         return []
 
 
-def _dummy_build(version: str, services: list[str]) -> Path:
-    """DEV fallback когда PyInstaller недоступен или в тесте — создаёт dummy exe + manifest."""
-    ver_dir = DIST / version
-    ver_dir.mkdir(parents=True, exist_ok=True)
-    exe_path = ver_dir / "Node_P2P_Core.exe"
-    # dummy: 1KB + версия
-    exe_path.write_bytes((f"P2P dummy {version} services={','.join(services)}\n".encode() + b"\x00" * 1024))
-    h = hashlib.sha256(exe_path.read_bytes()).hexdigest()
-    manifest = {
-        "version": version,
-        "exe_name": exe_path.name,
-        "exe_sha256": h,
-        "size": exe_path.stat().st_size,
-        "services": services,
-    }
-    (ver_dir / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
-    # также кладём в dist корень для совместимости с make_manifest логикой
-    try:
-        (DIST / "Node_P2P_Core.exe").write_bytes(exe_path.read_bytes())
-    except Exception:
-        pass
-    return exe_path
-
-
 def _peer_uri(uri: str) -> str:
     """Канон local.peers[].uri = ws://h:port/ws/ — main.py склеивает
     f'{peer.uri}{ctx.NODE}', поэтому bare ws://h:port даёт ws://h:portnode7.
@@ -574,53 +550,43 @@ class Deployer(ModuleGeneric):
             ui_flag = "webpanel" in expanded
             extra_list = extra_args.strip().split() if isinstance(extra_args, str) and extra_args.strip() else (list(extra_args) if extra_args else [])
             build_logs.append(f"packer={packer} services={expanded} ui={ui_flag} extra={extra_list}")
-            use_dummy = os.environ.get("P2P_DUMMY_BUILD") == "1"
-            if not use_dummy:
-                import compile as comp
-                # compile.build теперь принимает services/extra_args/packer напрямую
-                ok = await asyncio.to_thread(comp.build, "Node_P2P_Core", ui_flag, expanded, extra_list, packer)
-                if ok:
-                    # sign — compile.build не подписывает, делаем здесь как раньше
-                    try:
-                        from sign.signer import sign_exe as _sign
-                        exe_candidate = DIST / "Node_P2P_Core.exe"
-                        if exe_candidate.exists():
-                            _sign(exe_candidate, DIST)
-                            if (DIST / "signed_Node_P2P_Core.exe").exists():
-                                try:
-                                    os.remove(exe_candidate)
-                                except Exception:
-                                    pass
-                                shutil.move(str(DIST / "signed_Node_P2P_Core.exe"), str(exe_candidate))
-                    except Exception as e:
-                        build_logs.append(f"sign skip: {e}")
-                    try:
-                        comp.make_manifest(version, services=expanded, packer=packer)
-                        exe_src = DIST / version / "Node_P2P_Core.exe"
-                    except Exception as e:
-                        build_logs.append(f"manifest skip: {e}")
-                        for cand in [DIST / version / "Node_P2P_Core.exe", DIST / "Node_P2P_Core.exe"]:
-                            if cand.exists():
-                                exe_src = cand
-                                break
-                else:
-                    # Строго: что выбрано — то и пакует, без fallback на pyinstaller/dummy
-                    # P2P_DUMMY_BUILD только для тестов; в проде — ошибка
-                    if os.environ.get("P2P_DUMMY_BUILD") == "1":
-                        build_logs.append("compile.build returned False — dummy fallback (test mode)")
-                        use_dummy = True
-                    else:
-                        return {"ok": False, "error": f"packer '{packer}' build failed — pyarmor not found or build error", "logs": build_logs, "trace": "see logs"}
-            if use_dummy or exe_src is None or not exe_src.exists():
-                if use_dummy:
-                    exe_src = _dummy_build(version, expanded)
-                    build_logs.append(f"dummy build at {exe_src}")
-                else:
-                    return {"ok": False, "error": f"build failed (packer={packer}) — artifact not found", "logs": build_logs}
+            import compile as comp
+            # compile.build теперь принимает services/extra_args/packer напрямую
+            ok = await asyncio.to_thread(comp.build, "Node_P2P_Core", ui_flag, expanded, extra_list, packer)
+            if ok:
+                # sign — compile.build не подписывает, делаем здесь как раньше
+                try:
+                    from sign.signer import sign_exe as _sign
+                    exe_candidate = DIST / "Node_P2P_Core.exe"
+                    if exe_candidate.exists():
+                        _sign(exe_candidate, DIST)
+                        if (DIST / "signed_Node_P2P_Core.exe").exists():
+                            try:
+                                os.remove(exe_candidate)
+                            except Exception:
+                                pass
+                            shutil.move(str(DIST / "signed_Node_P2P_Core.exe"), str(exe_candidate))
+                except Exception as e:
+                    build_logs.append(f"sign skip: {e}")
+                try:
+                    comp.make_manifest(version, services=expanded, packer=packer)
+                    exe_src = DIST / version / "Node_P2P_Core.exe"
+                except Exception as e:
+                    build_logs.append(f"manifest skip: {e}")
+                    for cand in [DIST / version / "Node_P2P_Core.exe", DIST / "Node_P2P_Core.exe"]:
+                        if cand.exists():
+                            exe_src = cand
+                            break
+            else:
+                    # Строго: что выбрано — то и пакует, без fallback'ов —
+                    # в проде честная ошибка вместо поддельного exe
+                    return {"ok": False, "error": f"packer '{packer}' build failed — pyarmor not found or build error", "logs": build_logs, "trace": "see logs"}
+            if exe_src is None or not exe_src.exists():
+                return {"ok": False, "error": f"build failed (packer={packer}) — artifact not found", "logs": build_logs}
 
             # Параллельная сборка Web-UI NODE если галка
             webui_exe: Path | None = None
-            if build_webui and not use_dummy:
+            if build_webui:
                 try:
                     import compile as comp2
                     # ui=True, те же сервисы (webpanel нужен для UI)
@@ -656,16 +622,6 @@ class Deployer(ModuleGeneric):
                         build_logs.append("webui compile.build returned False")
                 except Exception as e:
                     build_logs.append(f"webui build skip: {e}")
-            elif build_webui and use_dummy:
-                # dummy webui
-                try:
-                    ver_dir = DIST / version
-                    ver_dir.mkdir(parents=True, exist_ok=True)
-                    webui_exe = ver_dir / "WebUI_P2P_Core.exe"
-                    webui_exe.write_bytes((f"P2P dummy WebUI {version}\n".encode() + b"\x00" * 512))
-                    build_logs.append(f"dummy webui at {webui_exe}")
-                except Exception as e:
-                    build_logs.append(f"dummy webui skip: {e}")
 
         except Exception as e:
             return {"ok": False, "error": f"build failed: {e}", "trace": traceback.format_exc()[-2000:], "logs": build_logs}
@@ -676,10 +632,9 @@ class Deployer(ModuleGeneric):
                 except Exception:
                     pass
 
-        # exe_src теперь указывает на версионный exe
+        # exe_src — версионный exe; отсутствие здесь уже отбито выше
         if exe_src is None or not exe_src.exists():
-            # fallback — dummy
-            exe_src = _dummy_build(version, expanded)
+            return {"ok": False, "error": f"build failed (packer={packer}) — artifact not found", "logs": build_logs}
 
         # Сохраняем last_build с логами для UI автообновления
         self._last_build = {"version": version, "exe": str(exe_src), "services": expanded, "packer": packer, "at": time.time(), "webui_exe": str(webui_exe) if webui_exe else None, "build_webui": build_webui, "logs": build_logs[-200:]}
@@ -715,10 +670,6 @@ class Deployer(ModuleGeneric):
     def _agent_exe_src(self, mode: str) -> Path | None:
         p = DIST / self._agent_exe_name(mode)
         if p.is_file():
-            return p
-        if os.environ.get("P2P_DUMMY_BUILD") == "1":
-            DIST.mkdir(parents=True, exist_ok=True)
-            p.write_bytes(b"MZ dummy agent (P2P_DUMMY_BUILD)")
             return p
         return None
 

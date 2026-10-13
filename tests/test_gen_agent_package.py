@@ -33,7 +33,6 @@ def agent_exe(tmp_path, monkeypatch):
     # make_deployer создаст dist; монтим заранее
     dist.mkdir(parents=True, exist_ok=True)
     src.write_bytes(b"MZ-agent")
-    monkeypatch.setenv("P2P_DUMMY_BUILD", "")     # сброс, если был
     return src
 
 
@@ -69,8 +68,8 @@ def test_gen_agent_package_errors(tmp_path, monkeypatch):
     # артефакта агента нет -> business-error с инструкцией
     res = run_gen(svc, {"targets": ["n1"]})
     assert res["ok"] is False and "compile.py --type agent" in res["error"]
-    # dummy-режим создаёт артефакт
-    monkeypatch.setenv("P2P_DUMMY_BUILD", "1")
+    # подложенный вручную артефакт — gen ok (как во всех остальных тестах)
+    (dist / "DeployAgent.exe").write_bytes(b"MZ-agent")
     res = run_gen(svc, {"targets": ["n1"]})
     assert res["ok"] is True
     # невалидный per-target port override -> бизнес-отказ (D9), не исключение
