@@ -696,8 +696,12 @@ class HostOpsWindows:
         else:
             own = f'"{sys.executable}" "{Path(sys.argv[0]).resolve()}"'
             tr = f'{own} --conf "{self.conf_path}" --system-run'
+        # /sc обязателен для /create (без него — «Потерян обязательный
+        # параметр sc», прод 13.10). Расписание фиктивное: запуск идёт
+        # через /run сразу, задача удаляется на финише (self_terminate).
         code, out = await self._run(["schtasks", "/create", "/tn", self.task_name,
                                      "/ru", "SYSTEM", "/rl", "HIGHEST",
+                                     "/sc", "ONCE", "/st", "00:00",
                                      "/tr", tr, "/f"])
         # Вывод НЕ глотаем: exit=14 без причины недиагностируем (прод 13.10:
         # SYSTEM-шелл, а задача не создалась — нужен код и текст schtasks).

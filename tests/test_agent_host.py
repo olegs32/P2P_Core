@@ -83,6 +83,8 @@ def test_ensure_system_paths(tmp_path):
     assert asyncio.run(h.ensure_system()) == "relaunched"
     assert calls[0][:3] == ["schtasks", "/create", "/tn"] and calls[1][0] == "schtasks"
     assert "--system-run" in " ".join(calls[0])
+    # /sc обязателен для schtasks /create (прод 13.10: без него exit=14)
+    assert "/sc" in calls[0] and "ONCE" in calls[0]
     # повторный запуск уже с --system-run, всё ещё не SYSTEM -> сразу denied (14)
     h = _host(tmp_path, _conf(), is_system_fn=lambda: False,
               system_run=True, runner=runner)
