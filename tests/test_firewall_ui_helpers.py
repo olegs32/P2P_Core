@@ -65,6 +65,22 @@ def test_draft_keys_namespaced_by_node():
     assert w.draft_key("fw_draft_rules", "AdminNode") != w.draft_key("fw_draft_rules", "Node2")
 
 
+def test_webpanel_visible_from_ctx_map():
+    from src.se.services.security_dashboard import policy_view as pv
+    from src.se.services.security_dashboard.fw_cache import svc_options
+    ctx_map = {"entries": [{"registry": {"webpanel": {"methods": ["node_status"], "generators": []}}}]}
+    mmap = pv.service_methods(ctx_map)
+    assert "webpanel" in mmap
+    assert "webpanel" in svc_options(mmap, ["files"])
+
+
+def test_webpanel_in_fw_fallback():
+    import src.se.services.security_dashboard.web_ui as w
+    from src.se.services.security_dashboard.fw_cache import svc_options
+    assert "webpanel" in w._FW_KNOWN_SERVICES
+    assert "webpanel" in svc_options({}, w._FW_KNOWN_SERVICES)
+
+
 def test_star_method_matches_any_method():
     from src.se.network.firewall import FirewallEngine
     from src.networking.protocol import MsgPack
