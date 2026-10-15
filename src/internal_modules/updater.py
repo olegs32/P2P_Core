@@ -48,6 +48,7 @@ MANIFEST_NAME = 'manifest.json'
 MAX_ATTEMPTS = 2            # неудачных загрузок новой версии до отката
 RESTART_DELAY_SEC = 3       # legacy (для _do_rollback совместимости)
 EXIT_DELAY_SEC = 1          # сколько живём после запуска _update.exe
+ROLLOUT_POLL_SEC = 30       # пауза между кругами опроса updater.status в фазе B
 
 
 def _sha256(path: Path) -> str:
@@ -665,7 +666,267 @@ class Updater(ModuleGeneric):
         return task is None or task.done()
 
     async def _rollout_run(self, ro: dict) -> None:
-        ro['state']['error'] = 'not implemented'
+        """Склейка фаз 0→1→A→B с журналом и проверкой cancelled между шагами."""
+        from src.internal_modules.rollout import RolloutJournal
+        st = ro['state']
+        version = ro.get('version') or st.get('version', '')
+        journal = RolloutJournal(self._work_dir(), version)
+        # повторный старт с тем же version: готовые ноды не трогаем
+        prev = journal.read()
+        prev_nodes = {}
+        if isinstance(prev, dict) and prev.get('version') == version:
+            pn = prev.get('nodes')
+            if isinstance(pn, dict):
+                prev_nodes = pn
+        resume = {n: e for n, e in prev_nodes.items()
+                  if isinstance(e, dict)
+                  and e.get('phase') in ('updated', 'seeded')}
+
+        def _restore():
+            for n, e in resume.items():
+                cur = (st.get('nodes') or {}).get(n)
+                if cur is None:
+                    continue
+                cur['phase'] = e.get('phase', cur.get('phase'))
+                for k in ('seed_mirror', 'detail', 'version_before'):
+                    if k in e and k not in cur:
+                        cur[k] = e[k]
+
+        await self._rollout_phase0(ro)
+        if st.get('error'):
+            journal.write(st)
+            return
+        if resume:
+            _restore()
+            journal.write(st)
+        if ro.get('cancelled'):
+            st['cancelled'] = True
+            journal.write(st)
+            return
+
+        cfg = self.ctx.config
+        admin = self.ctx.NODE
+        share = 'releases'
+        try:
+            sources = list(
+                getattr(getattr(cfg, 'update', None), 'sources', []) or [])
+            if sources:
+                share = getattr(sources[0], 'share', 'releases') or 'releases'
+        except Exception:
+            pass
+        try:
+            download_dir = str(getattr(cfg.files, 'download_dir',
+                                       'downloads') or 'downloads')
+        except Exception:
+            download_dir = 'downloads'
+
+        # ensure перезаписывает фазы — готовые восстановим после
+        await self._rollout_ensure_all(
+            ro, admin=admin, share=share, download_dir=download_dir)
+        if resume:
+            for n, e in resume.items():
+                cur = (st.get('nodes') or {}).get(n)
+                if cur is not None and cur.get('phase') in (
+                        'pending', 'ensure_failed', 'unreachable'):
+                    cur['phase'] = e.get('phase', cur.get('phase'))
+                    for k in ('seed_mirror', 'detail', 'version_before'):
+                        if k in e and k not in cur:
+                            cur[k] = e[k]
+            journal.write(st)
+        if ro.get('cancelled'):
+            st['cancelled'] = True
+            journal.write(st)
+            return
+
+        waves = st.get('waves_seed') or []
+        prev_wave: list[str] = []
+        for w in waves:
+            if ro.get('cancelled'):
+                st['cancelled'] = True
+                journal.write(st)
+                return
+            todo = [n for n in w
+                    if (((st.get('nodes') or {}).get(n) or {})
+                        .get('phase') not in ('seeded', 'updated'))]
+            if todo:
+                await self._rollout_seed_wave(ro, todo, prev_wave)
+            else:
+                journal.write(st)
+            prev_wave = w
+            if ro.get('cancelled'):
+                st['cancelled'] = True
+                journal.write(st)
+                return
+        await self._rollout_apply(st, admin)
+        journal.write(st)
+
+    async def _rollout_poll_once(self, dst: str,
+                                 version: str) -> tuple[str | None, str]:
+        """Один опрос updater.status ноды.
+
+        Возвращает (терминальная фаза | None, detail). None — не терминально
+        (нода ещё в pending_boot_confirm или опрос пропущен), ждать дальше.
+        """
+        try:
+            res = await self.ctx.network.call(
+                dst=dst, service='updater', method='status',
+                data={}, timeout=15)
+        except Exception as e:
+            return None, str(e)
+        if not isinstance(res, dict) or not res.get('ok'):
+            err = (res or {}).get('error', 'updater.status failed') \
+                if isinstance(res, dict) else 'updater.status failed'
+            return None, err
+        state = res.get('state')
+        if isinstance(state, dict) and state:
+            if state.get('rolled_back'):
+                to = state.get('to')
+                return ('rolled_back',
+                        f'нода откатилась{(" на " + str(to)) if to else ""}')
+            if state.get('boot_ok'):
+                return 'updated', ''
+            return None, ''
+        if res.get('current') == version:
+            return 'updated', ''
+        return None, ''
+
+    async def _rollout_poll_status(self, dst: str, version: str,
+                                   retries: int) -> tuple[str | None, str]:
+        """До retries опросов статуса; между кругами пауза ROLLOUT_POLL_SEC."""
+        last = ''
+        for i in range(max(1, retries)):
+            phase, detail = await self._rollout_poll_once(dst, version)
+            if phase in ('updated', 'rolled_back'):
+                return phase, detail
+            if detail:
+                last = detail
+            if i < max(1, retries) - 1:
+                await asyncio.sleep(ROLLOUT_POLL_SEC)
+        return None, last or 'не подтвердил обновление'
+
+    async def _rollout_apply(self, state: dict, admin: str) -> None:
+        """Фаза B: канарейка, веер apply, сбор статусов. Мутирует state."""
+        version = state.get('version', '')
+        nodes = state.get('nodes') or {}
+        cfg = getattr(self.ctx.config, 'update', None)
+        health_sec = max(0, int(getattr(cfg, 'health_confirm_sec', 90) or 0))
+        retries = max(1, int(getattr(cfg, 'health_confirm_retries', 3) or 1))
+
+        # канарейка — первая seeded из waves_seed[0] (hop=1), иначе из волн
+        waves = state.get('waves_seed') or []
+        canary = None
+        first_wave = (waves[0] if waves else []) or []
+        for n in first_wave:
+            if (nodes.get(n) or {}).get('phase') == 'seeded':
+                canary = n
+                break
+        if canary is None:
+            for w in waves:
+                for n in w or []:
+                    if (nodes.get(n) or {}).get('phase') == 'seeded':
+                        canary = n
+                        break
+                if canary is not None:
+                    break
+        if canary is None:
+            for n, e in nodes.items():
+                if (e or {}).get('phase') == 'seeded':
+                    canary = n
+                    break
+        if canary is None:
+            state['error'] = 'нечего обновлять'
+            return
+
+        async def _call_apply(name: str):
+            try:
+                return await self.ctx.network.call(
+                    dst=name, service='updater', method='apply',
+                    data={'version': version}, timeout=120)
+            except Exception as e:
+                return {'ok': False, 'error': str(e)}
+
+        def _apply_err(res) -> str:
+            if isinstance(res, dict):
+                return res.get('error', 'updater.apply failed')
+            return 'updater.apply failed'
+
+        # --- канарейка ---
+        entry = nodes.get(canary) or {}
+        entry['phase'] = 'applying'
+        nodes[canary] = entry
+        res = await _call_apply(canary)
+        if not isinstance(res, dict) or not res.get('ok'):
+            entry['phase'] = 'apply_failed'
+            entry['detail'] = _apply_err(res)
+            state['aborted_canary'] = True
+            return
+        await asyncio.sleep(health_sec)
+        final, detail = await self._rollout_poll_status(
+            canary, version, retries)
+        if final == 'updated':
+            entry['phase'] = 'updated'
+        elif final == 'rolled_back':
+            entry['phase'] = 'rolled_back'
+            if detail:
+                entry['detail'] = detail
+            state['aborted_canary'] = True
+            return
+        else:
+            entry['phase'] = 'apply_failed'
+            entry['detail'] = detail
+            state['aborted_canary'] = True
+            return
+
+        # --- веер: остальные seeded, дальние→ближние, батчи по 4 ---
+        rest = [n for n, e in nodes.items()
+                if n != canary and (e or {}).get('phase') == 'seeded']
+        rest.sort(key=lambda n: -((nodes.get(n) or {}).get('hop') or 0))
+        sem = asyncio.Semaphore(4)
+
+        async def _apply_one(name: str):
+            async with sem:
+                e = nodes.get(name) or {}
+                e['phase'] = 'applying'
+                nodes[name] = e
+                r = await _call_apply(name)
+                if not isinstance(r, dict) or not r.get('ok'):
+                    e['phase'] = 'apply_failed'
+                    e['detail'] = _apply_err(r)
+
+        await asyncio.gather(*[_apply_one(n) for n in rest])
+        pending = [n for n in rest
+                   if (nodes.get(n) or {}).get('phase') == 'applying']
+        if not pending:
+            return
+        await asyncio.sleep(health_sec)
+        last_err: dict[str, str] = {}
+        for i in range(retries):
+            if i > 0:
+                await asyncio.sleep(ROLLOUT_POLL_SEC)
+
+            async def _poll_one(name: str):
+                async with sem:
+                    ph, det = await self._rollout_poll_once(name, version)
+                    return name, ph, det
+
+            for name, ph, det in await asyncio.gather(
+                    *[_poll_one(n) for n in pending]):
+                if ph == 'updated':
+                    nodes[name]['phase'] = 'updated'
+                elif ph == 'rolled_back':
+                    nodes[name]['phase'] = 'rolled_back'
+                    if det:
+                        nodes[name]['detail'] = det
+                elif det:
+                    last_err[name] = det
+            pending = [n for n in pending
+                       if (nodes.get(n) or {}).get('phase') == 'applying']
+            if not pending:
+                break
+        for n in pending:
+            nodes[n]['phase'] = 'apply_failed'
+            nodes[n]['detail'] = (last_err.get(n)
+                                  or 'не подтвердил обновление')
 
     @staticmethod
     def _remote_download_dir(text: str, fallback: str) -> str:

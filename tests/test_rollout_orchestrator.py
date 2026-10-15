@@ -9,11 +9,11 @@ from src.internal_modules.updater import Updater
 def make_updater(tmp_path, **update_kw):
     class Ctx:
         NODE = 'NodeSelf'
+    kw = {'health_confirm_sec': 5, 'auto_check': False}
+    kw.update(update_kw)
     cfg = Config(update=UpdateConfig(
         sources=[UpdateSource(node='AdminNode', share='releases')],
-        health_confirm_sec=5,
-        auto_check=False,
-        **update_kw))
+        **kw))
     cfg.local.work_dir = tmp_path / 'work'
     ctx = Ctx()
     ctx.config = cfg
@@ -113,6 +113,55 @@ async def test_ensure_retry_uses_fresh_download_dir(tmp_path):
     assert res['phase'] == 'pending'
     assert len(saves) == 2
     assert 'new_dl' in saves[1]
+
+
+@pytest.mark.asyncio
+async def test_canary_failure_aborts_fanout(tmp_path):
+    from unittest.mock import patch
+
+    import src.internal_modules.updater as upd_mod
+    u = make_updater(tmp_path, health_confirm_sec=0, health_confirm_retries=1)
+    seen = []
+
+    async def fake_call(dst, service, method, data=None, timeout=300):
+        seen.append((dst, method))
+        if method == 'apply':
+            return {'ok': True, 'note': 'устанавливается'}
+        if service == 'updater' and method == 'status':
+            return {'ok': True, 'current': '2.0.0',
+                    'state': {'pending_boot_confirm': True, 'boot_ok': False, 'rolled_back': True, 'to': '2.1.0'}}
+        raise AssertionError((service, method))
+    u.ctx.network = type('N', (), {'call': staticmethod(fake_call)})()
+    state = {'version': '2.1.0', 'nodes': {'b': {'hop': 1, 'phase': 'seeded'}, 'c': {'hop': 2, 'phase': 'seeded'}}}
+    with patch.object(upd_mod, 'ROLLOUT_POLL_SEC', 0):
+        await u._rollout_apply(state, admin='a')
+    assert state['nodes']['b']['phase'] == 'rolled_back'
+    assert state['nodes']['c']['phase'] == 'seeded'  # веер не стартовал
+    assert not [s for s in seen if s == ('c', 'apply')]
+
+
+@pytest.mark.asyncio
+async def test_apply_status_mapping(tmp_path):
+    from unittest.mock import patch
+
+    import src.internal_modules.updater as upd_mod
+    u = make_updater(tmp_path, health_confirm_sec=0, health_confirm_retries=1)
+
+    async def fake_call(dst, service, method, data=None, timeout=300):
+        if method == 'apply':
+            return {'ok': True, 'note': 'устанавливается'}
+        if service == 'updater' and method == 'status':
+            if dst == 'b':
+                return {'ok': True, 'current': '2.1.0', 'state': {'boot_ok': True, 'to': '2.1.0'}}
+            return {'ok': True, 'current': '2.0.0',
+                    'state': {'pending_boot_confirm': True, 'boot_ok': False, 'rolled_back': True, 'to': '2.1.0'}}
+        raise AssertionError((service, method))
+    u.ctx.network = type('N', (), {'call': staticmethod(fake_call)})()
+    state = {'version': '2.1.0', 'nodes': {'b': {'hop': 1, 'phase': 'seeded'}, 'c': {'hop': 2, 'phase': 'seeded'}}}
+    with patch.object(upd_mod, 'ROLLOUT_POLL_SEC', 0):
+        await u._rollout_apply(state, admin='a')
+    assert state['nodes']['b']['phase'] == 'updated'
+    assert state['nodes']['c']['phase'] == 'rolled_back'
 
 
 @pytest.mark.asyncio
