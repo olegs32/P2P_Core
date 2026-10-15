@@ -38,3 +38,22 @@ async def test_rollout_start_rejects_concurrent(tmp_path):
             await live
         except asyncio.CancelledError:
             pass
+
+
+@pytest.mark.asyncio
+async def test_ensure_appends_source_and_cdn(tmp_path):
+    u = make_updater(tmp_path)
+    calls = {}
+
+    async def fake_call(dst, service, method, data=None, timeout=10):
+        if service == 'config' and method == 'get':
+            return {'ok': True, 'text': 'node: b\nupdate:\n  sources: []\nfiles:\n  shares: []\n', 'mtime': 1.0}
+        if service == 'config' and method == 'save':
+            calls['saved'] = data['text']
+            return {'ok': True}
+        raise AssertionError((service, method))
+
+    u.ctx.network = type('N', (), {'call': staticmethod(fake_call)})()
+    res = await u._rollout_ensure_node('b', admin='adminnode', share='releases', download_dir='downloads')
+    assert res['phase'] == 'pending'
+    assert 'adminnode' in calls['saved'] and 'cdn_update' in calls['saved']

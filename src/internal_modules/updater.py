@@ -666,3 +666,121 @@ class Updater(ModuleGeneric):
 
     async def _rollout_run(self, ro: dict) -> None:
         ro['state']['error'] = 'not implemented'
+
+    async def _rollout_ensure_node(self, dst: str, admin: str, share: str, download_dir: str) -> dict:
+        from src.internal_modules.rollout import ensure_cdn_share, ensure_update_source
+        try:
+            got = await self.ctx.network.call(
+                dst=dst, service='config', method='get', data={}, timeout=15)
+        except Exception as e:
+            return {'phase': 'unreachable', 'detail': str(e)}
+        if not isinstance(got, dict) or not got.get('ok'):
+            return {'phase': 'unreachable',
+                    'detail': (got or {}).get('error', 'config.get failed')
+                    if isinstance(got, dict) else 'config.get failed'}
+        text = got.get('text', '')
+        base_mtime = got.get('mtime')
+        # download_dir удаленной ноды — из ЕЕ конфига
+        try:
+            import yaml as _yaml
+            _parsed = _yaml.safe_load(text) or {}
+            _dd = ((_parsed.get('files') or {}).get('download_dir')) or download_dir
+        except Exception:
+            _dd = download_dir
+        new_text = text
+        patched = ensure_update_source(new_text, admin, share)
+        if patched is not None:
+            new_text = patched
+        patched = ensure_cdn_share(new_text, str(_dd))
+        if patched is not None:
+            new_text = patched
+        if new_text == text:
+            return {'phase': 'pending'}
+        for attempt in range(2):
+            try:
+                saved = await self.ctx.network.call(
+                    dst=dst, service='config', method='save',
+                    data={'text': new_text, 'base_mtime': base_mtime, 'restart': False},
+                    timeout=15)
+            except Exception as e:
+                return {'phase': 'unreachable', 'detail': str(e)}
+            if isinstance(saved, dict) and saved.get('ok'):
+                return {'phase': 'pending'}
+            if isinstance(saved, dict) and saved.get('conflict') and attempt == 0:
+                try:
+                    got = await self.ctx.network.call(
+                        dst=dst, service='config', method='get', data={}, timeout=15)
+                except Exception as e:
+                    return {'phase': 'unreachable', 'detail': str(e)}
+                if not isinstance(got, dict) or not got.get('ok'):
+                    return {'phase': 'unreachable', 'detail': 'config.get failed'}
+                text = got.get('text', '')
+                base_mtime = got.get('mtime')
+                new_text = text
+                p1 = ensure_update_source(new_text, admin, share)
+                if p1 is not None:
+                    new_text = p1
+                p2 = ensure_cdn_share(new_text, str(_dd))
+                if p2 is not None:
+                    new_text = p2
+                if new_text == text:
+                    return {'phase': 'pending'}
+                continue
+            err = (saved or {}).get('error', 'config.save failed') \
+                if isinstance(saved, dict) else 'config.save failed'
+            return {'phase': 'ensure_failed', 'detail': err}
+        return {'phase': 'ensure_failed', 'detail': 'conflict: config изменён'}
+
+    async def _rollout_phase0(self, ro: dict) -> None:
+        from src.internal_modules.rollout import RolloutJournal, plan_waves
+        st = ro['state']
+        try:
+            topo = await self.ctx.network.call(
+                dst=self.ctx.NODE, service='netinfo', method='topology',
+                data={'ttl': 4}, timeout=30)
+        except Exception as e:
+            st['error'] = f'topology failed: {e}'
+            return
+        if not isinstance(topo, dict) or not topo.get('ok'):
+            st['error'] = 'topology failed'
+            return
+        seed, apply = plan_waves(topo, self.ctx.NODE)
+        if not ro.get('include_self'):
+            seed = [[n for n in w if n != self.ctx.NODE] for w in seed]
+            apply = [[n for n in w if n != self.ctx.NODE] for w in apply]
+            seed = [w for w in seed if w]
+            apply = [w for w in apply if w]
+        st['waves_seed'] = seed
+        st['waves_apply'] = apply
+        nodes: dict[str, dict] = {}
+        for i, wave in enumerate(seed):
+            for n in wave:
+                nodes[n] = {'hop': i + 1, 'phase': 'pending'}
+        st['nodes'] = nodes
+        journal = RolloutJournal(self._work_dir(), ro['version'])
+        journal.write(st)
+
+    async def _rollout_ensure_all(self, ro: dict, admin: str, share: str, download_dir: str) -> None:
+        from src.internal_modules.rollout import RolloutJournal
+        st = ro['state']
+        nodes = st.get('nodes') or {}
+        if not nodes:
+            return
+
+        async def _one(name: str):
+            try:
+                res = await self._rollout_ensure_node(
+                    name, admin=admin, share=share, download_dir=download_dir)
+            except Exception as e:
+                res = {'phase': 'unreachable', 'detail': str(e)}
+            return name, res
+
+        results = await asyncio.gather(*[_one(n) for n in nodes])
+        for name, res in results:
+            entry = nodes.get(name) or {}
+            entry.update(res)
+            entry['phase'] = res.get('phase', 'ensure_failed')
+            nodes[name] = entry
+        st['nodes'] = nodes
+        journal = RolloutJournal(self._work_dir(), ro['version'])
+        journal.write(st)
