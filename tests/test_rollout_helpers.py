@@ -32,3 +32,12 @@ def test_ensure_cdn_share_appends_and_idempotent():
     patched = ensure_cdn_share(text, 'downloads')
     assert patched is not None and 'cdn_update' in patched
     assert ensure_cdn_share(patched, 'downloads') is None
+
+
+def test_journal_roundtrip(tmp_path):
+    from src.internal_modules.rollout import RolloutJournal
+    j = RolloutJournal(tmp_path, '2.1.0')
+    state = {'nodes': {'b': {'phase': 'seeded'}}}
+    j.write(state)
+    assert (tmp_path / 'rollout_2.1.0.json').is_file()
+    assert j.read() == state

@@ -1,4 +1,7 @@
 from collections import deque
+from pathlib import Path
+import json
+import os
 
 import yaml
 
@@ -55,3 +58,21 @@ def ensure_cdn_share(text: str, download_dir: str) -> str | None:
     data.setdefault('files', {}).setdefault('shares', []).append(
         {'name': 'cdn_update', 'path': str(download_dir), 'allow': [], 'chunk_size': 262144})
     return yaml.dump(data, allow_unicode=True, sort_keys=False)
+
+
+class RolloutJournal:
+    def __init__(self, work_dir: Path, version: str):
+        safe = ''.join(c for c in version if c.isalnum() or c in '.-_')
+        self.path = Path(work_dir) / f'rollout_{safe}.json'
+
+    def write(self, state: dict) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = self.path.with_name(self.path.name + '.tmp')
+        tmp.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding='utf-8')
+        os.replace(tmp, self.path)
+
+    def read(self) -> dict:
+        try:
+            return json.loads(self.path.read_text(encoding='utf-8'))
+        except (OSError, ValueError):
+            return {}
