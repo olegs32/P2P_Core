@@ -75,7 +75,7 @@ class FilesConfig(BaseModel):
 class UpdateSource(BaseModel):
     """Узел-источник релизов для сервиса обновлений."""
     node: str                       # имя узла в mesh
-    share: str = 'releases'         # имя шары с релизами на этом узле
+    share: str = 'dist'           # имя шары с релизами на этом узле (каталог dist сборки)
 
     @field_validator('node', mode='before')
     @classmethod

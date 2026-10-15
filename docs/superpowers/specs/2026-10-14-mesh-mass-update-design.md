@@ -5,7 +5,7 @@
 ## 1. Контекст и бриф
 
 Одним действием с админ-ноды перевести весь мульти-хоп mesh на новый релиз,
-собранный `updater.build` (`dist/<ver>/` + `manifest.json` в шаре `releases`).
+собранный `updater.build` (`dist/<ver>/` + `manifest.json` в шаре `dist`).
 Оркестратор — новый код только в ядерном `Updater` на админе (фоновая задача
 в event loop узла, переживает рестарты панели). Локальная механика
 `updater.apply/download` (hash + WinVerifyTrust + `_update.exe` + boot-confirm
@@ -40,7 +40,7 @@
 Новый код — только `src/internal_modules/updater.py` (+ модели конфига §8,
 + UI-кнопки поверх, отдельным пунктом). Три новых RPC на админе:
 
-- `rollout_start({version, share='releases', include_self=false})` →
+- `rollout_start({version, share='dist', include_self=false})` →
   проверка локального `build`-артефакта, построение плана (волны по hop),
   запуск фоновой `asyncio.Task`, немедленный возврат `{ok, plan_id}`
   (волны видны через `rollout_status`). Параметр `share` принимается, но
@@ -89,7 +89,7 @@
 (локальный `dist/<ver>/manifest.json` на админе, проверенный на `start`).
 - wave0: оркестратор вызывает на каждой ноде штатный `updater.download`
   (через mesh-RPC `call(dst=N, service='updater', ...)`): нода сама находит
-  версию у админа (источники выровнены в §5) и тянет из `releases`-шары.
+  версию у админа (источники выровнены в §5) и тянет из `dist`-шары.
   Верификация sha — внутри `updater.download` (poll staged + сверка).
 - waveN (N≥1): оркестратор вызывает на каждой ноде напрямую `files.download`
   (mesh-RPC на `service='files'` ноды N) с явным источником-зеркалом:

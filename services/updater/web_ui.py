@@ -158,17 +158,23 @@ if st is not None:
         st.subheader("Массовое обновление сети")
         st.caption(
             "Каскадный rollout: сид exe волнами через шару `cdn_update`, "
-            "затем веер штатного apply (дальние первыми). Best-effort, отчет по нодам.")
-        ver = st.text_input("Версия", key="rollout_ver", placeholder="2.1.0")
+            "затем веер штатного apply (дальние первыми). Best-effort, отчет по нодам. "
+            "Версия — из списка выше (кнопка «Проверить обновления»).")
+        by_ver = {a['version']: a for a in available}
+        ver = st.selectbox(
+            "Версия для rollout",
+            options=[a['version'] for a in available],
+            format_func=lambda v: f"{v} (источник: {(by_ver.get(v) or {}).get('node', '?')})",
+            key="rollout_ver")
         inc_self = st.checkbox("Включая себя (отложено — см. ниже)",
                                key="rollout_self", value=False, disabled=True)
         st.caption("Самообновление админа отложено (roadmap спеки) — "
                    "админ обновляется отдельно через свою сборку.")
         rc1, rc2, rc3 = st.columns([1, 1, 2])
-        if rc1.button("Стартовать rollout", key="rollout_start", disabled=not (ver or "").strip()):
+        if rc1.button("Стартовать rollout", key="rollout_start", disabled=not ver):
             try:
                 res = rpc.call('updater', 'rollout_start',
-                               {'version': ver.strip(), 'include_self': bool(inc_self)},
+                               {'version': ver, 'include_self': bool(inc_self)},
                                timeout=30)
                 (st.success if res.get('ok') else st.error)(
                     res.get('plan_id') or res.get('error', 'ошибка'))

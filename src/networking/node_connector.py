@@ -24,6 +24,8 @@ KEEPALIVE_INTERVAL = 20   # сек между проверками
 KEEPALIVE_TIMEOUT  = 60   # сек без трафика → ping
 DEAD_TIMEOUT       = 90   # сек без трафика → unreachable
 
+MAX_RETRY_BACKOFF  = 600  # потолок ретрая к давно мёртвому пиру: раз в 10 мин, тихо
+
 
 class NodeConnector(ModuleGeneric):
     """Исходящее подключение к другой ноде."""
@@ -69,25 +71,53 @@ class NodeConnector(ModuleGeneric):
     #  Правило подключения
     # ------------------------------------------------------------------ #
 
-    def _already_connected(self) -> bool:
-        """Узел уже подключен — клиентским или серверным каналом.
+    def _has_direct_transport(self) -> bool:
+        """Есть ли живой ПРЯМОЙ канал к пиру (inbound server-side или
+        outbound client-side этого коннектора).
 
-        Проверяем и статус таблицы, и фактический транспорт в Router:
+        Непрозрачно для mesh-маршрутов через via: наличие пути через третью
+        ноду — не повод отменять прямой dial, иначе возрождение прямого
+        исходящего подключения блокируется, пока жив любой gossip-путь.
+        """
+        net = self.ctx.network
+        if net.nodes_manager.get(self.peer_node_id) is not None:
+            return True
+        return net.router.has_client_ws(self.peer_node_id)
+
+    def _already_connected(self) -> bool:
+        """Узел уже подключен прямым каналом (входящим или исходящим).
+
+        Проверяем статус таблицы и фактический прямой транспорт в Router:
         запись может быть CONNECTED при уже отвалившемся сокете и наоборот.
+        Маршруты через via здесь не учитываются — см. _has_direct_transport.
         """
         info = self.ctx.network.neighbor_table.get(self.peer_node_id)
         if info and info.status.value == 'connected':
             return True
-        return self.ctx.network.router.get_transport_to(self.peer_node_id) is not None
+        return self._has_direct_transport()
+
+    def _log_retry(self, msg: str, backoff: float):
+        """Лог неудачной попытки: первые ретраи — warning, давно мёртвый
+        пир (backoff вырос) — debug, чтобы не спамить каждые 10 минут."""
+        if backoff <= 10:
+            self.log.warning(msg)
+        else:
+            self.log.debug(f'{msg} (retry in {backoff:.0f}s)')
 
     # ------------------------------------------------------------------ #
     #  Подключение
     # ------------------------------------------------------------------ #
 
     async def _connect_loop(self):
-        backoff = 5  # R8: экспоненциальный отступ при повторных отказах handshake
+        # R8 + tombstone: экспоненциальный backoff до MAX_RETRY_BACKOFF (10 мин).
+        # Давно мёртвый пир опрашивается редко и тихо (только debug),
+        # запись-надгробие в NeighborTable при этом не удаляется — revive
+        # происходит через register_connected при успешном dial. Пауза между
+        # попытками — одна, в finally (спит текущий backoff).
+        backoff = 5
         while True:
             if self._already_connected():
+                backoff = 5
                 await asyncio.sleep(5)
                 continue
             try:
@@ -112,15 +142,13 @@ class NodeConnector(ModuleGeneric):
                                 f'Lex reject from {self.peer_node_id} — '
                                 f'waiting reverse dial 5s'
                             )
-                            await asyncio.sleep(5)
                             continue
-                        # R8: перманентный отказ не должен долбить каждые ~15с
-                        backoff = min(backoff * 2, 300)
-                        self.log.warning(
-                            f'Handshake rejected by {self.peer_node_id} '
-                            f'(retry in {backoff}s)'
+                        # перманентный отказ не должен долбить постоянно
+                        backoff = min(backoff * 2, MAX_RETRY_BACKOFF)
+                        self._log_retry(
+                            f'Handshake rejected by {self.peer_node_id}',
+                            backoff,
                         )
-                        await asyncio.sleep(backoff)
                         continue
 
                     self.log.info(f'Connected to {self.peer_node_id}')
@@ -150,19 +178,27 @@ class NodeConnector(ModuleGeneric):
                             )
 
             except websockets.exceptions.ConnectionClosedError as e:
-                self.log.warning(f'Connection to {self.peer_node_id} closed: {e}')
+                backoff = min(backoff * 2, MAX_RETRY_BACKOFF)
+                self._log_retry(
+                    f'Connection to {self.peer_node_id} closed: {e}', backoff
+                )
             except Exception as e:
                 if isinstance(e, OSError) and getattr(e, 'winerror', None) == 1225:
                     pass
                 else:
-                    self.log.error(f'Connector error ({self.peer_node_id}): {e}')
+                    backoff = min(backoff * 2, MAX_RETRY_BACKOFF)
+                    self._log_retry(
+                        f'Connector error ({self.peer_node_id}): {e}', backoff
+                    )
             finally:
                 self._ws = None
                 self.ctx.network.router.unregister_client_ws(self.peer_node_id)
-                # пир может оставаться подключенным входящим каналом
-                if not self.ctx.network.router.get_transport_to(self.peer_node_id):
+                # пир может оставаться подключенным входящим каналом —
+                # хороним только если прямого канала не осталось (маршрут
+                # через via — не повод считать прямой канал живым)
+                if not self._has_direct_transport():
                     self.ctx.network.neighbor_table.mark_unreachable(self.peer_node_id)
-                await asyncio.sleep(5)
+                await asyncio.sleep(backoff)
 
     async def _handshake(self, ws) -> bool:
         """Отправить HELLO, дождаться HELLO_ACK или HELLO_REJECT."""

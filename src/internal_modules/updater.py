@@ -239,7 +239,7 @@ class Updater(ModuleGeneric):
 
     @rpc
     async def check(self, data: dict = None) -> dict:
-        """Опросить источники: доступные версии из манифестов releases."""
+        """Опросить источники: доступные версии из манифестов (шара dist)."""
         cfg = self.ctx.config.update
         sources = list(cfg.sources)
         wanted = (data or {}).get('node')
@@ -723,12 +723,12 @@ class Updater(ModuleGeneric):
 
         cfg = self.ctx.config
         admin = self.ctx.NODE
-        share = 'releases'
+        share = 'dist'
         try:
             sources = list(
                 getattr(getattr(cfg, 'update', None), 'sources', []) or [])
             if sources:
-                share = getattr(sources[0], 'share', 'releases') or 'releases'
+                share = getattr(sources[0], 'share', 'dist') or 'dist'
         except Exception:
             pass
         try:

@@ -172,30 +172,48 @@ def _render_quick_templates(rpc):
                 _append_snippet_to_editor(snippet)
     elif kind == "update.sources":
         own, nodes = _get_known_nodes(rpc)
-        node_ids = [n['node_id'] for n in nodes] or ["NodeX"]
+        # В списке — только ноды, у которых реально есть шары.
+        # Никаких дефолтов вида "releases"/"NodeX" здесь быть не должно.
+        shares_by_node: dict = {}
+        for n in nodes:
+            nid = n.get('node_id')
+            if not nid:
+                continue
+            try:
+                res = rpc.call('files', 'list_shares', {}, dst=nid, timeout=5)
+            except Exception:
+                continue
+            if isinstance(res, dict) and res.get('ok'):
+                names = [s.get('name') for s in res.get('shares', []) if s.get('name')]
+                if names:
+                    shares_by_node[nid] = names
+        if not shares_by_node:
+            st.warning("Нет узлов с шарами — сначала расшарьте каталог (files.shares) на узле-источнике.")
+            return
+        node_ids = sorted(shares_by_node.keys())
+        if st.session_state.get('cfg_tpl_upd_node') not in shares_by_node:
+            st.session_state['cfg_tpl_upd_node'] = node_ids[0]
         c1, c2 = st.columns(2)
         with c1:
             sel_node = st.selectbox("node (источник релизов)", node_ids, key="cfg_tpl_upd_node")
             st.caption("Узел, где лежит шара с релизами")
         with c2:
-            shares = []
-            shares_err = None
+            shares = list(shares_by_node.get(sel_node, []))
             try:
-                res = rpc.call('files', 'list_shares', {}, dst=sel_node, timeout=10)
+                res = rpc.call('files', 'list_shares', {}, dst=sel_node, timeout=5)
                 if isinstance(res, dict) and res.get('ok'):
-                    shares = [s['name'] for s in res.get('shares', [])]
-                elif isinstance(res, dict) and res.get('error'):
-                    shares_err = res.get('error')
-            except Exception as e:
-                shares_err = str(e)
-            if shares:
-                sel_share = st.selectbox("share", shares, key="cfg_tpl_upd_share")
-            else:
-                sel_share = st.text_input("share", value="releases", key="cfg_tpl_upd_share_manual", help="Имя шары с релизами на узле-источнике")
-                if shares_err:
-                    st.caption(f"Шары не получены: {shares_err} — введите вручную")
-            share_val = sel_share if isinstance(sel_share, str) else "releases"
-        preview = f'update:\n  sources:\n    - node: \"{sel_node}\"\n      share: \"{share_val}\"'
+                    fresh = [s.get('name') for s in res.get('shares', []) if s.get('name')]
+                    if fresh:
+                        shares = fresh
+                        shares_by_node[sel_node] = fresh
+            except Exception:
+                pass
+            if not shares:
+                st.warning(f"На узле `{sel_node}` шар больше нет — выберите другой узел.")
+                return
+            sel_share = st.selectbox("share", shares, key="cfg_tpl_upd_share")
+            share_val = sel_share if isinstance(sel_share, str) else ""
+        preview = f'update:\n  sources:\n    - node: "{sel_node}"\n      share: "{share_val}"'
         st.code(preview, language="yaml")
         if st.button("➕ Вставить sources в редактор", key="cfg_tpl_upd_add", type="primary"):
             if not sel_node or not share_val:

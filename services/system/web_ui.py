@@ -498,24 +498,6 @@ def _render_connect(rpc):
     # B9: значения пишутся в on_click-колбэке — он выполняется ДО рендера
     # виджетов connect_* в следующем ране; прямое присвоение st.session_state.*
     # после инстанцирования виджетов кидает StreamlitAPIException
-    known = detail.get('known', [])
-    if known:
-        st.markdown("**Известные узлы (для справки):**")
-        connected_ids = [c.get('node_id') for c in connected]
-        for n in known:
-            nid = n.get('node_id', '?')
-            h = n.get('host', '?')
-            p = n.get('port', '?')
-            badge = "🟢" if nid in connected_ids else "🟡"
-
-            def _fill_node(nid=nid, h=h, p=p):
-                st.session_state.connect_host = h if h != '?' else ''
-                st.session_state.connect_port = int(p) if p != '?' else 9000
-                st.session_state.connect_node_id = nid
-
-            st.button(f"{badge} {nid} — {h}:{p}",
-                      key=f"fill_{nid}", on_click=_fill_node)
-
     st.divider()
 
     if st.button("🔌 Подключиться", type="primary", key="connect_btn"):
@@ -557,6 +539,27 @@ def _render_connect(rpc):
                     st.toast(err, icon="❌")
 
                 st.rerun()
+
+
+    known = detail.get('known', [])
+    if known:
+        st.markdown("**Известные узлы (для справки):**")
+        connected_ids = [c.get('node_id') for c in connected]
+        for n in known:
+            nid = n.get('node_id', '?')
+            h = n.get('host', '?')
+            p = n.get('port', '?')
+            badge = "🟢" if nid in connected_ids else "🟡"
+
+            def _fill_node(nid=nid, h=h, p=p):
+                st.session_state.connect_host = h if h != '?' else ''
+                st.session_state.connect_port = int(p) if p != '?' else 9000
+                st.session_state.connect_node_id = nid
+
+            st.button(f"{badge} {nid} — {h}:{p}",
+                      key=f"fill_{nid}", on_click=_fill_node)
+
+
 
     # ---- Активные коннекторы ----
     st.divider()

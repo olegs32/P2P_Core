@@ -118,9 +118,11 @@ class NeighborTable:
 
     def mark_unreachable(self, node_id: str):
         info = self._table.get(_canon(node_id))
-        if info:
+        if info and info.status != NeighborStatus.UNREACHABLE:
             info.status = NeighborStatus.UNREACHABLE
             log.warning(f'Marked unreachable: {node_id}')
+        # уже UNREACHABLE или записи нет — тихо (keepalive опрашивает
+        # мёртвых пиров каждые 20с, спам в лог не нужен)
 
     def update_services(self, node_id: str, services: List[str]):
         info = self._table.get(_canon(node_id))
@@ -263,14 +265,19 @@ class NeighborTable:
         if added or updated:
             log.debug(f'Gossip from {from_node}: +{added} new, ~{updated} refreshed')
 
-    def sweep(self, now: float | None = None, ttl_known: float = 90, ttl_unreach: float = 300):
-        """TTL-чистка: KNOWN без обновления >ttl_known → UNREACHABLE, UNREACHABLE >ttl_unreach → удаление.
+    def sweep(self, now: float | None = None, ttl_known: float = 90):
+        """TTL-чистка: KNOWN без обновления >ttl_known → UNREACHABLE.
+
+        Tombstone-семантика: UNREACHABLE-записи НЕ удаляются — мёртвая нода
+        остаётся в таблице как надгробие, NodeConnector тихо ретраит
+        (backoff до 10 мин), revive — через register_connected при успешном
+        dial или через merge_gossip. Удаление надгробий убивало исходящие
+        ретраи: запись исчезала вместе с контекстом (via/hops/адрес).
 
         Также каскад: если via стал UNREACHABLE, зависимые KNOWN тоже помечаются.
         Вызывается из Network._gossip_loop (30с) — единый владелец таблицы.
         """
         now = now if now is not None else time.time()
-        to_remove = []
         for nid, info in list(self._table.items()):
             age = now - info.last_ts
             if info.status == NeighborStatus.KNOWN and age > ttl_known:
@@ -282,11 +289,6 @@ class NeighborTable:
                 else:
                     info.status = NeighborStatus.UNREACHABLE
                     log.warning(f'Sweep: {nid} stale {age:.0f}s >{ttl_known:.0f}s -> unreachable')
-            elif info.status == NeighborStatus.UNREACHABLE and age > ttl_unreach:
-                to_remove.append(nid)
-        for nid in to_remove:
-            self._table.pop(nid, None)
-            log.info(f'Sweep: removed {nid} (UNREACHABLE {ttl_unreach:.0f}s)')
 
         # каскад: KNOWN чей via стал UNREACHABLE — пометить
         for nid, info in list(self._table.items()):

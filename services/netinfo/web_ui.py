@@ -176,6 +176,13 @@ def _render_network_map(rpc):
     )
 
     auto = st.toggle("Автообновление (5 сек)", value=False, key="net_map_auto")
+    st.toggle(
+        "Жёлтые gossip-связи",
+        value=True,
+        key="net_map_show_gossip",
+        help="Пунктирные линии «известен через via» — не физические связи, "
+             "а записи из gossip-таблицы. Выключи, чтобы осталась только физика.",
+    )
 
     if auto:
         @st.fragment(run_every="5s")
@@ -302,9 +309,13 @@ def _draw_network_map(rpc):
             ))
 
     # gossip-пунктир для known-узлов (не физическая связь!) — с противоположным скруглением
-    for n in nodes_data:
-        via = n.get('via')
-        if n.get('status') == 'known' and via in by_id:
+    # выключатель — в _render_network_map перед картой (ключ net_map_show_gossip)
+    show_gossip = st.session_state.get("net_map_show_gossip", True)
+    if show_gossip:
+        for n in nodes_data:
+            via = n.get('via')
+            if n.get('status') != 'known' or via not in by_id:
+                continue
             a_edges.append(Edge(
                 source=via,
                 target=n['node_id'],
@@ -316,8 +327,39 @@ def _draw_network_map(rpc):
                 title=f"{n['node_id']} известен через {via} (gossip)",
             ))
 
+    # Настройка физики под размер сети: дефолтный barnesHut vis-network
+    # (centralGravity ~0.3, springLength ~95, avoidOverlap 0) при большом
+    # числе нод стягивает всё в центр с наслоением. Ослабляем центральную
+    # гравитацию, усиливаем отталкивание, удлиняем пружины и включаем
+    # avoidOverlap; стабилизацию масштабируем от числа узлов. Высоту
+    # холста тоже растим с числом узлов, чтобы было куда разложиться.
+    n_total = len(nodes_data) + len(clients)
+    crowded = n_total > 12
+    map_height = 480 if n_total <= 10 else min(900, 480 + (n_total - 10) * 14)
+    physics_opts = {
+        "enabled": True,
+        "solver": "barnesHut",
+        "barnesHut": {
+            # чем больше сеть — тем сильнее расталкивание и слабее стягивание в центр
+            "gravitationalConstant": -8000 if not crowded else -22000,
+            "centralGravity": 0.25 if not crowded else 0.08,
+            "springLength": 180 if not crowded else 260,
+            "springConstant": 0.04,
+            "damping": 0.09,
+            "avoidOverlap": 0 if not crowded else 1,
+        },
+        "stabilization": {
+            "enabled": True,
+            "iterations": max(400, n_total * 40),
+            "fit": True,
+        },
+        "minVelocity": 0.75,
+        "maxVelocity": 100,
+        "timestep": 0.5,
+    }
+
     config = Config(
-        height=480,
+        height=map_height,
         width=900,
         directed=True,
         physics=True,
@@ -327,16 +369,36 @@ def _draw_network_map(rpc):
         collapsible=False,
         node={'labelProperty': 'label'},
         link={'labelProperty': 'label', 'renderLabel': False},
+        interaction={'hover': True, 'zoomView': True, 'dragView': True},
+        layout={'hierarchical': {'enabled': False}, 'improvedLayout': True},
     )
+    # Config.__init__ принимает physics только как bool-флаг (кладёт его в
+    # physics.enabled), поэтому готовый словарь подменяем после конструктора —
+    # иначе dict попал бы в enabled и физика сломалась бы.
+    config.physics = physics_opts
+    # Ширина — на всю ширину рамки/экрана: Config форматирует width как
+    # f"{width}px", поэтому фиксированные 900px оставляли пустоты справа
+    # (широкий layout) или обрезались (узкий). vis-network/react-graph-vis
+    # принимает и проценты — подменяем после конструктора, до agraph().
+    config.width = "100%"
 
-    # тонкая рамка вокруг карты (пунктир) — визуально отделяет карту
-    # Используем st.container(border=True) + CSS для пунктира
+    # Растягиваем iframe кастомного компонента и canvas на всю ширину
+    # колонки/рамки; селектор stVerticalBlockBorderWrapper сужен до карты,
+    # чтобы не задевать остальные border-контейнеры панели.
     st.markdown(
         """<style>
         /* пунктирная тонкая рамка вокруг карты сети */
-        div[data-testid="stVerticalBlockBorderWrapper"] {
+        div[data-testid="stVerticalBlockBorderWrapper"]:has(div[data-testid="stCustomComponentV1"]) {
             border: 1px dashed #888 !important;
             border-radius: 8px !important;
+        }
+        /* карта на всю ширину рамки: компонент + iframe + canvas */
+        div[data-testid="stCustomComponentV1"],
+        div[data-testid="stCustomComponentV1"] > iframe,
+        div[data-testid="stCustomComponentV1"] div.vis-network,
+        div[data-testid="stCustomComponentV1"] canvas {
+            width: 100% !important;
+            max-width: 100% !important;
         }
         </style>""",
         unsafe_allow_html=True,

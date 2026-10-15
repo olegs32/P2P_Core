@@ -45,12 +45,12 @@ def render(rpc):
     extra_args = " ".join(_selected_extras)
 
     # Параллельная сборка Web-UI
-    build_webui = st.checkbox("Собирать Web-UI NODE (параллельно)", value=True, help="Собрать WebUI_P2P_Core.exe параллельно с Node")
+    build_webui = st.checkbox("Собирать Web-UI NODE (параллельно)", value=False, help="Собрать WebUI_P2P_Core.exe параллельно с Node")
 
     # Services чекбоксы с транзитивностью
     st.subheader("Сервисы в сборке")
     # Группировка по наличию
-    exclude_default = ['deployer', 'eyesauron', 'webpanel']
+    exclude_default = ['deployer', 'eyesauron', 'webpanel', 'compute_full', 'demo', 'test']
     names = [s["name"] for s in services ]
     defaults = [name for name in names if name not in exclude_default]
     # multiselect для выбора
@@ -362,7 +362,8 @@ def render(rpc):
                 if st2.get("version"):
                     st.caption(f"Сборка: {st2.get('version')} state={state}")
             if logs:
-                st.code("\n".join(logs[-100:]), language="text")
+                with st.container(height=630, border=True):
+                    st.code("\n".join(logs[-30:]), language="text")
                 if state == "running":
                     st.caption("⏳ Сборка идёт — логи обновляются...")
                 elif state == "failed":

@@ -196,6 +196,28 @@ def _gen_per_node_config(target_node: str, base_cfg_path: Path | None = None,
             peers.append({"node_id": admin_canon, "uri": uri})
     base_dict["local"]["peers"] = peers
 
+    # update.sources — гарантировать источник обновлений на админа.
+    # Иначе новая нода не видит релизы: updater.check нечего опрашивать
+    # (rollout ensure дописал бы позже, но дефолт должен быть сразу).
+    # Шара 'dist' — дефолт UpdateSource и rollout (каталог dist сборки);
+    # уже имеющаяся
+    # запись про админа наследуется как есть (другой share не затираем).
+    if admin_node and _canon_node(str(admin_node)) != canon:
+        admin_canon = _canon_node(str(admin_node))
+        upd = base_dict.get("update")
+        if not isinstance(upd, dict):
+            upd = {}
+            base_dict["update"] = upd
+        sources = upd.get("sources") or []
+        if not isinstance(sources, list):
+            sources = []
+        for s in sources:
+            if isinstance(s, dict) and _canon_node(s.get("node", "")) == admin_canon:
+                break
+        else:
+            sources.append({"node": admin_canon, "share": "dist"})
+        upd["sources"] = sources
+
     # Per-target port override (два узла на одном хосте -> bind-конфликт без него)
     if port is not None:
         if not isinstance(base_dict.get("network"), dict):

@@ -174,17 +174,28 @@ with st.sidebar:
     st.divider()
 
     # ---- Сервисы с UI ----
+    # service_view рендерит ЛОКАЛЬНЫЙ web_ui.py, поэтому для удалённой ноды
+    # показываем только пересечение: сервисы удалённой ноды ∩ локальные с UI.
+    # Иначе — заглушка "не имеет веб-интерфейса" (напр. spawner).
+    # deployer — только на локальной (админ) ноде.
     _svc_cache_key = f'_svc_cache_{selected_node}'
+    _local_ui_key = '_svc_cache_local_ui'
     try:
-        if selected_node == local_node:
-            ui_services = rpc.call('webpanel', 'discover_ui_services')
+        if _local_ui_key in st.session_state:
+            local_ui = set(st.session_state[_local_ui_key])
         else:
-            # Сервисы берутся из NeighborTable (голосование) — отдельный RPC не нужен
-            ui_services = []
+            local_ui = set(rpc.call('webpanel', 'discover_ui_services'))
+            st.session_state[_local_ui_key] = sorted(local_ui)
+        if selected_node == local_node:
+            ui_services = sorted(local_ui)
+        else:
+            # Сервисы удалённой ноды — из NeighborTable (gossip), отдельный RPC не нужен
+            remote_services = []
             for n in status.get('connected', []) + status.get('known', []):
                 if n.get('node_id') == selected_node:
-                    ui_services = list(n.get('services', []))
+                    remote_services = list(n.get('services', []))
                     break
+            ui_services = [s for s in remote_services if s in local_ui and s != 'deployer']
         if ui_services:
             st.session_state[_svc_cache_key] = ui_services
         elif _svc_cache_key in st.session_state:
@@ -195,6 +206,10 @@ with st.sidebar:
 
     # ---- Текущая страница ----
     if 'current_page' not in st.session_state:
+        st.session_state.current_page = 'home'
+    # После смены узла открытая страница может отсутствовать на новой ноде
+    # (напр. deployer/spawner) — вернуться на главную вместо заглушки.
+    if st.session_state.current_page != 'home' and st.session_state.current_page not in ui_services:
         st.session_state.current_page = 'home'
 
     # ---- Главная — кнопка ----

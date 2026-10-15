@@ -40,7 +40,7 @@ def _canon(s) -> str:
     return s.strip().lower() if isinstance(s, str) else s
 
 
-def ensure_update_source(text: str, admin: str, share: str = 'releases') -> str | None:
+def ensure_update_source(text: str, admin: str, share: str = 'dist') -> str | None:
     data = yaml.safe_load(text) or {}
     admin = _canon(admin)
     sources = ((data.get('update') or {}).get('sources')) or []
