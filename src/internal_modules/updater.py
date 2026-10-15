@@ -646,6 +646,7 @@ class Updater(ModuleGeneric):
         }
         t = asyncio.create_task(self._rollout_run(self._rollout))
         self._rollout['task'] = t
+        self._tasks.append(t)  # stop() гасит и фоновый rollout (cancel done-задачи — no-op)
         return {'ok': True, 'plan_id': self._rollout['plan_id']}
 
     @rpc
@@ -666,6 +667,22 @@ class Updater(ModuleGeneric):
         return task is None or task.done()
 
     async def _rollout_run(self, ro: dict) -> None:
+        """Гард верхнего уровня: смерть задачи всегда фиксируется в журнале."""
+        from src.internal_modules.rollout import RolloutJournal
+        st = ro['state']
+        version = ro.get('version') or st.get('version', '')
+        journal = RolloutJournal(self._work_dir(), version)
+        try:
+            await self._rollout_run_inner(ro)
+        except Exception as e:
+            st['error'] = f'rollout failed: {e}'
+        finally:
+            try:
+                journal.write(st)
+            except Exception:
+                pass
+
+    async def _rollout_run_inner(self, ro: dict) -> None:
         """Склейка фаз 0→1→A→B с журналом и проверкой cancelled между шагами."""
         from src.internal_modules.rollout import RolloutJournal
         st = ro['state']

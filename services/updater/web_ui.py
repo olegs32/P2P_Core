@@ -160,8 +160,10 @@ if st is not None:
             "Каскадный rollout: сид exe волнами через шару `cdn_update`, "
             "затем веер штатного apply (дальние первыми). Best-effort, отчет по нодам.")
         ver = st.text_input("Версия", key="rollout_ver", placeholder="2.1.0")
-        inc_self = st.checkbox("Включая себя (админ уже новый — обычно выкл)",
-                               key="rollout_self", value=False)
+        inc_self = st.checkbox("Включая себя (отложено — см. ниже)",
+                               key="rollout_self", value=False, disabled=True)
+        st.caption("Самообновление админа отложено (roadmap спеки) — "
+                   "админ обновляется отдельно через свою сборку.")
         rc1, rc2, rc3 = st.columns([1, 1, 2])
         if rc1.button("Стартовать rollout", key="rollout_start", disabled=not (ver or "").strip()):
             try:
