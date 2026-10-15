@@ -165,6 +165,46 @@ async def test_apply_status_mapping(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_rollout_run_resumes_from_journal(tmp_path):
+    from unittest.mock import AsyncMock, patch
+
+    import src.internal_modules.updater as upd_mod
+    from src.internal_modules.rollout import RolloutJournal
+    u = make_updater(tmp_path, health_confirm_sec=0, health_confirm_retries=1)
+    # fake journal: same version, b already updated, c seeded
+    j = RolloutJournal(u._work_dir(), '2.1.0')
+    j.write({'version': '2.1.0', 'nodes': {
+        'b': {'hop': 1, 'phase': 'updated'},
+        'c': {'hop': 2, 'phase': 'seeded'}}})
+
+    async def fake_phase0(ro):
+        ro['state']['waves_seed'] = [['b', 'd'], ['c']]
+        ro['state']['waves_apply'] = [['c'], ['b', 'd']]
+        ro['state']['nodes'] = {'b': {'hop': 1, 'phase': 'pending'},
+                                'c': {'hop': 2, 'phase': 'pending'},
+                                'd': {'hop': 1, 'phase': 'pending'}}
+    u._rollout_phase0 = AsyncMock(side_effect=fake_phase0)
+    u._rollout_ensure_all = AsyncMock()
+    u._rollout_seed_wave = AsyncMock()
+    u._rollout_apply = AsyncMock()
+    ro = {'version': '2.1.0', 'cancelled': False,
+          'state': {'version': '2.1.0', 'nodes': {}}}
+    with patch.object(upd_mod, 'ROLLOUT_POLL_SEC', 0):
+        await u._rollout_run(ro)
+    # resume restore: wave1 todo skips updated b → only fresh d is seeded;
+    # wave2 (c, already seeded) has empty todo → seed_wave not called for it
+    assert u._rollout_seed_wave.await_count == 1
+    seed_args = u._rollout_seed_wave.await_args.args
+    assert seed_args[1] == ['d']
+    assert seed_args[2] == []
+    # apply sees restored phases: b stays updated, c stays seeded
+    u._rollout_apply.assert_awaited_once()
+    apply_state = u._rollout_apply.await_args.args[0]
+    assert apply_state['nodes']['b']['phase'] == 'updated'
+    assert apply_state['nodes']['c']['phase'] == 'seeded'
+
+
+@pytest.mark.asyncio
 async def test_seed_rejects_bad_mirror_sha(tmp_path):
     u = make_updater(tmp_path)
 
