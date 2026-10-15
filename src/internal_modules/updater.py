@@ -64,6 +64,7 @@ class Updater(ModuleGeneric):
         self._known: dict[str, dict] = {}   # version -> {manifest, node, share, exe_rel}
         self._last_check: dict | None = None
         self._tasks: list[asyncio.Task] = []
+        self._rollout = None
 
     # ------------------------------------------------------------------ #
     #  Пути и состояние
@@ -619,3 +620,49 @@ class Updater(ModuleGeneric):
         self.log.info(f'Build packaged: {version} -> {ver_dir}')
         return {'ok': True, 'version': version, 'path': str(ver_dir),
                 'manifest': manifest}
+
+    # ------------------------------------------------------------------ #
+    #  RPC: массовый rollout по mesh (каркас; реализация — Task 6-8)
+    # ------------------------------------------------------------------ #
+
+    @rpc
+    async def rollout_start(self, data: dict = None) -> dict:
+        import time, uuid
+        data = data or {}
+        version = (data.get('version') or '').strip()
+        if not version:
+            return {'ok': False, 'error': 'укажите version'}
+        if self._rollout and not self._done(self._rollout.get('task')):
+            return {'ok': False, 'error': 'rollout уже идёт'}
+        include_self = bool(data.get('include_self', False))
+        self._rollout = {
+            'plan_id': uuid.uuid4().hex[:8],
+            'version': version,
+            'include_self': include_self,
+            'cancelled': False,
+            'task': None,
+            'state': {'version': version, 'started_at': time.time(), 'nodes': {}},
+        }
+        t = asyncio.create_task(self._rollout_run(self._rollout))
+        self._rollout['task'] = t
+        return {'ok': True, 'plan_id': self._rollout['plan_id']}
+
+    @rpc
+    async def rollout_status(self, data: dict = None) -> dict:
+        if not self._rollout:
+            return {'ok': True, 'state': None}
+        return {'ok': True, 'state': self._rollout['state']}
+
+    @rpc
+    async def rollout_cancel(self, data: dict = None) -> dict:
+        if not self._rollout:
+            return {'ok': False, 'error': 'rollout не запущен'}
+        self._rollout['cancelled'] = True
+        return {'ok': True}
+
+    @staticmethod
+    def _done(task) -> bool:
+        return task is None or task.done()
+
+    async def _rollout_run(self, ro: dict) -> None:
+        ro['state']['error'] = 'not implemented'
