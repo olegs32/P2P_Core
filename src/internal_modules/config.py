@@ -93,6 +93,7 @@ class UpdateConfig(BaseModel):
     require_signed: bool = True         # WinVerifyTrust перед применением
     allow_downgrade: bool = False       # понижение версии через apply(force)
     health_confirm_sec: int = 90        # сколько ждать до boot_ok после апдейта
+    health_confirm_retries: int = 3  # опросов статуса оркестратором после health_confirm_sec
 
 
 class PurgeConfig(BaseModel):
