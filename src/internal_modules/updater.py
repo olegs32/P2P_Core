@@ -667,6 +667,15 @@ class Updater(ModuleGeneric):
     async def _rollout_run(self, ro: dict) -> None:
         ro['state']['error'] = 'not implemented'
 
+    @staticmethod
+    def _remote_download_dir(text: str, fallback: str) -> str:
+        try:
+            import yaml as _yaml
+            _parsed = _yaml.safe_load(text) or {}
+            return ((_parsed.get('files') or {}).get('download_dir')) or fallback
+        except Exception:
+            return fallback
+
     async def _rollout_ensure_node(self, dst: str, admin: str, share: str, download_dir: str) -> dict:
         from src.internal_modules.rollout import ensure_cdn_share, ensure_update_source
         try:
@@ -681,12 +690,7 @@ class Updater(ModuleGeneric):
         text = got.get('text', '')
         base_mtime = got.get('mtime')
         # download_dir удаленной ноды — из ЕЕ конфига
-        try:
-            import yaml as _yaml
-            _parsed = _yaml.safe_load(text) or {}
-            _dd = ((_parsed.get('files') or {}).get('download_dir')) or download_dir
-        except Exception:
-            _dd = download_dir
+        _dd = self._remote_download_dir(text, download_dir)
         new_text = text
         patched = ensure_update_source(new_text, admin, share)
         if patched is not None:
@@ -716,6 +720,7 @@ class Updater(ModuleGeneric):
                     return {'phase': 'unreachable', 'detail': 'config.get failed'}
                 text = got.get('text', '')
                 base_mtime = got.get('mtime')
+                _dd = self._remote_download_dir(text, download_dir)
                 new_text = text
                 p1 = ensure_update_source(new_text, admin, share)
                 if p1 is not None:
@@ -756,6 +761,31 @@ class Updater(ModuleGeneric):
         for i, wave in enumerate(seed):
             for n in wave:
                 nodes[n] = {'hop': i + 1, 'phase': 'pending'}
+        if nodes:
+            async def _one_status(name: str):
+                try:
+                    res = await self.ctx.network.call(
+                        dst=name, service='updater', method='status',
+                        data={}, timeout=10)
+                except Exception as e:
+                    return name, None, str(e)
+                return name, res, None
+
+            for name, res, err in await asyncio.gather(
+                    *[_one_status(n) for n in nodes]):
+                entry = nodes.get(name) or {}
+                if err is not None:
+                    entry['phase'] = 'unreachable'
+                    entry['detail'] = err
+                elif isinstance(res, dict) and res.get('ok'):
+                    if res.get('current') is not None:
+                        entry['version_before'] = res.get('current')
+                else:
+                    entry['phase'] = 'unreachable'
+                    entry['detail'] = (res or {}).get(
+                        'error', 'updater.status failed') \
+                        if isinstance(res, dict) else 'updater.status failed'
+                nodes[name] = entry
         st['nodes'] = nodes
         journal = RolloutJournal(self._work_dir(), ro['version'])
         journal.write(st)
