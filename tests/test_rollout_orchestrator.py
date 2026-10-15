@@ -113,3 +113,22 @@ async def test_ensure_retry_uses_fresh_download_dir(tmp_path):
     assert res['phase'] == 'pending'
     assert len(saves) == 2
     assert 'new_dl' in saves[1]
+
+
+@pytest.mark.asyncio
+async def test_seed_rejects_bad_mirror_sha(tmp_path):
+    u = make_updater(tmp_path)
+
+    async def fake_call(dst, service, method, data=None, timeout=60):
+        if service == 'files' and method == 'stat':
+            return {'ok': True, 'manifest': {'id': 'deadbeef'}}
+        if service == 'files' and method == 'downloads':
+            return {'ok': True, 'downloads': [{'label': 'L', 'status': 'done'}]}
+        if service == 'files' and method == 'download':
+            return {'ok': True, 'label': 'L', 'size': 10}
+        raise AssertionError((service, method))
+
+    u.ctx.network = type('N', (), {'call': staticmethod(fake_call)})()
+    res = await u._rollout_seed_node('c', mirror='b', staged='2.1.0_exe',
+                                     expect_sha='cafef00d', version='2.1.0')
+    assert res['phase'] == 'seed_failed'  # зеркало битое — не раздаем дальше

@@ -814,3 +814,144 @@ class Updater(ModuleGeneric):
         st['nodes'] = nodes
         journal = RolloutJournal(self._work_dir(), ro['version'])
         journal.write(st)
+
+    async def _rollout_seed_node(self, dst: str, mirror: str | None,
+                                 staged: str, expect_sha: str,
+                                 version: str) -> dict:
+        """Засидировать одну ноду staged-файлом версии.
+
+        mirror is None (wave0) — нода сама тянет с админа через
+        `updater.download` (он ходит в `update.sources`). Иначе ноде
+        приказывается `files.download` с явного зеркала (mirror).
+        `files.download` отвечает сразу `{ok, label}`, файл докачивается
+        фоном — ждём done через `files.downloads`, затем сверяем sha
+        через `files.stat` (`manifest.id == expect_sha`).
+        """
+        try:
+            if mirror is None:
+                dl = await self.ctx.network.call(
+                    dst=dst, service='updater', method='download',
+                    data={'version': version}, timeout=120)
+                if not isinstance(dl, dict) or not dl.get('ok'):
+                    err = (dl or {}).get('error', 'download failed') \
+                        if isinstance(dl, dict) else 'download failed'
+                    return {'phase': 'seed_failed', 'detail': err}
+            else:
+                dl = await self.ctx.network.call(
+                    dst=dst, service='files', method='download',
+                    data={'dst': mirror, 'share': 'cdn_update',
+                          'path': staged, 'save_as': staged},
+                    timeout=60)
+                if not isinstance(dl, dict) or not dl.get('ok'):
+                    err = (dl or {}).get('error', 'download failed') \
+                        if isinstance(dl, dict) else 'download failed'
+                    return {'phase': 'seed_failed', 'detail': err}
+                label = dl.get('label')
+                if not dl.get('done') and label:
+                    done = False
+                    for _ in range(120):
+                        lst = await self.ctx.network.call(
+                            dst=dst, service='files', method='downloads',
+                            data={}, timeout=10)
+                        if isinstance(lst, dict) and lst.get('ok'):
+                            entries = lst.get('downloads') or []
+                            match = next(
+                                (e for e in entries
+                                 if isinstance(e, dict)
+                                 and e.get('label') == label),
+                                None)
+                            if match is not None:
+                                if match.get('status') == 'done':
+                                    done = True
+                                    break
+                                if match.get('status') == 'error':
+                                    return {
+                                        'phase': 'seed_failed',
+                                        'detail': match.get('error')
+                                        or 'files.download failed',
+                                    }
+                        await asyncio.sleep(0.5)
+                    if not done:
+                        return {'phase': 'seed_failed',
+                                'detail': 'таймаут ожидания files.download'}
+            st = await self.ctx.network.call(
+                dst=dst, service='files', method='stat',
+                data={'share': 'cdn_update', 'path': staged}, timeout=30)
+            if not isinstance(st, dict) or not st.get('ok'):
+                err = (st or {}).get('error', 'files.stat failed') \
+                    if isinstance(st, dict) else 'files.stat failed'
+                return {'phase': 'seed_failed', 'detail': err}
+            got = ((st.get('manifest') or {}).get('id')
+                   if isinstance(st.get('manifest'), dict) else None)
+            if got != expect_sha:
+                return {'phase': 'seed_failed',
+                        'detail': f'sha mismatch: ожидался {expect_sha}, '
+                                  f'на ноде {got}'}
+            return {'phase': 'seeded'}
+        except Exception as e:
+            return {'phase': 'seed_failed', 'detail': str(e)}
+
+    async def _rollout_seed_wave(self, ro: dict, wave: list[str],
+                                 mirrors: list[str]) -> None:
+        """Засидировать одну волну: батчи по 4, цепочка зеркал на ноду.
+
+        Для каждой ноды перебираются зеркала (только `seeded` из
+        предыдущей волны по порядку), затем деградация в A —
+        `mirror=None` (нода тянет с админа напрямую). Первая удача
+        фиксируется; битое зеркало (seed_failed) зеркалом не становится.
+        """
+        from src.internal_modules.rollout import RolloutJournal
+        st = ro['state']
+        if ro.get('cancelled'):
+            return
+        version = ro.get('version') or st.get('version', '')
+        staged = f"{version}_{self.ctx.config.local.exe_name}"
+        try:
+            man = json.loads(
+                (self._dist_dir() / version / 'manifest.json')
+                .read_text(encoding='utf-8'))
+            expect_sha = man.get('exe_sha256') or man.get('id')
+        except (OSError, ValueError):
+            expect_sha = None
+        if not expect_sha:
+            for n in wave:
+                entry = (st.get('nodes') or {}).get(n) or {}
+                entry['phase'] = 'seed_failed'
+                entry['detail'] = \
+                    f'нет локального dist/{version}/manifest.json'
+                st['nodes'][n] = entry
+            RolloutJournal(self._work_dir(), version).write(st)
+            return
+        seeded = [m for m in (mirrors or [])
+                  if ((st.get('nodes') or {}).get(m) or {}).get('phase')
+                  == 'seeded']
+        sem = asyncio.Semaphore(4)
+
+        async def _one(name: str):
+            async with sem:
+                try:
+                    entry = (st.get('nodes') or {}).get(name) or {}
+                    entry['phase'] = 'seeding'
+                    st['nodes'][name] = entry
+                    last: dict = {'phase': 'seed_failed',
+                                  'detail': 'нет доступных зеркал'}
+                    for m in seeded + [None]:
+                        res = await self._rollout_seed_node(
+                            name, mirror=m, staged=staged,
+                            expect_sha=expect_sha, version=version)
+                        if res.get('phase') == 'seeded':
+                            last = dict(res)
+                            last['seed_mirror'] = m
+                            break
+                        last = res
+                    entry.update(last)
+                    entry['phase'] = last.get('phase', 'seed_failed')
+                    st['nodes'][name] = entry
+                except Exception as e:
+                    entry = (st.get('nodes') or {}).get(name) or {}
+                    entry['phase'] = 'seed_failed'
+                    entry['detail'] = str(e)
+                    st['nodes'][name] = entry
+
+        await asyncio.gather(*[_one(n) for n in wave])
+        RolloutJournal(self._work_dir(), version).write(st)
