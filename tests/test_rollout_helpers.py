@@ -16,3 +16,19 @@ def test_plan_waves_linear_chain():
     seed, apply = plan_waves(snap, 'admin')
     assert seed == [['b'], ['c']]
     assert apply == [['c'], ['b']]
+
+
+def test_ensure_update_source_appends_and_idempotent():
+    from src.internal_modules.rollout import ensure_update_source
+    text = "node: b\nupdate:\n  sources: []\n"
+    patched = ensure_update_source(text, 'AdminNode')
+    assert patched is not None and 'adminnode' in patched  # lower-канон
+    assert ensure_update_source(patched, 'AdminNode') is None
+
+
+def test_ensure_cdn_share_appends_and_idempotent():
+    from src.internal_modules.rollout import ensure_cdn_share
+    text = "node: b\nfiles:\n  download_dir: downloads\n  shares: []\n"
+    patched = ensure_cdn_share(text, 'downloads')
+    assert patched is not None and 'cdn_update' in patched
+    assert ensure_cdn_share(patched, 'downloads') is None
