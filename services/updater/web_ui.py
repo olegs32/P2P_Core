@@ -154,6 +154,60 @@ if st is not None:
 
         _show_errors(last)
 
+        st.divider()
+        st.subheader("Массовое обновление сети")
+        st.caption(
+            "Каскадный rollout: сид exe волнами через шару `cdn_update`, "
+            "затем веер штатного apply (дальние первыми). Best-effort, отчет по нодам.")
+        ver = st.text_input("Версия", key="rollout_ver", placeholder="2.1.0")
+        inc_self = st.checkbox("Включая себя (админ уже новый — обычно выкл)",
+                               key="rollout_self", value=False)
+        rc1, rc2, rc3 = st.columns([1, 1, 2])
+        if rc1.button("Стартовать rollout", key="rollout_start", disabled=not (ver or "").strip()):
+            try:
+                res = rpc.call('updater', 'rollout_start',
+                               {'version': ver.strip(), 'include_self': bool(inc_self)},
+                               timeout=30)
+                (st.success if res.get('ok') else st.error)(
+                    res.get('plan_id') or res.get('error', 'ошибка'))
+            except Exception as e:
+                st.error(str(e))
+        if rc2.button("Отменить", key="rollout_cancel"):
+            try:
+                res = rpc.call('updater', 'rollout_cancel', {}, timeout=15)
+                if not res.get('ok'):
+                    st.error(res.get('error', 'ошибка'))
+                else:
+                    st.toast('Отмена запрошена (между волнами)')
+            except Exception as e:
+                st.error(str(e))
+        if rc3.button("Обновить статус", key="rollout_refresh"):
+            st.rerun()
+        try:
+            rs = rpc.call('updater', 'rollout_status', {}, timeout=15)
+        except Exception as e:
+            st.error(str(e))
+            rs = None
+        if rs and rs.get('state'):
+            stt = rs['state']
+            nodes = stt.get('nodes') or {}
+            if nodes:
+                rdf = pd.DataFrame([{
+                    'Узел': n,
+                    'Hop': v.get('hop', ''),
+                    'Фаза': v.get('phase', ''),
+                    'Детали': (v.get('detail') or '')[:120],
+                } for n, v in sorted(nodes.items())])
+                st.dataframe(rdf, width='stretch', hide_index=True, key='rollout_rows')
+            else:
+                st.caption("Ноды еще не разведаны — идет фаза 0.")
+            if stt.get('error'):
+                st.error(stt['error'])
+            if stt.get('aborted_canary'):
+                st.warning("Канарейка провалена — веер остановлен.")
+            if stt.get('cancelled'):
+                st.warning("Отмена запрошена.")
+
         # ---------------- автообновление статуса ---------------- #
         @st.fragment(run_every="5s")
         def state_view():
